@@ -1,0 +1,120 @@
+package frontend;
+
+import type { Token, IntegerSize, FloatSize } from frontend.Lexer;
+
+let _integerSize = fn(size: IntegerSize) {
+  match (size) {
+    Infer => "Infer",
+    I8 => "I8",
+    I16 => "I16",
+    I32 => "I32",
+    I64 => "I64",
+    U8 => "U8",
+    U16 => "U16",
+    U32 => "U32",
+    U64 => "U64",
+  }
+};
+
+let _floatSize = fn(size: FloatSize) {
+  match (size) {
+    Infer => "Infer",
+    F16 => "F16",
+    F32 => "F32",
+    F64 => "F64"
+  }
+};
+
+export let bytesLiteral: (Bytes) -> Bytes = fn(value) {
+  let out = "\"";
+  let i = 0;
+
+  while (i < value.len()) {
+    let c = Bytes.get_u8(value, i);
+    out = out + match (c) {
+      "\n".code => "\\n",
+      "\r".code => "\\r",
+      "\t".code => "\\t",
+      "\"".code => "\\\"",
+      "\\".code => "\\\\",
+      _ => ((c >= 32) && (c <= 126))
+        ? Bytes.slice(value, i, 1)
+        : "\\x" + Std.string(c),
+    };
+    i++;
+  }
+  out + "\""
+};
+
+export let tokenName: (Token) -> Bytes = fn(token) {
+  match (token) {
+    Ident(name) => "Ident(" + bytesLiteral(name) + ")",
+    IntegerConstant(digits, size) => "IntegerConstant(" + digits + ", " + _integerSize(size) + ")",
+    FloatConstant(literal, size) => "FloatConstant(" + literal + ", " + _floatSize(size) + ")",
+    BytesLiteral(value) => "BytesLiteral(" + bytesLiteral(value) + ")",
+    RegExpLiteral(pattern, flags) => "RegExpLiteral(" + bytesLiteral(pattern) + ", " + bytesLiteral(flags) + ")",
+    As => "As", Await => "Await", Bits => "Bits", Break => "Break", Catch => "Catch", Const => "Const",
+    Continue => "Continue", Do => "Do",
+    Else => "Else", EnumDecl => "EnumDecl", Export => "Export", False => "False", Fn => "Fn",
+    For => "For", From => "From", If => "If", Import => "Import", Is => "Is", Let => "Let",
+    ListLiteral => "ListLiteral", Load => "Load", Macro => "Macro", Match => "Match", New => "New", Null => "Null",
+    Package => "Package", Prototype => "Prototype", Rest => "Rest", Return => "Return",
+    Super => "Super", This => "This", Throw => "Throw",
+    True => "True", Try => "Try", Type => "Type", Typedef => "Typedef", When => "When", While => "While", With => "With",
+    LParen => "LParen",
+    RParen => "RParen",
+    LBrace => "LBrace",
+    RBrace => "RBrace",
+    LBracket => "LBracket",
+    RBracket => "RBracket",
+    Semicolon => "Semicolon",
+    Colon => "Colon",
+    Comma => "Comma",
+    Question => "Question",
+    Dot => "Dot",
+    DotDotDot => "DotDotDot",
+    Equal => "Equal",
+    EqualEqual => "EqualEqual",
+    FatArrow => "FatArrow",
+    Not => "Not",
+    NotEqual => "NotEqual",
+    Less => "Less",
+    LessEqual => "LessEqual",
+    LessMinus => "LessMinus",
+    Greater => "Greater",
+    GreaterEqual => "GreaterEqual",
+    Plus => "Plus",
+    PlusPlus => "PlusPlus",
+    PlusEqual => "PlusEqual",
+    Minus => "Minus",
+    MinusMinus => "MinusMinus",
+    MinusEqual => "MinusEqual",
+    Arrow => "Arrow",
+    Star => "Star",
+    StarEqual => "StarEqual",
+    Slash => "Slash",
+    SlashEqual => "SlashEqual",
+    Percent => "Percent",
+    LessLess => "LessLess",
+    GreaterGreater => "GreaterGreater",
+    Ampersand => "Ampersand",
+    And => "And",
+    Pipe => "Pipe",
+    PipePipe => "PipePipe",
+    PipeGreater => "PipeGreater",
+    Caret => "Caret",
+    Wildcard => "Wildcard",
+    Eof => "Eof",
+  }
+};
+
+export let printTokens: (Array<Token>) -> Bytes = fn(tokens) {
+  let out = "";
+  let i = 0;
+
+  while (i < Array.len(tokens)) {
+    out = out + tokenName(tokens[i]) + "\n";
+    i++;
+  }
+  out
+};

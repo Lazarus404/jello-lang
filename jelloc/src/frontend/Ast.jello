@@ -1,0 +1,287 @@
+package frontend;
+
+export enum IntSize {
+  Infer;
+  I8;
+  I16;
+  I32;
+  I64;
+  U8;
+  U16;
+  U32;
+  U64;
+}
+
+export enum FloatSize {
+  Infer;
+  F16;
+  F32;
+  F64;
+}
+
+export enum UnaryOp {
+  Not;
+  Negate;
+}
+
+export enum IncDecOp {
+  Increment;
+  Decrement;
+}
+
+export enum BinaryOp {
+  Add;
+  Subtract;
+  Multiply;
+  Divide;
+  Remainder;
+  ShiftLeft;
+  ShiftRight;
+  BitAnd;
+  BitOr;
+  BitXor;
+  Equal;
+  NotEqual;
+  Less;
+  LessEqual;
+  Greater;
+  GreaterEqual;
+  And;
+  Or;
+}
+
+export enum AssignOp {
+  Assign;
+  Add;
+  Subtract;
+  Multiply;
+  Divide;
+}
+
+export enum Type {
+  Named(name: Bytes);
+  Generic(name: Bytes, args: Array<Type>);
+  OptionalArg(inner: Type);
+  VarargsArg(inner: Type);
+  Function(args: Array<Type>, result: Type);
+  Tuple(items: Array<Type>);
+}
+
+export enum ParameterKind {
+  Required;
+  Default(value: Expr);
+  Optional(defaultValue: ?Expr);
+  Varargs;
+}
+
+export enum Parameter {
+  Parameter(name: Bytes, annotation: ?Type, kind: ParameterKind);
+}
+
+export enum Block {
+  Block(statements: Array<Stmt>, tail: ?Expr);
+}
+
+export enum QuoteKind {
+  Auto;
+  Expression;
+  Statement;
+  Statements;
+  Type;
+  Pattern;
+}
+
+export enum QuoteBody {
+  Expression(value: Expr);
+  Statement(value: Stmt);
+  Statements(values: Array<Stmt>);
+  Type(value: Type);
+  Pattern(value: Pattern);
+}
+
+export enum ObjectEntry {
+  Field(name: Bytes, value: Expr);
+  Computed(key: Expr, value: Expr);
+  Spread(value: Expr);
+}
+
+export enum ListGenerator {
+  Generator(pattern: Pattern, source: Expr, guard: ?Expr);
+}
+
+export enum ListLiteral {
+  Empty;
+  Elements(items: Array<Expr>);
+  Cons(prefix: Array<Expr>, tail: Expr);
+  Spread(prefix: Array<Expr>, rest: Expr, suffix: Array<Expr>);
+  Comprehension(generators: Array<ListGenerator>, body: Expr);
+}
+
+export enum Endian {
+  Big;
+  Little;
+}
+
+export enum BitValueKind {
+  Integer;
+  Float;
+  Rest;
+}
+
+export enum BitExprSegment {
+  Segment(width: I32, endian: Endian, signed: Bool, kind: BitValueKind, value: Expr);
+}
+
+export enum BitPatternSegment {
+  Segment(width: I32, endian: Endian, signed: Bool, kind: BitValueKind, value: Pattern);
+}
+
+export enum MatchArm {
+  Arm(pattern: Pattern, guard: ?Expr, body: Block);
+}
+
+export enum WithClause {
+  Clause(pattern: Pattern, guard: ?Expr, value: Expr);
+}
+
+export enum MatchArms {
+  None;
+  Some(arms: Array<MatchArm>);
+}
+
+export enum Pattern {
+  Wildcard;
+  BindPattern(name: Bytes);
+  Pin(name: Bytes);
+  Bool(value: Bool);
+  Integer(digits: Bytes, size: IntSize);
+  Bytes(value: Bytes);
+  Atom(name: Bytes);
+  Object(fields: Array<Tuple<Bytes, Pattern>>);
+  Tuple(items: Array<Pattern>);
+  Array(items: Array<Pattern>);
+  ArrayCons(head: Pattern, tail: Bytes);
+  ArrayRest(prefix: Array<Pattern>, rest: Bytes);
+  Enum(name: Bytes, args: Array<Pattern>);
+  RegExp(pattern: Bytes, flags: Bytes, binding: ?Bytes);
+  IsType(ty: Type, binding: ?Bytes);
+  Bits(segments: Array<BitPatternSegment>);
+}
+
+export enum Expr {
+  Bytes(value: Bytes);
+  RegExp(pattern: Bytes, flags: Bytes);
+  Atom(name: Bytes);
+  Bool(value: Bool);
+  Integer(digits: Bytes, size: IntSize);
+  Float(literal: Bytes, size: FloatSize);
+  Null;
+  This;
+  Super;
+  Variable(name: Bytes);
+
+  Array(items: Array<Expr>);
+  List(value: ListLiteral);
+  Tuple(items: Array<Expr>);
+  Object(entries: Array<ObjectEntry>);
+  Spread(value: Expr);
+  Bits(segments: Array<BitExprSegment>);
+
+  Member(base: Expr, name: Bytes);
+  Index(base: Expr, index: Expr);
+  Call(callee: Expr, typeArgs: Array<Type>, args: Array<Expr>);
+  TypeApply(base: Expr, args: Array<Type>);
+  New(prototype: Expr, args: Array<Expr>);
+
+  Function(params: Array<Parameter>, result: ?Type, body: Block, isMethod: Bool);
+  BlockExpr(body: Block);
+  If(condition: Expr, thenBranch: Expr, elseBranch: Expr);
+  Match(subject: Expr, arms: Array<MatchArm>);
+  With(clauses: Array<WithClause>, body: Block, elseArms: MatchArms);
+  Try(body: Block, catchName: ?Bytes, catchBody: Block);
+  LetExpr(pattern: Pattern, typeParams: Array<Bytes>, annotation: ?Type, value: Expr);
+
+  Unary(op: UnaryOp, value: Expr);
+  Binary(op: BinaryOp, left: Expr, right: Expr);
+  IncDec(op: IncDecOp, prefix: Bool, target: Expr);
+  Cast(value: Expr, ty: Type);
+  Is(value: Expr, ty: Type);
+  Conditional(condition: Expr, thenBranch: Expr, elseBranch: Expr);
+  Pipe(value: Expr, body: Expr);
+  Topic;
+  Assign(op: AssignOp, target: Expr, value: Expr);
+  Await(value: Expr);
+  Quote(kind: QuoteKind, body: QuoteBody);
+  Unquote(value: Expr);
+}
+
+export enum ImportKind {
+  Value;
+  TypeOnly;
+  MacroOnly;
+  Native;
+}
+
+export enum ImportItem {
+  Item(name: Bytes, alias: ?Bytes);
+}
+
+export enum StructField {
+  Field(name: Bytes, ty: Type);
+}
+
+export enum EnumConstructor {
+  Constructor(name: Bytes, fields: Array<StructField>);
+}
+
+export enum BytesLayoutType {
+  U8;
+  U16(endian: Endian);
+  U32(endian: Endian);
+  I32(endian: Endian);
+  F32(endian: Endian);
+  Bits(width: I32);
+  Rest;
+}
+
+export enum BytesLayoutField {
+  Field(name: Bytes, ty: BytesLayoutType);
+}
+
+export enum TypedefBody {
+  Alias(ty: Type);
+  Struct(fields: Array<StructField>);
+  BytesLayout(fields: Array<BytesLayoutField>);
+}
+
+export enum PrototypeField {
+  Field(name: Bytes, value: Expr);
+}
+
+export enum Stmt {
+  LetStmt(isConst: Bool, exported: Bool, pattern: Pattern, typeParams: Array<Bytes>, annotation: ?Type, value: Expr);
+  Prototype(exported: Bool, name: Bytes, typeParams: Array<Bytes>, fields: Array<PrototypeField>);
+  Typedef(exported: Bool, name: Bytes, typeParams: Array<Bytes>, body: TypedefBody);
+  Enum(exported: Bool, name: Bytes, typeParams: Array<Bytes>, constructors: Array<EnumConstructor>);
+  Macro(exported: Bool, name: Bytes, params: Array<Bytes>, body: Array<Stmt>);
+
+  ImportModule(kind: ImportKind, path: Array<Bytes>, alias: Bytes);
+  ImportFrom(kind: ImportKind, items: Array<ImportItem>, path: Array<Bytes>);
+
+  While(condition: Expr, body: Array<Stmt>);
+  DoWhile(body: Array<Stmt>, condition: Expr);
+  Break;
+  Continue;
+  Throw(value: Expr);
+  Return(value: ?Expr);
+  Expression(value: Expr);
+}
+
+export enum Package {
+  None;
+  Path(parts: Array<Bytes>);
+}
+
+export enum Program {
+  Program(package: Package, statements: Array<Stmt>, tail: ?Expr);
+}

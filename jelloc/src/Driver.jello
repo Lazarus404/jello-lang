@@ -1,0 +1,54 @@
+import { lexFile } from frontend.Lexer;
+import type { Token } from frontend.Lexer;
+import { printTokens } from frontend.Tokens;
+import { readText, writeText } from std.io.File;
+
+let _parseArgs = fn(argv: List<Bytes>) {
+  let input = "";
+  let printLex = false;
+  let output = "";
+  let cur = argv;
+
+  while (List.is_nil(cur) == false) {
+    let arg = List.head(cur);
+
+    if (arg == "--lex") {
+      printLex = true;
+    } else if (arg == "--out") {
+      cur = List.tail(cur);
+      if (List.is_nil(cur)) { throw "--out requires a path"; }
+      output = List.head(cur);
+    } else if (input == "") {
+      input = arg;
+    } else {
+      throw ("unexpected argument: " + arg);
+      null
+    }
+    cur = List.tail(cur);
+  }
+
+  if (input == "") {
+    throw "usage: jelloc <input.jello> [--lex|--out path]";
+    null
+  }
+  (input, printLex, output)
+};
+
+export let run: (List<Bytes>) -> Bytes = fn(argv) {
+  let (input, printLex, output) = _parseArgs(argv);
+
+  if (printLex) {
+    try { printTokens(lexFile(readText(input), input)) } catch (e) {
+      "LexError: " + Std.string(e) + "\n"
+    }
+  } else if (output != "") {
+    try {
+      ""
+    } catch (e) {
+      "EMIT\t" + Std.string(e) + "\n"
+    }
+  } else {
+    throw "output path required; pass --out <path>";
+    ""
+  }
+};

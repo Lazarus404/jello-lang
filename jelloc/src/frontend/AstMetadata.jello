@@ -1,0 +1,220 @@
+package frontend;
+
+import type { Block, Expr, Program, Stmt } from frontend.Ast;
+import type { SyntaxInfo, SyntaxKind } from frontend.Source;
+import { SyntaxInfo, SyntaxKind } from frontend.Source;
+
+let _source = Array.new<SyntaxInfo>(0);
+let _next = 0;
+
+let _sameKind = fn(left: SyntaxKind, right: SyntaxKind): Bool {
+  match (left) {
+    Expression => match (right) { Expression => true, _ => false },
+    Statement => match (right) { Statement => true, _ => false },
+    Parameter => match (right) { Parameter => true, _ => false },
+  }
+};
+
+let _kind = fn(kind: SyntaxKind): Bytes {
+  match (kind) { Expression => "expression", Statement => "statement", Parameter => "parameter" }
+};
+
+let _take = fn(kind: SyntaxKind): SyntaxInfo {
+  if (_next >= _source.len()) {
+    throw "missing parser metadata at " + Std.string(_next) + ": expected " + _kind(kind);
+  }
+  let info = _source[_next];
+
+  match (info) { Node(actual, path, start, end) => {
+    if (!_sameKind(actual, kind)) {
+      throw "parser metadata kind mismatch at " + Std.string(_next)
+        + ": expected " + _kind(kind) + ", got " + _kind(actual);
+    }
+    if ((path.len() == 0) || (start < 0) || (end < start)) { throw "invalid parser metadata span"; }
+  } };
+  _next++;
+  info
+};
+
+let _append = fn(out: Array<SyntaxInfo>, values: Array<SyntaxInfo>) {
+  let appendIndex = 0;
+
+  while (appendIndex < values.len()) {
+    out.push(values[appendIndex]);
+    appendIndex++;
+  }
+  null
+};
+
+let _expr: (Expr) -> Array<SyntaxInfo> = fn(_value) { Array.new<SyntaxInfo>(0) };
+let _statements: (Array<Stmt>) -> Array<SyntaxInfo> = fn(_values) { Array.new<SyntaxInfo>(0) };
+
+let _block = fn(block: Block): Array<SyntaxInfo> {
+  let out = Array.new<SyntaxInfo>(0);
+
+  match (block) { Block(statements, tail) => {
+    _append(out, _statements(statements));
+    if (tail != null) { _append(out, _expr(tail)); }
+  } };
+  out
+};
+
+_expr = fn(value) {
+  let out = Array.new<SyntaxInfo>(0);
+
+  match (value) {
+    Bool(_), Integer(_, _), Variable(_) => null,
+    Unary(Negate, Integer(_, _)) => {
+      _take(SyntaxKind.Expression);
+      null
+    },
+    Unary(_, inner), Cast(inner, _) => _append(out, _expr(inner)),
+    Binary(op, left, right) => {
+      _append(out, _expr(left));
+      _append(out, _expr(right));
+
+      match (op) {
+        NotEqual, LessEqual, GreaterEqual => {
+          let derived = _take(SyntaxKind.Expression);
+          out.push(derived);
+          out.push(derived);
+        },
+        _ => {
+          out.push(_take(SyntaxKind.Expression));
+          null
+        },
+      };
+      null
+    },
+    Assign(op, Variable(_), right) => {
+      let target = _take(SyntaxKind.Expression);
+      _append(out, _expr(right));
+      let assignment = _take(SyntaxKind.Expression);
+
+      match (op) {
+        Assign => {
+          out.push(assignment);
+          null
+        },
+        Add, Subtract => {
+          out.push(target);
+          out.push(assignment);
+          out.push(assignment);
+          null
+        },
+        _ => {
+          out.push(assignment);
+          null
+        },
+      }
+    },
+    Call(Variable(_), _, args) => {
+      let argumentIndex = 0;
+
+      while (argumentIndex < args.len()) {
+        _append(out, _expr(args[argumentIndex]));
+        argumentIndex++;
+      }
+      null
+    },
+    If(condition, thenBranch, elseBranch) => {
+      _append(out, _expr(condition));
+      _append(out, _expr(thenBranch));
+      _append(out, _expr(elseBranch));
+      null
+    },
+    BlockExpr(block) => _append(out, _block(block)),
+    _ => {
+      throw "unsupported expression in HIR source map";
+      null
+    },
+  };
+
+  match (value) {
+    Assign(_, _, _), Binary(_, _, _) => null,
+    _ => {
+      out.push(_take(SyntaxKind.Expression));
+      null
+    },
+  };
+  out
+};
+
+_statements = fn(values) {
+  let out = Array.new<SyntaxInfo>(0);
+  let statementIndex = 0;
+
+  while (statementIndex < values.len()) {
+    let addedStatement = false;
+
+    match (values[statementIndex]) {
+      LetStmt(_, _, BindPattern(_), _, _, value) => {
+        _append(out, _expr(value));
+        let statement = _take(SyntaxKind.Statement);
+        out.push(statement);
+        out.push(statement);
+        addedStatement = true;
+      },
+      Expression(value) => _append(out, _expr(value)),
+      Return(value) => if (value != null) { _append(out, _expr(value)); },
+      Throw(value) => _append(out, _expr(value)),
+      While(condition, body) => {
+        _append(out, _expr(condition));
+        _append(out, _statements(body));
+        null
+      },
+      Break, Continue => null,
+      _ => {
+        throw "unsupported statement in HIR source map";
+        null
+      },
+    };
+    if (!addedStatement) { out.push(_take(SyntaxKind.Statement)); }
+    statementIndex++;
+  }
+  out
+};
+
+export let orderSyntaxForHir: (Program, Array<SyntaxInfo>) -> Array<SyntaxInfo> = fn(program, source) {
+  _source = source;
+  _next = 0;
+  let functions = Array.new<Array<SyntaxInfo>>(0);
+  let programNodes = Array.new<SyntaxInfo>(0);
+
+  match (program) { Program(_, statements, tail) => {
+    let statementIndex = 0;
+
+    while (statementIndex < statements.len()) {
+      match (statements[statementIndex]) {
+        LetStmt(_, _, BindPattern(_), _, _, Function(params, _, body, false)) => {
+          let chunk = Array.new<SyntaxInfo>(0);
+          let parameterIndex = 0;
+
+          while (parameterIndex < params.len()) {
+            chunk.push(_take(SyntaxKind.Parameter));
+            parameterIndex++;
+          }
+          _append(chunk, _block(body));
+          let functionSpan = _take(SyntaxKind.Expression);
+          chunk.push(_take(SyntaxKind.Statement));
+          functions.push(chunk);
+          null
+        },
+        _ => _append(programNodes, _statements([statements[statementIndex]])),
+      };
+      statementIndex++;
+    }
+    if (tail == null) { throw "HIR program requires a tail expression"; }
+    _append(programNodes, _expr(tail));
+  } };
+  if (_next != _source.len()) { throw "unused parser metadata"; }
+  let out = Array.new<SyntaxInfo>(0);
+  let functionIndex = 0;
+
+  while (functionIndex < functions.len()) {
+    _append(out, functions[functionIndex]);
+    functionIndex++;
+  }
+  _append(out, programNodes);
+  out
+};
