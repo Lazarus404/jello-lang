@@ -1,11 +1,16 @@
 import { lexFile } from frontend.Lexer;
 import type { Token } from frontend.Lexer;
+import { parseProgram } from frontend.Parser;
 import { printTokens } from frontend.Tokens;
 import { readText, writeText } from std.io.File;
 
 let _parseArgs = fn(argv: List<Bytes>) {
   let input = "";
   let printLex = false;
+  let parseOnly = false;
+  let printLowered = false;
+  let printTyped = false;
+  let printLegalized = false;
   let output = "";
   let cur = argv;
 
@@ -14,6 +19,8 @@ let _parseArgs = fn(argv: List<Bytes>) {
 
     if (arg == "--lex") {
       printLex = true;
+    } else if (arg == "--parse") {
+      parseOnly = true;
     } else if (arg == "--out") {
       cur = List.tail(cur);
       if (List.is_nil(cur)) { throw "--out requires a path"; }
@@ -28,18 +35,32 @@ let _parseArgs = fn(argv: List<Bytes>) {
   }
 
   if (input == "") {
-    throw "usage: jelloc <input.jello> [--lex|--out path]";
+    throw "usage: jelloc <input.jello> [--lex|--parse|--out path]";
     null
   }
-  (input, printLex, output)
+  (input, printLex, parseOnly, output)
 };
 
 export let run: (List<Bytes>) -> Bytes = fn(argv) {
-  let (input, printLex, output) = _parseArgs(argv);
+  let (input, printLex, parseOnly, output) = _parseArgs(argv);
 
   if (printLex) {
     try { printTokens(lexFile(readText(input), input)) } catch (e) {
       "LexError: " + Std.string(e) + "\n"
+    }
+  } else if (parseOnly) {
+    let lexed = try { (lexFile(readText(input), input), "") } catch (e) {
+      (Array.new<Token>(0), Std.string(e))
+    };
+    let (parsedTokens, lexError) = lexed;
+
+    if (lexError != "") { "LEXER\t" + lexError + "\n" } else {
+      try {
+        parseProgram(parsedTokens);
+        ""
+      } catch (e) {
+        "PARSER\t" + Std.string(e) + "\n"
+      }
     }
   } else if (output != "") {
     try {

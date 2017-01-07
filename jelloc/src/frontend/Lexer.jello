@@ -308,7 +308,7 @@ let _lexBytesLiteral = fn(rest: Bytes) {
     let closing = (c == delimiter);
     let escaped = (c == "\\".code);
 
-    let ignored: Null<I32> = match ((invalid, closing, escaped)) {
+    let ignored: Null<Bytes> = match ((invalid, closing, escaped)) {
       (true, _, _) => {
         throw "unterminated bytes literal";
         null
