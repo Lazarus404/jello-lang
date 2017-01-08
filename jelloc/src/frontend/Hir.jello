@@ -1,0 +1,105 @@
+package frontend;
+
+import type { SourceSpan } from frontend.Source;
+
+export enum Type {
+  Bool;
+  I32;
+  I64;
+}
+
+export enum BindingId {
+  Id(value: I32);
+}
+
+export enum FunctionId {
+  Id(value: I32);
+}
+
+export enum NodeId {
+  Id(value: I32);
+}
+
+export enum NodeKind {
+  Expression;
+  Statement;
+  Binding;
+  Parameter;
+  Function;
+}
+
+export enum NodeInfo {
+  Node(id: NodeId, kind: NodeKind, span: SourceSpan);
+}
+
+export enum Expr {
+  BoolLiteral(value: Bool);
+  I32Literal(value: I32);
+  Local(id: BindingId, ty: Type);
+  AssignLocal(id: BindingId, value: Expr, ty: Type);
+  AddI32Wrap(left: Expr, right: Expr);
+  SubI32Wrap(left: Expr, right: Expr);
+  MultiplyI32Wrap(left: Expr, right: Expr);
+  NegateI32Wrap(value: Expr);
+  NotBool(value: Expr);
+  EqualI32(left: Expr, right: Expr);
+  LessI32Signed(left: Expr, right: Expr);
+  GreaterI32Signed(left: Expr, right: Expr);
+  SignExtendI32ToI64(value: Expr);
+  TruncateI64ToI32(value: Expr);
+  CallDirect(function: FunctionId, args: Array<Expr>, ty: Type);
+  Block(bindings: Array<Binding>, tail: Expr);
+  If(condition: Expr, thenBranch: Expr, elseBranch: Expr, ty: Type);
+}
+
+export enum Binding {
+  Binding(id: BindingId, name: Bytes, ty: Type, mutable: Bool, value: Expr);
+}
+
+export enum Parameter {
+  Parameter(id: BindingId, name: Bytes, ty: Type);
+}
+
+export enum Statement {
+  Bind(binding: Binding);
+  Expression(value: Expr);
+  ReturnValue(value: Expr);
+  ThrowValue(value: Expr);
+  BreakLoop;
+  ContinueLoop;
+  WhileLoop(condition: Expr, body: Array<Statement>);
+}
+
+export enum FunctionBody {
+  FunctionBody(statements: Array<Statement>, tail: ?Expr);
+}
+
+export enum FunctionDecl {
+  FunctionDecl(id: FunctionId, name: Bytes, params: Array<Parameter>, result: Type, body: FunctionBody);
+}
+
+export enum Program {
+  Program(functions: Array<FunctionDecl>, bindings: Array<Binding>, tail: Expr, nodes: Array<NodeInfo>);
+}
+
+export let exprType: (Expr) -> Type = fn(expr) {
+  match (expr) {
+    BoolLiteral(_) => Type.Bool,
+    I32Literal(_) => Type.I32,
+    Local(_, ty) => ty,
+    AssignLocal(_, _, ty) => ty,
+    AddI32Wrap(_, _) => Type.I32,
+    SubI32Wrap(_, _) => Type.I32,
+    MultiplyI32Wrap(_, _) => Type.I32,
+    NegateI32Wrap(_) => Type.I32,
+    NotBool(_) => Type.Bool,
+    EqualI32(_, _) => Type.Bool,
+    LessI32Signed(_, _) => Type.Bool,
+    GreaterI32Signed(_, _) => Type.Bool,
+    SignExtendI32ToI64(_) => Type.I64,
+    TruncateI64ToI32(_) => Type.I32,
+    CallDirect(_, _, ty) => ty,
+    Block(_, tail) => exprType(tail),
+    If(_, _, _, ty) => ty,
+  }
+};

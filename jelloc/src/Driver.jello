@@ -2,6 +2,10 @@ import { lexFile } from frontend.Lexer;
 import type { Token } from frontend.Lexer;
 import { parseProgram } from frontend.Parser;
 import { printTokens } from frontend.Tokens;
+import { printHir } from frontend.PrintHir;
+import { printIr } from ir.Print;
+import { printJlo } from backend.jello.Print;
+import { emitJlo } from backend.jello.Emit;
 import { readText, writeText } from std.io.File;
 
 let _parseArgs = fn(argv: List<Bytes>) {
@@ -21,6 +25,12 @@ let _parseArgs = fn(argv: List<Bytes>) {
       printLex = true;
     } else if (arg == "--parse") {
       parseOnly = true;
+    } else if (arg == "--ir") {
+      printLowered = true;
+    } else if (arg == "--hir") {
+      printTyped = true;
+    } else if (arg == "--jlo") {
+      printLegalized = true;
     } else if (arg == "--out") {
       cur = List.tail(cur);
       if (List.is_nil(cur)) { throw "--out requires a path"; }
@@ -35,14 +45,14 @@ let _parseArgs = fn(argv: List<Bytes>) {
   }
 
   if (input == "") {
-    throw "usage: jelloc <input.jello> [--lex|--parse|--out path]";
+    throw "usage: jelloc <input.jello> [--lex|--parse|--hir|--ir|--jlo|--out path]";
     null
   }
-  (input, printLex, parseOnly, output)
+  (input, printLex, parseOnly, printTyped, printLowered, printLegalized, output)
 };
 
 export let run: (List<Bytes>) -> Bytes = fn(argv) {
-  let (input, printLex, parseOnly, output) = _parseArgs(argv);
+  let (input, printLex, parseOnly, printTyped, printLowered, printLegalized, output) = _parseArgs(argv);
 
   if (printLex) {
     try { printTokens(lexFile(readText(input), input)) } catch (e) {

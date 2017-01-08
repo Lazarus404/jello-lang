@@ -1,0 +1,112 @@
+package ir;
+
+export enum ValueType {
+  Bool;
+  I32;
+  I64;
+  F32;
+  F64;
+  Bytes;
+  Atom;
+  Dynamic;
+  Object;
+  ArrayOf(element: ValueType);
+  TupleOf(elements: Array<ValueType>);
+  Nominal(id: I32);
+  Function(args: Array<ValueType>, result: ReturnType);
+}
+
+export enum ReturnType {
+  Void;
+  Value(ty: ValueType);
+}
+
+export enum Instruction {
+  ConstBool(dst: I32, value: Bool);
+  ConstI32(dst: I32, value: I32);
+  ConstI64(dst: I32, value: I64);
+  ConstF64(dst: I32, value: F64);
+  ConstBytes(dst: I32, value: Bytes);
+  ConstNull(dst: I32);
+  Move(dst: I32, src: I32);
+  AddI32Wrap(dst: I32, left: I32, right: I32);
+  SubI32Wrap(dst: I32, left: I32, right: I32);
+  MultiplyI32Wrap(dst: I32, left: I32, right: I32);
+  NegateI32Wrap(dst: I32, src: I32);
+  NotBool(dst: I32, src: I32);
+  CallDirect(dst: I32, function: I32, args: Array<I32>);
+  EqualI32(dst: I32, left: I32, right: I32);
+  LessI32Signed(dst: I32, left: I32, right: I32);
+  SignExtendI32ToI64(dst: I32, src: I32);
+  TruncateI64ToI32(dst: I32, src: I32);
+  Truthy(dst: I32, src: I32);
+  ToDynamic(dst: I32, src: I32);
+}
+
+export enum Effect {
+  MayReadMemory;
+  MayWriteMemory;
+  MayAllocate;
+  MayCall;
+  MayThrow;
+  MayTrap;
+}
+
+export enum Terminator {
+  Jump(target: I32);
+  Branch(condition: I32, thenTarget: I32, elseTarget: I32);
+  ReturnVoid;
+  ReturnValue(value: I32);
+  Throw(value: I32);
+  Unreachable;
+}
+
+export enum ThrowHandler {
+  Catch(target: I32, payload: I32);
+}
+
+export enum BasicBlock {
+  Block(
+    id: I32,
+    instructions: Array<Instruction>,
+    terminator: Terminator,
+    handler: ?ThrowHandler
+  );
+}
+
+export enum Function {
+  Function(
+    id: I32,
+    params: Array<I32>,
+    registers: Array<ValueType>,
+    result: ReturnType,
+    blocks: Array<BasicBlock>,
+    entry: I32
+  );
+}
+
+export enum Program {
+  Program(functions: Array<Function>);
+}
+
+export let instructionEffects: (Instruction) -> Array<Effect> = fn(instruction) {
+  match (instruction) {
+    ToDynamic(_, _) => [Effect.MayAllocate],
+    CallDirect(_, _, _) => [Effect.MayCall, Effect.MayThrow],
+    _ => [],
+  }
+};
+
+export let instructionMayThrow: (Instruction) -> Bool = fn(instruction) {
+  let effects = instructionEffects(instruction);
+  let i = 0;
+
+  while (i < effects.len()) {
+    match (effects[i]) {
+      MayThrow => { return true; },
+      _ => null,
+    };
+    i++;
+  }
+  false
+};

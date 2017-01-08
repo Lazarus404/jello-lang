@@ -1,0 +1,44 @@
+package backend.jello;
+
+import type { ReturnType, Terminator, ValueType } from ir.Model;
+
+export enum Instruction {
+  ConstBool(dst: I32, value: Bool);
+  ConstI32(dst: I32, value: I32);
+  Move(dst: I32, src: I32);
+  AddI32(dst: I32, left: I32, right: I32);
+  SubI32(dst: I32, left: I32, right: I32);
+  MultiplyI32(dst: I32, left: I32, right: I32);
+  NegateI32(dst: I32, src: I32);
+  NotBool(dst: I32, src: I32);
+  EqualI32(dst: I32, left: I32, right: I32);
+  LessI32Signed(dst: I32, left: I32, right: I32);
+  SignExtendI32ToI64(dst: I32, src: I32);
+  TruncateI64ToI32(dst: I32, src: I32);
+  Call(dst: I32, function: I32, args: Array<I32>);
+  SpillPush(src: I32, slot: I32);
+  SpillPop(dst: I32, slot: I32);
+}
+
+export enum Block {
+  Block(id: I32, instructions: Array<Instruction>, terminator: Terminator);
+}
+
+export enum Function {
+  Function(
+    id: I32,
+    params: Array<I32>,
+    registers: Array<ValueType>,
+    result: ReturnType,
+    blocks: Array<Block>,
+    entry: I32
+  );
+}
+
+export enum Program {
+  Program(functions: Array<Function>);
+}
+
+export enum Allocation {
+  Allocation(function: Function, scratchStart: I32, scratchSize: I32);
+}

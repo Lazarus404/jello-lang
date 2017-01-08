@@ -1,0 +1,180 @@
+package ir;
+
+import { bytesLiteral } from frontend.Tokens;
+import type {
+  BasicBlock,
+  Function,
+  Instruction,
+  Program,
+  ReturnType,
+  Terminator,
+  ThrowHandler,
+  ValueType,
+} from ir.Model;
+
+let _type: (ValueType) -> Bytes = fn(ty) {
+  match (ty) {
+    Bool => "bool",
+    I32 => "i32",
+    I64 => "i64",
+    F32 => "f32",
+    F64 => "f64",
+    Bytes => "bytes",
+    Atom => "atom",
+    Dynamic => "dynamic",
+    Object => "object",
+    ArrayOf(element) => "array<" + _type(element) + ">",
+    TupleOf(elements) => {
+      let out = "(";
+      let i = 0;
+
+      while (i < elements.len()) {
+        if (i > 0) { out = out + ", "; }
+        out = out + _type(elements[i]);
+        i++;
+      }
+      out + ")"
+    },
+    Nominal(id) => "type@" + Std.string(id),
+    Function(args, result) => {
+      let out = "fn(";
+      let i = 0;
+
+      while (i < args.len()) {
+        if (i > 0) { out = out + ", "; }
+        out = out + _type(args[i]);
+        i++;
+      }
+      out + ") -> " + match (result) {
+        Void => "void",
+        Value(resultType) => _type(resultType),
+      }
+    },
+  }
+};
+
+let _returnType: (ReturnType) -> Bytes = fn(result) {
+  match (result) {
+    Void => "void",
+    Value(ty) => _type(ty),
+  }
+};
+
+let _register = fn(id: I32): Bytes { "%" + Std.string(id) };
+
+let _instruction = fn(instruction: Instruction): Bytes {
+  match (instruction) {
+    ConstBool(dst, value) => _register(dst) + " = bool " + (value ? "true" : "false"),
+    ConstI32(dst, value) => _register(dst) + " = i32 " + Std.string(value),
+    ConstI64(dst, value) => _register(dst) + " = i64 " + Std.string(value),
+    ConstF64(dst, value) => _register(dst) + " = f64 " + Std.string(value),
+    ConstBytes(dst, value) => _register(dst) + " = bytes " + bytesLiteral(value),
+    ConstNull(dst) => _register(dst) + " = null",
+    Move(dst, src) => _register(dst) + " = move " + _register(src),
+    AddI32Wrap(dst, left, right) => _register(dst) + " = add.wrap.i32 " + _register(left) + ", " + _register(right),
+    SubI32Wrap(dst, left, right) => _register(dst) + " = sub.wrap.i32 " + _register(left) + ", " + _register(right),
+    MultiplyI32Wrap(dst, left, right) => _register(dst) + " = mul.wrap.i32 " + _register(left) + ", " + _register(right),
+    NegateI32Wrap(dst, src) => _register(dst) + " = neg.wrap.i32 " + _register(src),
+    NotBool(dst, src) => _register(dst) + " = not.bool " + _register(src),
+    CallDirect(dst, function, args) => {
+      let out = _register(dst) + " = call @" + Std.string(function) + "(";
+      let i = 0;
+
+      while (i < args.len()) {
+        if (i > 0) { out += ", "; }
+        out += _register(args[i]);
+        i++;
+      }
+      out + ")"
+    },
+    EqualI32(dst, left, right) => _register(dst) + " = eq.i32 " + _register(left) + ", " + _register(right),
+    LessI32Signed(dst, left, right) => _register(dst) + " = lt.s.i32 " + _register(left) + ", " + _register(right),
+    SignExtendI32ToI64(dst, src) => _register(dst) + " = sext.i32.i64 " + _register(src),
+    TruncateI64ToI32(dst, src) => _register(dst) + " = trunc.i64.i32 " + _register(src),
+    Truthy(dst, src) => _register(dst) + " = truthy " + _register(src),
+    ToDynamic(dst, src) => _register(dst) + " = dynamic " + _register(src),
+  }
+};
+
+let _terminator = fn(terminator: Terminator): Bytes {
+  match (terminator) {
+    Jump(target) => "jump block " + Std.string(target),
+    Branch(condition, thenTarget, elseTarget) => "branch " + _register(condition)
+      + ", block " + Std.string(thenTarget) + ", block " + Std.string(elseTarget),
+    ReturnVoid => "return",
+    ReturnValue(value) => "return " + _register(value),
+    Throw(value) => "throw " + _register(value),
+    Unreachable => "unreachable",
+  }
+};
+
+let _handler = fn(handler: ThrowHandler): Bytes {
+  match (handler) {
+    Catch(target, payload) => " catch block " + Std.string(target) + " as " + _register(payload),
+  }
+};
+
+let _block = fn(block: BasicBlock): Bytes {
+  match (block) {
+    Block(id, instructions, terminator, handler) => {
+      let out = "  block " + Std.string(id);
+
+      if (handler != null) {
+        out = out + _handler(handler);
+      }
+      out = out + ":\n";
+      let i = 0;
+
+      while (i < instructions.len()) {
+        out = out + "    " + _instruction(instructions[i]) + "\n";
+        i++;
+      }
+      out + "    " + _terminator(terminator) + "\n"
+    },
+  }
+};
+
+let _function = fn(function: Function): Bytes {
+  match (function) {
+    Function(id, params, registers, result, blocks, entry) => {
+      let out = "fn @" + Std.string(id) + "(";
+      let i = 0;
+
+      while (i < params.len()) {
+        if (i > 0) { out = out + ", "; }
+        out = out + _register(params[i]) + ": " + _type(registers[params[i]]);
+        i++;
+      }
+      out = out + ") -> " + _returnType(result) + " entry " + Std.string(entry) + " {\n";
+      i = 0;
+
+      while (i < registers.len()) {
+        out = out + "  register " + _register(i) + ": " + _type(registers[i]) + "\n";
+        i++;
+      }
+      i = 0;
+
+      while (i < blocks.len()) {
+        out = out + _block(blocks[i]);
+        i++;
+      }
+      out + "}\n"
+    },
+  }
+};
+
+export let printIr: (Program) -> Bytes = fn(program) {
+  match (program) {
+    Program(functions) => {
+      let out = "";
+      let i = 0;
+
+      while (i < functions.len()) {
+        if (i > 0) { out = out + "\n"; }
+        out = out + _function(functions[i]);
+        i++;
+      }
+      out
+    },
+  }
+};

@@ -1,0 +1,113 @@
+package backend.jello;
+
+import type { ReturnType, Terminator, ValueType } from ir.Model;
+import type { Block, Function, Instruction, Program } from backend.jello.Model;
+
+let _type = fn(ty: ValueType): Bytes {
+  match (ty) {
+    Bool => "bool",
+    I32 => "i32",
+    I64 => "i64",
+    Dynamic => "dynamic",
+    _ => "unsupported",
+  }
+};
+
+let _returnType = fn(result: ReturnType): Bytes {
+  match (result) { Void => "void", Value(ty) => _type(ty) }
+};
+
+let _register = fn(id: I32): Bytes { "%" + Std.string(id) };
+
+let _instruction = fn(instruction: Instruction, registers: Array<ValueType>): Bytes {
+  match (instruction) {
+    ConstBool(dst, value) => _register(dst) + " = CONST_BOOL " + (value ? "true" : "false"),
+    ConstI32(dst, value) => _register(dst) + " = CONST_I32 " + Std.string(value),
+    Move(dst, src) => _register(dst) + " = "
+      + (match (registers[dst]) { Dynamic => "TO_DYN ", _ => "MOV " }) + _register(src),
+    AddI32(dst, left, right) => _register(dst) + " = ADD_I32 " + _register(left) + ", " + _register(right),
+    SubI32(dst, left, right) => _register(dst) + " = SUB_I32 " + _register(left) + ", " + _register(right),
+    MultiplyI32(dst, left, right) => _register(dst) + " = MUL_I32 " + _register(left) + ", " + _register(right),
+    NegateI32(dst, src) => _register(dst) + " = NEG_I32 " + _register(src),
+    NotBool(dst, src) => _register(dst) + " = NOT_BOOL " + _register(src),
+    EqualI32(dst, left, right) => _register(dst) + " = EQ_I32 " + _register(left) + ", " + _register(right),
+    LessI32Signed(dst, left, right) => _register(dst) + " = LT_I32 " + _register(left) + ", " + _register(right),
+    SignExtendI32ToI64(dst, src) => _register(dst) + " = SEXT_I64 " + _register(src),
+    TruncateI64ToI32(dst, src) => _register(dst) + " = I32_FROM_I64 " + _register(src),
+    SpillPush(src, slot) => "SPILL_PUSH " + _register(src) + ", " + Std.string(slot),
+    SpillPop(dst, slot) => "SPILL_POP " + _register(dst) + ", " + Std.string(slot),
+    Call(dst, function, args) => {
+      let output = _register(dst) + " = CALL @" + Std.string(function) + "(";
+      let i = 0;
+
+      while (i < args.len()) {
+        if (i > 0) { output += ", "; }
+        output += _register(args[i]);
+        i++;
+      }
+      output + ")"
+    },
+  }
+};
+
+let _terminator = fn(terminator: Terminator): Bytes {
+  match (terminator) {
+    Jump(target) => "JMP block " + Std.string(target),
+    Branch(condition, thenTarget, elseTarget) => "BR " + _register(condition)
+      + ", block " + Std.string(thenTarget) + ", block " + Std.string(elseTarget),
+    ReturnVoid => "RET",
+    ReturnValue(value) => "RET " + _register(value),
+    Throw(value) => "THROW " + _register(value),
+    Unreachable => "UNREACHABLE",
+  }
+};
+
+let _function = fn(function: Function): Bytes {
+  match (function) {
+    Function(id, params, registers, result, blocks, entry) => {
+      let output = "jlo fn @" + Std.string(id) + "(";
+      let i = 0;
+
+      while (i < params.len()) {
+        if (i > 0) { output += ", "; }
+        output += _register(params[i]) + ": " + _type(registers[params[i]]);
+        i++;
+      }
+      output += ") -> " + _returnType(result) + " entry " + Std.string(entry) + " {\n";
+      i = 0;
+
+      while (i < blocks.len()) {
+        match (blocks[i]) {
+          Block(blockId, instructions, terminator) => {
+            output += "  block " + Std.string(blockId) + ":\n";
+            let j = 0;
+
+            while (j < instructions.len()) {
+              output += "    " + _instruction(instructions[j], registers) + "\n";
+              j++;
+            }
+            output += "    " + _terminator(terminator) + "\n";
+          },
+        };
+        i++;
+      }
+      output + "}\n"
+    },
+  }
+};
+
+export let printJlo: (Program) -> Bytes = fn(program) {
+  match (program) {
+    Program(functions) => {
+      let output = "";
+      let i = 0;
+
+      while (i < functions.len()) {
+        if (i > 0) { output += "\n"; }
+        output += _function(functions[i]);
+        i++;
+      }
+      output
+    },
+  }
+};
