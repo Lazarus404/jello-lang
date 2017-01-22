@@ -2,18 +2,20 @@ package backend.jello;
 
 import type { Terminator, ValueType } from ir.Model;
 import type { Allocation, Block, Function, Instruction, Program } from backend.jello.Model;
+import { verifyFinalJloFunction, verifyJlo } from backend.jello.Verify;
+import { verifyJloBytes } from backend.jello.VerifyBytes;
 
 let _u8 = fn(value: I32): Bytes {
   let out = Bytes.new(1);
   Bytes.set_u8(out, 0, value);
-  out.toString()
+  out
 };
 
 let _u16 = fn(value: I32): Bytes {
   let out = Bytes.new(2);
   Bytes.set_u8(out, 0, value & 255);
   Bytes.set_u8(out, 1, (value >> 8) & 255);
-  out.toString()
+  out
 };
 
 let _u32 = fn(value: I32): Bytes {
@@ -23,7 +25,7 @@ let _u32 = fn(value: I32): Bytes {
   Bytes.set_u8(out, 1, ((wide >> 8) & 255) as I32);
   Bytes.set_u8(out, 2, ((wide >> 16) & 255) as I32);
   Bytes.set_u8(out, 3, ((wide >> 24) & 255) as I32);
-  out.toString()
+  out
 };
 
 let _join = fn(pieces: Array<Bytes>): Bytes {
@@ -48,7 +50,7 @@ let _join = fn(pieces: Array<Bytes>): Bytes {
     offset += pieces[i].len();
     i++;
   }
-  out.toString()
+  out
 };
 
 let _insn = fn(pieces: Array<Bytes>, op: I32, a: I32, b: I32, c: I32, immediate: I32) {
@@ -742,6 +744,7 @@ let _emitFunction = fn(function: Function, functions: Array<Function>): Bytes {
       }
 
       let registers = sourceRegisters;
+      verifyFinalJloFunction(allocatedFunction, functions, registers, scratchStart, scratchSize, blockIds, blockPcs, instructionCount);
 
       pieces.push(_u32(-1));
       pieces.push(_u32(registers.len()));
@@ -815,6 +818,8 @@ let _emitFunction = fn(function: Function, functions: Array<Function>): Bytes {
 };
 
 export let emitJlo: (Program) -> Bytes = fn(program) {
+  try { verifyJlo(program); } catch (e) { throw "selected verification: " + Std.string(e); };
+
   match (program) {
     Program(functions) => {
       let entry = _functionIndex(functions, 0);
@@ -860,6 +865,7 @@ export let emitJlo: (Program) -> Bytes = fn(program) {
         functionIndex++;
       }
       let bytes = _join(pieces);
+      verifyJloBytes(bytes);
       bytes
     },
   }

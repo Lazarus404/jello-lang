@@ -1,0 +1,44 @@
+package ir;
+
+import { instructionMayThrow } from ir.Model;
+import type { BasicBlock, Instruction, Terminator, ThrowHandler } from ir.Model;
+
+export let terminatorThrows: (Terminator) -> Bool = fn(terminator) {
+  match (terminator) { Throw(_) => true, _ => false }
+};
+
+export let normalSuccessors: (Terminator) -> Array<I32> = fn(terminator) {
+  match (terminator) {
+    Jump(target) => [target],
+    Branch(_, thenTarget, elseTarget) => [thenTarget, elseTarget],
+    _ => [],
+  }
+};
+
+export let blockMayThrow: (Array<Instruction>, Terminator) -> Bool = fn(instructions, terminator) {
+  if (terminatorThrows(terminator)) { return true; }
+  let i = 0;
+
+  while (i < instructions.len()) {
+    if (instructionMayThrow(instructions[i])) { return true; }
+    i++;
+  }
+  false
+};
+
+let _handlerTarget = fn(handler: ThrowHandler): I32 {
+  match (handler) { Catch(target, _) => target }
+};
+
+export let blockSuccessors: (BasicBlock) -> Array<I32> = fn(block) {
+  match (block) {
+    Block(_, instructions, terminator, handler) => {
+      let successors = normalSuccessors(terminator);
+
+      if (blockMayThrow(instructions, terminator) && (handler != null)) {
+        successors.push(_handlerTarget(handler));
+      }
+      successors
+    },
+  }
+};

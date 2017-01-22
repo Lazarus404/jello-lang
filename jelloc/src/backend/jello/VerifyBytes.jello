@@ -1,0 +1,410 @@
+package backend.jello;
+
+let _u8 = fn(bytes: Bytes, offset: I32): I32 {
+  if ((offset < 0) || (offset >= bytes.len())) { throw "invalid JLO bytes: truncated at " + Std.string(offset); }
+  Bytes.get_u8(bytes, offset)
+};
+
+let _u32 = fn(bytes: Bytes, offset: I32): I32 {
+  if ((offset < 0) || (offset > bytes.len() - 4)) { throw "invalid JLO bytes: truncated at " + Std.string(offset); }
+  _u8(bytes, offset) | (_u8(bytes, offset + 1) << 8) | (_u8(bytes, offset + 2) << 16) | (_u8(bytes, offset + 3) << 24)
+};
+
+let _zero = fn(bytes: Bytes, offset: I32, count: I32) {
+  let i = 0;
+
+  while (i < count) {
+    if (_u8(bytes, offset + i) != 0) { throw "invalid JLO bytes: reserved field at " + Std.string(offset + i); }
+    i++;
+  }
+  null
+};
+
+let _reg = fn(kinds: Array<I32>, reg: I32): I32 {
+  if ((reg < 0) || (reg >= kinds.len())) { throw "invalid JLO bytes: register out of range"; }
+  kinds[reg]
+};
+
+let _expect = fn(kinds: Array<I32>, reg: I32, kind: I32) {
+  if (_reg(kinds, reg) != kind) { throw "invalid JLO bytes: register type mismatch"; }
+  null
+};
+
+let _unused = fn(b: I32, c: I32, immediate: I32) {
+  if ((b != 0) || (c != 0) || (immediate != 0)) { throw "invalid JLO bytes: nonzero unused operand"; }
+  null
+};
+
+let _bools = fn(size: I32, value: Bool): Array<Bool> {
+  let out = Array.new<Bool>(0);
+  let i = 0;
+
+  while (i < size) {
+    out.push(value);
+    i++;
+  }
+  out
+};
+
+let _copyBools = fn(values: Array<Bool>): Array<Bool> {
+  let out = Array.new<Bool>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    out.push(values[i]);
+    i++;
+  }
+  out
+};
+
+let _verifyInstruction = fn(bytes: Bytes, offset: I32, pc: I32, count: I32, kinds: Array<I32>, functionCount: I32) {
+  let op = _u8(bytes, offset);
+  let a = _u8(bytes, offset + 1);
+  let b = _u8(bytes, offset + 2);
+  let c = _u8(bytes, offset + 3);
+  let immediate = _u32(bytes, offset + 4);
+
+  match (op) {
+    1 => {
+      _reg(kinds, a);
+      _unused(b, c, immediate);
+      null
+    },
+    2 => {
+      if ((a != 0) || (b != 0) || (c != 0)) { throw "invalid JLO bytes: malformed jump"; }
+      let target = pc + 1 + immediate;
+      if ((target < 0) || (target >= count)) { throw "invalid JLO bytes: jump target out of range"; }
+      null
+    },
+    3 => {
+      _expect(kinds, a, 0);
+      if ((b != 0) || (c != 0)) { throw "invalid JLO bytes: malformed conditional jump"; }
+      let target = pc + 1 + immediate;
+      if ((target < 0) || (target >= count)) { throw "invalid JLO bytes: branch target out of range"; }
+      null
+    },
+    4 => {
+      let dst = _reg(kinds, a);
+      let src = _reg(kinds, b);
+
+      if ((c != 0) || (immediate != 0) || ((dst != src) && !((dst == 3) && (src == 2)))) {
+        throw "invalid JLO bytes: malformed move";
+      }
+      null
+    },
+    7 => {
+      _expect(kinds, a, 3);
+      _unused(b, c, immediate);
+      null
+    },
+    11 => {
+      _reg(kinds, a);
+
+      if ((b + c > kinds.len()) || (immediate < 0) || (immediate >= functionCount)) {
+        throw "invalid JLO bytes: malformed call";
+      }
+      null
+    },
+    19 => {
+      _expect(kinds, a, 1);
+      if ((b != 0) || (c != 0)) { throw "invalid JLO bytes: malformed i32 constant"; } null
+    },
+    24 => {
+      _expect(kinds, a, 0);
+      if ((b != 0) || (c != 0) || ((immediate != 0) && (immediate != 1))) { throw "invalid JLO bytes: malformed bool constant"; }
+      null
+    },
+    28, 29, 30 => {
+      _expect(kinds, a, 1);
+      _expect(kinds, b, 1);
+      _expect(kinds, c, 1);
+      if (immediate != 0) { throw "invalid JLO bytes: malformed i32 arithmetic"; } null
+    },
+    36 => {
+      _expect(kinds, a, 1);
+      _expect(kinds, b, 1);
+      if ((c != 0) || (immediate != 0)) { throw "invalid JLO bytes: malformed i32 negation"; } null
+    },
+    66 => {
+      _expect(kinds, a, 0);
+      _expect(kinds, b, 0);
+      if ((c != 0) || (immediate != 0)) { throw "invalid JLO bytes: malformed bool negation"; } null
+    },
+    67, 68 => {
+      _expect(kinds, a, 0);
+      _expect(kinds, b, 1);
+      _expect(kinds, c, 1);
+      if (immediate != 0) { throw "invalid JLO bytes: malformed i32 comparison"; } null
+    },
+    77 => {
+      _expect(kinds, a, 2);
+      _expect(kinds, b, 1);
+      if ((c != 0) || (immediate != 0)) { throw "invalid JLO bytes: malformed sign extension"; } null
+    },
+    81 => {
+      _expect(kinds, a, 1);
+      _expect(kinds, b, 2);
+      if ((c != 0) || (immediate != 0)) { throw "invalid JLO bytes: malformed truncation"; } null
+    },
+    96 => {
+      _expect(kinds, a, 3);
+      _reg(kinds, b);
+      if ((c != 0) || (immediate != 0)) { throw "invalid JLO bytes: malformed dynamic conversion"; } null
+    },
+    107, 108 => {
+      _reg(kinds, a);
+      if ((b != 0) || (c != 0) || (immediate < 0)) { throw "invalid JLO bytes: malformed spill"; } null
+    },
+    _ => {
+      throw "invalid JLO bytes: unsupported opcode " + Std.string(op);
+      null
+    },
+  }
+};
+
+let _verifyFlow = fn(bytes: Bytes, instructionOffset: I32, instructionCount: I32, kinds: Array<I32>): I32 {
+  let reachable = _bools(instructionCount, false);
+  let pending: Array<I32> = [0];
+  let result = -1;
+
+  while (pending.len() > 0) {
+    let current = pending.pop();
+
+    if (!reachable[current]) {
+      reachable[current] = true;
+      let offset = instructionOffset + current * 8;
+      let op = _u8(bytes, offset);
+
+      if (op == 1) {
+        let kind = _reg(kinds, _u8(bytes, offset + 1));
+        if ((result >= 0) && (result != kind)) { throw "invalid JLO bytes: inconsistent return type"; }
+        result = kind;
+      } else if (op == 2) { pending.push(current + 1 + _u32(bytes, offset + 4)); } else if (op == 3) {
+        pending.push(current + 1 + _u32(bytes, offset + 4));
+        if (current + 1 >= instructionCount) { throw "invalid JLO bytes: reachable fallthrough"; }
+        pending.push(current + 1);
+      } else if (op != 7) {
+        if (current + 1 >= instructionCount) { throw "invalid JLO bytes: reachable fallthrough"; }
+        pending.push(current + 1);
+      }
+    }
+  }
+  let slots = Array.new<I32>(0);
+  let slotKinds = Array.new<I32>(0);
+  let pc = 0;
+
+  while (pc < instructionCount) {
+    if (reachable[pc]) {
+      let offset = instructionOffset + pc * 8;
+      let op = _u8(bytes, offset);
+
+      if ((op == 107) || (op == 108)) {
+        let slot = _u32(bytes, offset + 4);
+        let slotIndex = -1;
+        let s = 0;
+
+        while (s < slots.len()) {
+          if (slots[s] == slot) { slotIndex = s; }
+          s++;
+        }
+        let kind = _reg(kinds, _u8(bytes, offset + 1));
+
+        if (slotIndex < 0) {
+          slots.push(slot);
+          slotKinds.push(kind);
+        } else if (slotKinds[slotIndex] != kind) { throw "invalid JLO bytes: spill slot type mismatch"; }
+      }
+    }
+    pc++;
+  }
+  let initialized = Array.new<Array<Bool>>(0);
+  pc = 0;
+
+  while (pc < instructionCount) {
+    initialized.push(_bools(slots.len(), pc != 0));
+    pc++;
+  }
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    pc = 0;
+
+    while (pc < instructionCount) {
+      if (reachable[pc]) {
+        let state = _copyBools(initialized[pc]);
+        let offset = instructionOffset + pc * 8;
+        let op = _u8(bytes, offset);
+
+        if (op == 107) {
+          let slot = _u32(bytes, offset + 4);
+          let s = 0;
+          while (slots[s] != slot) { s++; }
+          state[s] = true;
+        }
+        let successors = Array.new<I32>(0);
+
+        if (op == 2) { successors.push(pc + 1 + _u32(bytes, offset + 4)); } else if (op == 3) {
+          successors.push(pc + 1 + _u32(bytes, offset + 4));
+          successors.push(pc + 1);
+        } else if ((op != 1) && (op != 7)) { successors.push(pc + 1); }
+        let n = 0;
+
+        while (n < successors.len()) {
+          let successor = successors[n];
+          let s = 0;
+
+          while (s < slots.len()) {
+            let next = initialized[successor][s] && state[s];
+
+            if (next != initialized[successor][s]) {
+              initialized[successor][s] = next;
+              changed = true;
+            }
+            s++;
+          }
+          n++;
+        }
+      }
+      pc++;
+    }
+  }
+  pc = 0;
+
+  while (pc < instructionCount) {
+    if (reachable[pc]) {
+      let offset = instructionOffset + pc * 8;
+
+      if (_u8(bytes, offset) == 108) {
+        let slot = _u32(bytes, offset + 4);
+        let s = 0;
+        while (slots[s] != slot) { s++; }
+        if (!initialized[pc][s]) { throw "invalid JLO bytes: uninitialized spill slot"; }
+      }
+    }
+    pc++;
+  }
+  result
+};
+
+export let verifyJloBytes: (Bytes) -> Bool = fn(bytes) {
+  if (bytes.len() < 88) { throw "invalid JLO bytes: truncated header"; }
+
+  if ((_u32(bytes, 0) != 1246517570) || (_u32(bytes, 4) != 1) || (_u32(bytes, 8) != 0)
+    || (_u32(bytes, 12) != 4) || (_u32(bytes, 16) != 0) || (_u32(bytes, 20) != 0)
+    || (_u32(bytes, 24) != 0) || (_u32(bytes, 36) != 0)) {
+    throw "invalid JLO bytes: unsupported header";
+  }
+  let functionCount = _u32(bytes, 28);
+  let entry = _u32(bytes, 32);
+  if ((functionCount <= 0) || (entry < 0) || (entry >= functionCount)) { throw "invalid JLO bytes: invalid function table"; }
+  let expectedKinds: Array<I32> = [2, 6, 7, 18];
+  let i = 0;
+
+  while (i < 4) {
+    let offset = 40 + i * 12;
+    if (_u8(bytes, offset) != expectedKinds[i]) { throw "invalid JLO bytes: invalid type table"; }
+    _zero(bytes, offset + 1, 11);
+    i++;
+  }
+
+  let functionOffsets = Array.new<I32>(0);
+  let functionArgs = Array.new<I32>(0);
+  let functionRegisters = Array.new<Array<I32>>(0);
+  let instructionOffsets = Array.new<I32>(0);
+  let instructionCounts = Array.new<I32>(0);
+  let functionResults = Array.new<I32>(0);
+  let cursor = 88;
+  i = 0;
+
+  while (i < functionCount) {
+    if ((cursor < 0) || (cursor > bytes.len() - 20)) { throw "invalid JLO bytes: truncated function"; }
+    if (_u32(bytes, cursor) != -1) { throw "invalid JLO bytes: named function unsupported"; }
+    let registerCount = _u32(bytes, cursor + 4);
+    let captureStart = _u32(bytes, cursor + 8);
+    let argumentCount = _u32(bytes, cursor + 12);
+    let instructionCount = _u32(bytes, cursor + 16);
+
+    if ((registerCount < 0) || (registerCount > 256) || (captureStart != registerCount)
+      || (argumentCount < 0) || (argumentCount > registerCount) || (argumentCount > 255)
+      || (instructionCount <= 0)) {
+      throw "invalid JLO bytes: invalid function header";
+    }
+    let kinds = Array.new<I32>(0);
+    let registerOffset = cursor + 20;
+    let instructionOffset = registerOffset + registerCount * 4;
+
+    if ((instructionOffset < registerOffset) || (instructionOffset > bytes.len())
+      || (instructionCount > (bytes.len() - instructionOffset) / 8)) {
+      throw "invalid JLO bytes: truncated function body";
+    }
+    let r = 0;
+
+    while (r < registerCount) {
+      let kind = _u32(bytes, registerOffset + r * 4);
+      if ((kind < 0) || (kind > 3)) { throw "invalid JLO bytes: invalid register type"; }
+      kinds.push(kind);
+      r++;
+    }
+    functionOffsets.push(cursor);
+    functionArgs.push(argumentCount);
+    functionRegisters.push(kinds);
+    instructionOffsets.push(instructionOffset);
+    instructionCounts.push(instructionCount);
+    functionResults.push(-1);
+    cursor = instructionOffset + instructionCount * 8;
+    i++;
+  }
+  if (functionArgs[entry] != 0) { throw "invalid JLO bytes: entry function has arguments"; }
+  if (cursor != bytes.len()) { throw "invalid JLO bytes: trailing bytes"; }
+
+  i = 0;
+
+  while (i < functionCount) {
+    let pc = 0;
+    let kinds = functionRegisters[i];
+
+    while (pc < instructionCounts[i]) {
+      _verifyInstruction(bytes, instructionOffsets[i] + pc * 8, pc, instructionCounts[i], kinds, functionCount);
+      pc++;
+    }
+    functionResults[i] = _verifyFlow(bytes, instructionOffsets[i], instructionCounts[i], kinds);
+    i++;
+  }
+
+  i = 0;
+
+  while (i < functionCount) {
+    let pc = 0;
+
+    while (pc < instructionCounts[i]) {
+      let offset = instructionOffsets[i] + pc * 8;
+
+      if (_u8(bytes, offset) == 11) {
+        let destination = _u8(bytes, offset + 1);
+        let first = _u8(bytes, offset + 2);
+        let count = _u8(bytes, offset + 3);
+        let callee = _u32(bytes, offset + 4);
+        if (count != functionArgs[callee]) { throw "invalid JLO bytes: call argument count mismatch"; }
+
+        if ((functionResults[callee] >= 0) && (functionRegisters[i][destination] != functionResults[callee])) {
+          throw "invalid JLO bytes: call result type mismatch";
+        }
+        let a = 0;
+
+        while (a < count) {
+          let actual = functionRegisters[i][first + a];
+          let expected = functionRegisters[callee][a];
+
+          if ((actual != expected) && !((actual == 3) && (expected == 2))) {
+            throw "invalid JLO bytes: call argument type mismatch";
+          }
+          a++;
+        }
+      }
+      pc++;
+    }
+    i++;
+  }
+  true
+};

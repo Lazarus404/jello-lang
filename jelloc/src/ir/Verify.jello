@@ -1,0 +1,644 @@
+package ir;
+
+import type {
+  BasicBlock,
+  Function,
+  Instruction,
+  Program,
+  ReturnType,
+  Terminator,
+  ThrowHandler,
+  ValueType,
+} from ir.Model;
+import { instructionMayThrow } from ir.Model;
+import { blockMayThrow, blockSuccessors } from ir.Cfg;
+
+let _fail = fn(message: Bytes): Dynamic {
+  throw "invalid IR: " + message;
+  null
+};
+
+let _typeEq: (ValueType, ValueType) -> Bool = fn(left, right) {
+  match (left) {
+    Bool => match (right) { Bool => true, _ => false },
+    I32 => match (right) { I32 => true, _ => false },
+    I64 => match (right) { I64 => true, _ => false },
+    F32 => match (right) { F32 => true, _ => false },
+    F64 => match (right) { F64 => true, _ => false },
+    Bytes => match (right) { Bytes => true, _ => false },
+    Atom => match (right) { Atom => true, _ => false },
+    Dynamic => match (right) { Dynamic => true, _ => false },
+    Object => match (right) { Object => true, _ => false },
+    Nominal(leftId) => match (right) {
+      Nominal(rightId) => leftId == rightId,
+      _ => false,
+    },
+    ArrayOf(leftElement) => match (right) {
+      ArrayOf(rightElement) => _typeEq(leftElement, rightElement),
+      _ => false,
+    },
+    TupleOf(leftElements) => match (right) {
+      TupleOf(rightElements) => {
+        if (leftElements.len() != rightElements.len()) { return false; }
+        let i = 0;
+
+        while (i < leftElements.len()) {
+          if (!_typeEq(leftElements[i], rightElements[i])) { return false; }
+          i++;
+        }
+        true
+      },
+      _ => false,
+    },
+    Function(leftArgs, leftResult) => match (right) {
+      Function(rightArgs, rightResult) => {
+        if (leftArgs.len() != rightArgs.len()) { return false; }
+        let i = 0;
+
+        while (i < leftArgs.len()) {
+          if (!_typeEq(leftArgs[i], rightArgs[i])) { return false; }
+          i++;
+        }
+
+        match (leftResult) {
+          Void => match (rightResult) { Void => true, _ => false },
+          Value(leftType) => match (rightResult) {
+            Value(rightType) => _typeEq(leftType, rightType),
+            _ => false,
+          },
+        }
+      },
+      _ => false,
+    },
+  }
+};
+
+let _blockIndex = fn(blocks: Array<BasicBlock>, id: I32): I32 {
+  let i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) {
+      Block(blockId, _, _, _) => if (blockId == id) { return i; },
+    };
+    i++;
+  }
+  -1
+};
+
+let _registerType = fn(registers: Array<ValueType>, id: I32): ValueType {
+  if ((id < 0) || (id >= registers.len())) {
+    _fail("register out of range: " + Std.string(id));
+    return ValueType.Dynamic;
+  }
+  registers[id]
+};
+
+let _expectType = fn(registers: Array<ValueType>, id: I32, expected: ValueType) {
+  let actual = _registerType(registers, id);
+
+  if (!_typeEq(actual, expected)) {
+    _fail("wrong type for register " + Std.string(id));
+  }
+  null
+};
+
+let _verifyInstruction = fn(registers: Array<ValueType>, instruction: Instruction) {
+  match (instruction) {
+    ConstBool(dst, _) => _expectType(registers, dst, ValueType.Bool),
+    ConstI32(dst, _) => _expectType(registers, dst, ValueType.I32),
+    ConstI64(dst, _) => _expectType(registers, dst, ValueType.I64),
+    ConstF64(dst, _) => _expectType(registers, dst, ValueType.F64),
+    ConstBytes(dst, _) => _expectType(registers, dst, ValueType.Bytes),
+    ConstNull(dst) => _expectType(registers, dst, ValueType.Dynamic),
+    Move(dst, src) => {
+      let dstType = _registerType(registers, dst);
+      let srcType = _registerType(registers, src);
+      if (!_typeEq(dstType, srcType)) { _fail("move type mismatch"); }
+      null
+    },
+    AddI32Wrap(dst, left, right) => {
+      _expectType(registers, dst, ValueType.I32);
+      _expectType(registers, left, ValueType.I32);
+      _expectType(registers, right, ValueType.I32)
+    },
+    SubI32Wrap(dst, left, right) => {
+      _expectType(registers, dst, ValueType.I32);
+      _expectType(registers, left, ValueType.I32);
+      _expectType(registers, right, ValueType.I32)
+    },
+    MultiplyI32Wrap(dst, left, right) => {
+      _expectType(registers, dst, ValueType.I32);
+      _expectType(registers, left, ValueType.I32);
+      _expectType(registers, right, ValueType.I32)
+    },
+    NegateI32Wrap(dst, src) => {
+      _expectType(registers, dst, ValueType.I32);
+      _expectType(registers, src, ValueType.I32)
+    },
+    NotBool(dst, src) => {
+      _expectType(registers, dst, ValueType.Bool);
+      _expectType(registers, src, ValueType.Bool)
+    },
+    CallDirect(dst, _, args) => {
+      _registerType(registers, dst);
+      let i = 0;
+
+      while (i < args.len()) {
+        _registerType(registers, args[i]);
+        i++;
+      }
+      null
+    },
+    EqualI32(dst, left, right) => {
+      _expectType(registers, dst, ValueType.Bool);
+      _expectType(registers, left, ValueType.I32);
+      _expectType(registers, right, ValueType.I32)
+    },
+    LessI32Signed(dst, left, right) => {
+      _expectType(registers, dst, ValueType.Bool);
+      _expectType(registers, left, ValueType.I32);
+      _expectType(registers, right, ValueType.I32)
+    },
+    SignExtendI32ToI64(dst, src) => {
+      _expectType(registers, dst, ValueType.I64);
+      _expectType(registers, src, ValueType.I32)
+    },
+    TruncateI64ToI32(dst, src) => {
+      _expectType(registers, dst, ValueType.I32);
+      _expectType(registers, src, ValueType.I64)
+    },
+    Truthy(dst, src) => {
+      _expectType(registers, dst, ValueType.Bool);
+      _registerType(registers, src);
+      null
+    },
+    ToDynamic(dst, src) => {
+      _expectType(registers, dst, ValueType.Dynamic);
+      _registerType(registers, src);
+      null
+    },
+  }
+};
+
+let _verifyTarget = fn(blocks: Array<BasicBlock>, target: I32) {
+  if (_blockIndex(blocks, target) < 0) {
+    _fail("unknown block: " + Std.string(target));
+  }
+  null
+};
+
+let _verifyTerminator = fn(
+  registers: Array<ValueType>,
+  result: ReturnType,
+  blocks: Array<BasicBlock>,
+  terminator: Terminator
+) {
+  match (terminator) {
+    Jump(target) => _verifyTarget(blocks, target),
+    Branch(condition, thenTarget, elseTarget) => {
+      _expectType(registers, condition, ValueType.Bool);
+      _verifyTarget(blocks, thenTarget);
+      _verifyTarget(blocks, elseTarget)
+    },
+    ReturnVoid => match (result) {
+      Void => null,
+      Value(_) => _fail("value function returns void"),
+    },
+    ReturnValue(value) => match (result) {
+      Void => _fail("void function returns a value"),
+      Value(expected) => _expectType(registers, value, expected),
+    },
+    Throw(value) => {
+      _registerType(registers, value);
+      null
+    },
+    Unreachable => null,
+  }
+};
+
+let _newSet = fn(size: I32, value: Bool): Array<Bool> {
+  let set = Array.new<Bool>(0);
+  let i = 0;
+
+  while (i < size) {
+    set.push(value);
+    i++;
+  }
+  set
+};
+
+let _copySet = fn(set: Array<Bool>): Array<Bool> {
+  let copy = Array.new<Bool>(0);
+  let i = 0;
+
+  while (i < set.len()) {
+    copy.push(set[i]);
+    i++;
+  }
+  copy
+};
+
+let _sameSet = fn(left: Array<Bool>, right: Array<Bool>): Bool {
+  let i = 0;
+
+  while (i < left.len()) {
+    if (left[i] != right[i]) { return false; }
+    i++;
+  }
+  true
+};
+
+let _intersectInto = fn(dst: Array<Bool>, src: Array<Bool>) {
+  let i = 0;
+
+  while (i < dst.len()) {
+    dst[i] = dst[i] && src[i];
+    i++;
+  }
+  null
+};
+
+let _instructionDef = fn(instruction: Instruction): I32 {
+  match (instruction) {
+    ConstBool(dst, _) => dst,
+    ConstI32(dst, _) => dst,
+    ConstI64(dst, _) => dst,
+    ConstF64(dst, _) => dst,
+    ConstBytes(dst, _) => dst,
+    ConstNull(dst) => dst,
+    Move(dst, _) => dst,
+    AddI32Wrap(dst, _, _) => dst,
+    SubI32Wrap(dst, _, _) => dst,
+    MultiplyI32Wrap(dst, _, _) => dst,
+    NegateI32Wrap(dst, _) => dst,
+    NotBool(dst, _) => dst,
+    CallDirect(dst, _, _) => dst,
+    EqualI32(dst, _, _) => dst,
+    LessI32Signed(dst, _, _) => dst,
+    SignExtendI32ToI64(dst, _) => dst,
+    TruncateI64ToI32(dst, _) => dst,
+    Truthy(dst, _) => dst,
+    ToDynamic(dst, _) => dst,
+  }
+};
+
+let _transfer = fn(input: Array<Bool>, instructions: Array<Instruction>): Array<Bool> {
+  let output = _copySet(input);
+  let i = 0;
+
+  while (i < instructions.len()) {
+    output[_instructionDef(instructions[i])] = true;
+    i++;
+  }
+  output
+};
+
+let _transferToThrow = fn(input: Array<Bool>, instructions: Array<Instruction>): Array<Bool> {
+  let output = _copySet(input);
+  let i = 0;
+
+  while (i < instructions.len()) {
+    if (instructionMayThrow(instructions[i])) { return output; }
+    output[_instructionDef(instructions[i])] = true;
+    i++;
+  }
+  output
+};
+
+let _handlerTarget = fn(handler: ThrowHandler): I32 {
+  match (handler) { Catch(target, _) => target }
+};
+
+let _handlerPayload = fn(handler: ThrowHandler): I32 {
+  match (handler) { Catch(_, payload) => payload }
+};
+
+let _markReachable = fn(blocks: Array<BasicBlock>, entry: I32): Array<Bool> {
+  let reachable = _newSet(blocks.len(), false);
+  let work: Array<I32> = [entry];
+
+  while (work.len() > 0) {
+    let id = work.pop();
+    let index = _blockIndex(blocks, id);
+
+    if (!reachable[index]) {
+      reachable[index] = true;
+
+      match (blocks[index]) {
+        Block(_, _, _, _) => {
+          let successors = blockSuccessors(blocks[index]);
+          let i = 0;
+
+          while (i < successors.len()) {
+            work.push(successors[i]);
+            i++;
+          }
+        },
+      };
+    }
+  }
+  reachable
+};
+
+let _edgeTo = fn(
+  instructions: Array<Instruction>,
+  terminator: Terminator,
+  handler: ?ThrowHandler,
+  target: I32
+): Bool {
+  let successors = blockSuccessors(BasicBlock.Block(-1, instructions, terminator, handler));
+  let i = 0;
+
+  while (i < successors.len()) {
+    if (successors[i] == target) { return true; }
+    i++;
+  }
+  false
+};
+
+let _requireDefined = fn(defined: Array<Bool>, id: I32) {
+  if (!defined[id]) { _fail("register used before definition: " + Std.string(id)); }
+  null
+};
+
+let _verifyInstructionUses = fn(defined: Array<Bool>, instruction: Instruction) {
+  match (instruction) {
+    Move(_, src) => _requireDefined(defined, src),
+    AddI32Wrap(_, left, right) => {
+      _requireDefined(defined, left);
+      _requireDefined(defined, right)
+    },
+    SubI32Wrap(_, left, right) => {
+      _requireDefined(defined, left);
+      _requireDefined(defined, right)
+    },
+    MultiplyI32Wrap(_, left, right) => {
+      _requireDefined(defined, left);
+      _requireDefined(defined, right)
+    },
+    NegateI32Wrap(_, src), NotBool(_, src), SignExtendI32ToI64(_, src), TruncateI64ToI32(_, src) => _requireDefined(defined, src),
+    CallDirect(_, _, args) => {
+      let i = 0;
+
+      while (i < args.len()) {
+        _requireDefined(defined, args[i]);
+        i++;
+      }
+      null
+    },
+    EqualI32(_, left, right) => {
+      _requireDefined(defined, left);
+      _requireDefined(defined, right)
+    },
+    LessI32Signed(_, left, right) => {
+      _requireDefined(defined, left);
+      _requireDefined(defined, right)
+    },
+    Truthy(_, src) => _requireDefined(defined, src),
+    ToDynamic(_, src) => _requireDefined(defined, src),
+    _ => null,
+  }
+};
+
+let _verifyTerminatorUses = fn(defined: Array<Bool>, terminator: Terminator) {
+  match (terminator) {
+    Branch(condition, _, _) => _requireDefined(defined, condition),
+    ReturnValue(value) => _requireDefined(defined, value),
+    Throw(value) => _requireDefined(defined, value),
+    _ => null,
+  }
+};
+
+let _verifyDefinitions = fn(
+  params: Array<I32>,
+  registers: Array<ValueType>,
+  blocks: Array<BasicBlock>,
+  entry: I32
+) {
+  let reachable = _markReachable(blocks, entry);
+  let inputs = Array.new<Array<Bool>>(0);
+  let i = 0;
+
+  while (i < blocks.len()) {
+    inputs.push(_newSet(registers.len(), true));
+    i++;
+  }
+  let entryIndex = _blockIndex(blocks, entry);
+  inputs[entryIndex] = _newSet(registers.len(), false);
+  i = 0;
+
+  while (i < params.len()) {
+    inputs[entryIndex][params[i]] = true;
+    i++;
+  }
+
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    let targetIndex = 0;
+
+    while (targetIndex < blocks.len()) {
+      if (reachable[targetIndex] && (targetIndex != entryIndex)) {
+        let next = _newSet(registers.len(), true);
+        let sawPredecessor = false;
+        let targetId = match (blocks[targetIndex]) { Block(id, _, _, _) => id };
+        let sourceIndex = 0;
+
+        while (sourceIndex < blocks.len()) {
+          if (reachable[sourceIndex]) {
+            match (blocks[sourceIndex]) {
+              Block(_, instructions, terminator, handler) => {
+                if (_edgeTo(instructions, terminator, handler, targetId)) {
+                  let exceptional = blockMayThrow(instructions, terminator)
+                    && (handler != null) && (_handlerTarget(handler) == targetId);
+
+                  let edge = if (exceptional) {
+                    _transferToThrow(inputs[sourceIndex], instructions)
+                  } else {
+                    _transfer(inputs[sourceIndex], instructions)
+                  };
+
+                  if (exceptional) {
+                    edge[_handlerPayload(handler)] = true;
+                  }
+
+                  if (!sawPredecessor) {
+                    next = edge;
+                    sawPredecessor = true;
+                  } else {
+                    _intersectInto(next, edge);
+                  }
+                }
+              },
+            };
+          }
+          sourceIndex++;
+        }
+
+        if (sawPredecessor && !_sameSet(inputs[targetIndex], next)) {
+          inputs[targetIndex] = next;
+          changed = true;
+        }
+      }
+      targetIndex++;
+    }
+  }
+
+  i = 0;
+
+  while (i < blocks.len()) {
+    if (reachable[i]) {
+      let defined = _copySet(inputs[i]);
+
+      match (blocks[i]) {
+        Block(_, instructions, terminator, _) => {
+          let j = 0;
+
+          while (j < instructions.len()) {
+            _verifyInstructionUses(defined, instructions[j]);
+            defined[_instructionDef(instructions[j])] = true;
+            j++;
+          }
+          _verifyTerminatorUses(defined, terminator);
+        },
+      };
+    }
+    i++;
+  }
+  null
+};
+
+export let verifyFunction: (Function) -> Bool = fn(function) {
+  match (function) {
+    Function(_, params, registers, result, blocks, entry) => {
+      if (blocks.len() == 0) { _fail("function has no blocks"); }
+      _verifyTarget(blocks, entry);
+
+      let i = 0;
+
+      while (i < params.len()) {
+        _registerType(registers, params[i]);
+        let j = 0;
+
+        while (j < i) {
+          if (params[i] == params[j]) { _fail("duplicate parameter register"); }
+          j++;
+        }
+        i++;
+      }
+
+      i = 0;
+
+      while (i < blocks.len()) {
+        match (blocks[i]) {
+          Block(id, instructions, terminator, handler) => {
+            let j = 0;
+
+            while (j < i) {
+              match (blocks[j]) {
+                Block(previousId, _, _, _) => {
+                  if (id == previousId) { _fail("duplicate block id"); }
+                },
+              };
+              j++;
+            }
+
+            if (handler != null) {
+              _verifyTarget(blocks, _handlerTarget(handler));
+              _expectType(registers, _handlerPayload(handler), ValueType.Dynamic);
+              if (_handlerTarget(handler) == id) { _fail("block handles its own throw"); }
+            }
+            j = 0;
+
+            while (j < instructions.len()) {
+              _verifyInstruction(registers, instructions[j]);
+              j++;
+            }
+            _verifyTerminator(registers, result, blocks, terminator);
+          },
+        };
+        i++;
+      }
+      _verifyDefinitions(params, registers, blocks, entry);
+      true
+    },
+  }
+};
+
+export let verifyProgram: (Program) -> Bool = fn(program) {
+  match (program) {
+    Program(functions) => {
+      let i = 0;
+
+      while (i < functions.len()) {
+        match (functions[i]) {
+          Function(id, _, _, _, _, _) => {
+            let j = 0;
+
+            while (j < i) {
+              match (functions[j]) {
+                Function(previousId, _, _, _, _, _) => {
+                  if (id == previousId) { _fail("duplicate function id"); }
+                },
+              };
+              j++;
+            }
+          },
+        };
+        verifyFunction(functions[i]);
+
+        match (functions[i]) {
+          Function(_, _, registers, _, blocks, _) => {
+            let blockIndex = 0;
+
+            while (blockIndex < blocks.len()) {
+              match (blocks[blockIndex]) {
+                Block(_, instructions, _, _) => {
+                  let instructionIndex = 0;
+
+                  while (instructionIndex < instructions.len()) {
+                    match (instructions[instructionIndex]) {
+                      CallDirect(dst, calleeId, args) => {
+                        let calleeIndex = 0;
+
+                        while (calleeIndex < functions.len()) {
+                          match (functions[calleeIndex]) {
+                            Function(id, params, calleeRegisters, result, _, _) => if (id == calleeId) {
+                              if (args.len() != params.len()) { _fail("direct call argument count mismatch"); }
+                              let argIndex = 0;
+
+                              while (argIndex < args.len()) {
+                                if (!_typeEq(_registerType(registers, args[argIndex]), _registerType(calleeRegisters, params[argIndex]))) {
+                                  _fail("direct call argument type mismatch");
+                                }
+                                argIndex++;
+                              }
+
+                              match (result) {
+                                Void => _fail("value call targets void function"),
+                                Value(ty) => if (!_typeEq(_registerType(registers, dst), ty)) { _fail("direct call result type mismatch"); },
+                              };
+                              break;
+                            },
+                          };
+                          calleeIndex++;
+                        }
+                        if (calleeIndex == functions.len()) { _fail("unknown direct function"); }
+                      },
+                      _ => null,
+                    };
+                    instructionIndex++;
+                  }
+                },
+              };
+              blockIndex++;
+            }
+          },
+        };
+        i++;
+      }
+      true
+    },
+  }
+};

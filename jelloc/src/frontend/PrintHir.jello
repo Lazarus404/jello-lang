@@ -48,6 +48,7 @@ let _expr: (Expr, Bytes) -> Bytes = fn(expr, indent) {
             output += indent + "  " + (mutable ? "let " : "const ") + "%" + _id(id) + " " + name + ": " + _type(bindingType) + "\n";
             output += _expr(value, indent + "    ");
           },
+          _ => null,
         };
         i++;
       }
@@ -65,14 +66,11 @@ let _statements: (Array<Statement>, Bytes) -> Bytes = fn(statements, indent) {
   let i = 0;
 
   while (i < statements.len()) {
-    let ignored: Null<Bytes> = match (statements[i]) {
-      Bind(binding) => match (binding) {
-        Binding(id, name, ty, mutable, value) => {
-          output += indent + (mutable ? "let " : "const ") + "%" + _id(id) + " " + name + ": " + _type(ty) + "\n";
-          output += _expr(value, indent + "  ");
-          null
-        },
-      },
+    let ignored = match (statements[i]) {
+      Bind(binding) => match (binding) { Binding(id, name, ty, mutable, value) => {
+        output += indent + (mutable ? "let " : "const ") + "%" + _id(id) + " " + name + ": " + _type(ty) + "\n";
+        output += _expr(value, indent + "  ");
+      } },
       Expression(value) => {
         output += indent + "expression\n" + _expr(value, indent + "  ");
         null

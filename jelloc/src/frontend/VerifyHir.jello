@@ -1,0 +1,349 @@
+package frontend;
+
+import { exprType } from frontend.Hir;
+import type {
+  Binding, BindingId, Expr, FunctionBody, FunctionDecl, FunctionId, NodeInfo, NodeId, NodeKind, Parameter, Program, Statement, Type
+} from frontend.Hir;
+import type { SourceSpan } from frontend.Source;
+import { spanEnd, spanPath, spanStart } from frontend.Source;
+
+let _isI32 = fn(ty: Type): Bool { match (ty) { I32 => true, _ => false } };
+let _isBool = fn(ty: Type): Bool { match (ty) { Bool => true, _ => false } };
+let _isI64 = fn(ty: Type): Bool { match (ty) { I64 => true, _ => false } };
+
+let _typeEq = fn(left: Type, right: Type): Bool {
+  match (left) {
+    Bool => match (right) { Bool => true, _ => false },
+    I32 => match (right) { I32 => true, _ => false },
+    I64 => match (right) { I64 => true, _ => false },
+  }
+};
+
+let _id = fn(id: BindingId): I32 { match (id) { Id(value) => value } };
+let _functionId = fn(id: FunctionId): I32 { match (id) { Id(value) => value } };
+let _nodeId = fn(id: NodeId): I32 { match (id) { Id(value) => value } };
+
+let _nodeKindEq = fn(left: NodeKind, right: NodeKind): Bool {
+  match (left) {
+    Expression => match (right) { Expression => true, _ => false },
+    Statement => match (right) { Statement => true, _ => false },
+    Binding => match (right) { Binding => true, _ => false },
+    Parameter => match (right) { Parameter => true, _ => false },
+    Function => match (right) { Function => true, _ => false },
+  }
+};
+
+let _expectNode = fn(nodes: Array<NodeInfo>, nextNode: Array<I32>, kind: NodeKind) {
+  if (nextNode[0] >= nodes.len()) { throw "invalid HIR: missing node metadata"; }
+
+  match (nodes[nextNode[0]]) { Node(id, actual, _) => {
+    if (_nodeId(id) != nextNode[0]) { throw "invalid HIR: node metadata out of order"; }
+    if (!_nodeKindEq(actual, kind)) { throw "invalid HIR: node metadata kind mismatch"; }
+  } };
+  nextNode[0]++;
+  null
+};
+
+let _verifyNodes = fn(nodes: Array<NodeInfo>) {
+  let i = 0;
+
+  while (i < nodes.len()) {
+    match (nodes[i]) { Node(id, _, span) => {
+      if (_nodeId(id) != i) { throw "invalid HIR: node IDs must be sequential"; }
+
+      if ((spanPath(span).len() == 0) || (spanStart(span) < 0) || (spanEnd(span) < spanStart(span))) {
+        throw "invalid HIR: invalid source span";
+      }
+    } };
+    i++;
+  }
+  null
+};
+
+let _bindingType = fn(bindings: Array<Binding>, id: BindingId): Tuple<Bool, Type> {
+  let i = bindings.len() - 1;
+
+  while (i >= 0) {
+    match (bindings[i]) {
+      Binding(bindingId, _, ty, _, _) => if (_id(bindingId) == _id(id)) { return (true, ty); },
+    };
+    i--;
+  }
+  (false, Type.Bool)
+};
+
+let _function = fn(functions: Array<FunctionDecl>, id: FunctionId): FunctionDecl {
+  let i = 0;
+
+  while (i < functions.len()) {
+    match (functions[i]) {
+      FunctionDecl(functionId, _, _, _, _) => if (_functionId(functionId) == _functionId(id)) { return functions[i]; },
+    };
+    i++;
+  }
+  throw "invalid HIR: unknown direct function";
+  FunctionDecl.FunctionDecl(id, "", [], Type.Bool, FunctionBody.FunctionBody([], Expr.BoolLiteral(false)))
+};
+
+let _verifyExpr: (Expr, Array<Binding>, Array<FunctionDecl>, Array<I32>, Array<NodeInfo>, Array<I32>) -> Type =
+  fn(expr, bindings, functions, nextId, nodes, nextNode) {
+  let ty = match (expr) {
+    BoolLiteral(_) => Type.Bool,
+    I32Literal(_) => Type.I32,
+    Local(id, ty) => {
+      let (found, bindingType) = _bindingType(bindings, id);
+
+      if (!found) {
+        throw "invalid HIR: unknown local binding";
+        return ty;
+      }
+      if (!_typeEq(bindingType, ty)) { throw "invalid HIR: local binding type mismatch"; }
+      ty
+    },
+    AssignLocal(id, value, ty) => {
+      let i = bindings.len() - 1;
+      let found = false;
+
+      while (i >= 0) {
+        match (bindings[i]) {
+          Binding(bindingId, _, bindingType, mutable, _) => if (_id(bindingId) == _id(id)) {
+            if (!mutable) { throw "invalid HIR: assignment to immutable local"; }
+
+            if (!_typeEq(bindingType, ty) || !_typeEq(_verifyExpr(value, bindings, functions, nextId, nodes, nextNode), ty)) {
+              throw "invalid HIR: assignment type mismatch";
+            }
+            found = true;
+            i = 0;
+          },
+        };
+        i--;
+      }
+      if (!found) { throw "invalid HIR: assignment to unknown local"; }
+      ty
+    },
+    AddI32Wrap(left, right) => {
+      if (!_isI32(_verifyExpr(left, bindings, functions, nextId, nodes, nextNode)) || !_isI32(_verifyExpr(right, bindings, functions, nextId, nodes, nextNode))) {
+        throw "invalid HIR: i32 addition requires i32 operands";
+        return Type.I32;
+      }
+      exprType(expr)
+    },
+    SubI32Wrap(left, right) => {
+      if (!_isI32(_verifyExpr(left, bindings, functions, nextId, nodes, nextNode)) || !_isI32(_verifyExpr(right, bindings, functions, nextId, nodes, nextNode))) {
+        throw "invalid HIR: i32 subtraction requires i32 operands";
+      }
+      Type.I32
+    },
+    MultiplyI32Wrap(left, right) => {
+      if (!_isI32(_verifyExpr(left, bindings, functions, nextId, nodes, nextNode)) || !_isI32(_verifyExpr(right, bindings, functions, nextId, nodes, nextNode))) {
+        throw "invalid HIR: i32 multiplication requires i32 operands";
+      }
+      Type.I32
+    },
+    NegateI32Wrap(value) => {
+      if (!_isI32(_verifyExpr(value, bindings, functions, nextId, nodes, nextNode))) { throw "invalid HIR: i32 negation requires i32 operand"; }
+      Type.I32
+    },
+    NotBool(value) => {
+      if (!_isBool(_verifyExpr(value, bindings, functions, nextId, nodes, nextNode))) { throw "invalid HIR: bool not requires bool operand"; }
+      Type.Bool
+    },
+    EqualI32(left, right) => {
+      if (!_isI32(_verifyExpr(left, bindings, functions, nextId, nodes, nextNode)) || !_isI32(_verifyExpr(right, bindings, functions, nextId, nodes, nextNode))) {
+        throw "invalid HIR: i32 equality requires i32 operands";
+      }
+      Type.Bool
+    },
+    LessI32Signed(left, right) => {
+      if (!_isI32(_verifyExpr(left, bindings, functions, nextId, nodes, nextNode)) || !_isI32(_verifyExpr(right, bindings, functions, nextId, nodes, nextNode))) {
+        throw "invalid HIR: signed i32 less-than requires i32 operands";
+      }
+      Type.Bool
+    },
+    GreaterI32Signed(left, right) => {
+      if (!_isI32(_verifyExpr(left, bindings, functions, nextId, nodes, nextNode)) || !_isI32(_verifyExpr(right, bindings, functions, nextId, nodes, nextNode))) {
+        throw "invalid HIR: signed i32 greater-than requires i32 operands";
+      }
+      Type.Bool
+    },
+    SignExtendI32ToI64(value) => {
+      if (!_isI32(_verifyExpr(value, bindings, functions, nextId, nodes, nextNode))) { throw "invalid HIR: i32 to i64 cast requires i32 operand"; }
+      Type.I64
+    },
+    TruncateI64ToI32(value) => {
+      if (!_isI64(_verifyExpr(value, bindings, functions, nextId, nodes, nextNode))) { throw "invalid HIR: i64 to i32 cast requires i64 operand"; }
+      Type.I32
+    },
+    CallDirect(id, args, ty) => match (_function(functions, id)) {
+      FunctionDecl(_, _, params, result, _) => {
+        if ((args.len() != params.len()) || !_typeEq(ty, result)) { throw "invalid HIR: direct call signature mismatch"; }
+        let i = 0;
+
+        while (i < args.len()) {
+          let expected = match (params[i]) { Parameter(_, _, paramType) => paramType };
+
+          if (!_typeEq(_verifyExpr(args[i], bindings, functions, nextId, nodes, nextNode), expected)) {
+            throw "invalid HIR: direct call argument type mismatch";
+          }
+          i++;
+        }
+        ty
+      },
+    },
+    Block(blockBindings, tail) => {
+      let start = bindings.len();
+      let i = 0;
+
+      while (i < blockBindings.len()) {
+        match (blockBindings[i]) {
+          Binding(id, name, ty, mutable, value) => {
+            let actual = _verifyExpr(value, bindings, functions, nextId, nodes, nextNode);
+            if (_id(id) != nextId[0]) { throw "invalid HIR: binding IDs must be sequential"; }
+            nextId[0]++;
+            if (!_typeEq(actual, ty)) { throw "invalid HIR: binding type mismatch"; }
+            bindings.push(Binding.Binding(id, name, ty, mutable, value));
+            _expectNode(nodes, nextNode, NodeKind.Binding);
+          },
+        };
+        i++;
+      }
+      let ty = _verifyExpr(tail, bindings, functions, nextId, nodes, nextNode);
+      while (bindings.len() > start) { bindings.pop(); }
+      ty
+    },
+    If(condition, thenBranch, elseBranch, ty) => {
+      if (!_isBool(_verifyExpr(condition, bindings, functions, nextId, nodes, nextNode))) { throw "invalid HIR: if condition must be bool"; }
+      let thenType = _verifyExpr(thenBranch, bindings, functions, nextId, nodes, nextNode);
+      let elseType = _verifyExpr(elseBranch, bindings, functions, nextId, nodes, nextNode);
+      if (!_typeEq(thenType, elseType) || !_typeEq(thenType, ty)) { throw "invalid HIR: if branch type mismatch"; }
+      ty
+    },
+  };
+  _expectNode(nodes, nextNode, NodeKind.Expression);
+  ty
+};
+
+let _verifyStatements: (
+  Array<Statement>, Array<Binding>, Array<FunctionDecl>, Array<I32>, Type, I32, Array<NodeInfo>, Array<I32>
+) -> Bool = fn(statements, bindings, functions, nextId, result, loopDepth, nodes, nextNode) {
+  let reachable = true;
+  let i = 0;
+
+  while (i < statements.len()) {
+    if (!reachable) {
+      throw "invalid HIR: statement after return";
+      return false;
+    }
+
+    let ignored = match (statements[i]) {
+      Bind(binding) => match (binding) { Binding(id, name, ty, mutable, value) => {
+        let actual = _verifyExpr(value, bindings, functions, nextId, nodes, nextNode);
+        if (_id(id) != nextId[0]) { throw "invalid HIR: binding IDs must be sequential"; }
+        nextId[0]++;
+        if (!_typeEq(actual, ty)) { throw "invalid HIR: binding type mismatch"; }
+        bindings.push(Binding.Binding(id, name, ty, mutable, value));
+        _expectNode(nodes, nextNode, NodeKind.Binding);
+      } },
+      Expression(value) => {
+        _verifyExpr(value, bindings, functions, nextId, nodes, nextNode);
+        null
+      },
+      ReturnValue(value) => {
+        if (!_typeEq(_verifyExpr(value, bindings, functions, nextId, nodes, nextNode), result)) {
+          throw "invalid HIR: return type mismatch";
+        }
+        reachable = false;
+      },
+      ThrowValue(value) => {
+        _verifyExpr(value, bindings, functions, nextId, nodes, nextNode);
+        reachable = false;
+      },
+      BreakLoop => {
+        if (loopDepth == 0) { throw "invalid HIR: break outside loop"; }
+        reachable = false;
+      },
+      ContinueLoop => {
+        if (loopDepth == 0) { throw "invalid HIR: continue outside loop"; }
+        reachable = false;
+      },
+      WhileLoop(condition, body) => {
+        if (!_isBool(_verifyExpr(condition, bindings, functions, nextId, nodes, nextNode))) { throw "invalid HIR: while condition must be bool"; }
+        let start = bindings.len();
+        _verifyStatements(body, bindings, functions, nextId, result, loopDepth + 1, nodes, nextNode);
+        while (bindings.len() > start) { bindings.pop(); }
+      },
+    };
+    _expectNode(nodes, nextNode, NodeKind.Statement);
+    i++;
+  }
+  reachable
+};
+
+export let verifyProgram: (Program) -> Bool = fn(program) {
+  match (program) {
+    Program(functions, bindings, tail, nodes) => {
+      _verifyNodes(nodes);
+      if (nodes.len() == 0) { throw "invalid HIR: program has no node metadata"; }
+      let nextId: Array<I32> = [0];
+      let nextNode: Array<I32> = [0];
+      let visibleFunctions = Array.new<FunctionDecl>(0);
+      let i = 0;
+
+      while (i < functions.len()) {
+        match (functions[i]) {
+          FunctionDecl(id, name, params, result, FunctionBody(statements, functionTail)) => {
+            if (_functionId(id) != i + 1) { throw "invalid HIR: function IDs must be sequential"; }
+            let visibleBindings = Array.new<Binding>(0);
+            let j = 0;
+
+            while (j < params.len()) {
+              match (params[j]) {
+                Parameter(paramId, paramName, ty) => {
+                  if (_id(paramId) != nextId[0]) { throw "invalid HIR: binding IDs must be sequential"; }
+                  nextId[0]++;
+                  visibleBindings.push(Binding.Binding(paramId, paramName, ty, false, Expr.BoolLiteral(false)));
+                  _expectNode(nodes, nextNode, NodeKind.Parameter);
+                },
+              };
+              j++;
+            }
+            let reachable = _verifyStatements(statements, visibleBindings, visibleFunctions, nextId, result, 0, nodes, nextNode);
+
+            if (reachable) {
+              if (functionTail == null) { throw "invalid HIR: function falls through without value"; }
+
+              if (!_typeEq(_verifyExpr(functionTail, visibleBindings, visibleFunctions, nextId, nodes, nextNode), result)) {
+                throw "invalid HIR: function result type mismatch";
+              }
+            } else if (functionTail != null) {
+              throw "invalid HIR: unreachable function tail";
+            }
+            visibleFunctions.push(functions[i]);
+            _expectNode(nodes, nextNode, NodeKind.Function);
+          },
+        };
+        i++;
+      }
+
+      let visible = Array.new<Binding>(0);
+      i = 0;
+
+      while (i < bindings.len()) {
+        match (bindings[i]) {
+          Binding(id, name, ty, mutable, value) => {
+            let actual = _verifyExpr(value, visible, functions, nextId, nodes, nextNode);
+            if (_id(id) != nextId[0]) { throw "invalid HIR: binding IDs must be sequential"; }
+            nextId[0]++;
+            if (!_typeEq(actual, ty)) { throw "invalid HIR: binding type mismatch"; }
+            visible.push(Binding.Binding(id, name, ty, mutable, value));
+            _expectNode(nodes, nextNode, NodeKind.Binding);
+          },
+        };
+        i++;
+      }
+      _verifyExpr(tail, visible, functions, nextId, nodes, nextNode);
+      if (nextNode[0] != nodes.len()) { throw "invalid HIR: extra node metadata"; }
+    },
+  };
+  true
+};

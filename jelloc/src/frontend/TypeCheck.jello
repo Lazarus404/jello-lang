@@ -1,0 +1,600 @@
+package frontend;
+
+import type {
+  AssignOp,
+  BinaryOp,
+  Block as AstBlock,
+  Expr as AstExpr,
+  IntSize,
+  UnaryOp,
+  Pattern,
+  Program as AstProgram,
+  Stmt,
+  Type as AstType,
+} from frontend.Ast;
+import type {
+  Binding,
+  BindingId,
+  Expr as HirExpr,
+  FunctionDecl,
+  FunctionId,
+  FunctionBody as HirFunctionBody,
+  Parameter as HirParameter,
+  Program as HirProgram,
+  Statement as HirStatement,
+  Type as HirType,
+} from frontend.Hir;
+import { exprType } from frontend.Hir;
+import { collectNodes } from frontend.HirMetadata;
+import { orderSyntaxForHir } from frontend.AstMetadata;
+import { syntaxInfo } from frontend.Parser;
+import type { SyntaxInfo } from frontend.Source;
+import { verifyProgram } from frontend.VerifyHir;
+
+let _parsePositiveI32 = fn(digits: Bytes): I32 {
+  let value = 0;
+  let i = 0;
+
+  while (i < digits.len()) {
+    let digit = Bytes.get_u8(digits, i) - "0".code;
+
+    if ((value > 214748364) || ((value == 214748364) && (digit > 7))) {
+      throw "i32 literal out of range";
+      return 0;
+    }
+    value = value * 10 + digit;
+    i++;
+  }
+  value
+};
+
+let _parseNegativeI32 = fn(digits: Bytes): I32 {
+  let value = 0;
+  let i = 0;
+
+  while (i < digits.len()) {
+    let digit = Bytes.get_u8(digits, i) - "0".code;
+
+    if ((value < -214748364) || ((value == -214748364) && (digit > 8))) {
+      throw "i32 literal out of range";
+      return 0;
+    }
+    value = value * 10 - digit;
+    i++;
+  }
+  value
+};
+
+let _isI32 = fn(ty: HirType): Bool { match (ty) { I32 => true, _ => false } };
+let _isBool = fn(ty: HirType): Bool { match (ty) { Bool => true, _ => false } };
+let _isI64 = fn(ty: HirType): Bool { match (ty) { I64 => true, _ => false } };
+
+let _typeEq = fn(left: HirType, right: HirType): Bool {
+  match (left) {
+    Bool => match (right) { Bool => true, _ => false },
+    I32 => match (right) { I32 => true, _ => false },
+    I64 => match (right) { I64 => true, _ => false },
+  }
+};
+
+let _checkType = fn(ty: AstType): HirType {
+  match (ty) {
+    Named(name) => if (name == "I32") { HirType.I32 } else if (name == "I64") { HirType.I64 } else if (name == "Bool") { HirType.Bool } else {
+      throw "unsupported type: " + name;
+      HirType.Bool
+    },
+    _ => {
+      throw "unsupported type in initial semantic slice";
+      HirType.Bool
+    },
+  }
+};
+
+let _hasBindingName = fn(bindings: Array<Binding>, start: I32, name: Bytes): Bool {
+  let i = start;
+
+  while (i < bindings.len()) {
+    match (bindings[i]) { Binding(_, bindingName, _, _, _) => if (bindingName == name) { return true; } };
+    i++;
+  }
+  false
+};
+
+let _findBinding = fn(bindings: Array<Binding>, name: Bytes): Binding {
+  let i = bindings.len() - 1;
+
+  while (i >= 0) {
+    match (bindings[i]) {
+      Binding(_, bindingName, _, _, _) => if (bindingName == name) { return bindings[i]; },
+    };
+    i--;
+  }
+  throw "unknown local: " + name;
+  Binding.Binding(BindingId.Id(-1), name, HirType.Bool, false, HirExpr.BoolLiteral(false))
+};
+
+let _findFunction = fn(functions: Array<FunctionDecl>, name: Bytes): FunctionDecl {
+  let i = functions.len() - 1;
+
+  while (i >= 0) {
+    match (functions[i]) {
+      FunctionDecl(_, functionName, _, _, _) => if (functionName == name) { return functions[i]; },
+    };
+    i--;
+  }
+  throw "unknown function: " + name;
+  FunctionDecl.FunctionDecl(FunctionId.Id(-1), name, [], HirType.Bool, HirFunctionBody.FunctionBody([], HirExpr.BoolLiteral(false)))
+};
+
+let _type = fn(expr: HirExpr): HirType { exprType(expr) };
+
+let _unary = fn(op: UnaryOp, value: HirExpr): HirExpr {
+  match (op) {
+    Negate => {
+      if (!_isI32(_type(value))) {
+        throw "i32 negation requires i32 operand";
+        return HirExpr.I32Literal(0);
+      }
+      HirExpr.NegateI32Wrap(value)
+    },
+    Not => {
+      if (!_isBool(_type(value))) {
+        throw "bool not requires bool operand";
+        return HirExpr.BoolLiteral(false);
+      }
+      HirExpr.NotBool(value)
+    },
+  }
+};
+
+let _cast = fn(value: HirExpr, target: HirType): HirExpr {
+  if (_isI32(_type(value)) && _isI64(target)) { HirExpr.SignExtendI32ToI64(value) } else if (_isI64(_type(value)) && _isI32(target)) { HirExpr.TruncateI64ToI32(value) } else {
+    throw "unsupported explicit cast";
+    HirExpr.BoolLiteral(false)
+  }
+};
+
+let _binary = fn(op: BinaryOp, left: HirExpr, right: HirExpr): HirExpr {
+  if (!_isI32(_type(left)) || !_isI32(_type(right))) {
+    throw "i32 binary operation requires i32 operands";
+    return HirExpr.I32Literal(0);
+  }
+
+  match (op) {
+    Add => HirExpr.AddI32Wrap(left, right),
+    Subtract => HirExpr.SubI32Wrap(left, right),
+    Multiply => HirExpr.MultiplyI32Wrap(left, right),
+    Equal => HirExpr.EqualI32(left, right),
+    NotEqual => HirExpr.NotBool(HirExpr.EqualI32(left, right)),
+    Less => HirExpr.LessI32Signed(left, right),
+    LessEqual => HirExpr.NotBool(HirExpr.GreaterI32Signed(left, right)),
+    Greater => HirExpr.GreaterI32Signed(left, right),
+    GreaterEqual => HirExpr.NotBool(HirExpr.LessI32Signed(left, right)),
+    _ => {
+      throw "unsupported i32 binary operation";
+      HirExpr.I32Literal(0)
+    },
+  }
+};
+
+let _lookup = fn(bindings: Array<Binding>, name: Bytes): HirExpr {
+  match (_findBinding(bindings, name)) { Binding(id, _, ty, _, _) => HirExpr.Local(id, ty) }
+};
+
+let _assignment = fn(op: AssignOp, id: BindingId, ty: HirType, value: HirExpr, name: Bytes): HirExpr {
+  match (op) {
+    Assign => HirExpr.AssignLocal(id, value, ty),
+    Add => {
+      if (!_isI32(ty)) {
+        throw "compound assignment requires i32 local: " + name;
+        return HirExpr.BoolLiteral(false);
+      }
+      HirExpr.AssignLocal(id, HirExpr.AddI32Wrap(HirExpr.Local(id, ty), value), ty)
+    },
+    Subtract => {
+      if (!_isI32(ty)) {
+        throw "compound assignment requires i32 local: " + name;
+        return HirExpr.BoolLiteral(false);
+      }
+      HirExpr.AssignLocal(id, HirExpr.SubI32Wrap(HirExpr.Local(id, ty), value), ty)
+    },
+    _ => {
+      throw "unsupported compound assignment";
+      HirExpr.BoolLiteral(false)
+    },
+  }
+};
+
+let _checkFunctionStatements: (
+  Array<Stmt>,
+  Array<Binding>,
+  Array<FunctionDecl>,
+  Array<I32>,
+  Array<I32>,
+  HirType,
+  I32
+) -> Tuple<Array<HirStatement>, Bool> = fn(_a, _b, _c, _d, _e, _f, _g) {
+  (Array.new<HirStatement>(0), false)
+};
+
+let _checkExpr: (
+  AstExpr,
+  Array<Binding>,
+  Array<FunctionDecl>,
+  Array<I32>,
+  Array<I32>,
+  Bool
+) -> HirExpr = fn(expr, bindings, functions, nextId, nextFunction, allowFunctions) {
+  match (expr) {
+    Bool(value) => HirExpr.BoolLiteral(value),
+    Integer(digits, size) => {
+      match (size) {
+        I32 => null, _ => {
+          throw "integer literal must have an i32 suffix";
+          null
+        }
+      };
+      HirExpr.I32Literal(_parsePositiveI32(digits))
+    },
+    Unary(Negate, Integer(digits, size)) => {
+      match (size) {
+        I32 => null, _ => {
+          throw "integer literal must have an i32 suffix";
+          null
+        }
+      };
+      HirExpr.I32Literal(_parseNegativeI32(digits))
+    },
+    Unary(op, value) => {
+      let checked = _checkExpr(value, bindings, functions, nextId, nextFunction, false);
+      _unary(op, checked)
+    },
+    Binary(op, left, right) => {
+      let checkedLeft = _checkExpr(left, bindings, functions, nextId, nextFunction, false);
+      let checkedRight = _checkExpr(right, bindings, functions, nextId, nextFunction, false);
+      _binary(op, checkedLeft, checkedRight)
+    },
+    Cast(value, ty) => {
+      let checked = _checkExpr(value, bindings, functions, nextId, nextFunction, false);
+      _cast(checked, _checkType(ty))
+    },
+    Variable(name) => _lookup(bindings, name),
+    Assign(op, Variable(name), value) => {
+      match (_findBinding(bindings, name)) {
+        Binding(id, _, ty, mutable, _) => {
+          if (!mutable) {
+            throw "cannot assign to immutable local: " + name;
+            return HirExpr.BoolLiteral(false);
+          }
+          let checkedValue = _checkExpr(value, bindings, functions, nextId, nextFunction, false);
+
+          if (!_typeEq(_type(checkedValue), ty)) {
+            throw "assignment type mismatch: " + name;
+            return HirExpr.BoolLiteral(false);
+          }
+          _assignment(op, id, ty, checkedValue, name)
+        },
+      }
+    },
+    Call(Variable(name), typeArgs, args) => {
+      if (typeArgs.len() != 0) {
+        throw "direct calls do not support type arguments";
+        return HirExpr.BoolLiteral(false);
+      }
+
+      match (_findFunction(functions, name)) {
+        FunctionDecl(id, _, params, result, _) => {
+          if (args.len() != params.len()) {
+            throw "wrong argument count for " + name;
+            return HirExpr.BoolLiteral(false);
+          }
+          let checkedArgs = Array.new<HirExpr>(0);
+          let i = 0;
+
+          while (i < args.len()) {
+            let checkedArg = _checkExpr(args[i], bindings, functions, nextId, nextFunction, false);
+            let expected = match (params[i]) { Parameter(_, _, ty) => ty };
+
+            if (!_typeEq(_type(checkedArg), expected)) {
+              throw "wrong argument type for " + name;
+              return HirExpr.BoolLiteral(false);
+            }
+            checkedArgs.push(checkedArg);
+            i++;
+          }
+          HirExpr.CallDirect(id, checkedArgs, result)
+        },
+      }
+    },
+    If(condition, thenBranch, elseBranch) => {
+      let checkedCondition = _checkExpr(condition, bindings, functions, nextId, nextFunction, false);
+
+      if (!_isBool(_type(checkedCondition))) {
+        throw "if condition must be bool";
+        return HirExpr.BoolLiteral(false);
+      }
+      let checkedThen = _checkExpr(thenBranch, bindings, functions, nextId, nextFunction, false);
+      let checkedElse = _checkExpr(elseBranch, bindings, functions, nextId, nextFunction, false);
+      let ty = _type(checkedThen);
+
+      if (!_typeEq(ty, _type(checkedElse))) {
+        throw "if branches must have the same type";
+        return HirExpr.BoolLiteral(false);
+      }
+      HirExpr.If(checkedCondition, checkedThen, checkedElse, ty)
+    },
+    BlockExpr(Block(statements, tail)) => {
+      if (tail == null) {
+        throw "value block requires a trailing expression";
+        return HirExpr.BoolLiteral(false);
+      }
+      let start = bindings.len();
+      let checkedBindings = Array.new<Binding>(0);
+      let i = 0;
+
+      while (i < statements.len()) {
+        match (statements[i]) {
+          LetStmt(isConst, false, BindPattern(name), typeParams, annotation, value) => {
+            match (value) {
+              Function(params, result, body, false) => {
+                if (!allowFunctions) {
+                  throw "function declarations are only supported at program scope";
+                  return HirExpr.BoolLiteral(false);
+                }
+
+                if ((typeParams.len() != 0) || (annotation != null) || (result == null)) {
+                  throw "direct functions require typed parameters and an explicit result type";
+                  return HirExpr.BoolLiteral(false);
+                }
+                let j = 0;
+
+                while (j < functions.len()) {
+                  match (functions[j]) { FunctionDecl(_, functionName, _, _, _) => if (functionName == name) {
+                    throw "duplicate function: " + name;
+                    return HirExpr.BoolLiteral(false);
+                  } };
+                  j++;
+                }
+
+                if (_hasBindingName(bindings, start, name)) {
+                  throw "duplicate local: " + name;
+                  return HirExpr.BoolLiteral(false);
+                }
+                let functionBindings = Array.new<Binding>(0);
+                let checkedParams = Array.new<HirParameter>(0);
+                j = 0;
+
+                while (j < params.len()) {
+                  match (params[j]) {
+                    Parameter(paramName, paramType, kind) => {
+                      let required = match (kind) { Required => true, _ => false };
+
+                      if (!required) {
+                        throw "direct functions require required parameters";
+                        return HirExpr.BoolLiteral(false);
+                      }
+
+                      if (paramType == null) {
+                        throw "direct function parameters require types";
+                        return HirExpr.BoolLiteral(false);
+                      }
+                      let k = 0;
+
+                      while (k < functionBindings.len()) {
+                        match (functionBindings[k]) { Binding(_, existingName, _, _, _) => if (existingName == paramName) {
+                          throw "duplicate parameter: " + paramName;
+                          return HirExpr.BoolLiteral(false);
+                        } };
+                        k++;
+                      }
+                      let ty = _checkType(paramType);
+                      let id = BindingId.Id(nextId[0]);
+                      nextId[0]++;
+                      checkedParams.push(HirParameter.Parameter(id, paramName, ty));
+                      functionBindings.push(Binding.Binding(id, paramName, ty, false, HirExpr.BoolLiteral(false)));
+                    },
+                  };
+                  j++;
+                }
+                let checkedResult = _checkType(result);
+                let bodyStatements = Array.new<Stmt>(0);
+                let bodyTail: ?AstExpr = null;
+
+                match (body) { Block(functionStatements, functionTail) => {
+                  bodyStatements = functionStatements;
+                  bodyTail = functionTail;
+                } };
+                let (checkedStatements, reachable) = _checkFunctionStatements(
+                  bodyStatements, functionBindings, functions, nextId, nextFunction, checkedResult, 0
+                );
+                let checkedTail: ?HirExpr = null;
+
+                if (reachable) {
+                  if (bodyTail == null) {
+                    throw "function can fall through without a value: " + name;
+                    return HirExpr.BoolLiteral(false);
+                  }
+                  checkedTail = _checkExpr(bodyTail, functionBindings, functions, nextId, nextFunction, false);
+
+                  if (!_typeEq(_type(checkedTail), checkedResult)) {
+                    throw "function result type mismatch: " + name;
+                    return HirExpr.BoolLiteral(false);
+                  }
+                } else if (bodyTail != null) {
+                  throw "unreachable function tail";
+                  return HirExpr.BoolLiteral(false);
+                }
+                let checkedBody = HirFunctionBody.FunctionBody(checkedStatements, checkedTail);
+                functions.push(FunctionDecl.FunctionDecl(FunctionId.Id(nextFunction[0]), name, checkedParams, checkedResult, checkedBody));
+                nextFunction[0]++;
+                null
+              },
+              _ => {
+                if ((typeParams.len() != 0) || (annotation != null)) {
+                  throw "only unannotated local let bindings are supported";
+                  return HirExpr.BoolLiteral(false);
+                }
+
+                if (_hasBindingName(bindings, start, name)) {
+                  throw "duplicate local: " + name;
+                  return HirExpr.BoolLiteral(false);
+                }
+                let checkedValue = _checkExpr(value, bindings, functions, nextId, nextFunction, false);
+                let binding = Binding.Binding(BindingId.Id(nextId[0]), name, _type(checkedValue), !isConst, checkedValue);
+                nextId[0]++;
+                bindings.push(binding);
+                checkedBindings.push(binding);
+                null
+              },
+            }
+          },
+          _ => {
+            throw "unsupported statement in initial semantic slice";
+            return HirExpr.BoolLiteral(false);
+            null
+          },
+        };
+        i++;
+      }
+      let checkedTail = _checkExpr(tail, bindings, functions, nextId, nextFunction, false);
+      while (bindings.len() > start) { bindings.pop(); }
+      HirExpr.Block(checkedBindings, checkedTail)
+    },
+    _ => {
+      throw "unsupported expression in initial semantic slice";
+      HirExpr.BoolLiteral(false)
+    },
+  }
+};
+
+_checkFunctionStatements = fn(statements, bindings, functions, nextId, nextFunction, result, loopDepth) {
+  let checked = Array.new<HirStatement>(0);
+  let reachable = true;
+  let i = 0;
+
+  while (i < statements.len()) {
+    if (!reachable) {
+      throw "unreachable statement after return";
+      return (checked, false);
+    }
+
+    match (statements[i]) {
+      LetStmt(isConst, false, BindPattern(name), typeParams, annotation, value) => {
+        if ((typeParams.len() != 0) || (annotation != null)) {
+          throw "only unannotated local let bindings are supported";
+          return (checked, false);
+        }
+
+        if (_hasBindingName(bindings, 0, name)) {
+          throw "duplicate local: " + name;
+          return (checked, false);
+        }
+        let checkedValue = _checkExpr(value, bindings, functions, nextId, nextFunction, false);
+        let binding = Binding.Binding(BindingId.Id(nextId[0]), name, _type(checkedValue), !isConst, checkedValue);
+        nextId[0]++;
+        bindings.push(binding);
+        checked.push(HirStatement.Bind(binding));
+        null
+      },
+      Expression(value) => {
+        checked.push(HirStatement.Expression(_checkExpr(value, bindings, functions, nextId, nextFunction, false)));
+        null
+      },
+      Return(value) => {
+        if (value == null) {
+          throw "value function requires a return value";
+          return (checked, false);
+        }
+        let checkedValue = _checkExpr(value, bindings, functions, nextId, nextFunction, false);
+
+        if (!_typeEq(_type(checkedValue), result)) {
+          throw "return type mismatch";
+          return (checked, false);
+        }
+        checked.push(HirStatement.ReturnValue(checkedValue));
+        reachable = false;
+        null
+      },
+      Throw(value) => {
+        checked.push(HirStatement.ThrowValue(
+          _checkExpr(value, bindings, functions, nextId, nextFunction, false)
+        ));
+        reachable = false;
+        null
+      },
+      Break => {
+        if (loopDepth == 0) {
+          throw "break outside loop";
+          return (checked, false);
+        }
+        checked.push(HirStatement.BreakLoop);
+        reachable = false;
+        null
+      },
+      Continue => {
+        if (loopDepth == 0) {
+          throw "continue outside loop";
+          return (checked, false);
+        }
+        checked.push(HirStatement.ContinueLoop);
+        reachable = false;
+        null
+      },
+      While(condition, body) => {
+        let checkedCondition = _checkExpr(condition, bindings, functions, nextId, nextFunction, false);
+
+        if (!_isBool(_type(checkedCondition))) {
+          throw "while condition must be bool";
+          return (checked, false);
+        }
+        let start = bindings.len();
+        let (checkedBody, _) = _checkFunctionStatements(
+          body, bindings, functions, nextId, nextFunction, result, loopDepth + 1
+        );
+        while (bindings.len() > start) { bindings.pop(); }
+        checked.push(HirStatement.WhileLoop(checkedCondition, checkedBody));
+        null
+      },
+      _ => {
+        throw "unsupported statement in function body";
+        return (checked, false);
+        null
+      },
+    };
+    i++;
+  }
+  (checked, reachable)
+};
+
+export let typeCheckProgramWithSyntaxAt: (AstProgram, Array<SyntaxInfo>, Bytes) -> HirProgram = fn(program, sourceSyntax, path) {
+  let checked = match (program) {
+    Program(packageName, statements, tail) => {
+      match (packageName) {
+        None => null, _ => {
+          throw "semantic analysis currently requires a package-less program";
+          null
+        }
+      };
+      let bindings = Array.new<Binding>(0);
+      let functions = Array.new<FunctionDecl>(0);
+      let checked = _checkExpr(AstExpr.BlockExpr(AstBlock.Block(statements, tail)), bindings, functions, [0], [1], true);
+
+      match (checked) {
+        Block(checkedBindings, checkedTail) => HirProgram.Program(functions, checkedBindings, checkedTail, []),
+        _ => HirProgram.Program(functions, [], checked, []),
+      }
+    },
+  };
+
+  let withNodes = match (checked) { Program(functions, bindings, tail, _) => {
+    HirProgram.Program(functions, bindings, tail, collectNodes(checked, orderSyntaxForHir(program, sourceSyntax), path))
+  } };
+  verifyProgram(withNodes);
+  withNodes
+};
+
+export let typeCheckProgramAt: (AstProgram, Bytes) -> HirProgram = fn(program, path) {
+  typeCheckProgramWithSyntaxAt(program, syntaxInfo(), path)
+};
+
+export let typeCheckProgram: (AstProgram) -> HirProgram = fn(program) { typeCheckProgramAt(program, "<input>") };

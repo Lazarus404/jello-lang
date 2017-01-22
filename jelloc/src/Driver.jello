@@ -2,8 +2,12 @@ import { lexFile } from frontend.Lexer;
 import type { Token } from frontend.Lexer;
 import { parseProgram } from frontend.Parser;
 import { printTokens } from frontend.Tokens;
+import { typeCheckProgramWithSyntaxAt } from frontend.TypeCheck;
+import { loadProgramWithSyntax } from frontend.Modules;
 import { printHir } from frontend.PrintHir;
+import { lowerProgram } from ir.Lower;
 import { printIr } from ir.Print;
+import { legalizeJlo } from backend.jello.Legalize;
 import { printJlo } from backend.jello.Print;
 import { emitJlo } from backend.jello.Emit;
 import { readText, writeText } from std.io.File;
@@ -72,8 +76,32 @@ export let run: (List<Bytes>) -> Bytes = fn(argv) {
         "PARSER\t" + Std.string(e) + "\n"
       }
     }
+  } else if (printTyped) {
+    try {
+      let (program, sourceSyntax) = loadProgramWithSyntax(input);
+      printHir(typeCheckProgramWithSyntaxAt(program, sourceSyntax, input))
+    } catch (e) {
+      "HIR\t" + Std.string(e) + "\n"
+    }
+  } else if (printLowered) {
+    try {
+      let (program, sourceSyntax) = loadProgramWithSyntax(input);
+      printIr(lowerProgram(typeCheckProgramWithSyntaxAt(program, sourceSyntax, input)))
+    } catch (e) {
+      "IR\t" + Std.string(e) + "\n"
+    }
+  } else if (printLegalized) {
+    try {
+      let (program, sourceSyntax) = loadProgramWithSyntax(input);
+      printJlo(legalizeJlo(lowerProgram(typeCheckProgramWithSyntaxAt(program, sourceSyntax, input))))
+    } catch (e) {
+      "JLO\t" + Std.string(e) + "\n"
+    }
   } else if (output != "") {
     try {
+      let (program, sourceSyntax) = loadProgramWithSyntax(input);
+      let bytes = emitJlo(legalizeJlo(lowerProgram(typeCheckProgramWithSyntaxAt(program, sourceSyntax, input))));
+      if (!writeText(output, bytes)) { throw "could not write output"; }
       ""
     } catch (e) {
       "EMIT\t" + Std.string(e) + "\n"
