@@ -1,154 +1,151 @@
 package frontend;
 
-import { exprType } from frontend.Hir;
-import type { BindingId, Expr, FunctionBody, FunctionId, Program, Statement, Type } from frontend.Hir;
+import type { Hir } from frontend.Hir;
+import {
+  auxOf, bytesOf, childCount, childOf, innerOf, lastChild, opOf, rootNode, typeName, typeOf, useHir, valueOf,
+} from frontend.Hir;
+import { bytesLiteral } from frontend.Tokens;
 
-let _type = fn(ty: Type): Bytes {
-  match (ty) { Bool => "bool", I32 => "i32", I64 => "i64" }
-};
+let _typed = fn(id: I32): Bytes { ": " + typeName(typeOf(id)) + "\n" };
+let _id = fn(id: I32): Bytes { Std.string(valueOf(id)) };
 
-let _id = fn(id: BindingId): Bytes { match (id) { Id(value) => Std.string(value) } };
-let _functionId = fn(id: FunctionId): Bytes { match (id) { Id(value) => Std.string(value) } };
+let _expr: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
+let _statements: (I32, I32, I32, Bytes) -> Bytes = fn(_parent, _from, _to, _indent) { "" };
 
-let _expr: (Expr, Bytes) -> Bytes = fn(expr, indent) {
-  let ty = _type(exprType(expr));
-
-  match (expr) {
-    BoolLiteral(value) => indent + "bool " + (value ? "true" : "false") + ": " + ty + "\n",
-    I32Literal(value) => indent + "i32 " + Std.string(value) + ": " + ty + "\n",
-    Local(id, _) => indent + "local %" + _id(id) + ": " + ty + "\n",
-    AssignLocal(id, value, _) => indent + "assign %" + _id(id) + ": " + ty + "\n" + _expr(value, indent + "  "),
-    AddI32Wrap(left, right) => indent + "add.wrap: " + ty + "\n" + _expr(left, indent + "  ") + _expr(right, indent + "  "),
-    SubI32Wrap(left, right) => indent + "sub.wrap: " + ty + "\n" + _expr(left, indent + "  ") + _expr(right, indent + "  "),
-    MultiplyI32Wrap(left, right) => indent + "mul.wrap: " + ty + "\n" + _expr(left, indent + "  ") + _expr(right, indent + "  "),
-    NegateI32Wrap(value) => indent + "neg.wrap: " + ty + "\n" + _expr(value, indent + "  "),
-    NotBool(value) => indent + "not.bool: " + ty + "\n" + _expr(value, indent + "  "),
-    EqualI32(left, right) => indent + "eq.i32: " + ty + "\n" + _expr(left, indent + "  ") + _expr(right, indent + "  "),
-    LessI32Signed(left, right) => indent + "lt.s.i32: " + ty + "\n" + _expr(left, indent + "  ") + _expr(right, indent + "  "),
-    GreaterI32Signed(left, right) => indent + "gt.s.i32: " + ty + "\n" + _expr(left, indent + "  ") + _expr(right, indent + "  "),
-    SignExtendI32ToI64(value) => indent + "sext.i32.i64: " + ty + "\n" + _expr(value, indent + "  "),
-    TruncateI64ToI32(value) => indent + "trunc.i64.i32: " + ty + "\n" + _expr(value, indent + "  "),
-    CallDirect(function, args, _) => {
-      let output = indent + "call @" + _functionId(function) + ": " + ty + "\n";
-      let i = 0;
-
-      while (i < args.len()) {
-        output += _expr(args[i], indent + "  ");
-        i++;
-      }
-      output
-    },
-    Block(bindings, tail) => {
-      let output = indent + "block: " + ty + "\n";
-      let i = 0;
-
-      while (i < bindings.len()) {
-        match (bindings[i]) {
-          Binding(id, name, bindingType, mutable, value) => {
-            output += indent + "  " + (mutable ? "let " : "const ") + "%" + _id(id) + " " + name + ": " + _type(bindingType) + "\n";
-            output += _expr(value, indent + "    ");
-          },
-          _ => null,
-        };
-        i++;
-      }
-      output + _expr(tail, indent + "  ")
-    },
-    If(condition, thenBranch, elseBranch, _) => indent + "if: " + ty + "\n"
-      + indent + "  condition\n" + _expr(condition, indent + "    ")
-      + indent + "  then\n" + _expr(thenBranch, indent + "    ")
-      + indent + "  else\n" + _expr(elseBranch, indent + "    "),
-  }
-};
-
-let _statements: (Array<Statement>, Bytes) -> Bytes = fn(statements, indent) {
+let _children = fn(parent: I32, start: I32, end: I32, indent: Bytes): Bytes {
   let output = "";
-  let i = 0;
+  let i = start;
 
-  while (i < statements.len()) {
-    let ignored = match (statements[i]) {
-      Bind(binding) => match (binding) { Binding(id, name, ty, mutable, value) => {
-        output += indent + (mutable ? "let " : "const ") + "%" + _id(id) + " " + name + ": " + _type(ty) + "\n";
-        output += _expr(value, indent + "  ");
-      } },
-      Expression(value) => {
-        output += indent + "expression\n" + _expr(value, indent + "  ");
-        null
-      },
-      ReturnValue(value) => {
-        output += indent + "return\n" + _expr(value, indent + "  ");
-        null
-      },
-      ThrowValue(value) => {
-        output += indent + "throw\n" + _expr(value, indent + "  ");
-        null
-      },
-      BreakLoop => {
-        output += indent + "break\n";
-        null
-      },
-      ContinueLoop => {
-        output += indent + "continue\n";
-        null
-      },
-      WhileLoop(condition, body) => {
-        output += indent + "while\n" + indent + "  condition\n" + _expr(condition, indent + "    ");
-        output += indent + "  body\n" + _statements(body, indent + "    ");
-        null
-      },
-    };
+  while (i < end) {
+    output += _expr(childOf(parent, i), indent + "  ");
     i++;
   }
   output
 };
 
-let _functionBody = fn(body: FunctionBody, indent: Bytes): Bytes {
-  match (body) {
-    FunctionBody(statements, tail) => {
-      let output = _statements(statements, indent);
-      if (tail != null) { output += indent + "tail\n" + _expr(tail, indent + "  "); }
-      output
+let _binding = fn(id: I32, indent: Bytes): Bytes {
+  let keyword = match (opOf(id)) { Let => "let ", _ => "const " };
+  indent + keyword + "%" + _id(id) + " " + bytesOf(auxOf(id)) + _typed(id) + _expr(childOf(id, 0), indent + "  ")
+};
+
+let _operation = fn(name: Bytes, id: I32, indent: Bytes): Bytes { indent + name + _typed(id) + _children(id, 0, childCount(id), indent) };
+
+let _section = fn(name: Bytes, id: I32, index: I32, indent: Bytes): Bytes {
+  indent + "  " + name + "\n" + _expr(childOf(id, index), indent + "    ")
+};
+
+_expr = fn(id, indent) {
+  match (opOf(id)) {
+    Bool => indent + "bool " + (valueOf(id) == 1 ? "true" : "false") + _typed(id),
+    I32 => indent + "i32 " + _id(id) + _typed(id),
+    Bytes => indent + "bytes " + bytesLiteral(bytesOf(valueOf(id))) + _typed(id),
+    Null => indent + "null" + _typed(id),
+    Local => indent + "local %" + _id(id) + _typed(id),
+    FunctionRef => indent + "function @" + _id(id) + _typed(id),
+    Assign => _operation("assign %" + _id(id), id, indent),
+    TupleField => _operation("tuple.get " + _id(id), id, indent),
+    Call => _operation("call @" + _id(id), id, indent),
+    CallIndirect => _operation("call.indirect", id, indent),
+    Add => _operation("add.wrap", id, indent),
+    Sub => _operation("sub.wrap", id, indent),
+    Mul => _operation("mul.wrap", id, indent),
+    Neg => _operation("neg.wrap", id, indent),
+    Not => _operation("not.bool", id, indent),
+    And => _operation("and", id, indent),
+    Or => _operation("or", id, indent),
+    Eq => _operation("eq.i32", id, indent),
+    Lt => _operation("lt.s.i32", id, indent),
+    Gt => _operation("gt.s.i32", id, indent),
+    Sext => _operation("sext.i32.i64", id, indent),
+    Trunc => _operation("trunc.i64.i32", id, indent),
+    Present => _operation("present", id, indent),
+    IsNull => _operation("is_null", id, indent),
+    IsPresent => _operation("is_present", id, indent),
+    ArrayNew => _operation("array.new", id, indent),
+    ArrayLen => _operation("array.len", id, indent),
+    ArrayGet => _operation("array.get", id, indent),
+    ArraySet => _operation("array.set", id, indent),
+    BytesGet => _operation("bytes.get_u8", id, indent),
+    Tuple => _operation("tuple", id, indent),
+    Block => {
+      let output = indent + "block" + _typed(id);
+      let i = 0;
+
+      while (i < childCount(id) - 1) {
+        output += _binding(childOf(id, i), indent + "  ");
+        i++;
+      }
+      output + _expr(lastChild(id), indent + "  ")
+    },
+    If => indent + "if" + _typed(id) + _section("condition", id, 0, indent) + _section("then", id, 1, indent) + _section("else", id, 2, indent),
+    _ => {
+      throw "invalid HIR expression op";
+      ""
     },
   }
 };
 
-export let printHir: (Program) -> Bytes = fn(program) {
-  match (program) {
-    Program(functions, bindings, tail, _) => {
-      let output = "program\n";
-      let i = 0;
-
-      while (i < functions.len()) {
-        match (functions[i]) {
-          FunctionDecl(id, name, params, result, body) => {
-            output += "  fn @" + _functionId(id) + " " + name + "(";
-            let j = 0;
-
-            while (j < params.len()) {
-              if (j > 0) { output += ", "; }
-
-              match (params[j]) { Parameter(paramId, paramName, ty) => {
-                output += "%" + _id(paramId) + " " + paramName + ": " + _type(ty);
-              } };
-              j++;
-            }
-            output += ") -> " + _type(result) + "\n" + _functionBody(body, "    ");
-          }
-        };
-        i++;
-      }
-      i = 0;
-
-      while (i < bindings.len()) {
-        match (bindings[i]) {
-          Binding(id, name, ty, mutable, value) => {
-            output += "  " + (mutable ? "let " : "const ") + "%" + _id(id) + " " + name + ": " + _type(ty) + "\n";
-            output += _expr(value, "    ");
-          },
-        };
-        i++;
-      }
-      output + _expr(tail, "  ")
+let _statement = fn(id: I32, indent: Bytes): Bytes {
+  match (opOf(id)) {
+    Declare => _binding(childOf(id, 0), indent),
+    Expression => indent + "expression\n" + _expr(childOf(id, 0), indent + "  "),
+    Return => indent + "return\n" + _expr(childOf(id, 0), indent + "  "),
+    Throw => indent + "throw\n" + _expr(childOf(id, 0), indent + "  "),
+    Break => indent + "break\n",
+    Continue => indent + "continue\n",
+    While => indent + "while\n" + _section("condition", id, 0, indent)
+      + indent + "  body\n" + _statements(id, 1, childCount(id), indent + "    "),
+    _ => {
+      throw "invalid HIR statement op";
+      ""
     },
   }
+};
+
+_statements = fn(parent, start, end, indent) {
+  let output = "";
+  let i = start;
+
+  while (i < end) {
+    output += _statement(childOf(parent, i), indent);
+    i++;
+  }
+  output
+};
+
+let _function = fn(id: I32, functionId: I32): Bytes {
+  let output = "  fn @" + Std.string(functionId) + " " + bytesOf(valueOf(id)) + "(";
+  let i = 0;
+
+  while (i < childCount(id) - 1) {
+    let param = childOf(id, i);
+    if (i > 0) { output += ", "; }
+    output += "%" + _id(param) + " " + bytesOf(auxOf(param)) + ": " + typeName(typeOf(param));
+    i++;
+  }
+  let body = lastChild(id);
+  let statements = childCount(body) - auxOf(body);
+  output += ") -> " + typeName(innerOf(typeOf(id))) + "\n" + _statements(body, 0, statements, "    ");
+  if (auxOf(body) == 1) { output += "    tail\n" + _expr(lastChild(body), "      "); }
+  output
+};
+
+export let printHir: (Hir) -> Bytes = fn(program) {
+  useHir(program);
+  let root = rootNode();
+  let output = "program\n";
+  let i = 0;
+
+  while (i < childCount(root) - 1) {
+    output += _function(childOf(root, i), i + 1);
+    i++;
+  }
+  let body = lastChild(root);
+  i = 0;
+
+  while (i < childCount(body) - 1) {
+    output += _binding(childOf(body, i), "  ");
+    i++;
+  }
+  output + _expr(lastChild(body), "  ")
 };

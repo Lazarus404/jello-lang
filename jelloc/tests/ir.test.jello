@@ -1,37 +1,25 @@
 import { test, run } from jellotest.Runner;
-import { verifyFunction, verifyProgram } from ir.Verify;
+import { verifyProgram } from ir.Verify;
 import { blockSuccessors } from ir.Cfg;
-import { instructionEffects } from ir.Model;
+import { Op, instruction, opEffects, opOf } from ir.Model;
 import { printIr } from ir.Print;
 import { printHir } from frontend.PrintHir;
 import { lex, lexFileSource } from frontend.Lexer;
-import { parseProgram, parseSource } from frontend.Parser;
+import { parseProgram, parseSource, programSyntax } from frontend.Parser;
 import { lowerProgram } from ir.Lower;
 import { legalizeJlo } from backend.jello.Legalize;
-import { printJlo } from backend.jello.Print;
-import { verifyJlo } from backend.jello.Verify;
-import { verifyFinalJloFunction } from backend.jello.Verify;
+import { allocateProgram } from backend.jello.Allocate;
 import { emitJlo } from backend.jello.Emit;
-import { verifyJloBytes } from backend.jello.VerifyBytes;
-import { typeCheckProgram, typeCheckProgramAt, typeCheckProgramWithSyntaxAt } from frontend.TypeCheck;
-import { loadProgram, loadProgramWithSyntax, moduleInitializationOrder } from frontend.Modules;
-import { verifyProgram as verifyHirProgram } from frontend.VerifyHir;
+import { typeCheckProgram, typeCheckProgramWithSyntax } from frontend.TypeCheck;
+import { loadProgram, moduleInitializationOrder } from frontend.Modules;
+import type { SourceSpan } from frontend.Source;
 import { spanEnd, spanPath, spanStart } from frontend.Source;
-import { SourceSpan } from frontend.Source;
-import type {
-  Binding as HirBinding,
-  BindingId,
-  Expr as HirExpr,
-  FunctionDecl as HirFunctionDecl,
-  NodeInfo,
-  NodeId,
-  NodeKind,
-  Program as HirProgram,
-  Type as HirType,
-} from frontend.Hir;
+import type { Hir } from frontend.Hir;
+import { nodeCount, spanOf, useHir } from frontend.Hir;
 import type {
   BasicBlock,
   Effect,
+  EnumSchema,
   Function,
   Instruction,
   Program,
@@ -40,15 +28,66 @@ import type {
   ThrowHandler,
   ValueType,
 } from ir.Model;
-import type {
-  Block as JloBlock,
-  Function as JloFunction,
-  Instruction as JloInstruction,
-  Program as JloProgram,
-} from backend.jello.Model;
+
+let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
+let none = fn(): Array<I32> { Array.new<I32>(0) };
+let program = fn(functions: Array<Function>): Program { Program.Program(functions, Array.new<Bytes>(0), Array.new<EnumSchema>(0)) };
+let printJlo = fn(legalized: Program): Bytes { printIr(allocateProgram(legalized)) };
+let allocated = fn(legalized: Program): Function { match (allocateProgram(legalized)) { Program(functions, _, _) => functions[0] } };
+let registerCount = fn(function: Function): I32 { match (function) { Function(_, _, registers, _, _, _) => registers.len() as I32 } };
+
+let spillCount = fn(function: Function, push: Bool): I32 {
+  match (function) { Function(_, _, _, _, blocks, _) => {
+    let count = 0;
+    let b = 0;
+
+    while (b < blocks.len()) {
+      match (blocks[b]) { Block(_, instructions, _, _) => {
+        let i = 0;
+
+        while (i < instructions.len()) {
+          if (match (opOf(instructions[i])) { SpillPush => push, SpillPop => !push, _ => false }) { count++; }
+          i++;
+        }
+      } };
+      b++;
+    }
+    count
+  } }
+};
+
+let checkFile = fn(path: Bytes): Hir {
+  let (program, syntax) = loadProgram(path);
+  typeCheckProgramWithSyntax(program, syntax)
+};
+
+let spansOf = fn(hir: Hir): Array<SourceSpan> {
+  useHir(hir);
+  let spans = Array.new<SourceSpan>(0);
+  let id = 0;
+
+  while (id < nodeCount()) {
+    spans.push(spanOf(id));
+    id++;
+  }
+  spans
+};
+
+let spansBothModules = fn(spans: Array<SourceSpan>): Bool {
+  let dependency = false;
+  let entry = false;
+  let i = 0;
+
+  while (i < spans.len()) {
+    if (spanPath(spans[i]).indexOf("/math/Increment.jello") >= 0) { dependency = true; }
+    if (spanPath(spans[i]).indexOf("/modules/main.jello") >= 0) { entry = true; }
+    i++;
+  }
+  dependency && entry
+};
 
 test("centralizes instruction effects and CFG successors", fn(t) {
-  let effects = instructionEffects(Instruction.ToDynamic(0, 1));
+  let effects = opEffects(Op.Box);
   t.is(effects.len(), 1);
 
   match (effects[0]) {
@@ -67,20 +106,20 @@ test("centralizes instruction effects and CFG successors", fn(t) {
 });
 
 test("prints deterministic human-readable IR", fn(t) {
-  let program = Program.Program([Function.Function(
+  let printed = program([Function.Function(
     7,
     [0, 1],
     [ValueType.I32, ValueType.I32, ValueType.Bool],
     ReturnType.Value(ValueType.I32),
     [
-      BasicBlock.Block(0, [Instruction.EqualI32(2, 0, 1)], Terminator.Branch(2, 1, 2), null),
+      BasicBlock.Block(0, [insn(Op.Eq, 2, [0, 1], 0)], Terminator.Branch(2, 1, 2), null),
       BasicBlock.Block(1, [], Terminator.ReturnValue(0), null),
       BasicBlock.Block(2, [], Terminator.ReturnValue(1), null)
     ],
     0
   )]);
 
-  t.is(printIr(program), "fn @7(%0: i32, %1: i32) -> i32 entry 0 {\n"
+  t.is(printIr(printed), "fn @7(%0: i32, %1: i32) -> i32 entry 0 {\n"
     + "  register %0: i32\n"
     + "  register %1: i32\n"
     + "  register %2: bool\n"
@@ -114,13 +153,22 @@ test("lowers a parsed boolean program tail to verified IR", fn(t) {
     + "    return %2\n"
     + "}\n");
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("2147483648i32"))); });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("1 + 2"))); });
+  t.is(printIr(lowerProgram(typeCheckProgram(parseProgram(lex("1 + 2"))))),
+    printIr(lowerProgram(typeCheckProgram(parseProgram(lex("1i32 + 2i32"))))));
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("1i32 + true"))); });
-  t.throws(fn(_t) { verifyHirProgram(HirProgram.Program(Array.new<HirFunctionDecl>(0), Array.new<HirBinding>(0),
-    HirExpr.AddI32Wrap(HirExpr.BoolLiteral(true), HirExpr.I32Literal(1)),
-    Array.new<NodeInfo>(0)
-  ));
-  });
+});
+
+test("lowers Bytes literals and u8 indexing", fn(t) {
+  let hir = typeCheckProgram(parseProgram(lex("\"ABC\"[1i32]")));
+  t.is(printHir(hir), "program\n"
+    + "  bytes.get_u8: i32\n"
+    + "    bytes \"ABC\": bytes\n"
+    + "    i32 1: i32\n");
+  let ir = lowerProgram(hir);
+  let printed = printIr(ir);
+  t.is(printed.indexOf("bytes \"ABC\"") >= 0, true);
+  t.is(printed.indexOf("bytes.get_u8") >= 0, true);
+  t.is(verifyProgram(ir), true);
 });
 
 test("prints deterministic typed HIR", fn(t) {
@@ -133,168 +181,102 @@ test("prints deterministic typed HIR", fn(t) {
     + "    i32 3: i32\n");
 });
 
-test("assigns stable HIR node identities with source spans", fn(t) {
-  let hir = typeCheckProgram(parseProgram(lex("1i32 + 2i32")));
+test("gives every HIR node the span of the syntax it was checked from", fn(t) {
+  let spans = spansOf(typeCheckProgram(parseProgram(lex("1i32 + 2i32"))));
+  t.is(spans.len(), 5);
+  let i = 0;
 
-  match (hir) { Program(_, _, _, nodes) => {
-    t.is(nodes.len(), 3);
-    let i = 0;
+  while (i < spans.len()) {
+    t.is(spanPath(spans[i]), "<input>");
+    i++;
+  }
+  t.is(spanStart(spans[0]), 0);
+  t.is(spanEnd(spans[0]), 4);
+  t.is(spanStart(spans[1]), 7);
+  t.is(spanEnd(spans[1]), 11);
+  t.is(spanStart(spans[2]), 0);
+  t.is(spanEnd(spans[2]), 11);
 
-    while (i < nodes.len()) {
-      match (nodes[i]) { Node(id, _, span) => {
-        match (id) { Id(value) => t.is(value, i) };
-        t.is(spanPath(span), "<input>");
-        t.is(spanStart(span) >= 0, true);
-        t.is(spanEnd(span) >= spanStart(span), true);
-      } };
-      i++;
-    }
-
-    match (nodes[0]) {
-      Node(_, _, span) => {
-        t.is(spanStart(span), 0);
-        t.is(spanEnd(span), 4);
-      }
-    };
-
-    match (nodes[1]) {
-      Node(_, _, span) => {
-        t.is(spanStart(span), 7);
-        t.is(spanEnd(span), 11);
-      }
-    };
-
-    match (nodes[2]) {
-      Node(_, _, span) => {
-        t.is(spanStart(span), 0);
-        t.is(spanEnd(span), 11);
-      }
-    };
-  } };
-
-  match (typeCheckProgramAt(loadProgram("itests/emit/modules/main.jello"), "itests/emit/modules/main.jello")) {
-    Program(_, _, _, nodes) => {
-      let dependency = false;
-      let entry = false;
-      let i = 0;
-
-      while (i < nodes.len()) {
-        match (nodes[i]) { Node(_, _, span) => {
-          if (spanPath(span).indexOf("/math/Increment.jello") >= 0) { dependency = true; }
-          if (spanPath(span).indexOf("/modules/main.jello") >= 0) { entry = true; }
-        } };
-        i++;
-      }
-      t.is(dependency, true);
-      t.is(entry, true);
-    },
-  };
+  let (loaded, loadedSyntax) = loadProgram("itests/emit/modules/main.jello");
+  t.is(spansBothModules(spansOf(typeCheckProgramWithSyntax(loaded, loadedSyntax))), true);
 });
 
-test("keeps source metadata with explicit frontend results", fn(t) {
+test("keeps source spans with explicit frontend results", fn(t) {
   let (tokens, path, starts, ends) = lexFileSource("1i32 + 2i32", "first.jello");
   lex("false");
-  let (program, sourceSyntax, _, _) = parseSource(tokens, path, starts, ends);
+  let program = parseSource(tokens, path, starts, ends);
+  let syntax = programSyntax(program);
   parseProgram(lex("true"));
+  let spans = spansOf(typeCheckProgramWithSyntax(program, syntax));
+  let i = 0;
 
-  match (typeCheckProgramWithSyntaxAt(program, sourceSyntax, path)) {
-    Program(_, _, _, nodes) => {
-      t.is(nodes.len(), 3);
-      let i = 0;
-
-      while (i < nodes.len()) {
-        match (nodes[i]) { Node(_, _, span) => t.is(spanPath(span), "first.jello") };
-        i++;
-      }
-    },
-  };
+  while (i < spans.len()) {
+    t.is(spanPath(spans[i]), "first.jello");
+    i++;
+  }
 
   t.throws(fn(_t) { parseSource(tokens, path, Array.new<I32>(0), Array.new<I32>(0)); });
 
-  let (loaded, loadedSyntax) = loadProgramWithSyntax("itests/emit/modules/main.jello");
+  let (loaded, loadedSyntax) = loadProgram("itests/emit/modules/main.jello");
   parseProgram(lex("false"));
-
-  match (typeCheckProgramWithSyntaxAt(loaded, loadedSyntax, "itests/emit/modules/main.jello")) {
-    Program(_, _, _, nodes) => {
-      let dependency = false;
-      let entry = false;
-      let i = 0;
-
-      while (i < nodes.len()) {
-        match (nodes[i]) { Node(_, _, span) => {
-          if (spanPath(span).indexOf("/math/Increment.jello") >= 0) { dependency = true; }
-          if (spanPath(span).indexOf("/modules/main.jello") >= 0) { entry = true; }
-        } };
-        i++;
-      }
-      t.is(dependency, true);
-      t.is(entry, true);
-    },
-  };
+  t.is(spansBothModules(spansOf(typeCheckProgramWithSyntax(loaded, loadedSyntax))), true);
 });
 
-test("loads ordinary let declarations with matching syntax metadata", fn(t) {
+test("loads ordinary let declarations with their syntax", fn(t) {
   let path = "itests/emit/core.jello";
-  let (program, sourceSyntax) = loadProgramWithSyntax(path);
-  let hir = typeCheckProgramWithSyntaxAt(program, sourceSyntax, path);
+  let (program, sourceSyntax) = loadProgram(path);
+  let hir = typeCheckProgramWithSyntax(program, sourceSyntax);
   t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
 });
 
-test("loads a comparison tail with matching syntax metadata", fn(t) {
+test("loads a comparison tail with its syntax", fn(t) {
   let path = "itests/emit/greater-i32.jello";
-  let (program, sourceSyntax) = loadProgramWithSyntax(path);
-  let hir = typeCheckProgramWithSyntaxAt(program, sourceSyntax, path);
+  let (program, sourceSyntax) = loadProgram(path);
+  let hir = typeCheckProgramWithSyntax(program, sourceSyntax);
   t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
 });
 
-test("rejects incomplete or inconsistent HIR node metadata", fn(t) {
-  let span = SourceSpan.Span("test.jello", 0, 4);
-  let noFunctions = Array.new<HirFunctionDecl>(0);
-  let noBindings = Array.new<HirBinding>(0);
-  t.throws(fn(_t) { verifyHirProgram(HirProgram.Program(noFunctions, noBindings, HirExpr.BoolLiteral(true), Array.new<NodeInfo>(0))); });
-  t.throws(fn(_t) { verifyHirProgram(HirProgram.Program(noFunctions, noBindings, HirExpr.BoolLiteral(true), [
-    NodeInfo.Node(NodeId.Id(0), NodeKind.Statement, span)
-  ]));
-  });
-  t.throws(fn(_t) { verifyHirProgram(HirProgram.Program(noFunctions, noBindings, HirExpr.BoolLiteral(true), [
-    NodeInfo.Node(NodeId.Id(0), NodeKind.Expression, span),
-    NodeInfo.Node(NodeId.Id(1), NodeKind.Expression, span)
-  ]));
-  });
+test("checks Array<I32> len, get, and set", fn(t) {
+  let source = "let values = Array.new<I32>(2i32); values[0i32] = 39i32; values[0i32] + values.len() + 1i32";
+  let hir = typeCheckProgram(parseProgram(lex(source)));
+  let printed = printHir(hir);
+  t.is(printed.indexOf("array.set: i32") >= 0, true);
+  t.is(printed.indexOf("array.get: i32") >= 0, true);
+  t.is(printed.indexOf("array.len") >= 0, true);
+  t.is(verifyProgram(lowerProgram(hir)), true);
+});
+
+test("lowers Tuple<I32, I32> literal and fixed fields", fn(t) {
+  let source = "let pair = (19i32, 23i32); pair.0 + pair.1";
+  let parsed = parseProgram(lex(source));
+  let hir = typeCheckProgram(parsed);
+  t.is(printHir(hir).indexOf("tuple: tuple<i32, i32>") >= 0, true);
+  let ir = lowerProgram(hir);
+  let printed = printIr(ir);
+  t.is(printed.indexOf("tuple %") >= 0, true);
+  t.is(printed.indexOf("tuple.get") >= 0, true);
+  t.is(verifyProgram(ir), true);
+  t.is(emitJlo(legalizeJlo(ir)).len() > 128, true);
 });
 
 test("preserves exact spans through functions, assignments, branches, and loops", fn(t) {
   let source = "let f = fn(flag: Bool): I32 { let value = 1i32; while (flag) { value += 2i32; break; } return value; }; f(false)";
   let (tokens, path, starts, ends) = lexFileSource(source, "spans.jello");
-  let (program, sourceSyntax, _, _) = parseSource(tokens, path, starts, ends);
+  let program = parseSource(tokens, path, starts, ends);
+  let spans = spansOf(typeCheckProgramWithSyntax(program, programSyntax(program)));
+  let sawTarget = false;
+  let sawAssignment = 0;
+  let i = 0;
 
-  match (typeCheckProgramWithSyntaxAt(program, sourceSyntax, path)) {
-    Program(_, _, _, nodes) => {
-      let i = 0;
-
-      while (i < nodes.len()) {
-        match (nodes[i]) { Node(id, _, span) => {
-          match (id) { Id(value) => t.is(value, i) };
-          t.is(spanPath(span), path);
-          t.is(spanEnd(span) > spanStart(span), true);
-        } };
-        i++;
-      }
-      let sawTarget = false;
-      let sawAssignment = 0;
-      i = 0;
-
-      while (i < nodes.len()) {
-        match (nodes[i]) { Node(_, _, span) => {
-          if ((spanStart(span) == 70) && (spanEnd(span) == 75)) { sawTarget = true; }
-          if ((spanStart(span) == 70) && (spanEnd(span) == 83)) { sawAssignment++; }
-        } };
-        i++;
-      }
-      t.is(sawTarget, true);
-      t.is(sawAssignment, 2);
-    },
-  };
+  while (i < spans.len()) {
+    t.is(spanPath(spans[i]), path);
+    t.is(spanEnd(spans[i]) > spanStart(spans[i]), true);
+    if ((spanStart(spans[i]) == 63) && (spanEnd(spans[i]) == 68)) { sawTarget = true; }
+    if ((spanStart(spans[i]) == 63) && (spanEnd(spans[i]) == 76)) { sawAssignment++; }
+    i++;
+  }
+  t.is(sawTarget, true);
+  t.is(sawAssignment, 2);
 });
 
 test("resolves a local binding once by stable identity", fn(t) {
@@ -317,16 +299,6 @@ test("resolves a local binding once by stable identity", fn(t) {
     + "}\n");
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("missing"))); });
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("let x = x; x"))); });
-  t.throws(fn(_t) { verifyHirProgram(HirProgram.Program(Array.new<HirFunctionDecl>(0), Array.new<HirBinding>(0), HirExpr.Local(
-    BindingId.Id(0), HirType.I32
-  ), Array.new<NodeInfo>(0)));
-  });
-  t.throws(fn(_t) { verifyHirProgram(HirProgram.Program(Array.new<HirFunctionDecl>(0), [
-    HirBinding.Binding(BindingId.Id(0), "x", HirType.I32, true, HirExpr.Local(
-      BindingId.Id(0), HirType.I32
-    ))
-  ], HirExpr.Local(BindingId.Id(0), HirType.I32), Array.new<NodeInfo>(0)));
-  });
 });
 
 test("scopes block bindings and permits nested shadowing", fn(t) {
@@ -417,13 +389,6 @@ test("lowers expression-valued if through a typed join", fn(t) {
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("if (1i32) { 2i32 } else { 3i32 }"))); });
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("if (true) { 1i32 } else { false }"))); });
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("if (true) { 1i32 }"))); });
-  t.throws(fn(_t) { verifyHirProgram(HirProgram.Program(Array.new<HirFunctionDecl>(0), Array.new<HirBinding>(0), HirExpr.If(
-    HirExpr.BoolLiteral(true),
-    HirExpr.I32Literal(1),
-    HirExpr.BoolLiteral(false),
-    HirType.I32
-  ), Array.new<NodeInfo>(0)));
-  });
 });
 
 test("lowers typed direct functions and left-to-right calls", fn(t) {
@@ -476,236 +441,35 @@ test("lowers typed direct functions and left-to-right calls", fn(t) {
   });
 });
 
-test("lowers return and while in typed function bodies", fn(t) {
-  let source = "let choose = fn(flag: Bool, value: I32): I32 { while (flag) { return value; } value + 1i32 }; choose(false, 2i32)";
+test("resolves direct recursive calls from collected signatures", fn(t) {
+  let source = "let factorial = fn(value: I32): I32 { if (value < 2i32) { 1i32 } else { value * factorial(value - 1i32) } }; factorial(5i32)";
   let hir = typeCheckProgram(parseProgram(lex(source)));
-  t.is(printHir(hir), "program\n"
-    + "  fn @1 choose(%0 flag: bool, %1 value: i32) -> i32\n"
-    + "    while\n"
-    + "      condition\n"
-    + "        local %0: bool\n"
-    + "      body\n"
-    + "        return\n"
-    + "          local %1: i32\n"
-    + "    tail\n"
-    + "      add.wrap: i32\n"
-    + "        local %1: i32\n"
-    + "        i32 1: i32\n"
-    + "  call @1: i32\n"
-    + "    bool false: bool\n"
-    + "    i32 2: i32\n");
-  t.is(printIr(lowerProgram(hir)), "fn @1(%0: bool, %1: i32) -> i32 entry 0 {\n"
-    + "  register %0: bool\n"
-    + "  register %1: i32\n"
-    + "  register %2: i32\n"
-    + "  register %3: i32\n"
-    + "  block 0:\n"
-    + "    jump block 1\n"
-    + "  block 1:\n"
-    + "    branch %0, block 2, block 3\n"
-    + "  block 2:\n"
-    + "    return %1\n"
-    + "  block 3:\n"
-    + "    %2 = i32 1\n"
-    + "    %3 = add.wrap.i32 %1, %2\n"
-    + "    return %3\n"
-    + "}\n"
-    + "\n"
-    + "fn @0() -> i32 entry 0 {\n"
-    + "  register %0: bool\n"
-    + "  register %1: i32\n"
-    + "  register %2: i32\n"
-    + "  block 0:\n"
-    + "    %0 = bool false\n"
-    + "    %1 = i32 2\n"
-    + "    %2 = call @1(%0, %1)\n"
-    + "    return %2\n"
-    + "}\n");
-  t.is(verifyProgram(lowerProgram(typeCheckProgram(parseProgram(lex(
-    "let loop = fn(flag: Bool, value: I32): I32 { while (flag) { value; } value }; loop(false, 1i32)"
-  ))))), true);
+  let printedHir = printHir(hir);
+  t.is(printedHir.indexOf("fn @1 factorial") >= 0, true);
+  t.is(printedHir.indexOf("call @1: i32") >= 0, true);
+  let ir = printIr(lowerProgram(hir));
+  t.is(ir.indexOf("fn @1") >= 0, true);
+  t.is(ir.indexOf("call @1") > ir.indexOf("fn @1"), true);
+  t.is(verifyProgram(lowerProgram(hir)), true);
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(value: I32): I32 { return true; }; f(1i32)"
-  )));
-  });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(value: I32): I32 { while (value) { return value; } value }; f(1i32)"
-  )));
-  });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(value: I32): I32 { let value = 1i32; value }; f(1i32)"
-  )));
-  });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(): I32 { let value = 1i32; let value = 2i32; value }; f()"
-  )));
-  });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(value: I32): I32 { value; }; f(1i32)"
+    "let bad = fn(value: I32): I32 { bad(true) }; bad(1i32)"
   )));
   });
 });
 
-test("lowers mutable local assignment to the existing register", fn(t) {
-  let source = "let update = fn(flag: Bool): I32 { let value = 1i32; while (flag) { value = value + 1i32; return value; } value }; update(false)";
+test("lowers exact noncapturing function values and indirect calls", fn(t) {
+  let source = "let increment = fn(value: I32): I32 { value + 1i32 }; let decrement = fn(value: I32): I32 { value - 1i32 }; let operation: (I32) -> I32 = increment; operation = decrement; operation(43i32)";
   let hir = typeCheckProgram(parseProgram(lex(source)));
-  t.is(printHir(hir), "program\n"
-    + "  fn @1 update(%0 flag: bool) -> i32\n"
-    + "    let %1 value: i32\n"
-    + "      i32 1: i32\n"
-    + "    while\n"
-    + "      condition\n"
-    + "        local %0: bool\n"
-    + "      body\n"
-    + "        expression\n"
-    + "          assign %1: i32\n"
-    + "            add.wrap: i32\n"
-    + "              local %1: i32\n"
-    + "              i32 1: i32\n"
-    + "        return\n"
-    + "          local %1: i32\n"
-    + "    tail\n"
-    + "      local %1: i32\n"
-    + "  call @1: i32\n"
-    + "    bool false: bool\n");
-  t.is(printIr(lowerProgram(hir)), "fn @1(%0: bool) -> i32 entry 0 {\n"
-    + "  register %0: bool\n"
-    + "  register %1: i32\n"
-    + "  register %2: i32\n"
-    + "  register %3: i32\n"
-    + "  register %4: i32\n"
-    + "  block 0:\n"
-    + "    %1 = i32 1\n"
-    + "    %2 = move %1\n"
-    + "    jump block 1\n"
-    + "  block 1:\n"
-    + "    branch %0, block 2, block 3\n"
-    + "  block 2:\n"
-    + "    %3 = i32 1\n"
-    + "    %4 = add.wrap.i32 %2, %3\n"
-    + "    %2 = move %4\n"
-    + "    return %2\n"
-    + "  block 3:\n"
-    + "    return %2\n"
-    + "}\n"
-    + "\n"
-    + "fn @0() -> i32 entry 0 {\n"
-    + "  register %0: bool\n"
-    + "  register %1: i32\n"
-    + "  block 0:\n"
-    + "    %0 = bool false\n"
-    + "    %1 = call @1(%0)\n"
-    + "    return %1\n"
-    + "}\n");
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(): I32 { const value = 1i32; value = 2i32; value }; f()"
-  )));
-  });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(value: I32): I32 { value = 2i32; value }; f(1i32)"
-  )));
-  });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(): I32 { let value = 1i32; value = true; value }; f()"
-  )));
-  });
-});
-
-test("lowers break and continue to the nearest loop targets", fn(t) {
-  let breakHir = typeCheckProgram(parseProgram(lex(
-    "let f = fn(flag: Bool): I32 { while (flag) { break; } 1i32 }; f(false)"
-  )));
-  t.is(printHir(breakHir), "program\n"
-    + "  fn @1 f(%0 flag: bool) -> i32\n"
-    + "    while\n"
-    + "      condition\n"
-    + "        local %0: bool\n"
-    + "      body\n"
-    + "        break\n"
-    + "    tail\n"
-    + "      i32 1: i32\n"
-    + "  call @1: i32\n"
-    + "    bool false: bool\n");
-  t.is(printIr(lowerProgram(breakHir)), "fn @1(%0: bool) -> i32 entry 0 {\n"
-    + "  register %0: bool\n"
-    + "  register %1: i32\n"
-    + "  block 0:\n"
-    + "    jump block 1\n"
-    + "  block 1:\n"
-    + "    branch %0, block 2, block 3\n"
-    + "  block 2:\n"
-    + "    jump block 3\n"
-    + "  block 3:\n"
-    + "    %1 = i32 1\n"
-    + "    return %1\n"
-    + "}\n"
-    + "\n"
-    + "fn @0() -> i32 entry 0 {\n"
-    + "  register %0: bool\n"
-    + "  register %1: i32\n"
-    + "  block 0:\n"
-    + "    %0 = bool false\n"
-    + "    %1 = call @1(%0)\n"
-    + "    return %1\n"
-    + "}\n");
+  let ir = printIr(lowerProgram(hir));
+  t.is(ir.indexOf("function @1") >= 0, true);
+  t.is(ir.indexOf("call %") >= 0, true);
+  let jlo = printJlo(legalizeJlo(lowerProgram(hir)));
+  t.is(jlo.indexOf("= function @1") >= 0, true);
+  t.is(jlo.indexOf("= call %") >= 0, true);
+  t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 128, true);
   t.is(verifyProgram(lowerProgram(typeCheckProgram(parseProgram(lex(
-    "let f = fn(outer: Bool, inner: Bool): I32 { while (outer) { while (inner) { continue; } break; } 1i32 }; f(false, false)"
+    "let factorial = fn(value: I32): I32 { if (value < 2i32) { 1i32 } else { value * factorial(value - 1i32) } }; factorial(5i32)"
   ))))), true);
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(): I32 { break; }; f()"
-  )));
-  });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(): I32 { continue; }; f()"
-  )));
-  });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(flag: Bool): I32 { while (flag) { break; 1i32; } 1i32 }; f(false)"
-  )));
-  });
-});
-
-test("lowers explicit throw as a terminating control-flow edge", fn(t) {
-  let hir = typeCheckProgram(parseProgram(lex(
-    "let fail = fn(value: I32): I32 { throw value + 1i32; }; fail(1i32)"
-  )));
-  t.is(printHir(hir), "program\n"
-    + "  fn @1 fail(%0 value: i32) -> i32\n"
-    + "    throw\n"
-    + "      add.wrap: i32\n"
-    + "        local %0: i32\n"
-    + "        i32 1: i32\n"
-    + "  call @1: i32\n"
-    + "    i32 1: i32\n");
-  t.is(printIr(lowerProgram(hir)), "fn @1(%0: i32) -> i32 entry 0 {\n"
-    + "  register %0: i32\n"
-    + "  register %1: i32\n"
-    + "  register %2: i32\n"
-    + "  block 0:\n"
-    + "    %1 = i32 1\n"
-    + "    %2 = add.wrap.i32 %0, %1\n"
-    + "    throw %2\n"
-    + "}\n"
-    + "\n"
-    + "fn @0() -> i32 entry 0 {\n"
-    + "  register %0: i32\n"
-    + "  register %1: i32\n"
-    + "  block 0:\n"
-    + "    %0 = i32 1\n"
-    + "    %1 = call @1(%0)\n"
-    + "    return %1\n"
-    + "}\n");
-  t.is(verifyProgram(lowerProgram(typeCheckProgram(parseProgram(lex(
-    "let fail = fn(value: Bool): I32 { while (value) { throw value; } throw 1i32; }; fail(false)"
-  ))))), true);
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let fail = fn(): I32 { throw 1i32; return 1i32; }; fail()"
-  )));
-  });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let fail = fn(): I32 { throw 1i32; 1i32 }; fail()"
-  )));
-  });
 });
 
 test("lowers typed i32 equality for changing loop conditions", fn(t) {
@@ -930,212 +694,208 @@ test("legalizes the executable CFG subset to JLO operations", fn(t) {
   let jlo = legalizeJlo(lowerProgram(typeCheckProgram(parseProgram(lex(
     "let count = fn(limit: I32): I32 { let value = 0i32; while (value < limit) { value += 1i32; } value }; count(2i32)"
   )))));
-  t.is(verifyJlo(jlo), true);
   let bytes = emitJlo(jlo);
-  t.is(bytes.len(), 260);
   t.is(Bytes.get_u8(bytes, 0), "B".code);
   t.is(Bytes.get_u8(bytes, 1), "Y".code);
   t.is(Bytes.get_u8(bytes, 2), "L".code);
   t.is(Bytes.get_u8(bytes, 3), "J".code);
   t.is(emitJlo(jlo), bytes);
-  t.is(printJlo(jlo), "jlo fn @1(%0: i32) -> i32 entry 0 {\n"
+  t.is(printJlo(jlo), "fn @1(%0: i32) -> i32 entry 0 {\n"
+    + "  register %0: i32\n"
+    + "  register %1: i32\n"
+    + "  register %2: bool\n"
+    + "  register %3: i32\n"
     + "  block 0:\n"
-    + "    %1 = CONST_I32 0\n"
-    + "    %2 = MOV %1\n"
-    + "    JMP block 1\n"
+    + "    %1 = i32 0\n"
+    + "    jump block 1\n"
     + "  block 1:\n"
-    + "    %3 = LT_I32 %2, %0\n"
-    + "    BR %3, block 2, block 3\n"
+    + "    %2 = lt.s.i32 %1, %0\n"
+    + "    branch %2, block 2, block 3\n"
     + "  block 2:\n"
-    + "    %4 = CONST_I32 1\n"
-    + "    %5 = ADD_I32 %2, %4\n"
-    + "    %2 = MOV %5\n"
-    + "    JMP block 1\n"
+    + "    %3 = i32 1\n"
+    + "    %1 = add.wrap.i32 %1, %3\n"
+    + "    jump block 1\n"
     + "  block 3:\n"
-    + "    RET %2\n"
+    + "    return %1\n"
     + "}\n"
     + "\n"
-    + "jlo fn @0() -> i32 entry 0 {\n"
+    + "fn @0() -> i32 entry 0 {\n"
+    + "  register %0: i32\n"
+    + "  register %1: i32\n"
     + "  block 0:\n"
-    + "    %0 = CONST_I32 2\n"
-    + "    %1 = CALL @1(%0)\n"
-    + "    RET %1\n"
+    + "    %0 = i32 2\n"
+    + "    %1 = move %0\n"
+    + "    %0 = call @1(%1)\n"
+    + "    return %0\n"
     + "}\n");
   let throwing = legalizeJlo(lowerProgram(typeCheckProgram(parseProgram(lex(
     "let fail = fn(value: I32): I32 { throw value; }; fail(1i32)"
   )))));
-  t.is(verifyJlo(throwing), true);
-  t.is(printJlo(throwing).indexOf("TO_DYN %0") >= 0, true);
-  t.is(printJlo(throwing).indexOf("THROW %1") >= 0, true);
+  t.is(printJlo(throwing).indexOf("= box %0") >= 0, true);
+  t.is(printJlo(throwing).indexOf("throw %1") >= 0, true);
   t.is(emitJlo(throwing).len() > 64, true);
 });
 
+test("carries a deduplicated bytes pool through selected JLO", fn(t) {
+  let jlo = legalizeJlo(lowerProgram(typeCheckProgram(parseProgram(lex("\"A\"[0i32] + \"A\"[0i32]")))));
+
+  match (jlo) {
+    Program(_, pool, _) => {
+      t.is(pool.len(), 1);
+      t.is(pool[0], "A");
+    },
+  };
+  t.is(printJlo(jlo).indexOf("bytes \"A\"") >= 0, true);
+  t.is(emitJlo(jlo).len() > 0, true);
+});
+
 test("reuses one call scratch window", fn(t) {
-  let caller = JloFunction.Function(
+  let caller = Function.Function(
     0,
     [],
     [ValueType.I32, ValueType.I32, ValueType.I32],
     ReturnType.Value(ValueType.I32),
-    [JloBlock.Block(0, [
-      JloInstruction.ConstI32(0, 1),
-      JloInstruction.Call(1, 1, [0]),
-      JloInstruction.Call(2, 1, [1])
-    ], Terminator.ReturnValue(2))],
+    [BasicBlock.Block(0, [
+      insn(Op.ConstI32, 0, none(), 1),
+      insn(Op.Call, 1, [0], 1),
+      insn(Op.Call, 2, [1], 1)
+    ], Terminator.ReturnValue(2), null)],
     0
   );
-  let callee = JloFunction.Function(
+  let callee = Function.Function(
     1,
     [0],
     [ValueType.I32],
     ReturnType.Value(ValueType.I32),
-    [JloBlock.Block(0, [], Terminator.ReturnValue(0))],
+    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)],
     0
   );
-  let bytes = emitJlo(JloProgram.Program([caller, callee]));
-  let registerCount = Bytes.get_u8(bytes, 92)
-    + (Bytes.get_u8(bytes, 93) << 8)
-    + (Bytes.get_u8(bytes, 94) << 16)
-    + (Bytes.get_u8(bytes, 95) << 24);
-  t.is(registerCount, 4);
+  t.is(registerCount(allocated(program([caller, callee]))), 2);
 });
 
 test("allocates compatible scratch windows for mixed call signatures", fn(t) {
-  let caller = JloFunction.Function(
+  let caller = Function.Function(
     0, [], [ValueType.Bool, ValueType.Bool, ValueType.I32, ValueType.I32], ReturnType.Value(ValueType.I32),
-    [JloBlock.Block(0, [
-      JloInstruction.ConstBool(0, true),
-      JloInstruction.Call(1, 1, [0]),
-      JloInstruction.ConstI32(2, 7),
-      JloInstruction.Call(3, 2, [2])
-    ], Terminator.ReturnValue(3))], 0
+    [BasicBlock.Block(0, [
+      insn(Op.ConstBool, 0, none(), 1),
+      insn(Op.Call, 1, [0], 1),
+      insn(Op.ConstI32, 2, none(), 7),
+      insn(Op.Call, 3, [2], 2)
+    ], Terminator.ReturnValue(3), null)], 0
   );
-  let boolCallee = JloFunction.Function(
+  let boolCallee = Function.Function(
     1, [0], [ValueType.Bool], ReturnType.Value(ValueType.Bool),
-    [JloBlock.Block(0, [], Terminator.ReturnValue(0))], 0
+    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
   );
-  let i32Callee = JloFunction.Function(
+  let i32Callee = Function.Function(
     2, [0], [ValueType.I32], ReturnType.Value(ValueType.I32),
-    [JloBlock.Block(0, [], Terminator.ReturnValue(0))], 0
+    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
   );
-  t.is(verifyJloBytes(emitJlo(JloProgram.Program([caller, boolCallee, i32Callee]))), true);
+  t.is(printJlo(program([caller, boolCallee, i32Callee])).indexOf("call @2(%") >= 0, true);
 });
 
 test("allocates more than 256 short-lived virtual registers", fn(t) {
   let registers = Array.new<ValueType>(0);
-  let instructions = Array.new<JloInstruction>(0);
+  let instructions = Array.new<Instruction>(0);
   let i = 0;
 
   while (i < 300) {
     registers.push(ValueType.I32);
-    instructions.push(JloInstruction.ConstI32(i, i));
+    instructions.push(insn(Op.ConstI32, i, none(), i));
     i++;
   }
-  let bytes = emitJlo(JloProgram.Program([JloFunction.Function(
+  t.is(registerCount(allocated(program([Function.Function(
     0, [], registers, ReturnType.Value(ValueType.I32),
-    [JloBlock.Block(0, instructions, Terminator.ReturnValue(299))], 0
-  )]));
-  let registerCount = Bytes.get_u8(bytes, 92)
-    + (Bytes.get_u8(bytes, 93) << 8)
-    + (Bytes.get_u8(bytes, 94) << 16)
-    + (Bytes.get_u8(bytes, 95) << 24);
-  t.is(registerCount, 1);
-  t.is(verifyJloBytes(bytes), true);
+    [BasicBlock.Block(0, instructions, Terminator.ReturnValue(299), null)], 0
+  )]))), 1);
 });
 
 test("spills truly simultaneous register pressure", fn(t) {
   let registers = Array.new<ValueType>(0);
-  let instructions = Array.new<JloInstruction>(0);
+  let instructions = Array.new<Instruction>(0);
   let i = 0;
+  let count = 300;
 
-  while (i < 249) {
+  while (i < count) {
     registers.push(ValueType.I32);
-    instructions.push(JloInstruction.ConstI32(i, i));
+    instructions.push(insn(Op.ConstI32, i, none(), i));
     i++;
   }
-  let result = 248;
+  let result = count - 1;
   i = 1;
 
-  while (i < 249) {
+  while (i < count) {
     registers.push(ValueType.I32);
     result = registers.len() - 1;
-    instructions.push(JloInstruction.AddI32(result, result - 1, i));
+    instructions.push(insn(Op.Add, result, [result - 1, i], 0));
     i++;
   }
-  let bytes = emitJlo(JloProgram.Program([JloFunction.Function(
+  let function = allocated(program([Function.Function(
     0, [], registers, ReturnType.Value(ValueType.I32),
-    [JloBlock.Block(0, instructions, Terminator.ReturnValue(result))], 0
+    [BasicBlock.Block(0, instructions, Terminator.ReturnValue(result), null)], 0
   )]));
-  let registerCount = Bytes.get_u8(bytes, 92)
-    + (Bytes.get_u8(bytes, 93) << 8)
-    + (Bytes.get_u8(bytes, 94) << 16)
-    + (Bytes.get_u8(bytes, 95) << 24);
-  let instructionCount = Bytes.get_u8(bytes, 104)
-    + (Bytes.get_u8(bytes, 105) << 8)
-    + (Bytes.get_u8(bytes, 106) << 16)
-    + (Bytes.get_u8(bytes, 107) << 24);
-  let offset = 108 + registerCount * 4;
-  let pushes = 0;
-  let pops = 0;
-  i = 0;
-
-  while (i < instructionCount) {
-    let op = Bytes.get_u8(bytes, offset + i * 8);
-    if (op == 107) { pushes++; }
-    if (op == 108) { pops++; }
-    i++;
-  }
-  t.is(pushes > 0, true);
-  t.is(pops > 0, true);
-  t.is(registerCount <= 256, true);
-  t.is(verifyJloBytes(bytes), true);
-  let uninitialized = Bytes.slice(bytes, 0, bytes.len());
-  i = 0;
-  while (Bytes.get_u8(uninitialized, offset + i * 8) != 107) { i++; }
-  Bytes.set_u8(uninitialized, offset + i * 8, 108);
-  t.throws(fn(_t) { verifyJloBytes(uninitialized); });
+  t.is(spillCount(function, true) > 0, true);
+  t.is(spillCount(function, false) > 0, true);
+  t.is(registerCount(function) <= 256, true);
 });
 
-test("rejects malformed final JLO layouts before serialization", fn(t) {
-  let function = JloFunction.Function(
-    0,
-    [],
-    [ValueType.I32],
-    ReturnType.Value(ValueType.I32),
-    [JloBlock.Block(0, [], Terminator.ReturnValue(0))],
-    0
+test("allocates thousands of instructions across joins", fn(t) {
+  let count = 4000;
+  let registers: Array<ValueType> = [ValueType.Bool, ValueType.I32];
+  let blocks = Array.new<BasicBlock>(0);
+  let current = [insn(Op.ConstBool, 0, none(), 1), insn(Op.ConstI32, 1, none(), 1)];
+  let kept = Array.new<I32>(0);
+  let block = 0;
+  let i = 2;
+
+  while (i < count) {
+    registers.push(ValueType.I32);
+    current.push(insn(Op.Add, i, [i - 1, i - 1], 0));
+    if (i % 50 == 0) { kept.push(i); }
+
+    if (i % 200 == 0) {
+      blocks.push(BasicBlock.Block(block, current, Terminator.Branch(0, block + 1, block + 2), null));
+      blocks.push(BasicBlock.Block(block + 1, [], Terminator.Jump(block + 3), null));
+      blocks.push(BasicBlock.Block(block + 2, [], Terminator.Jump(block + 3), null));
+      block += 3;
+      current = Array.new<Instruction>(0);
+    }
+    i++;
+  }
+  let sum = count - 1;
+  i = 0;
+
+  while (i < kept.len()) {
+    registers.push(ValueType.I32);
+    current.push(insn(Op.Add, registers.len() as I32 - 1, [sum, kept[i]], 0));
+    sum = registers.len() as I32 - 1;
+    i++;
+  }
+  blocks.push(BasicBlock.Block(block, current, Terminator.ReturnValue(sum), null));
+  let function = allocated(program([Function.Function(0, [], registers, ReturnType.Value(ValueType.I32), blocks, 0)]));
+  t.is(registerCount(function) < 100, true);
+  t.is(spillCount(function, true), 0);
+});
+
+test("verifies allocated code against the program", fn(t) {
+  let caller = Function.Function(
+    0, [], [ValueType.Bool, ValueType.I32], ReturnType.Value(ValueType.I32),
+    [BasicBlock.Block(0, [insn(Op.ConstBool, 0, none(), 1), insn(Op.Call, 1, [0], 1)], Terminator.ReturnValue(1), null)], 0
   );
-  let functions = [function];
-  t.throws(fn(_t) { verifyFinalJloFunction(function, functions, [ValueType.I32], 0, 0, [0], [0], 1); });
-  t.throws(fn(_t) { verifyFinalJloFunction(function, functions, [ValueType.I32, ValueType.I32], 1, 0, [0], [0], 1); });
-  t.throws(fn(_t) { verifyFinalJloFunction(function, functions, [ValueType.F32], 1, 0, [0], [0], 1); });
-});
-
-test("independently verifies emitted JLO bytes", fn(t) {
-  let bytes = emitJlo(legalizeJlo(lowerProgram(typeCheckProgram(parseProgram(lex("1i32 + 2i32"))))));
-  t.is(verifyJloBytes(bytes), true);
-  let trailing = Bytes.new(bytes.len() + 1);
-  let i = 0;
-
-  while (i < bytes.len()) {
-    Bytes.set_u8(trailing, i, Bytes.get_u8(bytes, i));
-    i++;
-  }
-  t.throws(fn(_t) { verifyJloBytes(trailing); });
-  let malformed = Bytes.slice(bytes, 0, bytes.len());
-  Bytes.set_u8(malformed, 88 + 20 + 3 * 4, 255);
-  t.throws(fn(_t) { verifyJloBytes(malformed); });
-  let fallthrough = Bytes.slice(bytes, 0, bytes.len());
-  Bytes.set_u8(fallthrough, fallthrough.len() - 8, 19);
-  t.throws(fn(_t) { verifyJloBytes(fallthrough); });
+  let callee = Function.Function(
+    1, [0], [ValueType.I32], ReturnType.Value(ValueType.I32),
+    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
+  );
+  t.throws(fn(_t) { allocateProgram(program([caller, callee])); });
 });
 
 test("loads named direct-function imports as one typed program", fn(t) {
-  let hir = typeCheckProgram(loadProgram("itests/emit/modules/main.jello"));
+  let hir = checkFile("itests/emit/modules/main.jello");
   t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
 });
 
 test("initializes imported primitive constants before the entry tail", fn(t) {
-  let hir = typeCheckProgram(loadProgram("itests/emit/module-constants/main.jello"));
+  let hir = checkFile("itests/emit/module-constants/main.jello");
   let initialization = moduleInitializationOrder();
   t.is(initialization.len(), 2);
   t.is(initialization[0].indexOf("/math/Constants.jello") >= 0, true);
@@ -1144,16 +904,20 @@ test("initializes imported primitive constants before the entry tail", fn(t) {
     + "  register %0: i32\n"
     + "  register %1: i32\n"
     + "  register %2: i32\n"
+    + "  register %3: i32\n"
+    + "  register %4: i32\n"
     + "  block 0:\n"
     + "    %0 = i32 40\n"
-    + "    %1 = i32 2\n"
+    + "    %1 = i32 -3\n"
     + "    %2 = add.wrap.i32 %0, %1\n"
-    + "    return %2\n"
+    + "    %3 = i32 5\n"
+    + "    %4 = add.wrap.i32 %2, %3\n"
+    + "    return %4\n"
     + "}\n");
 });
 
 test("initializes all exports with one module identity", fn(t) {
-  let hir = typeCheckProgram(loadProgram("itests/emit/module-exports/main.jello"));
+  let hir = checkFile("itests/emit/module-exports/main.jello");
   let initialization = moduleInitializationOrder();
   t.is(initialization.len(), 2);
   t.is(initialization[0].indexOf("/math/Values.jello") >= 0, true);
@@ -1162,7 +926,7 @@ test("initializes all exports with one module identity", fn(t) {
 
 test("initializes module diamonds dependency-first exactly once", fn(t) {
   let path = "itests/emit/module-init/main.jello";
-  let hir = typeCheckProgram(loadProgram(path));
+  let hir = checkFile(path);
   let initialization = moduleInitializationOrder();
   t.is(initialization.len(), 4);
   t.is(initialization[0].indexOf("/values/Base.jello") >= 0, true);
@@ -1173,7 +937,7 @@ test("initializes module diamonds dependency-first exactly once", fn(t) {
 });
 
 test("loads transitive direct functions dependency-first and rejects cycles", fn(t) {
-  let hir = typeCheckProgram(loadProgram("itests/emit/transitive/main.jello"));
+  let hir = checkFile("itests/emit/transitive/main.jello");
   let ir = printIr(lowerProgram(hir));
   t.is(ir.indexOf("fn @1") >= 0, true);
   t.is(ir.indexOf("fn @2") > ir.indexOf("fn @1"), true);
@@ -1181,7 +945,7 @@ test("loads transitive direct functions dependency-first and rejects cycles", fn
 });
 
 test("canonicalizes aliases across a diamond import graph", fn(t) {
-  let hir = typeCheckProgram(loadProgram("itests/emit/alias-diamond/main.jello"));
+  let hir = checkFile("itests/emit/alias-diamond/main.jello");
   t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
 });
 
@@ -1204,14 +968,16 @@ test("carries phase 1 primitives through IR and JLO", fn(t) {
   t.is(ir.indexOf("neg.wrap.i32") >= 0, true);
   t.is(ir.indexOf("sext.i32.i64") >= 0, true);
   t.is(ir.indexOf("trunc.i64.i32") >= 0, true);
+  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("true as I64"))); });
+  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("1i32 as I32"))); });
   t.is(ir.indexOf("call @1") < ir.indexOf("call @2"), true);
   let jlo = legalizeJlo(lowerProgram(hir));
   let printed = printJlo(jlo);
-  t.is(printed.indexOf("MUL_I32") >= 0, true);
-  t.is(printed.indexOf("NEG_I32") >= 0, true);
-  t.is(printed.indexOf("NOT_BOOL") >= 0, true);
-  t.is(printed.indexOf("SEXT_I64") >= 0, true);
-  t.is(printed.indexOf("I32_FROM_I64") >= 0, true);
+  t.is(printed.indexOf("mul.wrap.i32") >= 0, true);
+  t.is(printed.indexOf("neg.wrap.i32") >= 0, true);
+  t.is(printed.indexOf("not.bool") >= 0, true);
+  t.is(printed.indexOf("sext.i32.i64") >= 0, true);
+  t.is(printed.indexOf("trunc.i64.i32") >= 0, true);
   t.is(emitJlo(jlo).len() > 64, true);
 });
 
@@ -1222,168 +988,4 @@ test("accepts only in-range signed i32 literal forms", fn(t) {
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("-true"))); });
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("!1i32"))); });
 });
-test("verifies a typed branching function", fn(t) {
-  let blocks: Array<BasicBlock> = [
-    BasicBlock.Block(0, [
-      Instruction.EqualI32(2, 0, 1)
-    ], Terminator.Branch(2, 1, 2), null),
-    BasicBlock.Block(1, [], Terminator.ReturnValue(0), null),
-    BasicBlock.Block(2, [], Terminator.ReturnValue(1), null)
-  ];
-  let function = Function.Function(
-    0,
-    [0, 1],
-    [ValueType.I32, ValueType.I32, ValueType.Bool],
-    ReturnType.Value(ValueType.I32),
-    blocks,
-    0
-  );
-
-  t.is(verifyFunction(function), true);
-  t.is(verifyProgram(Program.Program([function])), true);
-});
-
-test("rejects invalid register types and block targets", fn(t) {
-  let wrongType = Function.Function(
-    0,
-    [],
-    [ValueType.Bool],
-    ReturnType.Value(ValueType.Bool),
-    [BasicBlock.Block(
-      0,
-      [Instruction.ConstI32(0, 1)],
-      Terminator.ReturnValue(0),
-      null
-    )],
-    0
-  );
-  let badTarget = Function.Function(
-    1,
-    [],
-    [],
-    ReturnType.Void,
-    [BasicBlock.Block(0, [], Terminator.Jump(9), null)],
-    0
-  );
-
-  t.throws(fn(_t) { verifyFunction(wrongType); });
-  t.throws(fn(_t) { verifyFunction(badTarget); });
-});
-
-test("rejects return and handler mismatches", fn(t) {
-  let wrongReturn = Function.Function(
-    0,
-    [],
-    [],
-    ReturnType.Value(ValueType.I32),
-    [BasicBlock.Block(0, [], Terminator.ReturnVoid, null)],
-    0
-  );
-  let badHandler = Function.Function(
-    1,
-    [],
-    [],
-    ReturnType.Void,
-    [BasicBlock.Block(0, [], Terminator.ReturnVoid, ThrowHandler.Catch(4, 0))],
-    0
-  );
-
-  t.throws(fn(_t) { verifyFunction(wrongReturn); });
-  t.throws(fn(_t) { verifyFunction(badHandler); });
-});
-
-test("requires definitions on every path to a use", fn(t) {
-  let missingDefinition = Function.Function(
-    0,
-    [0],
-    [ValueType.Bool, ValueType.I32],
-    ReturnType.Value(ValueType.I32),
-    [
-      BasicBlock.Block(0, [], Terminator.Branch(0, 1, 2), null),
-      BasicBlock.Block(1, [Instruction.ConstI32(1, 7)], Terminator.Jump(3), null),
-      BasicBlock.Block(2, [], Terminator.Jump(3), null),
-      BasicBlock.Block(3, [], Terminator.ReturnValue(1), null)
-    ],
-    0
-  );
-  let definedOnBothPaths = Function.Function(
-    1,
-    [0],
-    [ValueType.Bool, ValueType.I32],
-    ReturnType.Value(ValueType.I32),
-    [
-      BasicBlock.Block(0, [], Terminator.Branch(0, 1, 2), null),
-      BasicBlock.Block(1, [Instruction.ConstI32(1, 7)], Terminator.Jump(3), null),
-      BasicBlock.Block(2, [Instruction.ConstI32(1, 9)], Terminator.Jump(3), null),
-      BasicBlock.Block(3, [], Terminator.ReturnValue(1), null)
-    ],
-    0
-  );
-
-  t.throws(fn(_t) { verifyFunction(missingDefinition); });
-  t.is(verifyFunction(definedOnBothPaths), true);
-});
-
-test("defines a dynamic catch payload on throw edges", fn(t) {
-  let function = Function.Function(
-    0,
-    [],
-    [ValueType.Dynamic, ValueType.Bytes],
-    ReturnType.Value(ValueType.Dynamic),
-    [
-      BasicBlock.Block(
-        0,
-        [Instruction.ConstBytes(1, "boom")],
-        Terminator.Throw(1),
-        ThrowHandler.Catch(1, 0)
-      ),
-      BasicBlock.Block(1, [], Terminator.ReturnValue(0), null)
-    ],
-    0
-  );
-
-  t.is(verifyFunction(function), true);
-});
-
-test("does not define post-call values on exceptional edges", fn(t) {
-  let callee = Function.Function(
-    1, [], [ValueType.I32], ReturnType.Value(ValueType.I32),
-    [BasicBlock.Block(0, [Instruction.ConstI32(0, 1)], Terminator.ReturnValue(0), null)], 0
-  );
-  let caller = Function.Function(
-    0,
-    [],
-    [ValueType.I32, ValueType.I32, ValueType.Dynamic],
-    ReturnType.Value(ValueType.I32),
-    [
-      BasicBlock.Block(
-        0,
-        [Instruction.CallDirect(0, 1, []), Instruction.ConstI32(1, 2)],
-        Terminator.ReturnValue(1),
-        ThrowHandler.Catch(1, 2)
-      ),
-      BasicBlock.Block(1, [], Terminator.ReturnValue(1), null)
-    ],
-    0
-  );
-  t.throws(fn(_t) { verifyProgram(Program.Program([callee, caller])); });
-});
-
-test("converges on loop backedges", fn(t) {
-  let function = Function.Function(
-    0,
-    [0, 1],
-    [ValueType.Bool, ValueType.I32],
-    ReturnType.Value(ValueType.I32),
-    [
-      BasicBlock.Block(0, [], Terminator.Branch(0, 1, 2), null),
-      BasicBlock.Block(1, [Instruction.AddI32Wrap(1, 1, 1)], Terminator.Jump(0), null),
-      BasicBlock.Block(2, [], Terminator.ReturnValue(1), null)
-    ],
-    0
-  );
-
-  t.is(verifyFunction(function), true);
-});
-
 run()

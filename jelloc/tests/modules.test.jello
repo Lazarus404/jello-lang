@@ -1,0 +1,34 @@
+import { test, run } from jellotest.Runner;
+import { lex } from frontend.Lexer;
+import { loadProgram } from frontend.Modules;
+import { parseProgram } from frontend.Parser;
+import { readText } from std.io.File;
+import type { Program, Stmt } from frontend.Ast;
+
+let _statements = fn(program: Program): Array<Stmt> {
+  match (program) { Program(_, statements, _) => statements }
+};
+
+let _same = fn(left: Stmt, right: Stmt): Bool {
+  let equal: Bool = Object.get(System.deepEqual(left, right), Atom.intern("equal"));
+  equal
+};
+
+test("linking renames imports except where a local binding shadows them", fn(t) {
+  let path = "tests/fixtures/rename/main.jello";
+  let original = _statements(parseProgram(lex(readText(path))));
+  let (loaded, _) = loadProgram(path);
+  let linked = _statements(loaded);
+  t.is(linked.len(), original.len());
+  let names = ["", "match arm", "catch", "with clause", "comprehension", "let destructuring", "parameter"];
+  let i = 1;
+
+  while (i < names.len()) {
+    t.is(names[i] + " shadows: " + Std.string(_same(linked[i], original[i])), names[i] + " shadows: true");
+    i++;
+  }
+  t.is(Std.string(_same(linked[7], original[7])), "false");
+  t.is(Std.string(_same(linked[8], original[8])), "false");
+});
+
+run()

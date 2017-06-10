@@ -285,3 +285,70 @@ export enum Package {
 export enum Program {
   Program(package: Package, statements: Array<Stmt>, tail: ?Expr);
 }
+
+export let isBindPattern: (Pattern) -> Bool = fn(pattern) { match (pattern) { BindPattern(_) => true, _ => false } };
+
+export let bindPatternName: (Pattern) -> Bytes = fn(pattern) {
+  match (pattern) {
+    BindPattern(name) => name, _ => {
+      throw "pattern is not a binding";
+      ""
+    }
+  }
+};
+
+export let exprTag: (Expr) -> I32 = fn(expr) {
+  match (expr) {
+    Bytes(_) => 1, RegExp(_, _) => 2, Atom(_) => 3, Bool(_) => 4, Integer(_, _) => 5, Float(_, _) => 6,
+    Null => 7, This => 8, Super => 9, Variable(_) => 10, Array(_) => 11, List(_) => 12, Tuple(_) => 13,
+    Object(_) => 14, Spread(_) => 15, Bits(_) => 16, Member(_, _) => 17, Index(_, _) => 18, Call(_, _, _) => 19,
+    TypeApply(_, _) => 20, New(_, _) => 21, Function(_, _, _, _) => 22, BlockExpr(_) => 23, If(_, _, _) => 24,
+    Match(_, _) => 25, With(_, _, _) => 26, Try(_, _, _) => 27, LetExpr(_, _, _, _) => 28, Unary(_, _) => 29,
+    Binary(_, _, _) => 30, IncDec(_, _, _) => 31, Cast(_, _) => 32, Is(_, _) => 33, Conditional(_, _, _) => 34,
+    Pipe(_, _) => 35, Topic => 36, Assign(_, _, _) => 37, Await(_) => 38, Quote(_, _) => 39, Unquote(_) => 40,
+  }
+};
+
+export let stmtTag: (Stmt) -> I32 = fn(stmt) {
+  match (stmt) {
+    LetStmt(_, _, _, _, _, _) => 1, Prototype(_, _, _, _) => 2, Typedef(_, _, _, _) => 3, Enum(_, _, _, _) => 4,
+    Macro(_, _, _, _) => 5, ImportModule(_, _, _) => 6, ImportFrom(_, _, _) => 7, While(_, _) => 8,
+    DoWhile(_, _) => 9, Break => 10, Continue => 11, Throw(_) => 12, Return(_) => 13, Expression(_) => 14,
+  }
+};
+
+let _digitValue = fn(c: I32): I32 {
+  if (c <= "9".code) { c - "0".code } else if (c <= "F".code) { c - "A".code + 10 } else { c - "a".code + 10 }
+};
+
+export let integerValue: (Bytes, Bool) -> I32 = fn(text, negative) {
+  let i = 0;
+  let sign = negative;
+
+  if ((text.len() > 0) && (Bytes.get_u8(text, 0) == "-".code)) {
+    sign = !sign;
+    i = 1;
+  }
+  let radix = 10;
+
+  if ((text.len() > i + 2) && (Bytes.get_u8(text, i) == "0".code)) {
+    radix = match (Bytes.get_u8(text, i + 1)) { "x".code, "X".code => 16, "b".code, "B".code => 2, "o".code, "O".code => 8, _ => 10 };
+    if (radix != 10) { i += 2; }
+  }
+  let limit: I64 = sign ? 2147483648 : 2147483647;
+  let magnitude: I64 = 0;
+
+  while (i < text.len()) {
+    let c = Bytes.get_u8(text, i);
+    i++;
+
+    if (c != "_".code) {
+      magnitude = magnitude * (radix as I64) + (_digitValue(c) as I64);
+
+      if (magnitude > limit) {
+        throw "integer literal " + (negative ? "-" : "") + text + " is out of range for I32 (-2147483648 to 2147483647)";
+      }
+    }
+  }
+  (sign ? -magnitude : magnitude) as I32
+};

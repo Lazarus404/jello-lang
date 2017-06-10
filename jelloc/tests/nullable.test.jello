@@ -1,0 +1,21 @@
+import { test, run } from jellotest.Runner;
+import { lex } from frontend.Lexer;
+import { parseProgram } from frontend.Parser;
+import { typeCheckProgram } from frontend.TypeCheck;
+import { printHir } from frontend.PrintHir;
+import { lowerProgram } from ir.Lower;
+import { printIr } from ir.Print;
+import { legalizeJlo } from backend.jello.Legalize;
+import { emitJlo } from backend.jello.Emit;
+
+test("nullable i32 reaches executable JLO", fn(t) {
+  let hir = typeCheckProgram(parseProgram(lex("let check = fn(value: ?I32): Bool { value != null }; check(7i32)")));
+  t.is(printHir(hir).indexOf("present: ?i32") >= 0, true);
+  let ir = lowerProgram(hir);
+  t.is(printIr(ir).indexOf("is_null") >= 0, true);
+  let jlo = legalizeJlo(ir);
+  t.is(printIr(jlo).indexOf("physeq") >= 0, true);
+  t.is(emitJlo(jlo).len() > 0, true);
+});
+
+run()

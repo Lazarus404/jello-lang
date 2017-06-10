@@ -1,6 +1,7 @@
 package frontend;
 
 import { group, advance } from std.core.RegExp;
+import { sourceDiagnostic } from frontend.Source;
 import {
   startsWith as bytesStartsWith,
   indexOf as bytesIndexOf,
@@ -61,7 +62,6 @@ export enum Token {
   Null;
   Package;
   Prototype;
-  Rest;
   Return;
   Super;
   This;
@@ -136,10 +136,7 @@ let _skipSpace = fn(rest: Bytes) {
 
   while (cont) {
     let next = match (cur) {
-      when ~r/\s+/ as ws => advance(cur, ws),
-      when ~r/\/\/[^\n]*/ as m => advance(cur, m),
-      when ~r/#[^\n]*/ as m => advance(cur, m),
-      _ => {
+      when ~r/\s+/ as ws => advance(cur, ws),            when ~r/\/\/[^\n]*/ as m => advance(cur, m),       when ~r/#[^\n]*/ as m => advance(cur, m),          _ => {
         (bytesStartsWith(cur, "/*"))
           ? {
           let close = bytesIndexOf(cur, "*/");
@@ -188,7 +185,6 @@ let _keywordToken = fn(word: Bytes) {
     "null" => Token.Null,
     "package" => Token.Package,
     "prototype" => Token.Prototype,
-    "rest" => Token.Rest,
     "return" => Token.Return,
     "super" => Token.Super,
     "this" => Token.This,
@@ -249,6 +245,26 @@ let _lexConstant = fn(digits: Bytes, after: Bytes) {
     (Token.Eof, after)
   } else {
     (token, cur)
+  }
+};
+
+let _lexRadix = fn(text: Bytes, after: Bytes) {
+  let digits = 0;
+  let i = 2;
+
+  while (i < text.len()) {
+    if (_byteAt(text, i) != "_".code) { digits++; }
+    i++;
+  }
+  if (digits == 0) { throw ("invalid integer literal: " + text); }
+  let (token, cur) = _lexConstant(text, after);
+
+  match (token) {
+    IntegerConstant(_, _) => (token, cur),
+    _ => {
+      throw ("invalid integer literal: " + text);
+      (Token.Eof, after)
+    },
   }
 };
 
@@ -496,6 +512,7 @@ let _lexOne = fn(rest: Bytes, memberDot: Bool) {
             let word = group(m, 0);
             (_keywordToken(word), advance(rest, m))
           },
+          when ~r/0[xX][0-9a-fA-F_]*|0[bB][01_]*|0[oO][0-7_]*/ as m => _lexRadix(group(m, 0), advance(rest, m)),
           when ~r/([0-9]*\.[0-9]+|[0-9]+\.?)[Ee][+-]?[0-9]+|[0-9]*\.[0-9]+|[0-9]+\./ as m => {
             let lit = group(m, 0);
             _lexFloat(lit, advance(rest, m))
@@ -512,26 +529,6 @@ let _lexOne = fn(rest: Bytes, memberDot: Bool) {
       }
     },
   }
-};
-
-let _location = fn(src: Bytes, rest: Bytes) {
-  let srcLen: I32 = src.len();
-  let restLen: I32 = rest.len();
-  let end = srcLen - restLen;
-  let line = 1;
-  let column = 1;
-  let i = 0;
-
-  while (i < end) {
-    if (Bytes.get_u8(src, i) == "\n".code) {
-      line++;
-      column = 1;
-    } else {
-      column++;
-    }
-    i++;
-  }
-  (line, column)
 };
 
 let _memberDot = fn(src: Bytes, rest: Bytes): Bool {
@@ -564,8 +561,7 @@ let _lexSource = fn(src: Bytes, filename: Bytes) {
       start = (src.len() as I32) - (rest.len() as I32);
       _lexOne(rest, _memberDot(src, rest))
     } catch (e) {
-      let (line, column) = _location(src, rest);
-      throw (filename + ":" + Std.string(line) + ":" + Std.string(column) + ": " + Std.string(e));
+      throw sourceDiagnostic(filename, src, (src.len() as I32) - (rest.len() as I32), Std.string(e));
       (Token.Eof, rest)
     };
     let (t, next) = result;

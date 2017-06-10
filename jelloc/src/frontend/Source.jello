@@ -10,10 +10,45 @@ export enum SyntaxKind {
   Parameter;
 }
 
-export enum SyntaxInfo {
-  Node(kind: SyntaxKind, path: Bytes, start: I32, end: I32);
+export enum SyntaxMark {
+  Mark(kind: SyntaxKind, tag: I32, start: I32, end: I32);
+}
+
+export enum Syntax {
+  Node(path: Bytes, start: I32, end: I32, children: Array<Syntax>);
 }
 
 export let spanPath: (SourceSpan) -> Bytes = fn(span) { match (span) { Span(path, _, _) => path } };
 export let spanStart: (SourceSpan) -> I32 = fn(span) { match (span) { Span(_, start, _) => start } };
 export let spanEnd: (SourceSpan) -> I32 = fn(span) { match (span) { Span(_, _, end) => end } };
+
+export let sourceLocation: (Bytes, I32) -> Tuple<I32, I32> = fn(source, offset) {
+  let line = 1;
+  let column = 1;
+  let i = 0;
+
+  while (i < offset) {
+    if (Bytes.get_u8(source, i) == "\n".code) {
+      line++;
+      column = 1;
+    } else { column++; }
+    i++;
+  }
+  (line, column)
+};
+
+export let sourceDiagnostic: (Bytes, Bytes, I32, Bytes) -> Bytes = fn(path, source, offset, message) {
+  let (line, column) = sourceLocation(source, offset);
+  let start = offset - column + 1;
+  let end = offset;
+  while ((end < source.len()) && (Bytes.get_u8(source, end) != "\n".code)) { end++; }
+  let caret = "";
+  let i = start;
+
+  while (i < offset) {
+    caret += Bytes.get_u8(source, i) == "\t".code ? "\t" : " ";
+    i++;
+  }
+  path + ":" + Std.string(line) + ":" + Std.string(column) + ": " + message + "\n"
+    + Bytes.slice(source, start, end - start) + "\n" + caret + "^"
+};

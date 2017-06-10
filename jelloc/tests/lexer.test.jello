@@ -46,6 +46,18 @@ test("distinguishes tuple members from leading-dot floats", fn(t) {
   t.is(toks[3], Token.FloatConstant(".5", FloatSize.Infer));
 });
 
+test("lexes 0x, 0b and 0o integers with digit separators", fn(t) {
+  let toks = lex("0xFF 0XdeAD_beef 0b1010 0o17 0x7Fi32");
+  t.is(toks[0], Token.IntegerConstant("0xFF", IntegerSize.Infer));
+  t.is(toks[1], Token.IntegerConstant("0XdeAD_beef", IntegerSize.Infer));
+  t.is(toks[2], Token.IntegerConstant("0b1010", IntegerSize.Infer));
+  t.is(toks[3], Token.IntegerConstant("0o17", IntegerSize.Infer));
+  t.is(toks[4], Token.IntegerConstant("0x7F", IntegerSize.I32));
+  t.throws(fn(_t) { lex("0x"); });
+  t.throws(fn(_t) { lex("0b2"); });
+  t.throws(fn(_t) { lex("0b1f32"); });
+});
+
 test("leaves unsuffixed integer size for type checking", fn(t) {
   let toks = lex("42");
   t.is(toks[0], Token.IntegerConstant("42", IntegerSize.Infer));
@@ -99,10 +111,10 @@ test("lexes object receiver keywords", fn(t) {
   t.is(toks[3], Token.Ident("superior"));
 });
 
-test("lexes bit syntax keywords", fn(t) {
+test("lexes bit syntax keywords and contextual rest", fn(t) {
   let toks = lex("bits rest match bitsValue restart matcher");
   t.is(toks[0], Token.Bits);
-  t.is(toks[1], Token.Rest);
+  t.is(toks[1], Token.Ident("rest"));
   t.is(toks[2], Token.Match);
   t.is(toks[3], Token.Ident("bitsValue"));
   t.is(toks[4], Token.Ident("restart"));

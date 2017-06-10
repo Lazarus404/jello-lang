@@ -1,442 +1,229 @@
 package backend.jello;
 
-import type { Terminator, ValueType } from ir.Model;
-import type { Allocation, Block, Function, Instruction, Program } from backend.jello.Model;
-import { verifyFinalJloFunction, verifyJlo } from backend.jello.Verify;
-import { verifyJloBytes } from backend.jello.VerifyBytes;
+import type { BasicBlock, EnumSchema, Function, Instruction, Program, Terminator, ValueType } from ir.Model;
+import { ValueType, argsOf, dstOf, immOf, opOf, valueTypeEqual } from ir.Model;
+import { allocateProgram } from backend.jello.Allocate;
 
-let _u8 = fn(value: I32): Bytes {
-  let out = Bytes.new(1);
-  Bytes.set_u8(out, 0, value);
-  out
-};
+let _buffer = Bytes.new(0);
+let _size = 0;
 
-let _u16 = fn(value: I32): Bytes {
-  let out = Bytes.new(2);
-  Bytes.set_u8(out, 0, value & 255);
-  Bytes.set_u8(out, 1, (value >> 8) & 255);
-  out
-};
-
-let _u32 = fn(value: I32): Bytes {
-  let wide = value as I64;
-  let out = Bytes.new(4);
-  Bytes.set_u8(out, 0, (wide & 255) as I32);
-  Bytes.set_u8(out, 1, ((wide >> 8) & 255) as I32);
-  Bytes.set_u8(out, 2, ((wide >> 16) & 255) as I32);
-  Bytes.set_u8(out, 3, ((wide >> 24) & 255) as I32);
-  out
-};
-
-let _join = fn(pieces: Array<Bytes>): Bytes {
-  let size = 0;
-  let i = 0;
-
-  while (i < pieces.len()) {
-    size += pieces[i].len();
-    i++;
-  }
-  let out = Bytes.new(size);
-  let offset = 0;
-  i = 0;
-
-  while (i < pieces.len()) {
-    let j = 0;
-
-    while (j < pieces[i].len()) {
-      Bytes.set_u8(out, offset + j, Bytes.get_u8(pieces[i], j));
-      j++;
-    }
-    offset += pieces[i].len();
-    i++;
-  }
-  out
-};
-
-let _insn = fn(pieces: Array<Bytes>, op: I32, a: I32, b: I32, c: I32, immediate: I32) {
-  pieces.push(_u8(op));
-  pieces.push(_u8(a));
-  pieces.push(_u8(b));
-  pieces.push(_u8(c));
-  pieces.push(_u32(immediate));
-  null
-};
-
-let _typeId = fn(ty: ValueType): I32 {
-  match (ty) {
-    Bool => 0,
-    I32 => 1,
-    I64 => 2,
-    Dynamic => 3,
-    _ => {
-      throw "JLO emission does not support register type";
-      0
-    },
-  }
-};
-
-let _sameType = fn(left: ValueType, right: ValueType): Bool {
-  match (left) {
-    Bool => match (right) { Bool => true, _ => false },
-    I32 => match (right) { I32 => true, _ => false },
-    I64 => match (right) { I64 => true, _ => false },
-    Dynamic => match (right) { Dynamic => true, _ => false },
-    _ => false,
-  }
-};
-
-let _bools = fn(size: I32, value: Bool): Array<Bool> {
-  let out = Array.new<Bool>(0);
-  let i = 0;
-
-  while (i < size) {
-    out.push(value);
-    i++;
-  }
-  out
-};
-
-let _ints = fn(size: I32, value: I32): Array<I32> {
-  let out = Array.new<I32>(0);
-  let i = 0;
-
-  while (i < size) {
-    out.push(value);
-    i++;
-  }
-  out
-};
-
-let _copyBools = fn(values: Array<Bool>): Array<Bool> {
-  let out = Array.new<Bool>(0);
-  let i = 0;
-
-  while (i < values.len()) {
-    out.push(values[i]);
-    i++;
-  }
-  out
-};
-
-let _markInstruction = fn(instruction: Instruction, uses: Array<Bool>, defs: Array<Bool>) {
-  match (instruction) {
-    ConstBool(dst, _) => {
-      defs[dst] = true;
-      null
-    },
-    ConstI32(dst, _) => {
-      defs[dst] = true;
-      null
-    },
-    Move(dst, src) => {
-      defs[dst] = true;
-      uses[src] = true;
-    },
-    AddI32(dst, left, right), SubI32(dst, left, right), MultiplyI32(dst, left, right),
-    EqualI32(dst, left, right), LessI32Signed(dst, left, right) => {
-      defs[dst] = true;
-      uses[left] = true;
-      uses[right] = true;
-    },
-    NegateI32(dst, src), NotBool(dst, src), SignExtendI32ToI64(dst, src), TruncateI64ToI32(dst, src) => {
-      defs[dst] = true;
-      uses[src] = true;
-    },
-    Call(dst, _, args) => {
-      defs[dst] = true;
-      let argument = 0;
-
-      while (argument < args.len()) {
-        uses[args[argument]] = true;
-        argument++;
-      }
-    },
-    SpillPush(src, _) => {
-      uses[src] = true;
-      null
-    },
-    SpillPop(dst, _) => {
-      defs[dst] = true;
-      null
-    },
-  };
-  null
-};
-
-let _markTerminator = fn(terminator: Terminator, uses: Array<Bool>) {
-  match (terminator) {
-    Branch(value, _, _) => {
-      uses[value] = true;
-      null
-    },
-    ReturnValue(value) => {
-      uses[value] = true;
-      null
-    },
-    Throw(value) => {
-      uses[value] = true;
-      null
-    },
-    _ => null,
-  };
-  null
-};
-
-let _blockIndex = fn(blocks: Array<Block>, id: I32): I32 {
-  let i = 0;
-
-  while (i < blocks.len()) {
-    match (blocks[i]) { Block(blockId, _, _) => if (blockId == id) { return i; } };
-    i++;
-  }
-  throw "JLO allocation found unknown block";
-  0
-};
-
-let _successors = fn(terminator: Terminator): Array<I32> {
-  match (terminator) {
-    Jump(target) => [target],
-    Branch(_, left, right) => [left, right],
-    _ => Array.new<I32>(0),
-  }
-};
-
-let _addEdge = fn(graph: Array<Array<Bool>>, left: I32, right: I32) {
-  if (left != right) {
-    graph[left][right] = true;
-    graph[right][left] = true;
-  }
-  null
-};
-
-let _allocation = fn(params: Array<I32>, registers: Array<ValueType>, blocks: Array<Block>, limit: I32): Array<I32> {
-  let count = registers.len();
-  let blockUses = Array.new<Array<Bool>>(0);
-  let blockDefs = Array.new<Array<Bool>>(0);
-  let liveIn = Array.new<Array<Bool>>(0);
-  let liveOut = Array.new<Array<Bool>>(0);
-  let i = 0;
-
-  while (i < blocks.len()) {
-    let uses = _bools(count, false);
-    let defs = _bools(count, false);
-
-    match (blocks[i]) { Block(_, instructions, terminator) => {
-      let j = 0;
-
-      while (j < instructions.len()) {
-        let instructionUses = _bools(count, false);
-        let instructionDefs = _bools(count, false);
-        _markInstruction(instructions[j], instructionUses, instructionDefs);
-        let r = 0;
-
-        while (r < count) {
-          if (instructionUses[r] && !defs[r]) { uses[r] = true; }
-          if (instructionDefs[r]) { defs[r] = true; }
-          r++;
-        }
-        j++;
-      }
-      let terminalUses = _bools(count, false);
-      _markTerminator(terminator, terminalUses);
-      let r = 0;
-
-      while (r < count) {
-        if (terminalUses[r] && !defs[r]) { uses[r] = true; }
-        r++;
-      }
-    } };
-    blockUses.push(uses);
-    blockDefs.push(defs);
-    liveIn.push(_bools(count, false));
-    liveOut.push(_bools(count, false));
-    i++;
-  }
-  let changed = true;
-
-  while (changed) {
-    changed = false;
-    i = blocks.len() - 1;
-
-    while (i >= 0) {
-      let nextOut = _bools(count, false);
-
-      match (blocks[i]) { Block(_, _, terminator) => {
-        let successors = _successors(terminator);
-        let s = 0;
-
-        while (s < successors.len()) {
-          let successor = _blockIndex(blocks, successors[s]);
-          let r = 0;
-
-          while (r < count) {
-            if (liveIn[successor][r]) { nextOut[r] = true; }
-            r++;
-          }
-          s++;
-        }
-      } };
-      let r = 0;
-
-      while (r < count) {
-        let nextIn = blockUses[i][r] || (nextOut[r] && !blockDefs[i][r]);
-        if ((liveOut[i][r] != nextOut[r]) || (liveIn[i][r] != nextIn)) { changed = true; }
-        liveOut[i][r] = nextOut[r];
-        liveIn[i][r] = nextIn;
-        r++;
-      }
-      i--;
-    }
-  }
-  let graph = Array.new<Array<Bool>>(0);
-  i = 0;
-
-  while (i < count) {
-    graph.push(_bools(count, false));
-    i++;
-  }
-  i = 0;
-
-  while (i < blocks.len()) {
-    match (blocks[i]) { Block(_, instructions, terminator) => {
-      let live = _copyBools(liveOut[i]);
-      _markTerminator(terminator, live);
-      let j = instructions.len() - 1;
-
-      while (j >= 0) {
-        let uses = _bools(count, false);
-        let defs = _bools(count, false);
-        _markInstruction(instructions[j], uses, defs);
-        let d = 0;
-
-        while (d < count) {
-          if (defs[d]) {
-            let r = 0;
-
-            while (r < count) {
-              if (live[r]) { _addEdge(graph, d, r); }
-              r++;
-            }
-            live[d] = false;
-          }
-          d++;
-        }
-        let r = 0;
-
-        while (r < count) {
-          if (uses[r]) { live[r] = true; }
-          r++;
-        }
-        j--;
-      }
-    } };
-    i++;
-  }
-  let colors = _ints(count, -1);
-  i = 0;
-
-  while (i < params.len()) {
-    colors[params[i]] = i;
-    i++;
-  }
-  i = 0;
-
-  while (i < count) {
-    if (colors[i] < 0) {
-      let color = 0;
-
-      while (color < limit) {
-        let compatible = true;
-        let owner = 0;
-
-        while (owner < count) {
-          if ((colors[owner] == color) && (!_sameType(registers[i], registers[owner]) || graph[i][owner])) { compatible = false; }
-          owner++;
-        }
-
-        if (compatible) {
-          colors[i] = color;
-          color = limit;
-        } else { color++; }
-      }
-    }
-    i++;
-  }
-  colors
-};
-
-let _functionIndex = fn(functions: Array<Function>, id: I32): I32 {
-  let i = 0;
-
-  while (i < functions.len()) {
-    match (functions[i]) { Function(functionId, _, _, _, _, _) => if (functionId == id) { return i; } };
-    i++;
-  }
-  throw "JLO emission found unknown function";
-  0
-};
-
-let _scratchOffset = fn(scratchTypes: Array<ValueType>, registers: Array<ValueType>, args: Array<I32>): I32 {
-  let offset = 0;
-
-  while (offset + args.len() <= scratchTypes.len()) {
-    let matches = true;
+let _byte = fn(value: I32) {
+  if (_size == _buffer.len()) {
+    let grown = Bytes.new(_buffer.len() * 2 + 64);
     let i = 0;
 
-    while (i < args.len()) {
-      if (!_sameType(scratchTypes[offset + i], registers[args[i]])) { matches = false; }
+    while (i < _size) {
+      Bytes.set_u8(grown, i, Bytes.get_u8(_buffer, i));
       i++;
     }
-    if (matches) { return offset; }
-    offset++;
+    _buffer = grown;
+  }
+  Bytes.set_u8(_buffer, _size, value & 255);
+  _size++;
+  null
+};
+
+let _u16 = fn(value: I32) {
+  _byte(value);
+  _byte(value >> 8)
+};
+
+let _u32 = fn(value: I32) {
+  _byte(value);
+  _byte(value >> 8);
+  _byte(value >> 16);
+  _byte(value >> 24)
+};
+
+let _bytes = fn(value: Bytes) {
+  let i = 0;
+
+  while (i < value.len()) {
+    _byte(Bytes.get_u8(value, i));
+    i++;
+  } null
+};
+
+let _types = Array.new<ValueType>(0);
+let _typeKinds = Array.new<I32>(0);
+let _typeDetails = Array.new<I32>(0);
+let _signatures = Array.new<ValueType>(0);
+let _structs = Array.new<Array<ValueType>>(0);
+
+let _buckets = Array.new<Array<I32>>(0);
+
+let _hash: (ValueType) -> I32 = fn(_ty) { 0 };
+_hash = fn(ty) {
+  let combine = fn(seed: I32, types: Array<ValueType>): I32 {
+    let h = seed;
+    let i = 0;
+
+    while (i < types.len()) {
+      h = h * 31 + _hash(types[i]);
+      i++;
+    }
+    h
+  };
+
+  match (ty) {
+    Bool => 1, I32 => 2, I64 => 3, Bytes => 4, Dynamic => 5,
+    ArrayOf(element) => 6 * 31 + _hash(element),
+    TupleOf(elements) => combine(7, elements),
+    Function(args, result) => combine(match (result) { Value(value) => 8 * 31 + _hash(value), Void => 9 }, args),
+    Nominal(id) => 10 * 31 + id,
+  }
+};
+
+let _bucket = fn(ty: ValueType): Array<I32> { _buckets[_hash(ty) & (_buckets.len() - 1)] };
+
+let _find = fn(ty: ValueType): I32 {
+  let bucket = _bucket(ty);
+  let i = 0;
+
+  while (i < bucket.len()) {
+    if (valueTypeEqual(_types[bucket[i]], ty)) { return bucket[i]; }
+    i++;
   }
   -1
 };
 
-let _orderedBlockIndex: (Array<Block>, I32, I32) -> I32 = fn(blocks, entry, position) {
-  let blockIndex = 0;
-  let found = -1;
-
-  if (position == 0) {
-    while ((blockIndex < blocks.len()) && (found < 0)) {
-      match (blocks[blockIndex]) { Block(id, _, _) => if (id == entry) { found = blockIndex; } };
-      blockIndex++;
-    }
-  } else {
-    let seen = 0;
-    blockIndex = 0;
-
-    while ((blockIndex < blocks.len()) && (found < 0)) {
-      match (blocks[blockIndex]) {
-        Block(id, _, _) => if (id != entry) {
-          seen++;
-          if (seen == position) { found = blockIndex; }
-        },
-      };
-      blockIndex++;
-    }
-  }
-  if (found < 0) { throw "JLO emission found unknown block"; }
-  found
+let _add = fn(ty: ValueType, kind: I32, detail: I32): I32 {
+  _types.push(ty);
+  _typeKinds.push(kind);
+  _typeDetails.push(detail);
+  let index = (_types.len() - 1) as I32;
+  _bucket(ty).push(index);
+  index
 };
 
-let _instructionCount = fn(instructions: Array<Instruction>): I32 {
-  let count = 0;
-  let i = 0;
+let _typeIndex: (ValueType) -> I32 = fn(_ty) { -1 };
+_typeIndex = fn(ty) {
+  let found = _find(ty);
+  if (found >= 0) { return found; }
 
-  while (i < instructions.len()) {
-    count++;
+  match (ty) {
+    Bool => _add(ty, 2, 0),
+    I32 => _add(ty, 6, 0),
+    I64 => _add(ty, 7, 0),
+    Bytes => _add(ty, 11, 0),
+    Dynamic => _add(ty, 18, 0),
+    ArrayOf(element) => _add(ty, 13, _typeIndex(element)),
+    TupleOf(elements) => {
+      let i = 0;
+
+      while (i < elements.len()) {
+        _typeIndex(elements[i]);
+        i++;
+      }
+      _structs.push(elements);
+      _add(ty, 14, (_structs.len() - 1) as I32)
+    },
+    Function(args, result) => {
+      let i = 0;
+
+      while (i < args.len()) {
+        _typeIndex(args[i]);
+        i++;
+      }
+
+      match (result) {
+        Value(value) => {
+          _typeIndex(value);
+          null
+        }, Void => {
+          throw "JLO emission does not support void function values";
+          null
+        }
+      };
+      _signatures.push(ty);
+      _add(ty, 16, (_signatures.len() - 1) as I32)
+    },
+    Nominal(id) => {
+      throw "unknown enum type@" + Std.string(id);
+      -1
+    },
+  }
+};
+
+let _functionIndexes = Array.new<I32>(0);
+
+let _functionIndex = fn(id: I32): I32 {
+  if ((id < 0) || (id >= _functionIndexes.len()) || (_functionIndexes[id] < 0)) { throw "JLO emission found unknown function"; }
+  _functionIndexes[id]
+};
+
+let _insn = fn(opcode: I32, a: I32, b: I32, c: I32, imm: I32) {
+  _byte(opcode);
+  _byte(a);
+  _byte(b);
+  _byte(c);
+  _u32(imm);
+  null
+};
+
+let _registerTypes = Array.new<ValueType>(0);
+let _wide = fn(register: I32): Bool { match (_registerTypes[register]) { I64 => true, _ => false } };
+
+let _window = fn(args: Array<I32>, start: I32, empty: I32): I32 {
+  let i = start + 1;
+
+  while (i < args.len()) {
+    if (args[i] != args[i - 1] + 1) { throw "JLO emission requires consecutive call arguments"; }
     i++;
   }
-  count
+  args.len() > start ? args[start] : empty
 };
 
-let _terminatorCount = fn(terminator: Terminator): I32 {
+let _instruction = fn(insn: Instruction, scratchStart: I32) {
+  let dst = dstOf(insn);
+  let args = argsOf(insn);
+  let imm = immOf(insn);
+  let a = args.len() > 0 ? args[0] : 0;
+  let b = args.len() > 1 ? args[1] : 0;
+
+  match (opOf(insn)) {
+    ConstBool => _insn(24, dst, 0, 0, imm),
+    ConstI32 => _insn(19, dst, 0, 0, imm),
+    ConstBytes => _insn(27, dst, 0, 0, imm),
+    ConstNull => _insn(25, dst, 0, 0, 0),
+    ConstFunction => _insn(15, dst, 0, 0, _functionIndex(imm)),
+    Move => _insn(4, dst, a, 0, 0),
+    Add => _insn(_wide(a) ? 42 : 28, dst, a, b, 0),
+    Sub => _insn(_wide(a) ? 43 : 29, dst, a, b, 0),
+    Mul => _insn(_wide(a) ? 44 : 30, dst, a, b, 0),
+    Neg => _insn(_wide(a) ? 47 : 36, dst, a, 0, 0),
+    Not => _insn(66, dst, a, 0, 0),
+    Eq => _insn(_wide(a) ? 71 : 67, dst, a, b, 0),
+    Lt => _insn(_wide(a) ? 72 : 68, dst, a, b, 0),
+    Sext => _insn(77, dst, a, 0, 0),
+    Trunc => _insn(81, dst, a, 0, 0),
+    Box => _insn(96, dst, a, 0, 0),
+    PhysEq => _insn(109, dst, a, b, 0),
+    ArrayNew => _insn(116, dst, a, 0, 0),
+    ArrayLen => _insn(117, dst, a, 0, 0),
+    ArrayGet => _insn(118, dst, a, b, 0),
+    ArraySet => _insn(119, args[2], a, b, 0),
+    BytesGet => _insn(124, dst, a, b, 0),
+    StructNew => _insn(150, dst, 0, 0, 0),
+    TupleGet => _insn(151, dst, a, 0, imm),
+    StructSet => _insn(152, b, a, 0, imm),
+    Call => _insn(11, dst, _window(args, 0, scratchStart), args.len() as I32, _functionIndex(imm)),
+    CallIndirect => _insn(12, dst, a, (args.len() as I32) - 1, _window(args, 1, scratchStart)),
+    SpillPush => _insn(107, a, 0, 0, imm),
+    SpillPop => _insn(108, dst, 0, 0, imm),
+    _ => {
+      throw "JLO emission does not support this operation";
+      null
+    },
+  }
+};
+
+let _blockId = fn(block: BasicBlock): I32 { match (block) { Block(id, _, _, _) => id } };
+
+let _terminatorSize = fn(terminator: Terminator): I32 {
   match (terminator) {
     Branch(_, _, _) => 2,
-    Jump(_) => 1,
-    ReturnValue(_) => 1,
-    Throw(_) => 1,
+    Jump(_), ReturnValue(_), Throw(_) => 1,
     _ => {
       throw "JLO emission does not support terminator";
       0
@@ -444,429 +231,220 @@ let _terminatorCount = fn(terminator: Terminator): I32 {
   }
 };
 
-let _blockPc = fn(blockIds: Array<I32>, blockPcs: Array<I32>, id: I32): I32 {
-  let i = 0;
-
-  while (i < blockIds.len()) {
-    if (blockIds[i] == id) { return blockPcs[i]; }
-    i++;
-  }
-  throw "JLO emission found unknown branch target";
-  0
-};
-
-let _tempOffset = fn(offsets: Array<I32>, ty: ValueType): I32 {
-  let offset = offsets[_typeId(ty)];
-  if (offset < 0) { throw "JLO allocation omitted a spill temporary"; }
-  offset
-};
-
-let _readRegister = fn(
-  output: Array<Instruction>, colors: Array<I32>, registers: Array<ValueType>, value: I32,
-  tempStart: I32, tempOffsets: Array<I32>, nextTemp: Array<I32>
-): I32 {
-  if (colors[value] >= 0) { return colors[value]; }
-  let kind = _typeId(registers[value]);
-  let temp = tempStart + _tempOffset(tempOffsets, registers[value]) + nextTemp[kind];
-  nextTemp[kind]++;
-  output.push(Instruction.SpillPop(temp, value));
-  temp
-};
-
-let _writeRegister = fn(colors: Array<I32>, registers: Array<ValueType>, value: I32, tempStart: I32, tempOffsets: Array<I32>, fallback: I32): I32 {
-  if (colors[value] >= 0) { colors[value] } else if (fallback >= 0) { fallback } else { tempStart + _tempOffset(tempOffsets, registers[value]) }
-};
-
-let _allocatedInstruction = fn(
-  instruction: Instruction, colors: Array<I32>, registers: Array<ValueType>,
-  tempStart: I32, tempOffsets: Array<I32>, scratchStart: I32, scratchTypes: Array<ValueType>
-): Array<Instruction> {
-  let out = Array.new<Instruction>(0);
-  let nextTemp: Array<I32> = [0, 0, 0, 0];
-  let spilledDst = -1;
-
-  match (instruction) {
-    ConstBool(dst, value) => {
-      spilledDst = dst;
-      out.push(Instruction.ConstBool(_writeRegister(colors, registers, dst, tempStart, tempOffsets, -1), value));
-    },
-    ConstI32(dst, value) => {
-      spilledDst = dst;
-      out.push(Instruction.ConstI32(_writeRegister(colors, registers, dst, tempStart, tempOffsets, -1), value));
-    },
-    Move(dst, src) => {
-      let source = _readRegister(out, colors, registers, src, tempStart, tempOffsets, nextTemp);
-      spilledDst = dst;
-      out.push(Instruction.Move(_writeRegister(colors, registers, dst, tempStart, tempOffsets, source), source));
-    },
-    AddI32(dst, left, right) => {
-      let a = _readRegister(out, colors, registers, left, tempStart, tempOffsets, nextTemp);
-      let b = _readRegister(out, colors, registers, right, tempStart, tempOffsets, nextTemp);
-      spilledDst = dst;
-      out.push(Instruction.AddI32(_writeRegister(colors, registers, dst, tempStart, tempOffsets, a), a, b));
-    },
-    SubI32(dst, left, right) => {
-      let a = _readRegister(out, colors, registers, left, tempStart, tempOffsets, nextTemp);
-      let b = _readRegister(out, colors, registers, right, tempStart, tempOffsets, nextTemp);
-      spilledDst = dst;
-      out.push(Instruction.SubI32(_writeRegister(colors, registers, dst, tempStart, tempOffsets, a), a, b));
-    },
-    MultiplyI32(dst, left, right) => {
-      let a = _readRegister(out, colors, registers, left, tempStart, tempOffsets, nextTemp);
-      let b = _readRegister(out, colors, registers, right, tempStart, tempOffsets, nextTemp);
-      spilledDst = dst;
-      out.push(Instruction.MultiplyI32(_writeRegister(colors, registers, dst, tempStart, tempOffsets, a), a, b));
-    },
-    EqualI32(dst, left, right) => {
-      let a = _readRegister(out, colors, registers, left, tempStart, tempOffsets, nextTemp);
-      let b = _readRegister(out, colors, registers, right, tempStart, tempOffsets, nextTemp);
-      spilledDst = dst;
-      out.push(Instruction.EqualI32(_writeRegister(colors, registers, dst, tempStart, tempOffsets, -1), a, b));
-    },
-    LessI32Signed(dst, left, right) => {
-      let a = _readRegister(out, colors, registers, left, tempStart, tempOffsets, nextTemp);
-      let b = _readRegister(out, colors, registers, right, tempStart, tempOffsets, nextTemp);
-      spilledDst = dst;
-      out.push(Instruction.LessI32Signed(_writeRegister(colors, registers, dst, tempStart, tempOffsets, -1), a, b));
-    },
-    NegateI32(dst, src) => {
-      let a = _readRegister(out, colors, registers, src, tempStart, tempOffsets, nextTemp);
-      spilledDst = dst;
-      out.push(Instruction.NegateI32(_writeRegister(colors, registers, dst, tempStart, tempOffsets, a), a));
-    },
-    NotBool(dst, src) => {
-      let a = _readRegister(out, colors, registers, src, tempStart, tempOffsets, nextTemp);
-      spilledDst = dst;
-      out.push(Instruction.NotBool(_writeRegister(colors, registers, dst, tempStart, tempOffsets, a), a));
-    },
-    SignExtendI32ToI64(dst, src) => {
-      let a = _readRegister(out, colors, registers, src, tempStart, tempOffsets, nextTemp);
-      spilledDst = dst;
-      out.push(Instruction.SignExtendI32ToI64(_writeRegister(colors, registers, dst, tempStart, tempOffsets, -1), a));
-    },
-    TruncateI64ToI32(dst, src) => {
-      let a = _readRegister(out, colors, registers, src, tempStart, tempOffsets, nextTemp);
-      spilledDst = dst;
-      out.push(Instruction.TruncateI64ToI32(_writeRegister(colors, registers, dst, tempStart, tempOffsets, -1), a));
-    },
-    Call(dst, callee, args) => {
-      let offset = _scratchOffset(scratchTypes, registers, args);
-      if (offset < 0) { throw "JLO allocation lost call scratch signature"; }
-      let callArgs = Array.new<I32>(0);
-      let i = 0;
-
-      while (i < args.len()) {
-        if (colors[args[i]] >= 0) { out.push(Instruction.Move(scratchStart + offset + i, colors[args[i]])); } else { out.push(Instruction.SpillPop(scratchStart + offset + i, args[i])); }
-        callArgs.push(scratchStart + offset + i);
-        i++;
-      }
-      spilledDst = dst;
-      out.push(Instruction.Call(_writeRegister(colors, registers, dst, tempStart, tempOffsets, -1), callee, callArgs));
-    },
-    SpillPush(_, _), SpillPop(_, _) => {
-      throw "JLO allocation received spill instruction";
-      null
-    },
-  };
-
-  if ((spilledDst >= 0) && (colors[spilledDst] < 0)) {
-    let last = match (out[out.len() - 1]) {
-      ConstBool(dst, _), ConstI32(dst, _), Move(dst, _), AddI32(dst, _, _), SubI32(dst, _, _), MultiplyI32(dst, _, _),
-      NegateI32(dst, _), NotBool(dst, _), EqualI32(dst, _, _), LessI32Signed(dst, _, _), SignExtendI32ToI64(dst, _),
-      TruncateI64ToI32(dst, _), Call(dst, _, _) => dst,
-      _ => 0,
-    };
-    out.push(Instruction.SpillPush(last, spilledDst));
-  }
-  out
-};
-
-let _allocateFunction = fn(function: Function): Allocation {
-  match (function) { Function(id, params, sourceRegisters, result, blocks, entry) => {
-    let scratchTypes = Array.new<ValueType>(0);
+let _function = fn(function: Function) {
+  match (function) { Function(_, params, registers, _, blocks, entry) => {
+    _registerTypes = registers;
+    let order = Array.new<BasicBlock>(0);
     let i = 0;
 
     while (i < blocks.len()) {
-      match (blocks[i]) { Block(_, instructions, _) => {
-        let j = 0;
-
-        while (j < instructions.len()) {
-          match (instructions[j]) { Call(_, _, args) => {
-            if (_scratchOffset(scratchTypes, sourceRegisters, args) < 0) {
-              let k = 0;
-
-              while (k < args.len()) {
-                scratchTypes.push(sourceRegisters[args[k]]);
-                k++;
-              }
-            }
-          }, _ => null };
-          j++;
-        }
-      } };
+      if (_blockId(blocks[i]) == entry) { order.push(blocks[i]); }
       i++;
     }
-    let colors = _allocation(params, sourceRegisters, blocks, 256 - scratchTypes.len());
-    let spillKinds: Array<Bool> = [false, false, false, false];
-    let changed = true;
-
-    while (changed) {
-      changed = false;
-      i = 0;
-
-      while (i < colors.len()) {
-        if ((colors[i] < 0) && !spillKinds[_typeId(sourceRegisters[i])]) {
-          spillKinds[_typeId(sourceRegisters[i])] = true;
-          changed = true;
-        }
-        i++;
-      }
-
-      if (changed) {
-        let tempCount = 0;
-        i = 0;
-
-        while (i < spillKinds.len()) {
-          if (spillKinds[i]) { tempCount += 2; }
-          i++;
-        }
-        colors = _allocation(params, sourceRegisters, blocks, 256 - scratchTypes.len() - tempCount);
-      }
-    }
-    let physicalCount = 0;
-    i = 0;
-
-    while (i < colors.len()) {
-      if (colors[i] >= physicalCount) { physicalCount = colors[i] + 1; }
-      i++;
-    }
-    let physical = Array.new<ValueType>(0);
-    i = 0;
-
-    while (i < physicalCount) {
-      let owner = 0;
-      while ((owner < colors.len()) && (colors[owner] != i)) { owner++; }
-      if (owner == colors.len()) { throw "JLO allocation left a physical register hole"; }
-      physical.push(sourceRegisters[owner]);
-      i++;
-    }
-    let tempStart = physical.len() as I32;
-    let tempOffsets: Array<I32> = [-1, -1, -1, -1];
-    i = 0;
-
-    while (i < spillKinds.len()) {
-      if (spillKinds[i]) {
-        tempOffsets[i] = physical.len() - tempStart;
-        let ty = match (i) { 0 => ValueType.Bool, 1 => ValueType.I32, 2 => ValueType.I64, _ => ValueType.Dynamic };
-        physical.push(ty);
-        physical.push(ty);
-      }
-      i++;
-    }
-    let scratchStart = physical.len() as I32;
-    i = 0;
-
-    while (i < scratchTypes.len()) {
-      physical.push(scratchTypes[i]);
-      i++;
-    }
-    if (physical.len() > 256) { throw "JLO allocation exceeds 256 physical registers"; }
-    let allocatedBlocks = Array.new<Block>(0);
     i = 0;
 
     while (i < blocks.len()) {
-      match (blocks[i]) { Block(blockId, instructions, terminator) => {
-        let allocated = Array.new<Instruction>(0);
-        let j = 0;
+      if (_blockId(blocks[i]) != entry) { order.push(blocks[i]); }
+      i++;
+    }
+    let pcs = Array.new<I32>(0);
+    let count = 0;
+    i = 0;
 
-        while (j < instructions.len()) {
-          let replacement = _allocatedInstruction(instructions[j], colors, sourceRegisters, tempStart, tempOffsets, scratchStart, scratchTypes);
-          let k = 0;
-
-          while (k < replacement.len()) {
-            allocated.push(replacement[k]);
-            k++;
-          }
-          j++;
-        }
-        let nextTemp: Array<I32> = [0, 0, 0, 0];
-
-        let allocatedTerminator = match (terminator) {
-          Branch(value, left, right) => Terminator.Branch(_readRegister(allocated, colors, sourceRegisters, value, tempStart, tempOffsets, nextTemp), left, right),
-          ReturnValue(value) => Terminator.ReturnValue(_readRegister(allocated, colors, sourceRegisters, value, tempStart, tempOffsets, nextTemp)),
-          Throw(value) => Terminator.Throw(_readRegister(allocated, colors, sourceRegisters, value, tempStart, tempOffsets, nextTemp)),
-          _ => terminator,
-        };
-        allocatedBlocks.push(Block.Block(blockId, allocated, allocatedTerminator));
+    while (i < order.len()) {
+      match (order[i]) { Block(id, instructions, terminator, _) => {
+        while (pcs.len() <= id) { pcs.push(-1); }
+        pcs[id] = count;
+        count += (instructions.len() as I32) + _terminatorSize(terminator);
       } };
       i++;
     }
-    let allocatedParams = Array.new<I32>(0);
+    let scratchStart = registers.len() as I32;
+    _u32(-1);
+    _u32(registers.len() as I32);
+    _u32(registers.len() as I32);
+    _u32(params.len() as I32);
+    _u32(count);
     i = 0;
 
-    while (i < params.len()) {
-      allocatedParams.push(colors[params[i]]);
+    while (i < registers.len()) {
+      _u32(_typeIndex(registers[i]));
       i++;
     }
-    Allocation.Allocation(Function.Function(id, allocatedParams, physical, result, allocatedBlocks, entry), scratchStart, scratchTypes.len() as I32)
+    let pc = 0;
+    i = 0;
+
+    while (i < order.len()) {
+      match (order[i]) { Block(_, instructions, terminator, _) => {
+        let j = 0;
+
+        while (j < instructions.len()) {
+          _instruction(instructions[j], scratchStart);
+          pc++;
+          j++;
+        }
+
+        match (terminator) {
+          Jump(target) => _insn(2, 0, 0, 0, pcs[target] - pc - 1),
+          Branch(condition, thenTarget, elseTarget) => {
+            _insn(3, condition, 0, 0, pcs[thenTarget] - pc - 1);
+            pc++;
+            _insn(2, 0, 0, 0, pcs[elseTarget] - pc - 1)
+          },
+          ReturnValue(value) => _insn(1, value, 0, 0, 0),
+          Throw(value) => _insn(7, value, 0, 0, 0),
+          _ => null,
+        };
+        pc++;
+      } };
+      i++;
+    }
+  } };
+  null
+};
+
+let _typeEntry = fn(kind: I32, detail: I32) {
+  _byte(kind);
+  _byte(0);
+  _u16(0);
+  _u32(detail);
+  _u32(0)
+};
+
+let _module = fn(program: Program): Bytes {
+  match (program) { Program(functions, pool, enums) => {
+    _types = Array.new<ValueType>(0);
+    _typeKinds = Array.new<I32>(0);
+    _typeDetails = Array.new<I32>(0);
+    _signatures = Array.new<ValueType>(0);
+    _structs = Array.new<Array<ValueType>>(0);
+    _buckets = Array.new<Array<I32>>(0);
+    while (_buckets.len() < 256) { _buckets.push(Array.new<I32>(0)); }
+    let i = 0;
+
+    while (i < enums.len()) {
+      _add(ValueType.Nominal(i), 19, i);
+      i++;
+    }
+    i = 0;
+
+    while (i < enums.len()) {
+      match (enums[i]) { Enum(variants) => {
+        let v = 0;
+
+        while (v < variants.len()) {
+          let f = 0;
+
+          while (f < variants[v].len()) {
+            _typeIndex(variants[v][f]);
+            f++;
+          }
+          v++;
+        }
+      } };
+      i++;
+    }
+    _functionIndexes = Array.new<I32>(0);
+    i = 0;
+
+    while (i < functions.len()) {
+      match (functions[i]) { Function(id, _, registers, _, _, _) => {
+        while (_functionIndexes.len() <= id) { _functionIndexes.push(-1); }
+        _functionIndexes[id] = i;
+        let r = 0;
+
+        while (r < registers.len()) {
+          _typeIndex(registers[r]);
+          r++;
+        }
+      } };
+      i++;
+    }
+    _buffer = Bytes.new(4096);
+    _size = 0;
+    let features = (pool.len() > 0 ? 2 : 0) | (enums.len() > 0 ? 16384 : 0);
+    _u32(1246517570);
+    _u32(1);
+    _u32(features);
+    _u32(_types.len() as I32);
+    _u32(_signatures.len() as I32);
+    _u32(_structs.len() as I32);
+    _u32(0);
+    _u32(functions.len() as I32);
+    _u32(_functionIndex(0));
+    _u32(0);
+    if (enums.len() > 0) { _u32(enums.len() as I32); }
+    if (pool.len() > 0) { _u32(pool.len() as I32); }
+    i = 0;
+
+    while (i < _types.len()) {
+      _typeEntry(_typeKinds[i], _typeDetails[i]);
+      i++;
+    }
+    i = 0;
+
+    while (i < _signatures.len()) {
+      match (_signatures[i]) { Function(args, result) => {
+        match (result) { Value(value) => _u32(_find(value)), Void => null };
+        _u16(args.len() as I32);
+        let a = 0;
+
+        while (a < args.len()) {
+          _u32(_find(args[a]));
+          a++;
+        }
+      }, _ => null };
+      i++;
+    }
+    i = 0;
+
+    while (i < _structs.len()) {
+      _u16(_structs[i].len() as I32);
+      _byte(0);
+      _byte(1);
+      let f = 0;
+
+      while (f < _structs[i].len()) {
+        _u32(_find(_structs[i][f]));
+        f++;
+      }
+      i++;
+    }
+    i = 0;
+
+    while (i < enums.len()) {
+      match (enums[i]) { Enum(variants) => {
+        _u16(variants.len() as I32);
+        let v = 0;
+
+        while (v < variants.len()) {
+          _u16(variants[v].len() as I32);
+          let f = 0;
+
+          while (f < variants[v].len()) {
+            _u32(_find(variants[v][f]));
+            f++;
+          }
+          v++;
+        }
+      } };
+      i++;
+    }
+    i = 0;
+
+    while (i < pool.len()) {
+      _u32(pool[i].len() as I32);
+      _bytes(pool[i]);
+      i++;
+    }
+    i = 0;
+
+    while (i < functions.len()) {
+      try { _function(functions[i]); } catch (e) { throw "function " + Std.string(i) + ": " + Std.string(e); }
+      i++;
+    }
+    Bytes.slice(_buffer, 0, _size)
   } }
 };
 
-let _emitFunction = fn(function: Function, functions: Array<Function>): Bytes {
-  let pieces = Array.new<Bytes>(0);
-
-  match (_allocateFunction(function)) { Allocation(allocatedFunction, scratchStart, scratchSize) => match (allocatedFunction) {
-    Function(_, params, sourceRegisters, _, blocks, entry) => {
-      let i = 0;
-
-      while (i < params.len()) {
-        if (params[i] != i) { throw "JLO emission requires parameters in the first registers"; }
-        i++;
-      }
-      if (params.len() > 255) { throw "JLO emission exceeds call argument limit"; }
-
-      let instructionCount = 0;
-      let blockIds = Array.new<I32>(0);
-      let blockPcs = Array.new<I32>(0);
-      i = 0;
-
-      while (i < blocks.len()) {
-        let block = blocks[_orderedBlockIndex(blocks, entry, i)];
-
-        match (block) {
-          Block(id, instructions, terminator) => {
-            blockIds.push(id);
-            blockPcs.push(instructionCount);
-            instructionCount += _instructionCount(instructions) + _terminatorCount(terminator);
-          },
-        };
-        i++;
-      }
-
-      let registers = sourceRegisters;
-      verifyFinalJloFunction(allocatedFunction, functions, registers, scratchStart, scratchSize, blockIds, blockPcs, instructionCount);
-
-      pieces.push(_u32(-1));
-      pieces.push(_u32(registers.len()));
-      pieces.push(_u32(registers.len()));
-      pieces.push(_u32(params.len()));
-      pieces.push(_u32(instructionCount));
-      i = 0;
-
-      while (i < registers.len()) {
-        pieces.push(_u32(_typeId(registers[i])));
-        i++;
-      }
-
-      let pc = 0;
-      i = 0;
-
-      while (i < blocks.len()) {
-        match (blocks[_orderedBlockIndex(blocks, entry, i)]) {
-          Block(_, instructions, terminator) => {
-            let j = 0;
-
-            while (j < instructions.len()) {
-              match (instructions[j]) {
-                ConstBool(dst, value) => _insn(pieces, 24, dst, 0, 0, value ? 1 : 0),
-                ConstI32(dst, value) => _insn(pieces, 19, dst, 0, 0, value),
-                Move(dst, src) => match (registers[dst]) {
-                  Dynamic => _insn(pieces, 96, dst, src, 0, 0),
-                  _ => _insn(pieces, 4, dst, src, 0, 0),
-                },
-                AddI32(dst, left, right) => _insn(pieces, 28, dst, left, right, 0),
-                SubI32(dst, left, right) => _insn(pieces, 29, dst, left, right, 0),
-                MultiplyI32(dst, left, right) => _insn(pieces, 30, dst, left, right, 0),
-                NegateI32(dst, src) => _insn(pieces, 36, dst, src, 0, 0),
-                NotBool(dst, src) => _insn(pieces, 66, dst, src, 0, 0),
-                EqualI32(dst, left, right) => _insn(pieces, 67, dst, left, right, 0),
-                LessI32Signed(dst, left, right) => _insn(pieces, 68, dst, left, right, 0),
-                SignExtendI32ToI64(dst, src) => _insn(pieces, 77, dst, src, 0, 0),
-                TruncateI64ToI32(dst, src) => _insn(pieces, 81, dst, src, 0, 0),
-                Call(dst, callee, args) => {
-                  _insn(pieces, 11, dst, args.len() == 0 ? scratchStart : args[0], args.len(), _functionIndex(functions, callee));
-                },
-                SpillPush(src, slot) => _insn(pieces, 107, src, 0, 0, slot),
-                SpillPop(dst, slot) => _insn(pieces, 108, dst, 0, 0, slot),
-              };
-              pc++;
-              j++;
-            }
-
-            match (terminator) {
-              Jump(target) => _insn(pieces, 2, 0, 0, 0, _blockPc(blockIds, blockPcs, target) - pc - 1),
-              Branch(condition, thenTarget, elseTarget) => {
-                _insn(pieces, 3, condition, 0, 0, _blockPc(blockIds, blockPcs, thenTarget) - pc - 1);
-                pc++;
-                _insn(pieces, 2, 0, 0, 0, _blockPc(blockIds, blockPcs, elseTarget) - pc - 1);
-              },
-              ReturnValue(value) => _insn(pieces, 1, value, 0, 0, 0),
-              Throw(value) => _insn(pieces, 7, value, 0, 0, 0),
-              _ => {
-                throw "JLO emission does not support terminator";
-                null
-              },
-            };
-            pc++;
-          },
-        };
-        i++;
-      }
-    },
-  } };
-  _join(pieces)
-};
-
-export let emitJlo: (Program) -> Bytes = fn(program) {
-  try { verifyJlo(program); } catch (e) { throw "selected verification: " + Std.string(e); };
-
-  match (program) {
-    Program(functions) => {
-      let entry = _functionIndex(functions, 0);
-
-      match (functions[entry]) {
-        Function(_, params, _, _, _, _) => if (params.len() != 0) { throw "JLO entry function cannot have parameters"; },
-      };
-      let pieces = Array.new<Bytes>(0);
-      pieces.push(_u32(1246517570));
-      pieces.push(_u32(1));
-      pieces.push(_u32(0));
-      pieces.push(_u32(4));
-      pieces.push(_u32(0));
-      pieces.push(_u32(0));
-      pieces.push(_u32(0));
-      pieces.push(_u32(functions.len()));
-      pieces.push(_u32(entry));
-      pieces.push(_u32(0));
-      pieces.push(_u8(2));
-      pieces.push(_u8(0));
-      pieces.push(_u16(0));
-      pieces.push(_u32(0));
-      pieces.push(_u32(0));
-      pieces.push(_u8(6));
-      pieces.push(_u8(0));
-      pieces.push(_u16(0));
-      pieces.push(_u32(0));
-      pieces.push(_u32(0));
-      pieces.push(_u8(7));
-      pieces.push(_u8(0));
-      pieces.push(_u16(0));
-      pieces.push(_u32(0));
-      pieces.push(_u32(0));
-      pieces.push(_u8(18));
-      pieces.push(_u8(0));
-      pieces.push(_u16(0));
-      pieces.push(_u32(0));
-      pieces.push(_u32(0));
-      let functionIndex = 0;
-
-      while (functionIndex < functions.len()) {
-        try { pieces.push(_emitFunction(functions[functionIndex], functions)); } catch (e) { throw "function " + Std.string(functionIndex) + ": " + Std.string(e); }
-        functionIndex++;
-      }
-      let bytes = _join(pieces);
-      verifyJloBytes(bytes);
-      bytes
-    },
-  }
-};
+export let emitJlo: (Program) -> Bytes = fn(program) { _module(allocateProgram(program)) };

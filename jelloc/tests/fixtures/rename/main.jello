@@ -1,0 +1,15 @@
+import { step } from lib.Steps;
+
+let viaMatch = fn(x: I32): I32 { match (x) { step => step } };
+let viaCatch = fn(): I32 { try { throw 1; } catch (step) { step } };
+let viaWith = fn(x: I32): I32 { with step <- x { step } else { _ => 0 } };
+let viaList = fn(xs: List<I32>): List<I32> { list[for step <- xs, do: step] };
+
+let viaLet = fn(pair: Tuple<I32, I32>): I32 {
+  let (step, other) = pair;
+  step + other
+};
+let viaParam = fn(step: I32): I32 { step };
+let viaPin = fn(x: I32): I32 { match (x) { ^step => 1, _ => 0 } };
+let direct = fn(x: I32): I32 { step(x) };
+direct(1)

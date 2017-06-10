@@ -4,12 +4,8 @@ export enum ValueType {
   Bool;
   I32;
   I64;
-  F32;
-  F64;
   Bytes;
-  Atom;
   Dynamic;
-  Object;
   ArrayOf(element: ValueType);
   TupleOf(elements: Array<ValueType>);
   Nominal(id: I32);
@@ -21,27 +17,27 @@ export enum ReturnType {
   Value(ty: ValueType);
 }
 
-export enum Instruction {
-  ConstBool(dst: I32, value: Bool);
-  ConstI32(dst: I32, value: I32);
-  ConstI64(dst: I32, value: I64);
-  ConstF64(dst: I32, value: F64);
-  ConstBytes(dst: I32, value: Bytes);
-  ConstNull(dst: I32);
-  Move(dst: I32, src: I32);
-  AddI32Wrap(dst: I32, left: I32, right: I32);
-  SubI32Wrap(dst: I32, left: I32, right: I32);
-  MultiplyI32Wrap(dst: I32, left: I32, right: I32);
-  NegateI32Wrap(dst: I32, src: I32);
-  NotBool(dst: I32, src: I32);
-  CallDirect(dst: I32, function: I32, args: Array<I32>);
-  EqualI32(dst: I32, left: I32, right: I32);
-  LessI32Signed(dst: I32, left: I32, right: I32);
-  SignExtendI32ToI64(dst: I32, src: I32);
-  TruncateI64ToI32(dst: I32, src: I32);
-  Truthy(dst: I32, src: I32);
-  ToDynamic(dst: I32, src: I32);
+export enum Op {
+  ConstBool; ConstI32; ConstBytes; ConstNull; ConstFunction; Move;
+  Add; Sub; Mul; Neg; Not; Eq; Lt; Sext; Trunc; Box; IsNull;
+  ArrayNew; ArrayLen; ArrayGet; ArraySet; BytesGet;
+  TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
+  Call; CallIndirect;
+  StructNew; StructSet; PhysEq; SpillPush; SpillPop;
 }
+
+export enum Instruction {
+  Instruction(op: Op, dst: I32, args: Array<I32>, imm: I32);
+}
+
+export let instruction: (Op, I32, Array<I32>, I32) -> Instruction = fn(op, dst, args, imm) {
+  Instruction.Instruction(op, dst, args, imm)
+};
+
+export let opOf: (Instruction) -> Op = fn(instruction) { match (instruction) { Instruction(op, _, _, _) => op } };
+export let dstOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, dst, _, _) => dst } };
+export let argsOf: (Instruction) -> Array<I32> = fn(instruction) { match (instruction) { Instruction(_, _, args, _) => args } };
+export let immOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, _, _, imm) => imm } };
 
 export enum Effect {
   MayReadMemory;
@@ -85,28 +81,54 @@ export enum Function {
   );
 }
 
+export enum EnumSchema { Enum(variants: Array<Array<ValueType>>); }
+
 export enum Program {
-  Program(functions: Array<Function>);
+  Program(functions: Array<Function>, bytes: Array<Bytes>, enums: Array<EnumSchema>);
 }
 
-export let instructionEffects: (Instruction) -> Array<Effect> = fn(instruction) {
-  match (instruction) {
-    ToDynamic(_, _) => [Effect.MayAllocate],
-    CallDirect(_, _, _) => [Effect.MayCall, Effect.MayThrow],
+export let opEffects: (Op) -> Array<Effect> = fn(op) {
+  match (op) {
+    Box, ConstFunction, ArrayNew, EnumNew, StructNew => [Effect.MayAllocate],
+    Call, CallIndirect => [Effect.MayCall, Effect.MayThrow],
+    BytesGet, ArrayLen, ArrayGet, TupleGet, EnumGet => [Effect.MayReadMemory, Effect.MayTrap],
+    ArraySet, StructSet => [Effect.MayWriteMemory, Effect.MayTrap],
+    TupleNew => [Effect.MayAllocate, Effect.MayWriteMemory],
     _ => [],
   }
 };
 
 export let instructionMayThrow: (Instruction) -> Bool = fn(instruction) {
-  let effects = instructionEffects(instruction);
+  match (opOf(instruction)) { Call, CallIndirect => true, _ => false }
+};
+
+let _equal: (ValueType, ValueType) -> Bool = fn(_left, _right) { false };
+
+export let valueTypesEqual: (Array<ValueType>, Array<ValueType>) -> Bool = fn(left, right) {
+  if (left.len() != right.len()) { return false; }
   let i = 0;
 
-  while (i < effects.len()) {
-    match (effects[i]) {
-      MayThrow => { return true; },
-      _ => null,
-    };
+  while (i < left.len()) {
+    if (!_equal(left[i], right[i])) { return false; }
     i++;
   }
-  false
+  true
 };
+
+export let returnTypeEqual: (ReturnType, ReturnType) -> Bool = fn(left, right) {
+  match ((left, right)) { (Void, Void) => true, (Value(a), Value(b)) => _equal(a, b), _ => false }
+};
+
+_equal = fn(left, right) {
+  match ((left, right)) {
+    (Bool, Bool), (I32, I32), (I64, I64), (Bytes, Bytes), (Dynamic, Dynamic) => true,
+    (Nominal(a), Nominal(b)) => a == b,
+    (ArrayOf(a), ArrayOf(b)) => _equal(a, b),
+    (TupleOf(a), TupleOf(b)) => valueTypesEqual(a, b),
+    (Function(leftArgs, leftResult), Function(rightArgs, rightResult)) =>
+      valueTypesEqual(leftArgs, rightArgs) && returnTypeEqual(leftResult, rightResult),
+    _ => false,
+  }
+};
+
+export let valueTypeEqual: (ValueType, ValueType) -> Bool = fn(left, right) { _equal(left, right) };

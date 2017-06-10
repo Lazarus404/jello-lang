@@ -1,0 +1,103 @@
+package ir;
+
+export let bitsNew: (I32) -> Array<I32> = fn(size) {
+  let words = (size + 31) >> 5;
+  let set = Array.new<I32>(words);
+  let i = 0;
+
+  while (i < words) {
+    set[i] = 0;
+    i++;
+  }
+  set
+};
+
+export let bitsFull: (I32) -> Array<I32> = fn(size) {
+  let set = bitsNew(size);
+  let i = 0;
+
+  while (i < set.len()) {
+    set[i] = -1;
+    i++;
+  }
+  set
+};
+
+export let bitsHas: (Array<I32>, I32) -> Bool = fn(set, value) { ((set[value >> 5] >> (value & 31)) & 1) == 1 };
+
+export let bitsAdd: (Array<I32>, I32) -> Bool = fn(set, value) {
+  set[value >> 5] = set[value >> 5] | (1 << (value & 31));
+  true
+};
+
+export let bitsRemove: (Array<I32>, I32) -> Bool = fn(set, value) {
+  set[value >> 5] = set[value >> 5] & ((1 << (value & 31)) ^ -1);
+  true
+};
+
+export let bitsCopy: (Array<I32>) -> Array<I32> = fn(set) {
+  let copy = Array.new<I32>(set.len());
+  let i = 0;
+
+  while (i < set.len()) {
+    copy[i] = set[i];
+    i++;
+  }
+  copy
+};
+
+export let bitsEqual: (Array<I32>, Array<I32>) -> Bool = fn(left, right) {
+  let i = 0;
+
+  while (i < left.len()) {
+    if (left[i] != right[i]) { return false; }
+    i++;
+  }
+  true
+};
+
+export let bitsUnion: (Array<I32>, Array<I32>) -> Bool = fn(dst, src) {
+  let changed = false;
+  let i = 0;
+
+  while (i < dst.len()) {
+    let word = dst[i] | src[i];
+
+    if (word != dst[i]) {
+      dst[i] = word;
+      changed = true;
+    }
+    i++;
+  }
+  changed
+};
+
+export let bitsIntersect: (Array<I32>, Array<I32>) -> Bool = fn(dst, src) {
+  let i = 0;
+
+  while (i < dst.len()) {
+    dst[i] = dst[i] & src[i];
+    i++;
+  }
+  true
+};
+
+export let bitsMembers: (Array<I32>) -> Array<I32> = fn(set) {
+  let members = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < set.len()) {
+    let word = set[i];
+
+    if (word != 0) {
+      let bit = 0;
+
+      while (bit < 32) {
+        if (((word >> bit) & 1) == 1) { members.push((i << 5) + bit); }
+        bit++;
+      }
+    }
+    i++;
+  }
+  members
+};

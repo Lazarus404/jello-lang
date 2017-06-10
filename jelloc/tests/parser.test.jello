@@ -29,7 +29,7 @@ test("parses package, declarations, precedence, and program tail", fn(t) {
   let program = parseProgram(lex(
     "package demo.core; import type {Box as B} from lib.types; let x: I32 = 1 + 2 * 3; x"
   ));
-  t.is(program, Program.Program(
+  t.deepEqual(program, Program.Program(
     Package.Path(["demo", "core"]),
     [
       Stmt.ImportFrom(
@@ -86,7 +86,7 @@ test("parses representative patterns and nested generic types", fn(t) {
 });
 
 test("rejects malformed syntax and missing semicolons", fn(t) {
-  t.throws(fn(_t) { parseProgram(lex("let x = 1")); });
+  t.throws(fn(_t) { parseProgram(lex("let x = 1 let y = 2")); });
   t.throws(fn(_t) { parseProgram(lex("while x {}")); });
   t.throws(fn(_t) { parseProgram(lex("package demo let x = 1;")); });
 });
@@ -109,7 +109,7 @@ test("parses match regexp, fallthrough, and enum payload patterns", fn(t) {
   ));
 
   match (program) {
-    Program(_, _, tail) => t.is(tail, Expr.Match(Expr.Variable("x"), [
+    Program(_, _, tail) => t.deepEqual(tail, Expr.Match(Expr.Variable("x"), [
       MatchArm.Arm(Pattern.Enum("A", []), null, Block.Block([], null)),
       MatchArm.Arm(Pattern.Enum("B", [Pattern.BindPattern("v")]), null, Block.Block([], Expr.Variable("v"))),
       MatchArm.Arm(Pattern.RegExp("a+", "", "m"), null, Block.Block([], Expr.Variable("m"))),
@@ -124,7 +124,7 @@ test("preserves guards on bodyless match arms", fn(t) {
   ));
 
   match (program) {
-    Program(_, _, tail) => t.is(tail, Expr.Match(Expr.Variable("x"), [
+    Program(_, _, tail) => t.deepEqual(tail, Expr.Match(Expr.Variable("x"), [
       MatchArm.Arm(Pattern.Enum("A", []), Expr.Variable("a"), Block.Block([], null)),
       MatchArm.Arm(Pattern.Enum("B", []), Expr.Variable("b"), Block.Block([], null)),
       MatchArm.Arm(Pattern.Enum("C", []), null, Block.Block([], Expr.Variable("value")))
@@ -139,35 +139,35 @@ test("builds exact ASTs for names, spreads, new, lists, and varargs", fn(t) {
 
   match (program) {
     Program(_, statements, tail) => {
-      t.is(statements[0], Stmt.LetStmt(false, false, Pattern.BindPattern("f"), [],
+      t.deepEqual(statements[0], Stmt.LetStmt(false, false, Pattern.BindPattern("f"), [],
         Type.Function([Type.VarargsArg(Type.Named("I32"))], Type.Named("I32")),
         Expr.Function([Parameter.Parameter("xs", null, ParameterKind.Varargs)], null,
           Block.Block([], Expr.Integer("0", IntSize.Infer)), false)));
-      t.is(statements[1], Stmt.Expression(Expr.New(
+      t.deepEqual(statements[1], Stmt.Expression(Expr.New(
         Expr.TypeApply(Expr.Variable("Box"), [Type.Named("I32")]),
         [Expr.Spread(Expr.Variable("xs"))]
       )));
-      t.is(statements[2], Stmt.Expression(Expr.Object([
+      t.deepEqual(statements[2], Stmt.Expression(Expr.Object([
         ObjectEntry.Field("type", Expr.Variable("t"))
       ])));
-      t.is(statements[3], Stmt.Expression(Expr.Tuple([
+      t.deepEqual(statements[3], Stmt.Expression(Expr.Tuple([
         Expr.Spread(Expr.Variable("xs")), Expr.Variable("x")
       ])));
-      t.is(statements[4], Stmt.Expression(Expr.List(
+      t.deepEqual(statements[4], Stmt.Expression(Expr.List(
         ListLiteral.Cons([Expr.Variable("head")], Expr.Variable("tail")))));
-      t.is(statements[5], Stmt.Expression(Expr.List(ListLiteral.Spread(
+      t.deepEqual(statements[5], Stmt.Expression(Expr.List(ListLiteral.Spread(
         [Expr.Variable("a")], Expr.Variable("rest"), [Expr.Variable("b")]
       ))));
-      t.is(statements[6], Stmt.Expression(Expr.Call(
+      t.deepEqual(statements[6], Stmt.Expression(Expr.Call(
         Expr.Member(Expr.Variable("Array"), "new"), [],
         [Expr.Spread(Expr.Variable("xs"))]
       )));
-      t.is(statements[7], Stmt.Expression(Expr.Array([
+      t.deepEqual(statements[7], Stmt.Expression(Expr.Array([
         Expr.Variable("x"), Expr.Spread(Expr.Variable("xs"))
       ])));
-      t.is(statements[8], Stmt.Expression(
+      t.deepEqual(statements[8], Stmt.Expression(
         Expr.Member(Expr.Variable("t"), "0")));
-      t.is(tail, Expr.List(ListLiteral.Cons([Expr.Variable("head")], Expr.Variable("tail"))));
+      t.deepEqual(tail, Expr.List(ListLiteral.Cons([Expr.Variable("head")], Expr.Variable("tail"))));
     }
   };
 });
@@ -180,16 +180,16 @@ test("builds exact pattern and control-statement ASTs", fn(t) {
   match (program) {
     Program(_, statements, tail) => {
       match (statements[0]) {
-        LetStmt(_, _, _, _, _, Function(_, _, Block(body, _), _)) => {
-          t.is(body[0], Stmt.Expression(Expr.If(
+        LetStmt(_, _, _, _, _, value) => match (value) { Function(_, _, Block(body, _), _) => {
+          t.deepEqual(body[0], Stmt.Expression(Expr.If(
             Expr.Variable("x"),
             Expr.BlockExpr(Block.Block([], Expr.Integer("1", IntSize.Infer))),
             Expr.Null
           )));
-        },
+        }, _ => t.fail("expected function expression") },
         _ => t.fail("expected function declaration"),
       };
-      t.is(tail, Expr.Match(Expr.Variable("x"), [
+      t.deepEqual(tail, Expr.Match(Expr.Variable("x"), [
         MatchArm.Arm(Pattern.IsType(Type.Named("__fn__"), "f"), null,
           Block.Block([], Expr.Variable("f"))),
         MatchArm.Arm(Pattern.Integer("35", IntSize.Infer), null,
@@ -208,7 +208,7 @@ test("parses else-if chains and keyword-led blocks", fn(t) {
 
   match (program) {
     Program(_, statements, tail) => {
-      t.is(statements[0], Stmt.Expression(Expr.If(
+      t.deepEqual(statements[0], Stmt.Expression(Expr.If(
         Expr.Variable("a"),
         Expr.BlockExpr(Block.Block([], Expr.Integer("1", IntSize.Infer))),
         Expr.If(
@@ -217,9 +217,9 @@ test("parses else-if chains and keyword-led blocks", fn(t) {
           Expr.BlockExpr(Block.Block([], Expr.Integer("3", IntSize.Infer)))
         )
       )));
-      t.is(statements[1], Stmt.Expression(
+      t.deepEqual(statements[1], Stmt.Expression(
         Expr.BlockExpr(Block.Block([], Expr.Null))));
-      t.is(tail, Expr.Object([
+      t.deepEqual(tail, Expr.Object([
         ObjectEntry.Field("null", Expr.Variable("value"))
       ]));
     }
@@ -233,18 +233,18 @@ test("parses macro and quote control-expression statements", fn(t) {
 
   match (program) {
     Program(_, statements, tail) => {
-      t.is(statements[0], Stmt.Macro(false, "m", [], [
+      t.deepEqual(statements[0], Stmt.Macro(false, "m", [], [
         Stmt.Expression(Expr.If(Expr.Variable("x"),
           Expr.BlockExpr(Block.Block([], Expr.Integer("1", IntSize.Infer))), Expr.Null)),
         Stmt.Expression(Expr.Variable("value"))
       ]));
-      t.is(statements[1], Stmt.Expression(Expr.Quote(QuoteKind.Statements,
+      t.deepEqual(statements[1], Stmt.Expression(Expr.Quote(QuoteKind.Statements,
         QuoteBody.Statements([
           Stmt.Expression(Expr.If(Expr.Variable("x"),
             Expr.BlockExpr(Block.Block([], Expr.Integer("1", IntSize.Infer))), Expr.Null)),
           Stmt.Expression(Expr.Variable("value"))
       ]))));
-      t.is(tail, Expr.Quote(QuoteKind.Statement,
+      t.deepEqual(tail, Expr.Quote(QuoteKind.Statement,
         QuoteBody.Statement(Stmt.Expression(Expr.Variable("value")))));
     }
   };
@@ -257,12 +257,12 @@ test("auto-detects quote bodies and rejects empty statement quotes", fn(t) {
 
   match (program) {
     Program(_, statements, tail) => {
-      t.is(statements[0], Stmt.Expression(Expr.Quote(QuoteKind.Auto,
+      t.deepEqual(statements[0], Stmt.Expression(Expr.Quote(QuoteKind.Auto,
         QuoteBody.Expression(Expr.Variable("value")))));
-      t.is(statements[1], Stmt.Expression(Expr.Quote(QuoteKind.Auto,
+      t.deepEqual(statements[1], Stmt.Expression(Expr.Quote(QuoteKind.Auto,
         QuoteBody.Statement(Stmt.LetStmt(false, false, Pattern.BindPattern("x"), [], null,
           Expr.Integer("1", IntSize.Infer))))));
-      t.is(tail, Expr.Quote(QuoteKind.Auto, QuoteBody.Statements([
+      t.deepEqual(tail, Expr.Quote(QuoteKind.Auto, QuoteBody.Statements([
         Stmt.LetStmt(false, false, Pattern.BindPattern("x"), [], null,
           Expr.Integer("1", IntSize.Infer)),
         Stmt.Return(Expr.Variable("x"))
@@ -276,11 +276,11 @@ test("auto-detects quote bodies and rejects empty statement quotes", fn(t) {
 
 test("classifies let by terminator and parses structural function fields", fn(t) {
   let expression = parseProgram(lex("let x = 1"));
-  t.is(expression, Program.Program(Package.None, [], Expr.LetExpr(
+  t.deepEqual(expression, Program.Program(Package.None, [], Expr.LetExpr(
     Pattern.BindPattern("x"), [], null, Expr.Integer("1", IntSize.Infer))));
 
   let declaration = parseProgram(lex("let x = 1; x"));
-  t.is(declaration, Program.Program(Package.None, [
+  t.deepEqual(declaration, Program.Program(Package.None, [
     Stmt.LetStmt(false, false, Pattern.BindPattern("x"), [], null,
       Expr.Integer("1", IntSize.Infer))
   ], Expr.Variable("x")));
@@ -288,7 +288,7 @@ test("classifies let by terminator and parses structural function fields", fn(t)
   let typedefProgram = parseProgram(lex("typedef Box = { let f: (I32) -> I32; };"));
 
   match (typedefProgram) {
-    Program(_, statements, _) => t.is(statements[0], Stmt.Typedef(false, "Box", [],
+    Program(_, statements, _) => t.deepEqual(statements[0], Stmt.Typedef(false, "Box", [],
       TypedefBody.Struct([StructField.Field("f",
         Type.Function([Type.Named("I32")], Type.Named("I32")))])))
   };
@@ -300,15 +300,15 @@ test("defines assignment and shift precedence", fn(t) {
 
   match (program) {
     Program(_, statements, tail) => {
-      t.is(statements[0], Stmt.Expression(Expr.Assign(AssignOp.Assign,
+      t.deepEqual(statements[0], Stmt.Expression(Expr.Assign(AssignOp.Assign,
         Expr.Variable("a"), Expr.Binary(BinaryOp.Add, Expr.Variable("b"),
           Expr.Binary(BinaryOp.ShiftLeft, Expr.Variable("c"), Expr.Variable("d"))))));
-      t.is(statements[1], Stmt.Expression(Expr.Binary(BinaryOp.Add,
+      t.deepEqual(statements[1], Stmt.Expression(Expr.Binary(BinaryOp.Add,
         Expr.Binary(BinaryOp.ShiftLeft, Expr.Variable("a"), Expr.Variable("b")),
         Expr.Variable("c"))));
-      t.is(statements[2], Stmt.Expression(Expr.Binary(BinaryOp.Add, Expr.Variable("a"),
+      t.deepEqual(statements[2], Stmt.Expression(Expr.Binary(BinaryOp.Add, Expr.Variable("a"),
         Expr.Binary(BinaryOp.ShiftLeft, Expr.Variable("b"), Expr.Variable("c")))));
-      t.is(tail, Expr.Pipe(Expr.Variable("value"),
+      t.deepEqual(tail, Expr.Pipe(Expr.Variable("value"),
         Expr.Member(Expr.Topic, "field")));
     }
   };
@@ -323,16 +323,16 @@ test("defines comparison, ternary, and await associativity", fn(t) {
 
   match (program) {
     Program(_, statements, tail) => {
-      t.is(statements[0], Stmt.Expression(Expr.Binary(BinaryOp.Greater,
+      t.deepEqual(statements[0], Stmt.Expression(Expr.Binary(BinaryOp.Greater,
         Expr.Binary(BinaryOp.Less, Expr.Variable("a"), Expr.Variable("b")),
         Expr.Variable("c"))));
-      t.is(statements[1], Stmt.Expression(Expr.Call(Expr.Variable("f"),
+      t.deepEqual(statements[1], Stmt.Expression(Expr.Call(Expr.Variable("f"),
         [Type.Named("T")], [Expr.Variable("x")])));
-      t.is(statements[2], Stmt.Expression(Expr.Conditional(Expr.Variable("a"),
+      t.deepEqual(statements[2], Stmt.Expression(Expr.Conditional(Expr.Variable("a"),
         Expr.Variable("b"), Expr.Conditional(Expr.Variable("c"), Expr.Variable("d"), Expr.Variable("e")))));
-      t.is(statements[3], Stmt.Expression(Expr.Conditional(
+      t.deepEqual(statements[3], Stmt.Expression(Expr.Conditional(
         Expr.Variable("a"), Expr.Variable("b"), Expr.Null)));
-      t.is(tail, Expr.Call(Expr.Await(Expr.Variable("f")), [], [Expr.Variable("x")]));
+      t.deepEqual(tail, Expr.Call(Expr.Await(Expr.Variable("f")), [], [Expr.Variable("x")]));
     }
   };
 });

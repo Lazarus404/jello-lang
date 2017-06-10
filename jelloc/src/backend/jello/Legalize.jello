@@ -1,103 +1,111 @@
 package backend.jello;
 
-import type {
-  BasicBlock as IrBlock,
-  Function as IrFunction,
-  Instruction as IrInstruction,
-  Program as IrProgram,
-  Terminator,
-  ValueType as IrValueType,
-} from ir.Model;
-import { ValueType } from ir.Model;
-import type {
-  Block as JloBlock,
-  Function as JloFunction,
-  Instruction as JloInstruction,
-  Program as JloProgram,
-} from backend.jello.Model;
-import { verifyJlo } from backend.jello.Verify;
+import type { BasicBlock, Function, Instruction, Program, Terminator, ValueType } from ir.Model;
+import { BasicBlock, Function, Op, Program, Terminator, ValueType, argsOf, dstOf, immOf, instruction, opOf } from ir.Model;
+import { verifyProgram } from ir.Verify;
 
-let _instruction = fn(instruction: IrInstruction): JloInstruction {
-  match (instruction) {
-    ConstBool(dst, value) => JloInstruction.ConstBool(dst, value),
-    ConstI32(dst, value) => JloInstruction.ConstI32(dst, value),
-    Move(dst, src) => JloInstruction.Move(dst, src),
-    AddI32Wrap(dst, left, right) => JloInstruction.AddI32(dst, left, right),
-    SubI32Wrap(dst, left, right) => JloInstruction.SubI32(dst, left, right),
-    MultiplyI32Wrap(dst, left, right) => JloInstruction.MultiplyI32(dst, left, right),
-    NegateI32Wrap(dst, src) => JloInstruction.NegateI32(dst, src),
-    NotBool(dst, src) => JloInstruction.NotBool(dst, src),
-    EqualI32(dst, left, right) => JloInstruction.EqualI32(dst, left, right),
-    LessI32Signed(dst, left, right) => JloInstruction.LessI32Signed(dst, left, right),
-    SignExtendI32ToI64(dst, src) => JloInstruction.SignExtendI32ToI64(dst, src),
-    TruncateI64ToI32(dst, src) => JloInstruction.TruncateI64ToI32(dst, src),
-    CallDirect(dst, function, args) => JloInstruction.Call(dst, function, args),
+let _registers = Array.new<ValueType>(0);
+let _out = Array.new<Instruction>(0);
+
+let _fresh = fn(ty: ValueType): I32 {
+  _registers.push(ty);
+  (_registers.len() - 1) as I32
+};
+
+let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
+  _out.push(instruction(op, dst, args, imm));
+  null
+};
+
+let _instruction = fn(insn: Instruction) {
+  let dst = dstOf(insn);
+  let args = argsOf(insn);
+
+  match (opOf(insn)) {
+    TupleNew => {
+      _emit(Op.StructNew, dst, Array.new<I32>(0), 0);
+      let i = 0;
+
+      while (i < args.len()) {
+        _emit(Op.StructSet, -1, [dst, args[i]], i);
+        i++;
+      }
+      null
+    },
+    IsNull => {
+      let nullValue = _fresh(ValueType.Dynamic);
+      _emit(Op.ConstNull, nullValue, Array.new<I32>(0), 0);
+      _emit(Op.PhysEq, dst, [args[0], nullValue], 0)
+    },
+    EnumNew, EnumTag, EnumGet => {
+      throw "JLO legalization does not support enum values yet";
+      null
+    },
     _ => {
-      throw "JLO legalization does not support IR instruction";
-      JloInstruction.Move(0, 0)
+      _out.push(insn);
+      null
     },
   }
 };
 
-let _block = fn(block: IrBlock, registers: Array<IrValueType>): JloBlock {
-  match (block) {
-    Block(id, instructions, terminator, handler) => {
-      if (handler != null) { throw "JLO legalization does not support catch handlers"; }
-      let selected = Array.new<JloInstruction>(0);
-      let i = 0;
+let _block = fn(block: BasicBlock): BasicBlock {
+  match (block) { Block(id, instructions, terminator, handler) => {
+    if (handler != null) { throw "JLO legalization does not support catch handlers"; }
+    _out = Array.new<Instruction>(0);
+    let i = 0;
 
-      while (i < instructions.len()) {
-        selected.push(_instruction(instructions[i]));
-        i++;
-      }
-      let selectedTerminator = terminator;
+    while (i < instructions.len()) {
+      _instruction(instructions[i]);
+      i++;
+    }
 
-      match (terminator) {
-        Throw(value) => {
-          let payload = registers.len() as I32;
-          registers.push(ValueType.Dynamic);
-          selected.push(JloInstruction.Move(payload, value));
-          selectedTerminator = Terminator.Throw(payload);
-        },
-        Unreachable => {
-          throw "JLO legalization does not support unreachable terminators";
-          null
-        },
-        _ => null,
-      };
-      JloBlock.Block(id, selected, selectedTerminator)
-    },
-  }
+    let selected = match (terminator) {
+      Throw(value) => {
+        let payload = _fresh(ValueType.Dynamic);
+        _emit(Op.Box, payload, [value], 0);
+        Terminator.Throw(payload)
+      },
+      Unreachable => {
+        throw "JLO legalization does not support unreachable terminators";
+        terminator
+      },
+      _ => terminator,
+    };
+    BasicBlock.Block(id, _out, selected, null)
+  } }
 };
 
-let _function = fn(function: IrFunction): JloFunction {
-  match (function) {
-    Function(id, params, registers, result, blocks, entry) => {
-      let selected = Array.new<JloBlock>(0);
-      let i = 0;
+let _function = fn(function: Function): Function {
+  match (function) { Function(id, params, registers, result, blocks, entry) => {
+    _registers = Array.new<ValueType>(0);
+    let r = 0;
 
-      while (i < blocks.len()) {
-        selected.push(_block(blocks[i], registers));
-        i++;
-      }
-      JloFunction.Function(id, params, registers, result, selected, entry)
-    },
-  }
+    while (r < registers.len()) {
+      _registers.push(registers[r]);
+      r++;
+    }
+    let selected = Array.new<BasicBlock>(0);
+    let i = 0;
+
+    while (i < blocks.len()) {
+      selected.push(_block(blocks[i]));
+      i++;
+    }
+    Function.Function(id, params, _registers, result, selected, entry)
+  } }
 };
 
-export let legalizeJlo: (IrProgram) -> JloProgram = fn(program) {
-  let legalized = match (program) {
-    Program(functions) => {
-      let selected = Array.new<JloFunction>(0);
-      let i = 0;
+export let legalizeJlo: (Program) -> Program = fn(program) {
+  let legalized = match (program) { Program(functions, pool, enums) => {
+    let selected = Array.new<Function>(0);
+    let i = 0;
 
-      while (i < functions.len()) {
-        selected.push(_function(functions[i]));
-        i++;
-      }
-      JloProgram.Program(selected)
-    },
-  };
-  verifyJlo(legalized);
+    while (i < functions.len()) {
+      selected.push(_function(functions[i]));
+      i++;
+    }
+    Program.Program(selected, pool, enums)
+  } };
+  verifyProgram(legalized);
   legalized
 };

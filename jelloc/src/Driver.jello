@@ -1,113 +1,107 @@
 import { lexFile } from frontend.Lexer;
 import type { Token } from frontend.Lexer;
-import { parseProgram } from frontend.Parser;
+import { parseProgram, programSyntax } from frontend.Parser;
+import { sourceDiagnostic } from frontend.Source;
+import type { SourceSpan } from frontend.Source;
 import { printTokens } from frontend.Tokens;
-import { typeCheckProgramWithSyntaxAt } from frontend.TypeCheck;
-import { loadProgramWithSyntax } from frontend.Modules;
+import { checkFailureSpan, typeCheckProgramWithSyntax } from frontend.TypeCheck;
+import { loadProgram } from frontend.Modules;
 import { printHir } from frontend.PrintHir;
 import { lowerProgram } from ir.Lower;
 import { printIr } from ir.Print;
 import { legalizeJlo } from backend.jello.Legalize;
-import { printJlo } from backend.jello.Print;
+import { allocateProgram } from backend.jello.Allocate;
 import { emitJlo } from backend.jello.Emit;
 import { readText, writeText } from std.io.File;
 
-let _parseArgs = fn(argv: List<Bytes>) {
+import type { Program as AstProgram } from frontend.Ast;
+import type { Hir } from frontend.Hir;
+
+enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; }
+
+let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
   let input = "";
-  let printLex = false;
-  let parseOnly = false;
-  let printLowered = false;
-  let printTyped = false;
-  let printLegalized = false;
+  let mode: ?Mode = null;
   let output = "";
   let cur = argv;
 
-  while (List.is_nil(cur) == false) {
+  while (!List.is_nil(cur)) {
     let arg = List.head(cur);
+    let flag: ?Mode = match (arg) { "--lex" => Mode.Lex, "--parse" => Mode.Parse, "--hir" => Mode.Typed, "--ir" => Mode.Lowered, "--jlo" => Mode.Legalized, _ => null };
 
-    if (arg == "--lex") {
-      printLex = true;
-    } else if (arg == "--parse") {
-      parseOnly = true;
-    } else if (arg == "--ir") {
-      printLowered = true;
-    } else if (arg == "--hir") {
-      printTyped = true;
-    } else if (arg == "--jlo") {
-      printLegalized = true;
-    } else if (arg == "--out") {
-      cur = List.tail(cur);
-      if (List.is_nil(cur)) { throw "--out requires a path"; }
-      output = List.head(cur);
-    } else if (input == "") {
-      input = arg;
+    if (flag != null) {
+      if (mode != null) { throw "choose one of --lex, --parse, --hir, --ir, --jlo"; }
+      mode = flag;
     } else {
-      throw ("unexpected argument: " + arg);
-      null
+      match (arg) {
+        "--out" => {
+          cur = List.tail(cur);
+          if (List.is_nil(cur)) { throw "--out requires a path"; }
+          output = List.head(cur);
+          null
+        },
+        _ when (input == "") => {
+          input = arg;
+          null
+        },
+        _ => {
+          throw "unexpected argument: " + arg;
+          null
+        },
+      };
     }
     cur = List.tail(cur);
   }
+  if (input == "") { throw "usage: jelloc <input.jello> [--lex|--parse|--hir|--ir|--jlo|--out path]"; }
+  (input, mode == null ? Mode.Emit : mode, output)
+};
 
-  if (input == "") {
-    throw "usage: jelloc <input.jello> [--lex|--parse|--hir|--ir|--jlo|--out path]";
-    null
-  }
-  (input, printLex, parseOnly, printTyped, printLowered, printLegalized, output)
+let _checked = fn(input: Bytes): Hir {
+  let (program, sourceSyntax) = loadProgram(input);
+  typeCheckProgramWithSyntax(program, sourceSyntax)
+};
+
+let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
+  match (span) { Span(path, start, _) => sourceDiagnostic(path, readText(path), start, message) }
+};
+
+let _located = fn(message: Bytes): Bytes {
+  let span = checkFailureSpan();
+  if (span == null) { message } else { _diagnostic(span, message) }
+};
+
+let _report: (Bytes, () -> Bytes) -> Bytes = fn(label, stage) {
+  try { stage() } catch (e) { label + "\t" + _located(Std.string(e)) + "\n" }
+};
+
+let _checkSyntax = fn(program: AstProgram): Bytes {
+  try {
+    programSyntax(program);
+    ""
+  } catch (e) { "SYNTAX\t" + Std.string(e) + "\n" }
+};
+
+let _parse = fn(input: Bytes): Bytes {
+  let (tokens, lexError) = try { (lexFile(readText(input), input), "") } catch (e) { (Array.new<Token>(0), Std.string(e)) };
+  if (lexError != "") { return "LEXER\t" + lexError + "\n"; }
+  _report("PARSER", fn() { _checkSyntax(parseProgram(tokens)) })
 };
 
 export let run: (List<Bytes>) -> Bytes = fn(argv) {
-  let (input, printLex, parseOnly, printTyped, printLowered, printLegalized, output) = _parseArgs(argv);
+  let (input, mode, output) = _parseArgs(argv);
 
-  if (printLex) {
-    try { printTokens(lexFile(readText(input), input)) } catch (e) {
-      "LexError: " + Std.string(e) + "\n"
-    }
-  } else if (parseOnly) {
-    let lexed = try { (lexFile(readText(input), input), "") } catch (e) {
-      (Array.new<Token>(0), Std.string(e))
-    };
-    let (parsedTokens, lexError) = lexed;
-
-    if (lexError != "") { "LEXER\t" + lexError + "\n" } else {
-      try {
-        parseProgram(parsedTokens);
+  match (mode) {
+    Lex => try { printTokens(lexFile(readText(input), input)) } catch (e) { "LexError: " + Std.string(e) + "\n" },
+    Parse => _parse(input),
+    Typed => _report("HIR", fn() { printHir(_checked(input)) }),
+    Lowered => _report("IR", fn() { printIr(lowerProgram(_checked(input))) }),
+    Legalized => _report("JLO", fn() { printIr(allocateProgram(legalizeJlo(lowerProgram(_checked(input))))) }),
+    Emit => {
+      if (output == "") { throw "output path required; pass --out <path>"; }
+      _report("EMIT", fn() {
+        if (!writeText(output, emitJlo(legalizeJlo(lowerProgram(_checked(input)))))) { throw "could not write output"; }
         ""
-      } catch (e) {
-        "PARSER\t" + Std.string(e) + "\n"
-      }
-    }
-  } else if (printTyped) {
-    try {
-      let (program, sourceSyntax) = loadProgramWithSyntax(input);
-      printHir(typeCheckProgramWithSyntaxAt(program, sourceSyntax, input))
-    } catch (e) {
-      "HIR\t" + Std.string(e) + "\n"
-    }
-  } else if (printLowered) {
-    try {
-      let (program, sourceSyntax) = loadProgramWithSyntax(input);
-      printIr(lowerProgram(typeCheckProgramWithSyntaxAt(program, sourceSyntax, input)))
-    } catch (e) {
-      "IR\t" + Std.string(e) + "\n"
-    }
-  } else if (printLegalized) {
-    try {
-      let (program, sourceSyntax) = loadProgramWithSyntax(input);
-      printJlo(legalizeJlo(lowerProgram(typeCheckProgramWithSyntaxAt(program, sourceSyntax, input))))
-    } catch (e) {
-      "JLO\t" + Std.string(e) + "\n"
-    }
-  } else if (output != "") {
-    try {
-      let (program, sourceSyntax) = loadProgramWithSyntax(input);
-      let bytes = emitJlo(legalizeJlo(lowerProgram(typeCheckProgramWithSyntaxAt(program, sourceSyntax, input))));
-      if (!writeText(output, bytes)) { throw "could not write output"; }
-      ""
-    } catch (e) {
-      "EMIT\t" + Std.string(e) + "\n"
-    }
-  } else {
-    throw "output path required; pass --out <path>";
-    ""
+      })
+    },
   }
 };

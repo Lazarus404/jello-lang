@@ -1,460 +1,314 @@
 package ir;
 
-import type {
-  Binding as HirBinding,
-  BindingId,
-  Expr,
-  FunctionDecl,
-  FunctionBody,
-  FunctionId,
-  Parameter,
-  Program as HirProgram,
-  Type as HirType,
-  Statement,
+import type { Hir } from frontend.Hir;
+import {
+  TYPE_BOOL, TYPE_I32, auxOf, bytesOf, childCount, childOf, innerOf, kindOf, lastChild, opOf, rootNode, typeArg, typeArgCount,
+  typeOf, useHir, valueOf,
 } from frontend.Hir;
-import type {
-  BasicBlock,
-  Function as IrFunction,
-  Instruction,
-  Program as IrProgram,
-  ReturnType,
-  Terminator,
-  ValueType,
-} from ir.Model;
+import type { BasicBlock, Function as IrFunction, Instruction, Op, Program as IrProgram, Terminator, ValueType } from ir.Model;
+import { BasicBlock, Op, Program as IrProgram, ReturnType, Terminator, ValueType, instruction } from ir.Model;
 import { verifyProgram } from ir.Verify;
 
-let _bindingId = fn(id: BindingId): I32 { match (id) { Id(value) => value } };
-let _functionId = fn(id: FunctionId): I32 { match (id) { Id(value) => value } };
+let _registers = Array.new<ValueType>(0);
+let _instructions = Array.new<Instruction>(0);
+let _blocks = Array.new<BasicBlock>(0);
+let _block = 0;
+let _nextBlock = 1;
+let _bindings = Array.new<I32>(0);
+let _reachable = true;
+let _pool = Array.new<Bytes>(0);
+let _poolIndexes = Array.new<I32>(0);
 
-let _valueType = fn(ty: HirType): ValueType {
-  match (ty) {
+let _valueType: (I32) -> ValueType = fn(_ty) { ValueType.Bool };
+
+let _valueTypes = fn(ty: I32): Array<ValueType> {
+  let items = Array.new<ValueType>(0);
+  let i = 0;
+
+  while (i < typeArgCount(ty)) {
+    items.push(_valueType(typeArg(ty, i)));
+    i++;
+  }
+  items
+};
+_valueType = fn(ty) {
+  match (kindOf(ty)) {
     Bool => ValueType.Bool,
     I32 => ValueType.I32,
     I64 => ValueType.I64,
+    Bytes => ValueType.Bytes,
+    Array => ValueType.ArrayOf(_valueType(innerOf(ty))),
+    Null => {
+      if (innerOf(ty) != TYPE_I32) { throw "only ?I32 values can be lowered"; }
+      ValueType.Dynamic
+    },
+    Tuple => ValueType.TupleOf(_valueTypes(ty)),
+    Function => ValueType.Function(_valueTypes(ty), ReturnType.Value(_valueType(innerOf(ty)))),
+    Enum => {
+      throw "enum values cannot be lowered yet";
+      ValueType.Bool
+    },
   }
 };
 
-let _setBinding = fn(bindings: Array<I32>, id: BindingId, register: I32) {
-  let index = _bindingId(id);
-  while (bindings.len() <= index) { bindings.push(-1); }
-  bindings[index] = register;
+let _fresh = fn(ty: I32): I32 {
+  let register = _registers.len() as I32;
+  _registers.push(_valueType(ty));
+  register
+};
+
+let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
+  _instructions.push(instruction(op, dst, args, imm));
+  null
+};
+let _move = fn(dst: I32, src: I32) { _emit(Op.Move, dst, [src], 0) };
+
+let _poolIndex = fn(id: I32): I32 {
+  while (_poolIndexes.len() <= id) { _poolIndexes.push(-1); }
+
+  if (_poolIndexes[id] < 0) {
+    _poolIndexes[id] = _pool.len() as I32;
+    _pool.push(bytesOf(id));
+  }
+  _poolIndexes[id]
+};
+
+let _end = fn(terminator: Terminator, next: I32) {
+  _blocks.push(BasicBlock.Block(_block, _instructions, terminator, null));
+  _instructions = Array.new<Instruction>(0);
+  _block = next;
   null
 };
 
-let _bindValue = fn(
-  binding: HirBinding,
-  valueRegister: I32,
-  bindings: Array<I32>,
-  registers: Array<ValueType>,
-  instructions: Array<Instruction>
-) {
-  match (binding) {
-    Binding(id, _, ty, mutable, _) => {
-      if (mutable) {
-        let register = registers.len() as I32;
-        registers.push(_valueType(ty));
-        instructions.push(Instruction.Move(register, valueRegister));
-        _setBinding(bindings, id, register);
-      } else {
-        _setBinding(bindings, id, valueRegister);
-      }
-    },
-  };
+let _bindRegister = fn(binding: I32, register: I32) {
+  while (_bindings.len() <= valueOf(binding)) { _bindings.push(-1); }
+  _bindings[valueOf(binding)] = register;
   null
 };
 
-let _lowerExpr: (
-  Expr,
-  Array<I32>,
-  Array<ValueType>,
-  Array<Instruction>,
-  Array<BasicBlock>,
-  I32,
-  Array<I32>
-) -> Tuple<I32, ValueType, Array<Instruction>, I32> =
-  fn(expr, bindings, registers, instructions, blocks, blockId, nextBlock) {
-  match (expr) {
-    BoolLiteral(value) => {
-      let dst = registers.len() as I32;
-      registers.push(ValueType.Bool);
-      instructions.push(Instruction.ConstBool(dst, value));
-      (dst, ValueType.Bool, instructions, blockId)
+let _expr: (I32) -> I32 = fn(_id) { -1 };
+
+let _bind = fn(binding: I32) {
+  let value = _expr(childOf(binding, 0));
+
+  match (opOf(binding)) {
+    Let => {
+      let register = _fresh(typeOf(binding));
+      _move(register, value);
+      _bindRegister(binding, register)
     },
-    I32Literal(value) => {
-      let dst = registers.len() as I32;
-      registers.push(ValueType.I32);
-      instructions.push(Instruction.ConstI32(dst, value));
-      (dst, ValueType.I32, instructions, blockId)
+    _ => _bindRegister(binding, value),
+  }
+};
+
+let _values = fn(id: I32, start: I32): Array<I32> {
+  let registers = Array.new<I32>(0);
+  let i = start;
+
+  while (i < childCount(id)) {
+    registers.push(_expr(childOf(id, i)));
+    i++;
+  }
+  registers
+};
+
+let _if = fn(id: I32): I32 {
+  let condition = _expr(childOf(id, 0));
+  let thenBlock = _nextBlock;
+  let elseBlock = thenBlock + 1;
+  let joinBlock = thenBlock + 2;
+  _nextBlock += 3;
+  _end(Terminator.Branch(condition, thenBlock, elseBlock), thenBlock);
+  let result = _fresh(typeOf(id));
+  _move(result, _expr(childOf(id, 1)));
+  _end(Terminator.Jump(joinBlock), elseBlock);
+  _move(result, _expr(childOf(id, 2)));
+  _end(Terminator.Jump(joinBlock), joinBlock);
+  result
+};
+
+let _shortCircuit = fn(id: I32): I32 {
+  let result = _fresh(typeOf(id));
+  _move(result, _expr(childOf(id, 0)));
+  let rightBlock = _nextBlock;
+  let joinBlock = rightBlock + 1;
+  _nextBlock += 2;
+  _end(match (opOf(id)) {
+    And => Terminator.Branch(result, rightBlock, joinBlock),
+    _ => Terminator.Branch(result, joinBlock, rightBlock),
+  }, rightBlock);
+  _move(result, _expr(childOf(id, 1)));
+  _end(Terminator.Jump(joinBlock), joinBlock);
+  result
+};
+
+let _operation = fn(id: I32): Op {
+  match (opOf(id)) {
+    Bool => Op.ConstBool, I32 => Op.ConstI32, Bytes => Op.ConstBytes, Null => Op.ConstNull, FunctionRef => Op.ConstFunction,
+    Add => Op.Add, Sub => Op.Sub, Mul => Op.Mul, Neg => Op.Neg, Not => Op.Not, Eq => Op.Eq, Lt, Gt => Op.Lt,
+    Sext => Op.Sext, Trunc => Op.Trunc, Present => Op.Box, IsNull, IsPresent => Op.IsNull,
+    ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet, BytesGet => Op.BytesGet,
+    Tuple => Op.TupleNew, TupleField => Op.TupleGet, Call => Op.Call, CallIndirect => Op.CallIndirect,
+    _ => {
+      throw "invalid HIR expression op";
+      Op.Move
     },
-    Local(id, ty) => (bindings[_bindingId(id)], _valueType(ty), instructions, blockId),
-    AssignLocal(id, value, ty) => {
-      let (src, _, nextInstructions, nextId) = _lowerExpr(
-        value, bindings, registers, instructions, blocks, blockId, nextBlock
-      );
-      let dst = bindings[_bindingId(id)];
-      nextInstructions.push(Instruction.Move(dst, src));
-      (dst, _valueType(ty), nextInstructions, nextId)
+  }
+};
+
+_expr = fn(id) {
+  match (opOf(id)) {
+    Local => _bindings[valueOf(id)],
+    Assign => {
+      let dst = _bindings[valueOf(id)];
+      _move(dst, _expr(childOf(id, 0)));
+      dst
     },
-    AddI32Wrap(left, right) => {
-      let (leftRegister, _, afterLeft, leftBlock) = _lowerExpr(
-        left, bindings, registers, instructions, blocks, blockId, nextBlock
-      );
-      let (rightRegister, _, afterRight, rightBlock) = _lowerExpr(
-        right, bindings, registers, afterLeft, blocks, leftBlock, nextBlock
-      );
-      let dst = registers.len() as I32;
-      registers.push(ValueType.I32);
-      afterRight.push(Instruction.AddI32Wrap(dst, leftRegister, rightRegister));
-      (dst, ValueType.I32, afterRight, rightBlock)
+    ArraySet => {
+      let operands = _values(id, 0);
+      _emit(Op.ArraySet, -1, operands, 0);
+      operands[2]
     },
-    SubI32Wrap(left, right) => {
-      let (leftRegister, _, afterLeft, leftBlock) = _lowerExpr(
-        left, bindings, registers, instructions, blocks, blockId, nextBlock
-      );
-      let (rightRegister, _, afterRight, rightBlock) = _lowerExpr(
-        right, bindings, registers, afterLeft, blocks, leftBlock, nextBlock
-      );
-      let dst = registers.len() as I32;
-      registers.push(ValueType.I32);
-      afterRight.push(Instruction.SubI32Wrap(dst, leftRegister, rightRegister));
-      (dst, ValueType.I32, afterRight, rightBlock)
-    },
-    MultiplyI32Wrap(left, right) => {
-      let (leftRegister, _, afterLeft, leftBlock) = _lowerExpr(left, bindings, registers, instructions, blocks, blockId, nextBlock);
-      let (rightRegister, _, afterRight, rightBlock) = _lowerExpr(right, bindings, registers, afterLeft, blocks, leftBlock, nextBlock);
-      let dst = registers.len() as I32;
-      registers.push(ValueType.I32);
-      afterRight.push(Instruction.MultiplyI32Wrap(dst, leftRegister, rightRegister));
-      (dst, ValueType.I32, afterRight, rightBlock)
-    },
-    NegateI32Wrap(value) => {
-      let (src, _, nextInstructions, nextId) = _lowerExpr(value, bindings, registers, instructions, blocks, blockId, nextBlock);
-      let dst = registers.len() as I32;
-      registers.push(ValueType.I32);
-      nextInstructions.push(Instruction.NegateI32Wrap(dst, src));
-      (dst, ValueType.I32, nextInstructions, nextId)
-    },
-    NotBool(value) => {
-      let (src, _, nextInstructions, nextId) = _lowerExpr(value, bindings, registers, instructions, blocks, blockId, nextBlock);
-      let dst = registers.len() as I32;
-      registers.push(ValueType.Bool);
-      nextInstructions.push(Instruction.NotBool(dst, src));
-      (dst, ValueType.Bool, nextInstructions, nextId)
-    },
-    EqualI32(left, right) => {
-      let (leftRegister, _, afterLeft, leftBlock) = _lowerExpr(
-        left, bindings, registers, instructions, blocks, blockId, nextBlock
-      );
-      let (rightRegister, _, afterRight, rightBlock) = _lowerExpr(
-        right, bindings, registers, afterLeft, blocks, leftBlock, nextBlock
-      );
-      let dst = registers.len() as I32;
-      registers.push(ValueType.Bool);
-      afterRight.push(Instruction.EqualI32(dst, leftRegister, rightRegister));
-      (dst, ValueType.Bool, afterRight, rightBlock)
-    },
-    LessI32Signed(left, right) => {
-      let (leftRegister, _, afterLeft, leftBlock) = _lowerExpr(
-        left, bindings, registers, instructions, blocks, blockId, nextBlock
-      );
-      let (rightRegister, _, afterRight, rightBlock) = _lowerExpr(
-        right, bindings, registers, afterLeft, blocks, leftBlock, nextBlock
-      );
-      let dst = registers.len() as I32;
-      registers.push(ValueType.Bool);
-      afterRight.push(Instruction.LessI32Signed(dst, leftRegister, rightRegister));
-      (dst, ValueType.Bool, afterRight, rightBlock)
-    },
-    GreaterI32Signed(left, right) => {
-      let (leftRegister, _, afterLeft, leftBlock) = _lowerExpr(
-        left, bindings, registers, instructions, blocks, blockId, nextBlock
-      );
-      let (rightRegister, _, afterRight, rightBlock) = _lowerExpr(
-        right, bindings, registers, afterLeft, blocks, leftBlock, nextBlock
-      );
-      let dst = registers.len() as I32;
-      registers.push(ValueType.Bool);
-      afterRight.push(Instruction.LessI32Signed(dst, rightRegister, leftRegister));
-      (dst, ValueType.Bool, afterRight, rightBlock)
-    },
-    SignExtendI32ToI64(value) => {
-      let (src, _, nextInstructions, nextId) = _lowerExpr(value, bindings, registers, instructions, blocks, blockId, nextBlock);
-      let dst = registers.len() as I32;
-      registers.push(ValueType.I64);
-      nextInstructions.push(Instruction.SignExtendI32ToI64(dst, src));
-      (dst, ValueType.I64, nextInstructions, nextId)
-    },
-    TruncateI64ToI32(value) => {
-      let (src, _, nextInstructions, nextId) = _lowerExpr(value, bindings, registers, instructions, blocks, blockId, nextBlock);
-      let dst = registers.len() as I32;
-      registers.push(ValueType.I32);
-      nextInstructions.push(Instruction.TruncateI64ToI32(dst, src));
-      (dst, ValueType.I32, nextInstructions, nextId)
-    },
-    CallDirect(function, args, ty) => {
-      let callArgs = Array.new<I32>(0);
-      let currentInstructions = instructions;
-      let currentBlock = blockId;
+    Block => {
       let i = 0;
 
-      while (i < args.len()) {
-        let (arg, _, nextInstructions, nextId) = _lowerExpr(
-          args[i], bindings, registers, currentInstructions, blocks, currentBlock, nextBlock
-        );
-        callArgs.push(arg);
-        currentInstructions = nextInstructions;
-        currentBlock = nextId;
+      while (i < childCount(id) - 1) {
+        _bind(childOf(id, i));
         i++;
       }
-      let resultType = _valueType(ty);
-      let dst = registers.len() as I32;
-      registers.push(resultType);
-      currentInstructions.push(Instruction.CallDirect(dst, _functionId(function), callArgs));
-      (dst, resultType, currentInstructions, currentBlock)
+      _expr(lastChild(id))
     },
-    Block(blockBindings, tail) => {
-      let currentInstructions = instructions;
-      let currentBlock = blockId;
-      let i = 0;
+    If => _if(id),
+    And, Or => _shortCircuit(id),
+    _ => {
+      let operands = _values(id, 0);
+      let op = _operation(id);
 
-      while (i < blockBindings.len()) {
-        match (blockBindings[i]) {
-          Binding(_, _, _, _, value) => {
-            let (register, _, nextInstructions, nextId) = _lowerExpr(
-              value, bindings, registers, currentInstructions, blocks, currentBlock, nextBlock
-            );
-            currentInstructions = nextInstructions;
-            currentBlock = nextId;
-            _bindValue(blockBindings[i], register, bindings, registers, currentInstructions);
-          },
-          _ => {
-            throw "internal: function binding in expression block";
-            null
-          },
-        };
-        i++;
-      }
-      _lowerExpr(tail, bindings, registers, currentInstructions, blocks, currentBlock, nextBlock)
+      let imm = match (opOf(id)) {
+        Bool, I32, FunctionRef, TupleField, Call => valueOf(id),
+        Bytes => _poolIndex(valueOf(id)),
+        _ => 0,
+      };
+
+      match (opOf(id)) {
+        Gt => {
+          operands = [operands[1], operands[0]];
+          null
+        }, _ => null
+      };
+      let present = match (opOf(id)) { IsPresent => true, _ => false };
+      let dst = _fresh(present ? TYPE_BOOL : typeOf(id));
+      _emit(op, dst, operands, imm);
+
+      if (present) {
+        let negated = _fresh(TYPE_BOOL);
+        _emit(Op.Not, negated, [dst], 0);
+        negated
+      } else { dst }
     },
-    If(condition, thenBranch, elseBranch, ty) => {
-      let (conditionRegister, _, conditionInstructions, conditionBlock) = _lowerExpr(
-        condition, bindings, registers, instructions, blocks, blockId, nextBlock
-      );
-      let thenBlock = nextBlock[0];
-      let elseBlock = thenBlock + 1;
-      let joinBlock = thenBlock + 2;
-      nextBlock[0] = nextBlock[0] + 3;
-      blocks.push(BasicBlock.Block(
-        conditionBlock,
-        conditionInstructions,
-        Terminator.Branch(conditionRegister, thenBlock, elseBlock),
+  }
+};
+
+let _statements: (I32, I32, I32, I32, I32) -> Bool = fn(_parent, _from, _to, _breakTarget, _continueTarget) { false };
+
+let _exit = fn(terminator: Terminator) {
+  _end(terminator, _block);
+  _reachable = false;
+  null
+};
+
+let _while = fn(id: I32) {
+  let conditionBlock = _nextBlock;
+  let bodyBlock = conditionBlock + 1;
+  let exitBlock = conditionBlock + 2;
+  _nextBlock += 3;
+  _end(Terminator.Jump(conditionBlock), conditionBlock);
+  let condition = _expr(childOf(id, 0));
+  _end(Terminator.Branch(condition, bodyBlock, exitBlock), bodyBlock);
+  let outerReachable = _reachable;
+  _reachable = true;
+  _statements(id, 1, childCount(id), exitBlock, conditionBlock);
+  if (_reachable) { _end(Terminator.Jump(conditionBlock), exitBlock); }
+  _instructions = Array.new<Instruction>(0);
+  _block = exitBlock;
+  _reachable = outerReachable;
+  null
+};
+
+_statements = fn(parent, start, end, breakTarget, continueTarget) {
+  let i = start;
+
+  while (i < end) {
+    let id = childOf(parent, i);
+
+    match (opOf(id)) {
+      Declare => _bind(childOf(id, 0)),
+      Expression => {
+        _expr(childOf(id, 0));
         null
-      ));
-
-      let resultType = _valueType(ty);
-      let result = registers.len() as I32;
-      registers.push(resultType);
-      let (thenValue, _, thenInstructions, thenEnd) = _lowerExpr(
-        thenBranch, bindings, registers, [], blocks, thenBlock, nextBlock
-      );
-      thenInstructions.push(Instruction.Move(result, thenValue));
-      blocks.push(BasicBlock.Block(thenEnd, thenInstructions, Terminator.Jump(joinBlock), null));
-
-      let (elseValue, _, elseInstructions, elseEnd) = _lowerExpr(
-        elseBranch, bindings, registers, [], blocks, elseBlock, nextBlock
-      );
-      elseInstructions.push(Instruction.Move(result, elseValue));
-      blocks.push(BasicBlock.Block(elseEnd, elseInstructions, Terminator.Jump(joinBlock), null));
-      (result, resultType, Array.new<Instruction>(0), joinBlock)
-    },
-  }
-};
-
-let _lowerStatements: (
-  Array<Statement>, Array<I32>, Array<ValueType>, Array<BasicBlock>, I32, Array<I32>, Array<Bool>, I32, I32
-) -> Tuple<Array<Instruction>, I32> =
-  fn(statements, bindings, registers, blocks, blockId, nextBlock, reachable, breakTarget, continueTarget) {
-  let instructions = Array.new<Instruction>(0);
-  let currentBlock = blockId;
-  let i = 0;
-
-  while (i < statements.len()) {
-    let statement = statements[i];
-
-    let ignored = match (statement) {
-      Bind(binding) => match (binding) { Binding(id, _, _, _, value) => {
-        let (register, _, nextInstructions, nextId) = _lowerExpr(
-          value, bindings, registers, instructions, blocks, currentBlock, nextBlock
-        );
-        instructions = nextInstructions;
-        currentBlock = nextId;
-        _bindValue(binding, register, bindings, registers, instructions);
-      } },
-      Expression(value) => {
-        let (_, _, nextInstructions, nextId) = _lowerExpr(
-          value, bindings, registers, instructions, blocks, currentBlock, nextBlock
-        );
-        instructions = nextInstructions;
-        currentBlock = nextId;
       },
-      ReturnValue(value) => {
-        let (register, _, nextInstructions, nextId) = _lowerExpr(
-          value, bindings, registers, instructions, blocks, currentBlock, nextBlock
-        );
-        blocks.push(BasicBlock.Block(nextId, nextInstructions, Terminator.ReturnValue(register), null));
-        instructions = [];
-        currentBlock = nextId;
-        reachable[0] = false;
-      },
-      ThrowValue(value) => {
-        let (register, _, nextInstructions, nextId) = _lowerExpr(
-          value, bindings, registers, instructions, blocks, currentBlock, nextBlock
-        );
-        blocks.push(BasicBlock.Block(nextId, nextInstructions, Terminator.Throw(register), null));
-        instructions = [];
-        currentBlock = nextId;
-        reachable[0] = false;
-      },
-      BreakLoop => {
-        blocks.push(BasicBlock.Block(currentBlock, instructions, Terminator.Jump(breakTarget), null));
-        instructions = [];
-        reachable[0] = false;
-      },
-      ContinueLoop => {
-        blocks.push(BasicBlock.Block(currentBlock, instructions, Terminator.Jump(continueTarget), null));
-        instructions = [];
-        reachable[0] = false;
-      },
-      WhileLoop(condition, body) => {
-        let conditionBlock = nextBlock[0];
-        let bodyBlock = conditionBlock + 1;
-        let exitBlock = conditionBlock + 2;
-        nextBlock[0] = nextBlock[0] + 3;
-        blocks.push(BasicBlock.Block(currentBlock, instructions, Terminator.Jump(conditionBlock), null));
-        let (conditionRegister, _, conditionInstructions, conditionEnd) = _lowerExpr(
-          condition, bindings, registers, [], blocks, conditionBlock, nextBlock
-        );
-        blocks.push(BasicBlock.Block(
-          conditionEnd, conditionInstructions, Terminator.Branch(conditionRegister, bodyBlock, exitBlock), null
-        ));
-        let bodyReachable: Array<Bool> = [true];
-        let (bodyInstructions, bodyEnd) = _lowerStatements(
-          body, bindings, registers, blocks, bodyBlock, nextBlock, bodyReachable, exitBlock, conditionBlock
-        );
-
-        if (bodyReachable[0]) {
-          blocks.push(BasicBlock.Block(bodyEnd, bodyInstructions, Terminator.Jump(conditionBlock), null));
-        }
-        instructions = [];
-        currentBlock = exitBlock;
+      Return => _exit(Terminator.ReturnValue(_expr(childOf(id, 0)))),
+      Throw => _exit(Terminator.Throw(_expr(childOf(id, 0)))),
+      Break => _exit(Terminator.Jump(breakTarget)),
+      Continue => _exit(Terminator.Jump(continueTarget)),
+      While => _while(id),
+      _ => {
+        throw "invalid HIR statement op";
+        null
       },
     };
     i++;
   }
-  (instructions, currentBlock)
+  true
 };
 
-let _lowerFunction = fn(declaration: FunctionDecl): IrFunction {
-  match (declaration) {
-    FunctionDecl(id, _, params, result, FunctionBody(statements, tail)) => {
-      let bindingRegisters = Array.new<I32>(0);
-      let registers = Array.new<ValueType>(0);
-      let paramRegisters = Array.new<I32>(0);
-      let i = 0;
-
-      while (i < params.len()) {
-        match (params[i]) {
-          Parameter(bindingId, _, ty) => {
-            let register = registers.len() as I32;
-            registers.push(_valueType(ty));
-            paramRegisters.push(register);
-            _setBinding(bindingRegisters, bindingId, register);
-          },
-        };
-        i++;
-      }
-      let blocks = Array.new<BasicBlock>(0);
-      let nextBlock: Array<I32> = [1];
-      let reachable: Array<Bool> = [true];
-      let (instructions, finalBlock) = _lowerStatements(
-        statements, bindingRegisters, registers, blocks, 0, nextBlock, reachable, -1, -1
-      );
-
-      if (reachable[0]) {
-        let (value, _, tailInstructions, tailBlock) = _lowerExpr(
-          tail, bindingRegisters, registers, instructions, blocks, finalBlock, nextBlock
-        );
-        blocks.push(BasicBlock.Block(tailBlock, tailInstructions, Terminator.ReturnValue(value), null));
-      }
-      IrFunction.Function(
-        _functionId(id), paramRegisters, registers, ReturnType.Value(_valueType(result)), blocks, 0
-      )
-    },
-  }
+let _begin = fn() {
+  _registers = Array.new<ValueType>(0);
+  _instructions = Array.new<Instruction>(0);
+  _blocks = Array.new<BasicBlock>(0);
+  _block = 0;
+  _nextBlock = 1;
+  _bindings = Array.new<I32>(0);
+  _reachable = true;
+  null
 };
 
-let _lowerTail = fn(program: HirProgram): IrProgram {
-  let bindingRegisters = Array.new<I32>(0);
-  let registers = Array.new<ValueType>(0);
-  let instructions = Array.new<Instruction>(0);
-  let blocks = Array.new<BasicBlock>(0);
-  let currentBlock = 0;
-  let nextBlock: Array<I32> = [1];
-  let functions = Array.new<FunctionDecl>(0);
-  let tailExpr: Expr = Expr.BoolLiteral(false);
-
-  match (program) {
-    Program(functionDecls, bindings, tail, _) => {
-      let i = 0;
-
-      while (i < functionDecls.len()) {
-        functions.push(functionDecls[i]);
-        i++;
-      }
-      tailExpr = tail;
-      i = 0;
-
-      while (i < bindings.len()) {
-        match (bindings[i]) {
-          Binding(id, _, _, _, value) => {
-            let (register, _, nextInstructions, nextId) = _lowerExpr(
-              value, bindingRegisters, registers, instructions, blocks, currentBlock, nextBlock
-            );
-            instructions = nextInstructions;
-            currentBlock = nextId;
-            _bindValue(bindings[i], register, bindingRegisters, registers, instructions);
-          },
-        };
-        i++;
-      }
-      null
-    },
-  };
-  let (resultRegister, resultType, finalInstructions, finalBlock) = _lowerExpr(
-    tailExpr, bindingRegisters, registers, instructions, blocks, currentBlock, nextBlock
-  );
-  blocks.push(BasicBlock.Block(finalBlock, finalInstructions, Terminator.ReturnValue(resultRegister), null));
-  let main = IrFunction.Function(
-    0,
-    [],
-    registers,
-    ReturnType.Value(resultType),
-    blocks,
-    0
-  );
-  let loweredFunctions = Array.new<IrFunction>(0);
+let _function = fn(id: I32, functionId: I32): IrFunction {
+  _begin();
+  let params = Array.new<I32>(0);
   let i = 0;
 
-  while (i < functions.len()) {
-    loweredFunctions.push(_lowerFunction(functions[i]));
+  while (i < childCount(id) - 1) {
+    let param = childOf(id, i);
+    let register = _fresh(typeOf(param));
+    params.push(register);
+    _bindRegister(param, register);
     i++;
   }
-  loweredFunctions.push(main);
-  IrProgram.Program(loweredFunctions)
+  let body = lastChild(id);
+  _statements(body, 0, childCount(body) - auxOf(body), -1, -1);
+  if (_reachable) { _end(Terminator.ReturnValue(_expr(lastChild(body))), _block); }
+  IrFunction.Function(functionId, params, _registers, ReturnType.Value(_valueType(innerOf(typeOf(id)))), _blocks, 0)
 };
 
-export let lowerProgram: (HirProgram) -> IrProgram = fn(program) {
-  let lowered = _lowerTail(program);
+export let lowerProgram: (Hir) -> IrProgram = fn(program) {
+  useHir(program);
+  _pool = Array.new<Bytes>(0);
+  _poolIndexes = Array.new<I32>(0);
+  let root = rootNode();
+  let functions = Array.new<IrFunction>(0);
+  let i = 0;
+
+  while (i < childCount(root) - 1) {
+    functions.push(_function(childOf(root, i), i + 1));
+    i++;
+  }
+  _begin();
+  let body = lastChild(root);
+  let result = _expr(body);
+  _end(Terminator.ReturnValue(result), _block);
+  functions.push(IrFunction.Function(0, [], _registers, ReturnType.Value(_valueType(typeOf(body))), _blocks, 0));
+  let lowered = IrProgram.Program(functions, _pool, []);
   verifyProgram(lowered);
   lowered
 };
