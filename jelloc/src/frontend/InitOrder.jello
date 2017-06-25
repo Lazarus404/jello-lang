@@ -1,0 +1,139 @@
+package frontend;
+
+import { childCount, childOf, globalCount, lastChild, nodeCount, opOf, rootNode, valueOf } from frontend.Hir;
+import { bitsAdd, bitsHas, bitsMembers, bitsNew, bitsUnion } from ir.Bits;
+
+let _reads = Array.new<Array<I32>>(0);
+let _calls = Array.new<Array<I32>>(0);
+let _indirect = Array.new<Bool>(0);
+let _referenced = Array.new<I32>(0);
+
+let _scan: (I32, Array<I32>, Array<I32>) -> Bool = fn(_id, _reads, _calls) { false };
+_scan = fn(id, reads, calls) {
+  let indirect = match (opOf(id)) {
+    Global => {
+      bitsAdd(reads, valueOf(id));
+      false
+    },
+    Call => {
+      bitsAdd(calls, valueOf(id));
+      false
+    },
+    FunctionRef => {
+      bitsAdd(_referenced, valueOf(id));
+      false
+    },
+    CallIndirect => true,
+    _ => false,
+  };
+  let i = 0;
+
+  while (i < childCount(id)) {
+    if (_scan(childOf(id, i), reads, calls)) { indirect = true; }
+    i++;
+  }
+  indirect
+};
+
+let _transitive = fn(functions: I32): Array<Array<I32>> {
+  let reach = Array.new<Array<I32>>(0);
+  let f = 0;
+
+  while (f <= functions) {
+    let set = bitsNew(globalCount());
+    bitsUnion(set, _reads[f]);
+    reach.push(set);
+    f++;
+  }
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    f = 1;
+
+    while (f <= functions) {
+      let callees = bitsMembers(_calls[f]);
+      if (_indirect[f]) { callees = bitsMembers(_referenced); }
+      let i = 0;
+
+      while (i < callees.len()) {
+        if (bitsUnion(reach[f], reach[callees[i]])) { changed = true; }
+        i++;
+      }
+
+      if (_indirect[f]) {
+        let direct = bitsMembers(_calls[f]);
+        i = 0;
+
+        while (i < direct.len()) {
+          if (bitsUnion(reach[f], reach[direct[i]])) { changed = true; }
+          i++;
+        }
+      }
+      f++;
+    }
+  }
+  reach
+};
+
+export let firstUninitializedRead: () -> Tuple<I32, I32> = fn() {
+  let root = rootNode();
+  let functions = childCount(root) - 1;
+  _reads = Array.new<Array<I32>>(0);
+  _calls = Array.new<Array<I32>>(0);
+  _indirect = Array.new<Bool>(0);
+  _referenced = bitsNew(functions + 1);
+  _reads.push(bitsNew(globalCount()));
+  _calls.push(bitsNew(functions + 1));
+  _indirect.push(false);
+  let f = 0;
+
+  while (f < functions) {
+    let reads = bitsNew(globalCount());
+    let calls = bitsNew(functions + 1);
+    _indirect.push(_scan(childOf(root, f), reads, calls));
+    _reads.push(reads);
+    _calls.push(calls);
+    f++;
+  }
+  let body = lastChild(root);
+  let i = 0;
+
+  while (i < childCount(body)) {
+    _scan(childOf(body, i), bitsNew(globalCount()), bitsNew(functions + 1));
+    i++;
+  }
+  let reach = _transitive(functions);
+  let initialized = bitsNew(globalCount());
+  i = 0;
+
+  while (i < childCount(body)) {
+    let binding = childOf(body, i);
+    let reads = bitsNew(globalCount());
+    let calls = bitsNew(functions + 1);
+    if (_scan(binding, reads, calls)) { bitsUnion(calls, _referenced); }
+    let callees = bitsMembers(calls);
+    let c = 0;
+
+    while (c < callees.len()) {
+      bitsUnion(reads, reach[callees[c]]);
+      c++;
+    }
+    let members = bitsMembers(reads);
+    let m = 0;
+
+    while (m < members.len()) {
+      if (!bitsHas(initialized, members[m])) { return (binding, members[m]); }
+      m++;
+    }
+
+    match (opOf(binding)) {
+      InitGlobal => {
+        bitsAdd(initialized, valueOf(binding));
+        null
+      }, _ => null
+    };
+    i++;
+  }
+  (-1, -1)
+};

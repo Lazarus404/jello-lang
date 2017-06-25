@@ -4,8 +4,9 @@ import { parseProgram, programSyntax } from frontend.Parser;
 import { sourceDiagnostic } from frontend.Source;
 import type { SourceSpan } from frontend.Source;
 import { printTokens } from frontend.Tokens;
-import { checkFailureSpan, typeCheckProgramWithSyntax } from frontend.TypeCheck;
-import { loadProgram } from frontend.Modules;
+import { typeCheckModules } from frontend.CheckModules;
+import { checkFailureSpan } from frontend.TypeCheck;
+import { loadModules } from frontend.Modules;
 import { printHir } from frontend.PrintHir;
 import { lowerProgram } from ir.Lower;
 import { printIr } from ir.Print;
@@ -56,10 +57,7 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
   (input, mode == null ? Mode.Emit : mode, output)
 };
 
-let _checked = fn(input: Bytes): Hir {
-  let (program, sourceSyntax) = loadProgram(input);
-  typeCheckProgramWithSyntax(program, sourceSyntax)
-};
+let _checked = fn(input: Bytes): Hir { typeCheckModules(loadModules(input)) };
 
 let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
   match (span) { Span(path, start, _) => sourceDiagnostic(path, readText(path), start, message) }

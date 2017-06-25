@@ -211,6 +211,8 @@ let _instruction = fn(insn: Instruction, scratchStart: I32) {
     CallIndirect => _insn(12, dst, a, (args.len() as I32) - 1, _window(args, 1, scratchStart)),
     SpillPush => _insn(107, a, 0, 0, imm),
     SpillPop => _insn(108, dst, 0, 0, imm),
+    GlobalGet => _insn(187, dst, 0, 0, imm),
+    GlobalSet => _insn(188, a, 0, 0, imm),
     _ => {
       throw "JLO emission does not support this operation";
       null
@@ -312,7 +314,7 @@ let _typeEntry = fn(kind: I32, detail: I32) {
 };
 
 let _module = fn(program: Program): Bytes {
-  match (program) { Program(functions, pool, enums) => {
+  match (program) { Program(functions, pool, enums, globals) => {
     _types = Array.new<ValueType>(0);
     _typeKinds = Array.new<I32>(0);
     _typeDetails = Array.new<I32>(0);
@@ -344,6 +346,12 @@ let _module = fn(program: Program): Bytes {
       } };
       i++;
     }
+    i = 0;
+
+    while (i < globals.len()) {
+      _typeIndex(globals[i]);
+      i++;
+    }
     _functionIndexes = Array.new<I32>(0);
     i = 0;
 
@@ -362,7 +370,7 @@ let _module = fn(program: Program): Bytes {
     }
     _buffer = Bytes.new(4096);
     _size = 0;
-    let features = (pool.len() > 0 ? 2 : 0) | (enums.len() > 0 ? 16384 : 0);
+    let features = (pool.len() > 0 ? 2 : 0) | (enums.len() > 0 ? 16384 : 0) | (globals.len() > 0 ? 32768 : 0);
     _u32(1246517570);
     _u32(1);
     _u32(features);
@@ -375,6 +383,7 @@ let _module = fn(program: Program): Bytes {
     _u32(0);
     if (enums.len() > 0) { _u32(enums.len() as I32); }
     if (pool.len() > 0) { _u32(pool.len() as I32); }
+    if (globals.len() > 0) { _u32(globals.len() as I32); }
     i = 0;
 
     while (i < _types.len()) {
@@ -435,6 +444,12 @@ let _module = fn(program: Program): Bytes {
     while (i < pool.len()) {
       _u32(pool[i].len() as I32);
       _bytes(pool[i]);
+      i++;
+    }
+    i = 0;
+
+    while (i < globals.len()) {
+      _u32(_find(globals[i]));
       i++;
     }
     i = 0;

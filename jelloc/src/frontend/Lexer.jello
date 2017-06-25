@@ -136,7 +136,10 @@ let _skipSpace = fn(rest: Bytes) {
 
   while (cont) {
     let next = match (cur) {
-      when ~r/\s+/ as ws => advance(cur, ws),            when ~r/\/\/[^\n]*/ as m => advance(cur, m),       when ~r/#[^\n]*/ as m => advance(cur, m),          _ => {
+      when ~r/\s+/ as ws => advance(cur, ws),
+      when ~r/\/\/[^\n]*/ as m => advance(cur, m),
+      when ~r/#[^\n]*/ as m => advance(cur, m),
+      _ => {
         (bytesStartsWith(cur, "/*"))
           ? {
           let close = bytesIndexOf(cur, "*/");

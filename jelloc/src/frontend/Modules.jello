@@ -1,35 +1,16 @@
 package frontend;
 
-import type {
-  BinaryOp,
-  BitExprSegment,
-  BitPatternSegment,
-  Block as AstBlock,
-  Expr,
-  IntSize,
-  ImportItem,
-  ImportKind,
-  ListGenerator,
-  ListLiteral,
-  MatchArm,
-  MatchArms,
-  ObjectEntry,
-  Package,
-  Pattern,
-  Parameter,
-  Program as AstProgram,
-  PrototypeField,
-  Stmt,
-  WithClause,
-} from frontend.Ast;
-import { IntSize, bindPatternName, integerValue, isBindPattern } from frontend.Ast;
+import type { Expr, Package, Stmt } from frontend.Ast;
 import { lexFileSource } from frontend.Lexer;
 import { parseSource, programSyntax } from frontend.Parser;
 import type { Syntax } from frontend.Source;
-import { rootSyntax } from frontend.SyntaxTree;
 import { readText } from std.io.File;
 
-let _children = fn(syntax: Syntax): Array<Syntax> { match (syntax) { Node(_, _, _, children) => children } };
+export enum Import { Import(local: Bytes, module: I32, name: Bytes); }
+
+export enum Module {
+  Module(path: Bytes, statements: Array<Stmt>, syntax: Syntax, tail: ?Expr, imports: Array<Import>);
+}
 
 let _directory = fn(path: Bytes): Bytes {
   let slash = -1;
@@ -69,19 +50,6 @@ let _packageMatches = fn(packageName: Package, parts: Array<Bytes>): Bool {
   } }
 };
 
-let _constantExpr: (Expr) -> Bool = fn(expr) {
-  match (expr) {
-    Bool(_) => true,
-    Integer(_, _) => true,
-    Variable(_) => true,
-    Binary(op, left, right) => match (op) {
-      Add, Subtract, Equal, Less => _constantExpr(left) && _constantExpr(right),
-      _ => false,
-    },
-    _ => false,
-  }
-};
-
 let _indexOf = fn(values: Array<Bytes>, value: Bytes): I32 {
   let i = 0;
 
@@ -92,707 +60,84 @@ let _indexOf = fn(values: Array<Bytes>, value: Bytes): I32 {
   -1
 };
 
-let _constantNames = Array.new<Bytes>(0);
-let _constantKinds = Array.new<Bool>(0);
-let _constantBools = Array.new<Bool>(0);
-let _constantI32s = Array.new<I32>(0);
-let _initializedModules = Array.new<Bytes>(0);
+let _modules = Array.new<Module>(0);
+let _paths = Array.new<Bytes>(0);
+let _visiting = Array.new<Bytes>(0);
+let _root = ".";
 
-export let moduleInitializationOrder: () -> Array<Bytes> = fn() {
-  let copy = Array.new<Bytes>(0);
-  let i = 0;
+let _load: (Bytes, Array<Bytes>) -> I32 = fn(_path, _parts) { -1 };
+_load = fn(path, parts) {
+  let loaded = _indexOf(_paths, path);
+  if (loaded >= 0) { return loaded; }
+  if (_indexOf(_visiting, path) >= 0) { throw "import cycle through " + path; }
+  _visiting.push(path);
+  let (tokens, sourcePath, starts, ends) = lexFileSource(readText(path), path);
+  let program = parseSource(tokens, sourcePath, starts, ends);
+  let syntax = programSyntax(program);
 
-  while (i < _initializedModules.len()) {
-    copy.push(_initializedModules[i]);
-    i++;
-  }
-  copy
-};
-
-let _constantValue: (Expr) -> Tuple<Bool, Bool, I32> = fn(expr) {
-  match (expr) {
-    Bool(value) => (true, value, 0),
-    Integer(digits, _) => (false, false, integerValue(digits, false)),
-    Binary(op, left, right) => {
-      let (leftBool, leftValue, leftI32) = _constantValue(left);
-      let (rightBool, rightValue, rightI32) = _constantValue(right);
-      if (leftBool || rightBool) { throw "imported constant arithmetic requires i32 operands"; }
-
-      match (op) {
-        Add => (false, false, leftI32 + rightI32),
-        Subtract => (false, false, leftI32 - rightI32),
-        Equal => (true, leftI32 == rightI32, 0),
-        Less => (true, leftI32 < rightI32, 0),
-        _ => {
-          throw "unsupported imported constant operation";
-          (false, false, 0)
-        },
-      }
-    },
-    _ => {
-      throw "unsupported imported constant expression";
-      (false, false, 0)
-    },
-  }
-};
-
-let _constantLiteral = fn(index: I32): Expr {
-  if (_constantKinds[index]) { Expr.Bool(_constantBools[index]) } else { Expr.Integer(Std.string(_constantI32s[index]), IntSize.I32) }
-};
-
-let _copyNames = fn(names: Array<Bytes>): Array<Bytes> {
-  let copy = Array.new<Bytes>(0);
-  let i = 0;
-
-  while (i < names.len()) {
-    copy.push(names[i]);
-    i++;
-  }
-  copy
-};
-
-let _renameName = fn(names: Array<Bytes>, canonical: Array<Bytes>, shadows: Array<Bytes>, name: Bytes): Bytes {
-  if (_indexOf(shadows, name) >= 0) { return name; }
-  let index = _indexOf(names, name);
-  if (index < 0) { name } else { canonical[index] }
-};
-
-let _renameExpr: (Expr, Array<Bytes>, Array<Bytes>, Array<Bytes>) -> Expr = fn(expr, _a, _b, _c) { expr };
-let _renameBlock: (AstBlock, Array<Bytes>, Array<Bytes>, Array<Bytes>) -> AstBlock = fn(block, _a, _b, _c) { block };
-
-let _renameExprs = fn(items: Array<Expr>, names: Array<Bytes>, canonical: Array<Bytes>, shadows: Array<Bytes>): Array<Expr> {
-  let renamed = Array.new<Expr>(0);
-  let i = 0;
-
-  while (i < items.len()) {
-    renamed.push(_renameExpr(items[i], names, canonical, shadows));
-    i++;
-  }
-  renamed
-};
-
-let _renameOptional = fn(value: ?Expr, names: Array<Bytes>, canonical: Array<Bytes>, shadows: Array<Bytes>): ?Expr {
-  let renamed: ?Expr = null;
-  if (value != null) { renamed = _renameExpr(value, names, canonical, shadows); }
-  renamed
-};
-
-let _renameTarget = fn(target: Expr, names: Array<Bytes>, canonical: Array<Bytes>, shadows: Array<Bytes>): Expr {
-  match (target) {
-    Variable(name) => Expr.Variable(_renameName(names, canonical, shadows, name)),
-    _ => _renameExpr(target, names, canonical, shadows),
-  }
-};
-
-let _patternNames: (Pattern, Array<Bytes>) -> Array<Bytes> = fn(_pattern, out) { out };
-
-let _patternListNames = fn(items: Array<Pattern>, out: Array<Bytes>): Array<Bytes> {
-  let i = 0;
-
-  while (i < items.len()) {
-    _patternNames(items[i], out);
-    i++;
-  }
-  out
-};
-_patternNames = fn(pattern, out) {
-  match (pattern) {
-    BindPattern(name) => {
-      out.push(name);
-      out
-    },
-    Object(fields) => {
-      let i = 0;
-
-      while (i < fields.len()) {
-        let (_, field) = fields[i];
-        _patternNames(field, out);
-        i++;
-      }
-      out
-    },
-    Tuple(items) => _patternListNames(items, out),
-    Array(items) => _patternListNames(items, out),
-    ArrayCons(head, tail) => {
-      _patternNames(head, out);
-      out.push(tail);
-      out
-    },
-    ArrayRest(prefix, rest) => {
-      _patternListNames(prefix, out);
-      out.push(rest);
-      out
-    },
-    Enum(_, args) => _patternListNames(args, out),
-    RegExp(_, _, binding) => {
-      if (binding != null) { out.push(binding); }
-      out
-    },
-    IsType(_, binding) => {
-      if (binding != null) { out.push(binding); }
-      out
-    },
-    Bits(segments) => {
-      let i = 0;
-
-      while (i < segments.len()) {
-        match (segments[i]) { Segment(_, _, _, _, value) => _patternNames(value, out) };
-        i++;
-      }
-      out
-    },
-    _ => out,
-  }
-};
-
-let _renamePattern: (Pattern, Array<Bytes>, Array<Bytes>, Array<Bytes>) -> Pattern = fn(pattern, _a, _b, _c) { pattern };
-
-let _renamePatterns = fn(items: Array<Pattern>, names: Array<Bytes>, canonical: Array<Bytes>, shadows: Array<Bytes>): Array<Pattern> {
-  let renamed = Array.new<Pattern>(0);
-  let i = 0;
-
-  while (i < items.len()) {
-    renamed.push(_renamePattern(items[i], names, canonical, shadows));
-    i++;
-  }
-  renamed
-};
-_renamePattern = fn(pattern, names, canonical, shadows) {
-  match (pattern) {
-    Pin(name) => Pattern.Pin(_renameName(names, canonical, shadows, name)),
-    Object(fields) => {
-      let renamed = Array.new<Tuple<Bytes, Pattern>>(0);
-      let i = 0;
-
-      while (i < fields.len()) {
-        let (key, field) = fields[i];
-        renamed.push((key, _renamePattern(field, names, canonical, shadows)));
-        i++;
-      }
-      Pattern.Object(renamed)
-    },
-    Tuple(items) => Pattern.Tuple(_renamePatterns(items, names, canonical, shadows)),
-    Array(items) => Pattern.Array(_renamePatterns(items, names, canonical, shadows)),
-    ArrayCons(head, tail) => Pattern.ArrayCons(_renamePattern(head, names, canonical, shadows), tail),
-    ArrayRest(prefix, rest) => Pattern.ArrayRest(_renamePatterns(prefix, names, canonical, shadows), rest),
-    Enum(name, args) => Pattern.Enum(name, _renamePatterns(args, names, canonical, shadows)),
-    Bits(segments) => {
-      let renamed = Array.new<BitPatternSegment>(0);
-      let i = 0;
-
-      while (i < segments.len()) {
-        match (segments[i]) { Segment(width, endian, signed, kind, value) => renamed.push(
-          BitPatternSegment.Segment(width, endian, signed, kind, _renamePattern(value, names, canonical, shadows))
-        ) };
-        i++;
-      }
-      Pattern.Bits(renamed)
-    },
-    _ => pattern,
-  }
-};
-
-let _renameArms = fn(arms: Array<MatchArm>, names: Array<Bytes>, canonical: Array<Bytes>, shadows: Array<Bytes>): Array<MatchArm> {
-  let renamed = Array.new<MatchArm>(0);
-  let i = 0;
-
-  while (i < arms.len()) {
-    match (arms[i]) { Arm(pattern, guard, body) => {
-      let armShadows = _patternNames(pattern, _copyNames(shadows));
-      renamed.push(MatchArm.Arm(
-        _renamePattern(pattern, names, canonical, shadows),
-        _renameOptional(guard, names, canonical, armShadows),
-        _renameBlock(body, names, canonical, armShadows)
-      ));
-      null
-    } };
-    i++;
-  }
-  renamed
-};
-
-let _renameStatements: (Array<Stmt>, Array<Bytes>, Array<Bytes>, Array<Bytes>) -> Array<Stmt> =
-  fn(statements, names, canonical, shadows) {
-  let renamed = Array.new<Stmt>(0);
-  let i = 0;
-
-  while (i < statements.len()) {
-    match (statements[i]) {
-      LetStmt(isConst, exported, pattern, typeParams, annotation, value) => {
-        renamed.push(Stmt.LetStmt(
-          isConst, exported, _renamePattern(pattern, names, canonical, shadows), typeParams, annotation,
-          _renameExpr(value, names, canonical, shadows)
-        ));
-        _patternNames(pattern, shadows);
-        null
-      },
-      Expression(value) => {
-        renamed.push(Stmt.Expression(_renameExpr(value, names, canonical, shadows)));
-        null
-      },
-      Return(value) => {
-        renamed.push(Stmt.Return(_renameOptional(value, names, canonical, shadows)));
-        null
-      },
-      Throw(value) => {
-        renamed.push(Stmt.Throw(_renameExpr(value, names, canonical, shadows)));
-        null
-      },
-      While(condition, body) => {
-        renamed.push(Stmt.While(
-          _renameExpr(condition, names, canonical, shadows),
-          _renameStatements(body, names, canonical, _copyNames(shadows))
-        ));
-        null
-      },
-      DoWhile(body, condition) => {
-        renamed.push(Stmt.DoWhile(
-          _renameStatements(body, names, canonical, _copyNames(shadows)),
-          _renameExpr(condition, names, canonical, shadows)
-        ));
-        null
-      },
-      Break => {
-        renamed.push(Stmt.Break);
-        null
-      },
-      Continue => {
-        renamed.push(Stmt.Continue);
-        null
-      },
-      Enum(exported, name, typeParams, constructors) => {
-        renamed.push(Stmt.Enum(exported, name, typeParams, constructors));
-        shadows.push(name);
-        null
-      },
-      Prototype(exported, name, typeParams, fields) => {
-        let renamedFields = Array.new<PrototypeField>(0);
-        let j = 0;
-
-        while (j < fields.len()) {
-          match (fields[j]) { Field(fieldName, value) => renamedFields.push(
-            PrototypeField.Field(fieldName, _renameExpr(value, names, canonical, shadows))
-          ) };
-          j++;
-        }
-        renamed.push(Stmt.Prototype(exported, name, typeParams, renamedFields));
-        shadows.push(name);
-        null
-      },
-      Typedef(_, _, _, _) => {
-        renamed.push(statements[i]);
-        null
-      },
-      Macro(_, _, _, _) => {
-        renamed.push(statements[i]);
-        null
-      },
-      ImportModule(_, _, _) => {
-        throw "imports are only allowed at the top level of a module";
-        null
-      },
-      ImportFrom(_, _, _) => {
-        throw "imports are only allowed at the top level of a module";
-        null
-      },
-    };
-    i++;
-  }
-  renamed
-};
-
-_renameBlock = fn(block, names, canonical, shadows) {
-  match (block) { Block(statements, tail) => {
-    let localShadows = _copyNames(shadows);
-    let renamedStatements = _renameStatements(statements, names, canonical, localShadows);
-    AstBlock.Block(renamedStatements, _renameOptional(tail, names, canonical, localShadows))
-  } }
-};
-
-let _renameList = fn(value: ListLiteral, names: Array<Bytes>, canonical: Array<Bytes>, shadows: Array<Bytes>): ListLiteral {
-  match (value) {
-    Empty => value,
-    Elements(items) => ListLiteral.Elements(_renameExprs(items, names, canonical, shadows)),
-    Cons(prefix, tail) => ListLiteral.Cons(
-      _renameExprs(prefix, names, canonical, shadows), _renameExpr(tail, names, canonical, shadows)
-    ),
-    Spread(prefix, rest, suffix) => ListLiteral.Spread(
-      _renameExprs(prefix, names, canonical, shadows), _renameExpr(rest, names, canonical, shadows),
-      _renameExprs(suffix, names, canonical, shadows)
-    ),
-    Comprehension(generators, body) => {
-      let scope = _copyNames(shadows);
-      let renamed = Array.new<ListGenerator>(0);
-      let i = 0;
-
-      while (i < generators.len()) {
-        match (generators[i]) { Generator(pattern, source, guard) => {
-          let renamedSource = _renameExpr(source, names, canonical, scope);
-          let renamedPattern = _renamePattern(pattern, names, canonical, scope);
-          _patternNames(pattern, scope);
-          renamed.push(ListGenerator.Generator(renamedPattern, renamedSource, _renameOptional(guard, names, canonical, scope)));
-          null
-        } };
-        i++;
-      }
-      ListLiteral.Comprehension(renamed, _renameExpr(body, names, canonical, scope))
-    },
-  }
-};
-
-_renameExpr = fn(expr, names, canonical, shadows) {
-  match (expr) {
-    Variable(name) => {
-      let renamed = _renameName(names, canonical, shadows, name);
-      let constant = _indexOf(_constantNames, renamed);
-      if (constant >= 0) { _constantLiteral(constant) } else { Expr.Variable(renamed) }
-    },
-    Array(items) => Expr.Array(_renameExprs(items, names, canonical, shadows)),
-    List(value) => Expr.List(_renameList(value, names, canonical, shadows)),
-    Tuple(items) => Expr.Tuple(_renameExprs(items, names, canonical, shadows)),
-    Object(entries) => {
-      let renamed = Array.new<ObjectEntry>(0);
-      let i = 0;
-
-      while (i < entries.len()) {
-        renamed.push(match (entries[i]) {
-          Field(name, value) => ObjectEntry.Field(name, _renameExpr(value, names, canonical, shadows)),
-          Computed(key, value) => ObjectEntry.Computed(
-            _renameExpr(key, names, canonical, shadows), _renameExpr(value, names, canonical, shadows)
-          ),
-          Spread(value) => ObjectEntry.Spread(_renameExpr(value, names, canonical, shadows)),
-        });
-        i++;
-      }
-      Expr.Object(renamed)
-    },
-    Spread(value) => Expr.Spread(_renameExpr(value, names, canonical, shadows)),
-    Bits(segments) => {
-      let renamed = Array.new<BitExprSegment>(0);
-      let i = 0;
-
-      while (i < segments.len()) {
-        match (segments[i]) { Segment(width, endian, signed, kind, value) => renamed.push(
-          BitExprSegment.Segment(width, endian, signed, kind, _renameExpr(value, names, canonical, shadows))
-        ) };
-        i++;
-      }
-      Expr.Bits(renamed)
-    },
-    Member(base, name) => Expr.Member(_renameExpr(base, names, canonical, shadows), name),
-    Index(base, index) => Expr.Index(
-      _renameExpr(base, names, canonical, shadows), _renameExpr(index, names, canonical, shadows)
-    ),
-    Call(callee, typeArgs, args) => Expr.Call(
-      _renameExpr(callee, names, canonical, shadows), typeArgs, _renameExprs(args, names, canonical, shadows)
-    ),
-    TypeApply(base, args) => Expr.TypeApply(_renameExpr(base, names, canonical, shadows), args),
-    New(proto, args) => Expr.New(
-      _renameExpr(proto, names, canonical, shadows), _renameExprs(args, names, canonical, shadows)
-    ),
-    Function(params, result, body, isMethod) => {
-      let functionShadows = _copyNames(shadows);
-      let i = 0;
-
-      while (i < params.len()) {
-        match (params[i]) { Parameter(name, _, _) => functionShadows.push(name) };
-        i++;
-      }
-      Expr.Function(params, result, _renameBlock(body, names, canonical, functionShadows), isMethod)
-    },
-    BlockExpr(block) => Expr.BlockExpr(_renameBlock(block, names, canonical, shadows)),
-    If(condition, thenBranch, elseBranch) => Expr.If(
-      _renameExpr(condition, names, canonical, shadows),
-      _renameExpr(thenBranch, names, canonical, shadows),
-      _renameExpr(elseBranch, names, canonical, shadows)
-    ),
-    Match(subject, arms) => Expr.Match(
-      _renameExpr(subject, names, canonical, shadows), _renameArms(arms, names, canonical, shadows)
-    ),
-    With(clauses, body, elseArms) => {
-      let scope = _copyNames(shadows);
-      let renamed = Array.new<WithClause>(0);
-      let i = 0;
-
-      while (i < clauses.len()) {
-        match (clauses[i]) { Clause(pattern, guard, value) => {
-          let renamedValue = _renameExpr(value, names, canonical, scope);
-          let renamedPattern = _renamePattern(pattern, names, canonical, scope);
-          _patternNames(pattern, scope);
-          renamed.push(WithClause.Clause(renamedPattern, _renameOptional(guard, names, canonical, scope), renamedValue));
-          null
-        } };
-        i++;
-      }
-
-      let renamedElse = match (elseArms) {
-        None => elseArms,
-        Some(arms) => MatchArms.Some(_renameArms(arms, names, canonical, shadows)),
-      };
-      Expr.With(renamed, _renameBlock(body, names, canonical, scope), renamedElse)
-    },
-    Try(body, catchName, catchBody) => {
-      let catchShadows = _copyNames(shadows);
-      if (catchName != null) { catchShadows.push(catchName); }
-      Expr.Try(
-        _renameBlock(body, names, canonical, shadows), catchName,
-        _renameBlock(catchBody, names, canonical, catchShadows)
-      )
-    },
-    LetExpr(pattern, typeParams, annotation, value) => Expr.LetExpr(
-      _renamePattern(pattern, names, canonical, shadows), typeParams, annotation,
-      _renameExpr(value, names, canonical, shadows)
-    ),
-    Unary(op, value) => Expr.Unary(op, _renameExpr(value, names, canonical, shadows)),
-    Binary(op, left, right) => Expr.Binary(
-      op, _renameExpr(left, names, canonical, shadows), _renameExpr(right, names, canonical, shadows)
-    ),
-    IncDec(op, prefix, target) => Expr.IncDec(op, prefix, _renameTarget(target, names, canonical, shadows)),
-    Cast(value, ty) => Expr.Cast(_renameExpr(value, names, canonical, shadows), ty),
-    Is(value, ty) => Expr.Is(_renameExpr(value, names, canonical, shadows), ty),
-    Conditional(condition, thenBranch, elseBranch) => Expr.Conditional(
-      _renameExpr(condition, names, canonical, shadows),
-      _renameExpr(thenBranch, names, canonical, shadows),
-      _renameExpr(elseBranch, names, canonical, shadows)
-    ),
-    Pipe(value, body) => Expr.Pipe(
-      _renameExpr(value, names, canonical, shadows), _renameExpr(body, names, canonical, shadows)
-    ),
-    Assign(op, target, value) => Expr.Assign(
-      op, _renameTarget(target, names, canonical, shadows), _renameExpr(value, names, canonical, shadows)
-    ),
-    Await(value) => Expr.Await(_renameExpr(value, names, canonical, shadows)),
-    Unquote(value) => Expr.Unquote(_renameExpr(value, names, canonical, shadows)),
-    _ => expr,
-  }
-};
-
-let _loadExport: (
-  Bytes, Array<Bytes>, Bytes, Array<Stmt>, Array<Syntax>, Array<Bytes>, Array<Bytes>, Array<Bytes>
-) -> Bytes = fn(root, parts, name, merged, mergedSyntax, loadedKeys, loadedModules, visiting) {
-  let path = _modulePath(root, parts);
-  let key = path + "#" + name;
-
-  if (_indexOf(loadedModules, path) >= 0) {
-    if (_indexOf(loadedKeys, key) < 0) { throw "unknown exported function: " + name; }
-    return key;
-  }
-  if (_indexOf(visiting, path) >= 0) { throw "import cycle through " + path; }
-  visiting.push(path);
-
-  let (dependencyTokens, dependencyPath, dependencyStarts, dependencyEnds) = lexFileSource(readText(path), path);
-  let dependency = parseSource(dependencyTokens, dependencyPath, dependencyStarts, dependencyEnds);
-  let dependencySyntax = _children(programSyntax(dependency));
-  let dependencyStatements = Array.new<Stmt>(0);
-
-  match (dependency) {
-    Program(dependencyPackage, statements, dependencyTail) => {
-      if (!_packageMatches(dependencyPackage, parts)) { throw "module package does not match import path: " + path; }
-      if (dependencyTail != null) { throw "dependency module cannot have a tail expression: " + path; }
-      let statementIndex = 0;
-
-      while (statementIndex < statements.len()) {
-        dependencyStatements.push(statements[statementIndex]);
-        statementIndex++;
-      }
-    },
-  };
-
-  let i = 0;
-
-  while (i < dependencyStatements.len()) {
-    match (dependencyStatements[i]) {
-      ImportFrom(kind, _, _) => match (kind) {
-        Value => null,
-        _ => {
-          throw "only named value imports are supported";
-          null
-        },
-      },
-      ImportModule(_, _, _) => {
-        throw "module namespace imports are not supported";
-        null
-      },
-      LetStmt(isConst, exported, pattern, typeParams, annotation, value) when (exported) => {
-        match (pattern) {
-          BindPattern(_) => null, _ => {
-            throw "exported module values require names";
-            null
-          }
-        };
-
-        match (value) {
-          Function(_, _, _, _) => null,
-          _ => {
-            if (!isConst || (typeParams.len() != 0) || (annotation != null) || !_constantExpr(value)) {
-              throw "exported constants require an unannotated primitive constant expression";
-            }
-            null
-          },
-        }
-      },
-      _ => {
-        throw "dependency modules may contain only imports and exported pure declarations";
-        null
-      },
-    };
-    i++;
-  }
-
-  let requestedExport = false;
-  i = 0;
-
-  while (i < dependencyStatements.len()) {
-    match (dependencyStatements[i]) {
-      LetStmt(_, exported, pattern, _, _, _) when (exported && isBindPattern(pattern)) => if (bindPatternName(pattern) == name) { requestedExport = true; },
-      _ => null,
-    };
-    i++;
-  }
-  if (!requestedExport) { throw "unknown exported function: " + name; }
-  let importNames = Array.new<Bytes>(0);
-  let importCanonical = Array.new<Bytes>(0);
-  i = 0;
-
-  while (i < dependencyStatements.len()) {
-    match (dependencyStatements[i]) {
-      ImportFrom(_, items, importParts) => {
-        let j = 0;
-
-        while (j < items.len()) {
-          match (items[j]) {
-            Item(importName, alias) => {
-              let importLocal = importName;
-              if (alias != null) { importLocal = alias; }
-              if (_indexOf(importNames, importLocal) >= 0) { throw "duplicate import name: " + importLocal; }
-              importNames.push(importLocal);
-              importCanonical.push(_loadExport(root, importParts, importName, merged, mergedSyntax, loadedKeys, loadedModules, visiting));
-            },
-          };
-          j++;
-        }
-      },
-      _ => null,
-    };
-    i++;
-  }
-  i = 0;
-
-  while (i < dependencyStatements.len()) {
-    match (dependencyStatements[i]) {
-      LetStmt(isConst, exported, pattern, typeParams, annotation, value) when (exported && isBindPattern(pattern)) => {
-        let exportName = bindPatternName(pattern);
-        let exportKey = path + "#" + exportName;
-        let renamedValue = _renameExpr(value, importNames, importCanonical, []);
-
-        match (value) {
-          Function(_, _, _, _) => {
-            merged.push(Stmt.LetStmt(
-              isConst, false, Pattern.BindPattern(exportKey), typeParams, annotation, renamedValue
-            ));
-            mergedSyntax.push(dependencySyntax[i]);
-          },
-          _ => {
-            let (isBool, boolValue, i32Value) = _constantValue(renamedValue);
-            _constantNames.push(exportKey);
-            _constantKinds.push(isBool);
-            _constantBools.push(boolValue);
-            _constantI32s.push(i32Value);
-          },
-        };
-        loadedKeys.push(exportKey);
-      },
-      _ => null,
-    };
-    i++;
-  }
-  loadedModules.push(path);
-  _initializedModules.push(path);
-  visiting.pop();
-  key
-};
-
-export let loadProgram: (Bytes) -> Tuple<AstProgram, Syntax> = fn(entryPath) {
-  let (entryTokens, parsedEntryPath, entryStarts, entryEnds) = lexFileSource(readText(entryPath), entryPath);
-  let entry = parseSource(entryTokens, parsedEntryPath, entryStarts, entryEnds);
-  let entrySyntax = _children(programSyntax(entry));
-
-  match (entry) {
-    Program(packageName, statements, tail) => {
+  let module = match (program) { Program(packageName, statements, tail) => {
+    if (parts.len() == 0) {
       match (packageName) {
         None => null, _ => {
           throw "entry module must be package-less";
           null
         }
       };
-      let merged = Array.new<Stmt>(0);
-      let mergedSyntax = Array.new<Syntax>(0);
-      let root = _directory(entryPath);
-      let loadedKeys = Array.new<Bytes>(0);
-      let loadedModules = Array.new<Bytes>(0);
-      _constantNames = Array.new<Bytes>(0);
-      _constantKinds = Array.new<Bool>(0);
-      _constantBools = Array.new<Bool>(0);
-      _constantI32s = Array.new<I32>(0);
-      _initializedModules = Array.new<Bytes>(0);
-      let visiting = Array.new<Bytes>(0);
-      let importNames = Array.new<Bytes>(0);
-      let importCanonical = Array.new<Bytes>(0);
-      let entryStatements = Array.new<Stmt>(0);
-      let i = 0;
+    } else {
+      if (!_packageMatches(packageName, parts)) { throw "module package does not match import path: " + path; }
+      if (tail != null) { throw "dependency module cannot have a tail expression: " + path; }
+    }
+    let imports = Array.new<Import>(0);
+    let locals = Array.new<Bytes>(0);
+    let i = 0;
 
-      while (i < statements.len()) {
-        match (statements[i]) {
-          ImportFrom(kind, items, parts) => {
-            match (kind) {
-              Value => null, _ => {
-                throw "only named value imports are supported";
-                null
-              }
-            };
-            let j = 0;
-
-            while (j < items.len()) {
-              match (items[j]) {
-                Item(name, alias) => {
-                  let localName = name;
-                  if (alias != null) { localName = alias; }
-                  if (_indexOf(importNames, localName) >= 0) { throw "duplicate import name: " + localName; }
-                  importNames.push(localName);
-                  importCanonical.push(_loadExport(root, parts, name, merged, mergedSyntax, loadedKeys, loadedModules, visiting));
-                },
-              };
-              j++;
+    while (i < statements.len()) {
+      match (statements[i]) {
+        ImportFrom(kind, items, importParts) => {
+          match (kind) {
+            Value => null, _ => {
+              throw "type imports are not supported yet";
+              null
             }
-            null
-          },
-          ImportModule(_, _, _) => {
-            throw "module namespace imports are not supported";
-            null
-          },
-          _ => {
-            entryStatements.push(statements[i]);
-            mergedSyntax.push(entrySyntax[i]);
-            null
-          },
-        };
-        i++;
-      }
-      let renamedEntry = _renameStatements(entryStatements, importNames, importCanonical, []);
-      i = 0;
+          };
+          let dependency = _load(_modulePath(_root, importParts), importParts);
+          let j = 0;
 
-      while (i < renamedEntry.len()) {
-        merged.push(renamedEntry[i]);
-        i++;
-      }
-      let renamedTail: ?Expr = null;
-
-      if (tail != null) {
-        renamedTail = _renameExpr(tail, importNames, importCanonical, []);
-        mergedSyntax.push(entrySyntax[statements.len()]);
-      }
-      _initializedModules.push(entryPath);
-      (AstProgram.Program(Package.None, merged, renamedTail), rootSyntax(parsedEntryPath, mergedSyntax))
-    },
-  }
+          while (j < items.len()) {
+            match (items[j]) { Item(name, alias) => {
+              let local = name;
+              if (alias != null) { local = alias; }
+              if (_indexOf(locals, local) >= 0) { throw "duplicate import name: " + local; }
+              locals.push(local);
+              imports.push(Import.Import(local, dependency, name));
+            } };
+            j++;
+          }
+          null
+        },
+        ImportModule(_, _, _) => {
+          throw "module namespace imports are not supported";
+          null
+        },
+        _ => null,
+      };
+      i++;
+    }
+    Module.Module(sourcePath, statements, syntax, tail, imports)
+  } };
+  _visiting.pop();
+  _modules.push(module);
+  _paths.push(path);
+  (_modules.len() - 1) as I32
 };
+
+export let loadModules: (Bytes) -> Array<Module> = fn(entryPath) {
+  _modules = Array.new<Module>(0);
+  _paths = Array.new<Bytes>(0);
+  _visiting = Array.new<Bytes>(0);
+  _root = _directory(entryPath);
+  _load(entryPath, Array.new<Bytes>(0));
+  _modules
+};
+
+export let modulePath: (Module) -> Bytes = fn(module) { match (module) { Module(path, _, _, _, _) => path } };

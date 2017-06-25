@@ -3,7 +3,7 @@ package ir;
 import type { Hir } from frontend.Hir;
 import {
   TYPE_BOOL, TYPE_I32, auxOf, bytesOf, childCount, childOf, innerOf, kindOf, lastChild, opOf, rootNode, typeArg, typeArgCount,
-  typeOf, useHir, valueOf,
+  globalCount, globalTypeOf, typeOf, useHir, valueOf,
 } from frontend.Hir;
 import type { BasicBlock, Function as IrFunction, Instruction, Op, Program as IrProgram, Terminator, ValueType } from ir.Model;
 import { BasicBlock, Op, Program as IrProgram, ReturnType, Terminator, ValueType, instruction } from ir.Model;
@@ -92,6 +92,7 @@ let _bind = fn(binding: I32) {
   let value = _expr(childOf(binding, 0));
 
   match (opOf(binding)) {
+    InitGlobal => _emit(Op.GlobalSet, -1, [value], valueOf(binding)),
     Let => {
       let register = _fresh(typeOf(binding));
       _move(register, value);
@@ -163,6 +164,16 @@ _expr = fn(id) {
       let dst = _bindings[valueOf(id)];
       _move(dst, _expr(childOf(id, 0)));
       dst
+    },
+    Global => {
+      let dst = _fresh(typeOf(id));
+      _emit(Op.GlobalGet, dst, Array.new<I32>(0), valueOf(id));
+      dst
+    },
+    SetGlobal => {
+      let value = _expr(childOf(id, 0));
+      _emit(Op.GlobalSet, -1, [value], valueOf(id));
+      value
     },
     ArraySet => {
       let operands = _values(id, 0);
@@ -308,7 +319,14 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
   let result = _expr(body);
   _end(Terminator.ReturnValue(result), _block);
   functions.push(IrFunction.Function(0, [], _registers, ReturnType.Value(_valueType(typeOf(body))), _blocks, 0));
-  let lowered = IrProgram.Program(functions, _pool, []);
+  let globals = Array.new<ValueType>(0);
+  i = 0;
+
+  while (i < globalCount()) {
+    globals.push(_valueType(globalTypeOf(i)));
+    i++;
+  }
+  let lowered = IrProgram.Program(functions, _pool, [], globals);
   verifyProgram(lowered);
   lowered
 };

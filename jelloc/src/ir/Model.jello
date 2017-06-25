@@ -22,7 +22,7 @@ export enum Op {
   Add; Sub; Mul; Neg; Not; Eq; Lt; Sext; Trunc; Box; IsNull;
   ArrayNew; ArrayLen; ArrayGet; ArraySet; BytesGet;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
-  Call; CallIndirect;
+  Call; CallIndirect; GlobalGet; GlobalSet;
   StructNew; StructSet; PhysEq; SpillPush; SpillPop;
 }
 
@@ -84,7 +84,7 @@ export enum Function {
 export enum EnumSchema { Enum(variants: Array<Array<ValueType>>); }
 
 export enum Program {
-  Program(functions: Array<Function>, bytes: Array<Bytes>, enums: Array<EnumSchema>);
+  Program(functions: Array<Function>, bytes: Array<Bytes>, enums: Array<EnumSchema>, globals: Array<ValueType>);
 }
 
 export let opEffects: (Op) -> Array<Effect> = fn(op) {
@@ -92,6 +92,8 @@ export let opEffects: (Op) -> Array<Effect> = fn(op) {
     Box, ConstFunction, ArrayNew, EnumNew, StructNew => [Effect.MayAllocate],
     Call, CallIndirect => [Effect.MayCall, Effect.MayThrow],
     BytesGet, ArrayLen, ArrayGet, TupleGet, EnumGet => [Effect.MayReadMemory, Effect.MayTrap],
+    GlobalGet => [Effect.MayReadMemory],
+    GlobalSet => [Effect.MayWriteMemory],
     ArraySet, StructSet => [Effect.MayWriteMemory, Effect.MayTrap],
     TupleNew => [Effect.MayAllocate, Effect.MayWriteMemory],
     _ => [],

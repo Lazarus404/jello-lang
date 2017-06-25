@@ -2,7 +2,7 @@ package frontend;
 
 import type { Hir } from frontend.Hir;
 import {
-  auxOf, bytesOf, childCount, childOf, innerOf, lastChild, opOf, rootNode, typeName, typeOf, useHir, valueOf,
+  auxOf, bytesOf, childCount, childOf, globalNameOf, innerOf, lastChild, opOf, rootNode, typeName, typeOf, useHir, valueOf,
 } from frontend.Hir;
 import { bytesLiteral } from frontend.Tokens;
 
@@ -24,8 +24,12 @@ let _children = fn(parent: I32, start: I32, end: I32, indent: Bytes): Bytes {
 };
 
 let _binding = fn(id: I32, indent: Bytes): Bytes {
-  let keyword = match (opOf(id)) { Let => "let ", _ => "const " };
-  indent + keyword + "%" + _id(id) + " " + bytesOf(auxOf(id)) + _typed(id) + _expr(childOf(id, 0), indent + "  ")
+  let header = match (opOf(id)) {
+    Let => "let %" + _id(id) + " " + bytesOf(auxOf(id)),
+    InitGlobal => "global g" + _id(id) + " " + globalNameOf(valueOf(id)),
+    _ => "const %" + _id(id) + " " + bytesOf(auxOf(id)),
+  };
+  indent + header + _typed(id) + _expr(childOf(id, 0), indent + "  ")
 };
 
 let _operation = fn(name: Bytes, id: I32, indent: Bytes): Bytes { indent + name + _typed(id) + _children(id, 0, childCount(id), indent) };
@@ -41,6 +45,8 @@ _expr = fn(id, indent) {
     Bytes => indent + "bytes " + bytesLiteral(bytesOf(valueOf(id))) + _typed(id),
     Null => indent + "null" + _typed(id),
     Local => indent + "local %" + _id(id) + _typed(id),
+    Global => indent + "global g" + _id(id) + _typed(id),
+    SetGlobal => _operation("global.set g" + _id(id), id, indent),
     FunctionRef => indent + "function @" + _id(id) + _typed(id),
     Assign => _operation("assign %" + _id(id), id, indent),
     TupleField => _operation("tuple.get " + _id(id), id, indent),

@@ -2,8 +2,9 @@ package frontend;
 
 import type { Hir } from frontend.Hir;
 import {
-  Kind, TYPE_BOOL, TYPE_BYTES, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, innerOf, isKind, lastChild,
-  nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf, spanStartOf, typeArg, typeArgCount, typeOf, useHir, valueOf,
+  Kind, TYPE_BOOL, TYPE_BYTES, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, globalCount,
+  globalIsMutable, globalTypeOf, innerOf, isKind, lastChild, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf, spanStartOf,
+  typeArg, typeArgCount, typeOf, useHir, valueOf,
 } from frontend.Hir;
 
 let _used = Array.new<Bool>(0);
@@ -11,7 +12,8 @@ let _functionTypes = Array.new<I32>(0);
 let _visibleIds = Array.new<I32>(0);
 let _visibleTypes = Array.new<I32>(0);
 let _visibleMutable = Array.new<Bool>(0);
-let _nextId = 0;
+let _declared = Array.new<Bool>(0);
+let _nextGlobal = 0;
 
 let _fail = fn(message: Bytes) {
   throw "invalid HIR: " + message;
@@ -64,8 +66,10 @@ let _visible = fn(id: I32): I32 {
 };
 
 let _declare = fn(id: I32, ty: I32, mutable: Bool) {
-  if (id != _nextId) { _fail("binding IDs must be sequential"); }
-  _nextId++;
+  if (id < 0) { _fail("negative binding ID"); }
+  while (_declared.len() <= id) { _declared.push(false); }
+  if (_declared[id]) { _fail("binding declared twice"); }
+  _declared[id] = true;
   _visibleIds.push(id);
   _visibleTypes.push(ty);
   _visibleMutable.push(mutable);
@@ -84,18 +88,30 @@ let _popTo = fn(start: I32) {
 let _expr: (I32) -> I32 = fn(_id) { -1 };
 let _operand = fn(parent: I32, index: I32): I32 { _expr(_child(parent, index)) };
 
-let _binding = fn(parent: I32, index: I32) {
-  let binding = _child(parent, index);
+let _global = fn(id: I32): I32 {
+  if ((id < 0) || (id >= globalCount())) { _fail("unknown global"); }
+  globalTypeOf(id)
+};
 
-  let mutable = match (opOf(binding)) {
-    Let => true, Const => false, _ => {
-      _fail("expected binding");
-      false
-    }
-  };
+let _binding = fn(parent: I32, index: I32, programBody: Bool) {
+  let binding = _child(parent, index);
   _arity(binding, 1);
   if (_operand(binding, 0) != typeOf(binding)) { _fail("binding type mismatch"); }
-  _declare(valueOf(binding), typeOf(binding), mutable);
+
+  match (opOf(binding)) {
+    Let, Const => _declare(valueOf(binding), typeOf(binding), match (opOf(binding)) { Let => true, _ => false }),
+    InitGlobal => {
+      if (!programBody) { _fail("global initialized outside the program body"); }
+      if (valueOf(binding) != _nextGlobal) { _fail("globals must be initialized once, in order"); }
+      if (_global(valueOf(binding)) != typeOf(binding)) { _fail("global type mismatch"); }
+      _nextGlobal++;
+      null
+    },
+    _ => {
+      _fail("expected binding");
+      null
+    },
+  };
   null
 };
 
@@ -134,13 +150,13 @@ let _array = fn(id: I32, operands: I32): I32 {
   innerOf(array)
 };
 
-let _block = fn(id: I32): I32 {
+let _block = fn(id: I32, programBody: Bool): I32 {
   if (childCount(id) < 1) { _fail("block without tail"); }
   let scope = _visibleIds.len();
   let i = 0;
 
   while (i < childCount(id) - 1) {
-    _binding(id, i);
+    _binding(id, i, programBody);
     i++;
   }
   let tail = _operand(id, childCount(id) - 1);
@@ -173,6 +189,15 @@ _expr = fn(id) {
       let found = _visible(valueOf(id));
       if (!_visibleMutable[found]) { _fail("assignment to immutable local"); }
       _typed(id, [_visibleTypes[found]], _visibleTypes[found], "assignment type mismatch")
+    },
+    Global => {
+      _arity(id, 0);
+      _global(valueOf(id))
+    },
+    SetGlobal => {
+      let global = _global(valueOf(id));
+      if (!globalIsMutable(valueOf(id))) { _fail("assignment to immutable global"); }
+      _typed(id, [global], global, "global assignment type mismatch")
     },
     FunctionRef => {
       _arity(id, 0);
@@ -224,7 +249,7 @@ _expr = fn(id) {
     },
     Call => _arguments(id, _functionType(valueOf(id)), 0, "direct call signature mismatch"),
     CallIndirect => _arguments(id, _operand(id, 0), 1, "indirect call signature mismatch"),
-    Block => _block(id),
+    Block => _block(id, false),
     If => _typed(id, [TYPE_BOOL, ty, ty], ty, "if operand type"),
     _ => {
       _fail("expected expression");
@@ -241,7 +266,7 @@ let _statement = fn(id: I32, result: I32, loopDepth: I32): Bool {
   let reachable = match (opOf(id)) {
     Declare => {
       _arity(id, 1);
-      _binding(id, 0);
+      _binding(id, 0, false);
       true
     },
     Expression => {
@@ -354,7 +379,8 @@ export let verifyHir: (Hir) -> Bool = fn(program) {
   _visibleIds = Array.new<I32>(0);
   _visibleTypes = Array.new<I32>(0);
   _visibleMutable = Array.new<Bool>(0);
-  _nextId = 0;
+  _declared = Array.new<Bool>(0);
+  _nextGlobal = 0;
   i = 0;
 
   while (i < childCount(root) - 1) {
@@ -362,14 +388,16 @@ export let verifyHir: (Hir) -> Bool = fn(program) {
     i++;
   }
   _popTo(0);
+  let body = _child(root, childCount(root) - 1);
 
-  match (opOf(lastChild(root))) {
+  match (opOf(body)) {
     Block => null, _ => {
       _fail("program body must be a block");
       null
     }
   };
-  _operand(root, childCount(root) - 1);
+  if (_block(body, true) != typeOf(body)) { _fail("expression type mismatch"); }
+  if (_nextGlobal != globalCount()) { _fail("global never initialized"); }
   _spans();
   true
 };

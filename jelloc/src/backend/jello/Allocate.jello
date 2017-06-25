@@ -467,7 +467,7 @@ let _allocate = fn(function: Function): Function {
 };
 
 export let allocateProgram: (Program) -> Program = fn(program) {
-  let allocated = match (program) { Program(functions, pool, enums) => {
+  let allocated = match (program) { Program(functions, pool, enums, globals) => {
     let out = Array.new<Function>(0);
     let i = 0;
 
@@ -475,7 +475,7 @@ export let allocateProgram: (Program) -> Program = fn(program) {
       try { out.push(_allocate(functions[i])); } catch (e) { throw "function " + Std.string(i) + ": " + Std.string(e); }
       i++;
     }
-    Program.Program(out, pool, enums)
+    Program.Program(out, pool, enums, globals)
   } };
   verifyProgram(allocated);
   allocated

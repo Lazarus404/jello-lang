@@ -15,6 +15,7 @@ let _functionIds = Array.new<I32>(0);
 let _signatures = Array.new<ValueType>(0);
 let _poolSize = 0;
 let _enums = Array.new<EnumSchema>(0);
+let _globals = Array.new<ValueType>(0);
 
 let _registers = Array.new<ValueType>(0);
 
@@ -73,6 +74,11 @@ let _hasField = fn(enumId: I32, index: I32, ty: ValueType): Bool {
   } }
 };
 
+let _global = fn(index: I32): ValueType {
+  if ((index < 0) || (index >= _globals.len())) { _fail("global out of range"); }
+  _globals[index]
+};
+
 let _arity = fn(args: Array<I32>, count: I32) { if (args.len() != count) { _fail("wrong operand count"); } null };
 
 let _instruction = fn(instruction: Instruction) {
@@ -87,7 +93,7 @@ let _instruction = fn(instruction: Instruction) {
   }
 
   match (opOf(instruction)) {
-    ArraySet, StructSet, SpillPush => { if (dst >= 0) { _fail("store defines a register"); } null },
+    ArraySet, StructSet, SpillPush, GlobalSet => { if (dst >= 0) { _fail("store defines a register"); } null },
     Call => null,
     _ => {
       _type(dst);
@@ -314,6 +320,14 @@ let _instruction = fn(instruction: Instruction) {
     SpillPush => {
       _arity(args, 1);
       if ((imm < 0) || (imm >= 65536)) { _fail("spill slot out of range"); } null
+    },
+    GlobalGet => {
+      _arity(args, 0);
+      if (_inProgram) { _expect(dst, _global(imm)); } null
+    },
+    GlobalSet => {
+      _arity(args, 1);
+      if (_inProgram) { _expect(args[0], _global(imm)); } null
     },
     SpillPop => {
       _arity(args, 0);
@@ -592,7 +606,7 @@ let _signatureOf = fn(function: Function): ValueType {
 };
 
 export let verifyProgram: (Program) -> Bool = fn(program) {
-  match (program) { Program(functions, pool, enums) => {
+  match (program) { Program(functions, pool, enums, globals) => {
     _functionIds = Array.new<I32>(0);
     _signatures = Array.new<ValueType>(0);
     let i = 0;
@@ -618,6 +632,7 @@ export let verifyProgram: (Program) -> Bool = fn(program) {
     }
     _poolSize = pool.len() as I32;
     _enums = enums;
+    _globals = globals;
     _inProgram = true;
     i = 0;
 

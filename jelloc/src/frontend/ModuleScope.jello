@@ -1,0 +1,91 @@
+package frontend;
+
+import type { Import, Module } from frontend.Modules;
+import { Module } from frontend.Modules;
+
+export enum Binding { Global(id: I32); Function(index: I32); Unbound; }
+
+let _names = Array.new<Bytes>(0);
+let _bindings = Array.new<Binding>(0);
+let _imported = Array.new<Bool>(0);
+let _exportModules = Array.new<I32>(0);
+let _exportNames = Array.new<Bytes>(0);
+let _exportBindings = Array.new<Binding>(0);
+
+let _index = fn(name: Bytes): I32 {
+  let i = 0;
+
+  while (i < _names.len()) {
+    if (_names[i] == name) { return i; }
+    i++;
+  }
+  -1
+};
+
+let _add = fn(name: Bytes, binding: Binding, imported: Bool) {
+  if (_index(name) >= 0) { throw "duplicate top-level name: " + name; }
+  _names.push(name);
+  _bindings.push(binding);
+  _imported.push(imported);
+  null
+};
+
+export let resetExports: () -> Bool = fn() {
+  _exportModules = Array.new<I32>(0);
+  _exportNames = Array.new<Bytes>(0);
+  _exportBindings = Array.new<Binding>(0);
+  true
+};
+
+export let enterModule: (Array<Import>, Array<Module>) -> Bool = fn(imports, modules) {
+  _names = Array.new<Bytes>(0);
+  _bindings = Array.new<Binding>(0);
+  _imported = Array.new<Bool>(0);
+  let i = 0;
+
+  while (i < imports.len()) {
+    match (imports[i]) { Import(local, module, name) => {
+      let found = -1;
+      let e = 0;
+
+      while (e < _exportNames.len()) {
+        if ((_exportModules[e] == module) && (_exportNames[e] == name)) { found = e; }
+        e++;
+      }
+
+      if (found < 0) {
+        match (modules[module]) {
+          Module(path, _, _, _, _) => {
+            throw "unknown export " + name + " in " + path;
+            null
+          }
+        };
+      }
+      _add(local, _exportBindings[found], true);
+    } };
+    i++;
+  }
+  true
+};
+
+export let declareScoped: (Bytes, Binding) -> Bool = fn(name, binding) {
+  _add(name, binding, false);
+  true
+};
+
+export let scoped: (Bytes) -> Binding = fn(name) {
+  let found = _index(name);
+  if (found < 0) { Binding.Unbound } else { _bindings[found] }
+};
+
+export let isImported: (Bytes) -> Bool = fn(name) {
+  let found = _index(name);
+  (found >= 0) && _imported[found]
+};
+
+export let exportScoped: (I32, Bytes) -> Bool = fn(module, name) {
+  _exportModules.push(module);
+  _exportNames.push(name);
+  _exportBindings.push(_bindings[_index(name)]);
+  true
+};

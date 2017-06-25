@@ -5,7 +5,7 @@ import {
   Hir, Op, arrayType, beginHir, bytesId, declareEnum, functionType, nullType, opOf, tupleType,
   typeName, useHir,
 } from frontend.Hir;
-import { typeCheckProgram } from frontend.TypeCheck;
+import { typeCheckProgram } from frontend.CheckModules;
 import { verifyHir } from frontend.VerifyHir;
 import { lex } from frontend.Lexer;
 import { parseProgram } from frontend.Parser;
@@ -13,7 +13,10 @@ import { parseProgram } from frontend.Parser;
 let checked = fn(source: Bytes): Hir { typeCheckProgram(parseProgram(lex(source))) };
 
 let opName = fn(op: Op): Bytes {
-  match (op) { I32 => "I32", Local => "Local", Add => "Add", Call => "Call", If => "If", Let => "Let", Return => "Return", _ => "" }
+  match (op) {
+    I32 => "I32", Local => "Local", Add => "Add", Call => "Call", If => "If", Let => "Let", Return => "Return",
+    Global => "Global", InitGlobal => "InitGlobal", Parameter => "Parameter", _ => "",
+  }
 };
 
 let find = fn(hir: Hir, name: Bytes, nth: I32): I32 {
@@ -43,15 +46,15 @@ let copy = fn(values: Array<I32>): Array<I32> {
 };
 
 let mutate = fn(hir: Hir, id: I32, column: I32, value: I32): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans) => {
+  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals) => {
     let changed = copy(nodes);
     changed[id * 5 + column] = value;
-    Hir.Hir(ops, changed, edges, bytes, kinds, types, typeEdges, root, spans)
+    Hir.Hir(ops, changed, edges, bytes, kinds, types, typeEdges, root, spans, globals)
   } }
 };
 
 let mutateOp = fn(hir: Hir, id: I32, op: Op): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans) => {
+  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals) => {
     let changed = Array.new<Op>(0);
     let i = 0;
 
@@ -59,20 +62,20 @@ let mutateOp = fn(hir: Hir, id: I32, op: Op): Hir {
       changed.push(i == id ? op : ops[i]);
       i++;
     }
-    Hir.Hir(changed, nodes, edges, bytes, kinds, types, typeEdges, root, spans)
+    Hir.Hir(changed, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals)
   } }
 };
 
 let mutateChild = fn(hir: Hir, parent: I32, index: I32, child: I32): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans) => {
+  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals) => {
     let changed = copy(edges);
     changed[nodes[parent * 5 + 3] + index] = child;
-    Hir.Hir(ops, nodes, changed, bytes, kinds, types, typeEdges, root, spans)
+    Hir.Hir(ops, nodes, changed, bytes, kinds, types, typeEdges, root, spans, globals)
   } }
 };
 
 let mutateSpans = fn(hir: Hir, count: I32, id: I32, column: I32, value: I32): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans) => {
+  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals) => {
     let changed = Array.new<I32>(0);
     let i = 0;
 
@@ -81,7 +84,7 @@ let mutateSpans = fn(hir: Hir, count: I32, id: I32, column: I32, value: I32): Hi
       i++;
     }
     if (id >= 0) { changed[id * 3 + column] = value; }
-    Hir.Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, changed)
+    Hir.Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, changed, globals)
   } }
 };
 
@@ -152,7 +155,14 @@ test("verifier checks scopes and mutability", fn(t) {
   let hir = checked(SAMPLE);
   t.is(rejection(mutate(hir, find(hir, "Local", 0), 1, 99)), "invalid HIR: unknown local binding");
   t.is(rejection(mutateOp(hir, find(hir, "Let", 0), Op.Const)), "invalid HIR: assignment to immutable local");
-  t.is(rejection(mutate(hir, find(hir, "Let", 1), 1, 7)), "invalid HIR: binding IDs must be sequential");
+  t.is(rejection(mutate(hir, find(hir, "Let", 0), 1, H.valueOf(find(hir, "Parameter", 3)))), "invalid HIR: binding declared twice");
+});
+
+test("verifier checks globals", fn(t) {
+  let hir = checked(SAMPLE);
+  t.is(rejection(mutate(hir, find(hir, "Global", 0), 1, 99)), "invalid HIR: unknown global");
+  t.is(rejection(mutate(hir, find(hir, "InitGlobal", 1), 1, 0)), "invalid HIR: globals must be initialized once, in order");
+  t.is(rejection(mutate(hir, find(hir, "InitGlobal", 1), 1, 2)), "invalid HIR: globals must be initialized once, in order");
 });
 
 test("verifier requires a tree", fn(t) {

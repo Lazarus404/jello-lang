@@ -1,0 +1,121 @@
+package frontend;
+
+import type { Program as AstProgram } from frontend.Ast;
+import { bindPatternName, isBindPattern } from frontend.Ast;
+import type { Hir } from frontend.Hir;
+import { Op, declareEnum, declareGlobal, globalNameOf, node, spanOf, typeOf } from frontend.Hir;
+import { firstUninitializedRead } from frontend.InitOrder;
+import { Binding, declareScoped, enterModule, exportScoped, resetExports } from frontend.ModuleScope;
+import type { Import, Module } from frontend.Modules;
+import { Module } from frontend.Modules;
+import { programSyntax } from frontend.Parser;
+import type { Syntax } from frontend.Source;
+import { Syntax } from frontend.Source;
+import {
+  beginCheck, checkEffect, checkFunctionBody, checkOperand, checkType, declareFunctions, enterSyntax, finishProgram,
+  isDirectFunction, syntaxChild,
+} from frontend.TypeCheck;
+import { verifyHir } from frontend.VerifyHir;
+
+let _initializers = Array.new<I32>(0);
+
+let _checkModule = fn(modules: Array<Module>, index: I32): I32 {
+  match (modules[index]) { Module(_, statements, syntax, tail, imports) => {
+    let outer = enterSyntax(syntax);
+    enterModule(imports, modules);
+    let functionIndex = declareFunctions(statements);
+    let i = 0;
+
+    while (i < statements.len()) {
+      let parent = enterSyntax(syntaxChild(i));
+
+      match (statements[i]) {
+        ImportFrom(_, _, _) => null,
+        LetStmt(_, exported, pattern, _, _, value) when (isDirectFunction(statements[i])) => {
+          match (value) { Function(_, _, body, _) => checkFunctionBody(functionIndex, body, syntaxChild(0)), _ => true };
+          functionIndex++;
+          if (exported) { exportScoped(index, bindPatternName(pattern)); }
+          null
+        },
+        LetStmt(isConst, exported, pattern, typeParams, annotation, value) when (isBindPattern(pattern)) => {
+          let name = bindPatternName(pattern);
+          if (typeParams.len() != 0) { throw "globals do not support type parameters"; }
+          let ty = annotation == null ? -1 : checkType(annotation);
+          let checked = checkOperand(value, 0, ty);
+          if (ty < 0) { ty = typeOf(checked); } else if (ty != typeOf(checked)) { throw "binding annotation type mismatch: " + name; }
+          let global = declareGlobal(name, ty, !isConst);
+          declareScoped(name, Binding.Global(global));
+          _initializers.push(node(Op.InitGlobal, ty, global, 0, [checked]));
+          if (exported) { exportScoped(index, name); }
+          null
+        },
+        Expression(value) => {
+          _initializers.push(checkEffect(value));
+          null
+        },
+        Enum(exported, name, _, _) when (!exported) => {
+          declareEnum(name);
+          null
+        },
+        _ => {
+          throw "unsupported statement in initial semantic slice";
+          null
+        },
+      };
+      enterSyntax(parent);
+      i++;
+    }
+    let checkedTail = tail == null ? -1 : checkOperand(tail, statements.len() as I32, -1);
+    enterSyntax(outer);
+    checkedTail
+  } }
+};
+
+let _checkInitOrder = fn() {
+  let (binding, global) = firstUninitializedRead();
+
+  if (binding >= 0) {
+    match (spanOf(binding)) { Span(path, start, end) => enterSyntax(Syntax.Node(path, start, end, Array.new<Syntax>(0))) };
+    throw "global " + globalNameOf(global) + " is read before it is initialized";
+  }
+  null
+};
+
+export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
+  beginCheck();
+  resetExports();
+  _initializers = Array.new<I32>(0);
+  let entry = (modules.len() - 1) as I32;
+  let i = 0;
+  let tail = -1;
+
+  while (i <= entry) {
+    tail = _checkModule(modules, i);
+    i++;
+  }
+
+  match (modules[entry]) { Module(_, _, syntax, _, _) => {
+    enterSyntax(syntax);
+    if (tail < 0) { throw "program requires a trailing expression"; }
+  } };
+  _initializers.push(tail);
+  let hir = finishProgram(node(Op.Block, typeOf(tail), 0, 0, _initializers));
+  _checkInitOrder();
+  verifyHir(hir);
+  hir
+};
+
+export let typeCheckProgramWithSyntax: (AstProgram, Syntax) -> Hir = fn(program, syntax) {
+  match (program) { Program(packageName, statements, tail) => {
+    match (packageName) {
+      None => null, _ => {
+        throw "semantic analysis currently requires a package-less program";
+        null
+      }
+    };
+    let path = match (syntax) { Node(path, _, _, _) => path };
+    typeCheckModules([Module.Module(path, statements, syntax, tail, Array.new<Import>(0))])
+  } }
+};
+
+export let typeCheckProgram: (AstProgram) -> Hir = fn(program) { typeCheckProgramWithSyntax(program, programSyntax(program)) };

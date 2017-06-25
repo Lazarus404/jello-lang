@@ -10,8 +10,8 @@ import { lowerProgram } from ir.Lower;
 import { legalizeJlo } from backend.jello.Legalize;
 import { allocateProgram } from backend.jello.Allocate;
 import { emitJlo } from backend.jello.Emit;
-import { typeCheckProgram, typeCheckProgramWithSyntax } from frontend.TypeCheck;
-import { loadProgram, moduleInitializationOrder } from frontend.Modules;
+import { typeCheckModules, typeCheckProgram, typeCheckProgramWithSyntax } from frontend.CheckModules;
+import { loadModules, modulePath } from frontend.Modules;
 import type { SourceSpan } from frontend.Source;
 import { spanEnd, spanPath, spanStart } from frontend.Source;
 import type { Hir } from frontend.Hir;
@@ -31,9 +31,9 @@ import type {
 
 let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
 let none = fn(): Array<I32> { Array.new<I32>(0) };
-let program = fn(functions: Array<Function>): Program { Program.Program(functions, Array.new<Bytes>(0), Array.new<EnumSchema>(0)) };
+let program = fn(functions: Array<Function>): Program { Program.Program(functions, Array.new<Bytes>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0)) };
 let printJlo = fn(legalized: Program): Bytes { printIr(allocateProgram(legalized)) };
-let allocated = fn(legalized: Program): Function { match (allocateProgram(legalized)) { Program(functions, _, _) => functions[0] } };
+let allocated = fn(legalized: Program): Function { match (allocateProgram(legalized)) { Program(functions, _, _, _) => functions[0] } };
 let registerCount = fn(function: Function): I32 { match (function) { Function(_, _, registers, _, _, _) => registers.len() as I32 } };
 
 let spillCount = fn(function: Function, push: Bool): I32 {
@@ -56,9 +56,18 @@ let spillCount = fn(function: Function, push: Bool): I32 {
   } }
 };
 
-let checkFile = fn(path: Bytes): Hir {
-  let (program, syntax) = loadProgram(path);
-  typeCheckProgramWithSyntax(program, syntax)
+let checkFile = fn(path: Bytes): Hir { typeCheckModules(loadModules(path)) };
+
+let initializationOrder = fn(path: Bytes): Array<Bytes> {
+  let modules = loadModules(path);
+  let paths = Array.new<Bytes>(0);
+  let i = 0;
+
+  while (i < modules.len()) {
+    paths.push(modulePath(modules[i]));
+    i++;
+  }
+  paths
 };
 
 let spansOf = fn(hir: Hir): Array<SourceSpan> {
@@ -197,8 +206,7 @@ test("gives every HIR node the span of the syntax it was checked from", fn(t) {
   t.is(spanStart(spans[2]), 0);
   t.is(spanEnd(spans[2]), 11);
 
-  let (loaded, loadedSyntax) = loadProgram("itests/emit/modules/main.jello");
-  t.is(spansBothModules(spansOf(typeCheckProgramWithSyntax(loaded, loadedSyntax))), true);
+  t.is(spansBothModules(spansOf(checkFile("itests/emit/modules/main.jello"))), true);
 });
 
 test("keeps source spans with explicit frontend results", fn(t) {
@@ -217,22 +225,20 @@ test("keeps source spans with explicit frontend results", fn(t) {
 
   t.throws(fn(_t) { parseSource(tokens, path, Array.new<I32>(0), Array.new<I32>(0)); });
 
-  let (loaded, loadedSyntax) = loadProgram("itests/emit/modules/main.jello");
+  let loaded = loadModules("itests/emit/modules/main.jello");
   parseProgram(lex("false"));
-  t.is(spansBothModules(spansOf(typeCheckProgramWithSyntax(loaded, loadedSyntax))), true);
+  t.is(spansBothModules(spansOf(typeCheckModules(loaded))), true);
 });
 
 test("loads ordinary let declarations with their syntax", fn(t) {
   let path = "itests/emit/core.jello";
-  let (program, sourceSyntax) = loadProgram(path);
-  let hir = typeCheckProgramWithSyntax(program, sourceSyntax);
+  let hir = checkFile(path);
   t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
 });
 
 test("loads a comparison tail with its syntax", fn(t) {
   let path = "itests/emit/greater-i32.jello";
-  let (program, sourceSyntax) = loadProgram(path);
-  let hir = typeCheckProgramWithSyntax(program, sourceSyntax);
+  let hir = checkFile(path);
   t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
 });
 
@@ -280,13 +286,14 @@ test("preserves exact spans through functions, assignments, branches, and loops"
 });
 
 test("resolves a local binding once by stable identity", fn(t) {
-  let hir = typeCheckProgram(parseProgram(lex("let x = 1i32; x + x")));
+  let hir = typeCheckProgram(parseProgram(lex("{ let x = 1i32; x + x }")));
   t.is(printHir(hir), "program\n"
-    + "  let %0 x: i32\n"
-    + "    i32 1: i32\n"
-    + "  add.wrap: i32\n"
-    + "    local %0: i32\n"
-    + "    local %0: i32\n");
+    + "  block: i32\n"
+    + "    let %0 x: i32\n"
+    + "      i32 1: i32\n"
+    + "    add.wrap: i32\n"
+    + "      local %0: i32\n"
+    + "      local %0: i32\n");
   t.is(printIr(lowerProgram(hir)), "fn @0() -> i32 entry 0 {\n"
     + "  register %0: i32\n"
     + "  register %1: i32\n"
@@ -303,26 +310,27 @@ test("resolves a local binding once by stable identity", fn(t) {
 
 test("scopes block bindings and permits nested shadowing", fn(t) {
   let hir = typeCheckProgram(parseProgram(lex(
-    "let x = 1i32; { let x = x + 1i32; { let y = x + 1i32; y } + x } + x"
+    "{ let x = 1i32; { let x = x + 1i32; { let y = x + 1i32; y } + x } + x }"
   )));
   t.is(printHir(hir), "program\n"
-    + "  let %0 x: i32\n"
-    + "    i32 1: i32\n"
-    + "  add.wrap: i32\n"
-    + "    block: i32\n"
-    + "      let %1 x: i32\n"
+    + "  block: i32\n"
+    + "    let %0 x: i32\n"
+    + "      i32 1: i32\n"
+    + "    add.wrap: i32\n"
+    + "      block: i32\n"
+    + "        let %1 x: i32\n"
+    + "          add.wrap: i32\n"
+    + "            local %0: i32\n"
+    + "            i32 1: i32\n"
     + "        add.wrap: i32\n"
-    + "          local %0: i32\n"
-    + "          i32 1: i32\n"
-    + "      add.wrap: i32\n"
-    + "        block: i32\n"
-    + "          let %2 y: i32\n"
-    + "            add.wrap: i32\n"
-    + "              local %1: i32\n"
-    + "              i32 1: i32\n"
-    + "          local %2: i32\n"
-    + "        local %1: i32\n"
-    + "    local %0: i32\n");
+    + "          block: i32\n"
+    + "            let %2 y: i32\n"
+    + "              add.wrap: i32\n"
+    + "                local %1: i32\n"
+    + "                i32 1: i32\n"
+    + "            local %2: i32\n"
+    + "          local %1: i32\n"
+    + "      local %0: i32\n");
   t.is(printIr(lowerProgram(hir)), "fn @0() -> i32 entry 0 {\n"
     + "  register %0: i32\n"
     + "  register %1: i32\n"
@@ -740,7 +748,7 @@ test("carries a deduplicated bytes pool through selected JLO", fn(t) {
   let jlo = legalizeJlo(lowerProgram(typeCheckProgram(parseProgram(lex("\"A\"[0i32] + \"A\"[0i32]")))));
 
   match (jlo) {
-    Program(_, pool, _) => {
+    Program(_, pool, _, _) => {
       t.is(pool.len(), 1);
       t.is(pool[0], "A");
     },
@@ -895,30 +903,45 @@ test("loads named direct-function imports as one typed program", fn(t) {
 });
 
 test("initializes imported primitive constants before the entry tail", fn(t) {
-  let hir = checkFile("itests/emit/module-constants/main.jello");
-  let initialization = moduleInitializationOrder();
+  let path = "itests/emit/module-constants/main.jello";
+  let hir = checkFile(path);
+  let initialization = initializationOrder(path);
   t.is(initialization.len(), 2);
   t.is(initialization[0].indexOf("/math/Constants.jello") >= 0, true);
-  t.is(initialization[1], "itests/emit/module-constants/main.jello");
-  t.is(printIr(lowerProgram(hir)), "fn @0() -> i32 entry 0 {\n"
+  t.is(initialization[1], path);
+  t.is(printIr(lowerProgram(hir)), "global g0: i32\n"
+    + "global g1: i32\n"
+    + "\n"
+    + "fn @0() -> i32 entry 0 {\n"
     + "  register %0: i32\n"
     + "  register %1: i32\n"
     + "  register %2: i32\n"
     + "  register %3: i32\n"
     + "  register %4: i32\n"
+    + "  register %5: i32\n"
+    + "  register %6: i32\n"
+    + "  register %7: i32\n"
+    + "  register %8: i32\n"
     + "  block 0:\n"
     + "    %0 = i32 40\n"
-    + "    %1 = i32 -3\n"
-    + "    %2 = add.wrap.i32 %0, %1\n"
-    + "    %3 = i32 5\n"
-    + "    %4 = add.wrap.i32 %2, %3\n"
-    + "    return %4\n"
+    + "    global.set g0, %0\n"
+    + "    %1 = i32 16\n"
+    + "    %2 = i32 19\n"
+    + "    %3 = sub.wrap.i32 %1, %2\n"
+    + "    global.set g1, %3\n"
+    + "    %4 = global.get g0\n"
+    + "    %5 = global.get g1\n"
+    + "    %6 = add.wrap.i32 %4, %5\n"
+    + "    %7 = i32 5\n"
+    + "    %8 = add.wrap.i32 %6, %7\n"
+    + "    return %8\n"
     + "}\n");
 });
 
 test("initializes all exports with one module identity", fn(t) {
-  let hir = checkFile("itests/emit/module-exports/main.jello");
-  let initialization = moduleInitializationOrder();
+  let path = "itests/emit/module-exports/main.jello";
+  let hir = checkFile(path);
+  let initialization = initializationOrder(path);
   t.is(initialization.len(), 2);
   t.is(initialization[0].indexOf("/math/Values.jello") >= 0, true);
   t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
@@ -927,7 +950,7 @@ test("initializes all exports with one module identity", fn(t) {
 test("initializes module diamonds dependency-first exactly once", fn(t) {
   let path = "itests/emit/module-init/main.jello";
   let hir = checkFile(path);
-  let initialization = moduleInitializationOrder();
+  let initialization = initializationOrder(path);
   t.is(initialization.len(), 4);
   t.is(initialization[0].indexOf("/values/Base.jello") >= 0, true);
   t.is(initialization[1].indexOf("/values/Left.jello") >= 0, true);
@@ -941,7 +964,7 @@ test("loads transitive direct functions dependency-first and rejects cycles", fn
   let ir = printIr(lowerProgram(hir));
   t.is(ir.indexOf("fn @1") >= 0, true);
   t.is(ir.indexOf("fn @2") > ir.indexOf("fn @1"), true);
-  t.throws(fn(_t) { loadProgram("itests/emit/cycle/main.jello"); });
+  t.throws(fn(_t) { loadModules("itests/emit/cycle/main.jello"); });
 });
 
 test("canonicalizes aliases across a diamond import graph", fn(t) {
