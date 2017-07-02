@@ -1,7 +1,7 @@
 package frontend;
 
 import type {
-  AssignOp, BinaryOp, Block as AstBlock, Expr as AstExpr, IntSize, Pattern, Stmt, Type as AstType, UnaryOp,
+  AssignOp, BinaryOp, Block as AstBlock, Expr as AstExpr, IntSize, Parameter, Pattern, Stmt, Type as AstType, UnaryOp,
 } from frontend.Ast;
 import { Block as AstBlock, Expr as AstExpr, bindPatternName, integerValue, isBindPattern } from frontend.Ast;
 import type { Hir } from frontend.Hir;
@@ -16,10 +16,15 @@ let _ids = Array.new<I32>(0);
 let _types = Array.new<I32>(0);
 let _mutable = Array.new<Bool>(0);
 let _nextBinding = 0;
+let _scopeStart = 0;
+let _loops = 0;
+let _enclosing = Array.new<Bytes>(0);
 let _functionNames = Array.new<Bytes>(0);
 let _functionTypes = Array.new<I32>(0);
 let _functionParams = Array.new<Array<Bytes>>(0);
 let _functionNodes = Array.new<I32>(0);
+let _functionParamTypes = Array.new<Array<I32>>(0);
+let _result = -1;
 let _arrayI32 = 0;
 let _tupleI32 = 0;
 let _nullI32 = 0;
@@ -119,7 +124,7 @@ checkType = fn(ty) { match (ty) {
 } };
 
 let _checkExpr: (AstExpr, Syntax, I32) -> I32 = fn(_expr, _exprSyntax, _expected) { -1 };
-let _checkBlock: (Array<Stmt>, AstExpr, I32) -> I32 = fn(_statements, _tail, _expected) { -1 };
+let _checkBlock: (Array<Stmt>, ?AstExpr, I32) -> I32 = fn(_statements, _tail, _expected) { -1 };
 let _value = fn(expr: AstExpr, index: I32): I32 { _checkExpr(expr, syntaxChild(index), -1) };
 export let checkOperand: (AstExpr, I32, I32) -> I32 = fn(expr, index, expected) { _checkExpr(expr, syntaxChild(index), expected) };
 
@@ -225,13 +230,25 @@ let _checkCast = fn(value: AstExpr, targetType: AstType): I32 {
   }
 };
 
+let _functionType = fn(index: I32): I32 {
+  let ty = _functionTypes[index];
+  if (ty < 0) { throw _functionNames[index] + " is used before its result type is inferred; annotate its result type"; }
+  ty
+};
+
 let _checkVariable = fn(name: Bytes): I32 {
   let found = _find(name, 0);
   if (found >= 0) { return _leaf(Op.Local, _types[found], _ids[found]); }
+  let i = 0;
+
+  while (i < _enclosing.len()) {
+    if (_enclosing[i] == name) { throw "closures that capture variables are not supported yet: " + name; }
+    i++;
+  }
 
   match (scoped(name)) {
     Global(id) => _leaf(Op.Global, H.globalTypeOf(id), id),
-    Function(index) => _leaf(Op.FunctionRef, _functionTypes[index], index + 1),
+    Function(index) => _leaf(Op.FunctionRef, _functionType(index), index + 1),
     Unbound => {
       throw "unknown local: " + name;
       -1
@@ -303,7 +320,7 @@ let _checkIndirectCall = fn(callee: I32, args: Array<AstExpr>): I32 {
 };
 
 let _checkDirectCall = fn(index: I32, args: Array<AstExpr>): I32 {
-  let ty = _functionTypes[index];
+  let ty = _functionType(index);
   let name = _functionNames[index];
   if (args.len() != H.typeArgCount(ty)) { throw "wrong argument count for " + name; }
   node(Op.Call, innerOf(ty), index + 1, 0, _arguments(ty, args, [], true, "wrong argument type for " + name))
@@ -419,6 +436,8 @@ let _checkAssignment = fn(op: AssignOp, target: AstExpr, value: AstExpr): I32 {
   }
 };
 
+let _checkFunctionLiteral: (Array<Parameter>, ?AstType, AstBlock, I32) -> I32 = fn(_params, _result, _body, _expected) { -1 };
+
 _checkExpr = fn(expr, syntax, expected) {
   let outer = enterSyntax(syntax);
 
@@ -441,6 +460,7 @@ _checkExpr = fn(expr, syntax, expected) {
       _checkBlock(statements, tail, expected)
     } },
     Assign(op, target, value) => _checkAssignment(op, target, value),
+    Function(params, result, body, isMethod) when (!isMethod) => _checkFunctionLiteral(params, result, body, expected),
     _ => {
       throw "unsupported expression in initial semantic slice";
       -1
@@ -459,39 +479,49 @@ export let isDirectFunction: (Stmt) -> Bool = fn(statement) {
   }
 };
 
-let _declareFunction = fn(name: Bytes, typeParams: Array<Bytes>, value: AstExpr) {
-  match (value) { Function(params, result, _, _) => {
-    if ((typeParams.len() != 0) || (result == null)) { throw "direct functions require typed parameters and an explicit result type"; }
-    declareScoped(name, Binding.Function(_functionNames.len() as I32));
-    let names = Array.new<Bytes>(0);
-    let types = Array.new<I32>(0);
-    let i = 0;
+let _addFunction = fn(name: Bytes, params: Array<Parameter>, result: ?AstType, expected: I32): I32 {
+  let fits = (expected >= 0) && H.isKind(expected, Kind.Function) && (H.typeArgCount(expected) == params.len());
+  let names = Array.new<Bytes>(0);
+  let types = Array.new<I32>(0);
+  let i = 0;
 
-    while (i < params.len()) {
-      match (params[i]) { Parameter(paramName, paramType, kind) => {
-        match (kind) {
-          Required => null, _ => {
-            throw "direct functions require required parameters";
-            null
-          }
-        };
-        if (paramType == null) { throw "direct function parameters require types"; }
-        let j = 0;
-
-        while (j < names.len()) {
-          if (names[j] == paramName) { throw "duplicate parameter: " + paramName; }
-          j++;
+  while (i < params.len()) {
+    match (params[i]) { Parameter(paramName, paramType, kind) => {
+      match (kind) {
+        Required => null, _ => {
+          throw "only required parameters are supported";
+          null
         }
-        names.push(paramName);
-        types.push(checkType(paramType));
-      } };
-      i++;
-    }
-    _functionNames.push(name);
-    _functionTypes.push(H.functionType(types, checkType(result)));
-    _functionParams.push(names);
-    _functionNodes.push(-1);
-  }, _ => null };
+      };
+      let j = 0;
+
+      while (j < names.len()) {
+        if (names[j] == paramName) { throw "duplicate parameter: " + paramName; }
+        j++;
+      }
+      let ty = paramType != null ? checkType(paramType) : fits ? H.typeArg(expected, i) : -1;
+      if (ty < 0) { throw "parameter " + paramName + " of " + name + " needs a type"; }
+      names.push(paramName);
+      types.push(ty);
+    } };
+    i++;
+  }
+  let resultType = result != null ? checkType(result) : fits ? innerOf(expected) : -1;
+  _functionNames.push(name);
+  _functionTypes.push(resultType < 0 ? -1 : H.functionType(types, resultType));
+  _functionParams.push(names);
+  _functionParamTypes.push(types);
+  _functionNodes.push(-1);
+  (_functionNames.len() - 1) as I32
+};
+
+let _declareFunction = fn(name: Bytes, typeParams: Array<Bytes>, value: AstExpr) {
+  if (typeParams.len() != 0) { throw "generic functions are not supported yet: " + name; }
+
+  match (value) {
+    Function(params, result, _, _) => declareScoped(name, Binding.Function(_addFunction(name, params, result, -1))),
+    _ => true,
+  };
   null
 };
 
@@ -513,56 +543,137 @@ export let declareFunctions: (Array<Stmt>) -> I32 = fn(statements) {
   first
 };
 
-let _checkLocal = fn(pattern: Pattern, isConst: Bool, typeParams: Array<Bytes>, annotation: ?AstType, value: AstExpr, scopeStart: I32): I32 {
+let _checkLocal = fn(pattern: Pattern, isConst: Bool, typeParams: Array<Bytes>, annotation: ?AstType, value: AstExpr): I32 {
   let name = bindPatternName(pattern);
   if (typeParams.len() != 0) { throw "local bindings do not support type parameters"; }
-  if (_find(name, scopeStart) >= 0) { throw "duplicate local: " + name; }
+  if (_find(name, _scopeStart) >= 0) { throw "duplicate local: " + name; }
   let ty = annotation == null ? -1 : checkType(annotation);
   let checked = checkOperand(value, 0, ty);
   if (ty < 0) { ty = typeOf(checked); } else if (ty != typeOf(checked)) { throw "binding annotation type mismatch: " + name; }
   node(isConst ? Op.Const : Op.Let, ty, _declare(name, ty, !isConst), bytesId(name), [checked])
 };
 
-let _checkStatements: (Array<Stmt>, I32, I32, I32) -> Tuple<Array<I32>, Bool> = fn(_statements, _first, _result, _loopDepth) {
-  (Array.new<I32>(0), false)
+let _checkResult = fn(value: AstExpr, index: I32, message: Bytes): I32 {
+  let checked = checkOperand(value, index, _result);
+  if (_result < 0) { _result = typeOf(checked); } else if (typeOf(checked) != _result) { throw message; }
+  checked
 };
 
-let _checkStatement = fn(statement: Stmt, syntax: Syntax, result: I32, loopDepth: I32): I32 {
+let _checkStatement: (Stmt, Syntax) -> I32 = fn(_statement, _statementSyntax) { -1 };
+let _checkIfStatement: (AstExpr, AstExpr, AstExpr) -> I32 = fn(_condition, _thenBranch, _elseBranch) { -1 };
+
+export let checkEffect: (AstExpr, I32) -> I32 = fn(value, index) {
+  match (value) {
+    If(condition, thenBranch, elseBranch) => {
+      let outer = enterSyntax(syntaxChild(index));
+      let id = _checkIfStatement(condition, thenBranch, elseBranch);
+      enterSyntax(outer);
+      id
+    },
+    _ => _unary(Op.Expression, 0, checkOperand(value, index, -1)),
+  }
+};
+
+let _STATEMENT_TAIL = 0;
+let _VALUE_TAIL = 1;
+let _RESULT_TAIL = 2;
+
+let _checkBlockBody = fn(statements: Array<Stmt>, tail: ?AstExpr, first: I32, expected: I32, tailKind: I32): I32 {
+  let outerStart = _scopeStart;
+  _scopeStart = tailKind == _RESULT_TAIL ? 0 : _names.len();
+  let children = Array.new<I32>(0);
+  let ends = false;
+  let i = 0;
+
+  while (i < statements.len()) {
+    if (ends) {
+      enterSyntax(syntaxChild(first + i));
+      throw "unreachable statement";
+    }
+    let statement = _checkStatement(statements[i], syntaxChild(first + i));
+    ends = H.endsPath(statement);
+    children.push(statement);
+    i++;
+  }
+  let ty = 0;
+  let hasTail = false;
+
+  if (tail != null) {
+    let index = first + (statements.len() as I32);
+
+    if ((tailKind == _STATEMENT_TAIL) && !ends) { children.push(checkEffect(tail, index)); } else {
+      let checked = ((tailKind == _RESULT_TAIL) && !ends) ? _checkResult(tail, index, "function result type mismatch")
+        : checkOperand(tail, index, tailKind == _RESULT_TAIL ? _result : expected);
+      ty = typeOf(checked);
+      hasTail = true;
+      children.push(checked);
+    }
+  } else if ((tailKind == _RESULT_TAIL) && !ends) { throw "function can fall through without a value"; }
+  _popTo(_scopeStart);
+  _scopeStart = outerStart;
+  node(Op.Block, ty, 0, hasTail ? 1 : 0, children)
+};
+
+let _checkBranch = fn(branch: AstExpr, index: I32): I32 {
+  let outer = enterSyntax(syntaxChild(index));
+
+  let block = match (branch) {
+    BlockExpr(body) => match (body) { Block(statements, tail) => _checkBlockBody(statements, tail, 0, -1, _STATEMENT_TAIL) },
+    _ => {
+      throw "if branch must be a block";
+      -1
+    },
+  };
+  enterSyntax(outer);
+  block
+};
+
+_checkIfStatement = fn(condition, thenBranch, elseBranch) {
+  let checkedCondition = _value(condition, 0);
+  if (typeOf(checkedCondition) != TYPE_BOOL) { throw "if condition must be bool"; }
+  let children = [checkedCondition, _checkBranch(thenBranch, 1)];
+
+  match (elseBranch) {
+    Null => null,
+    If(_, _, _) => {
+      children.push(checkEffect(elseBranch, 2));
+      null
+    },
+    _ => {
+      children.push(_checkBranch(elseBranch, 2));
+      null
+    },
+  };
+  node(Op.IfStatement, 0, 0, 0, children)
+};
+
+_checkStatement = fn(statement, syntax) {
   let outer = enterSyntax(syntax);
 
   let id = match (statement) {
     LetStmt(isConst, exported, pattern, typeParams, annotation, value) when (!exported && isBindPattern(pattern)) =>
-      _unary(Op.Declare, 0, _checkLocal(pattern, isConst, typeParams, annotation, value, 0)),
-    Expression(value) => _unary(Op.Expression, 0, _value(value, 0)),
+      _unary(Op.Declare, 0, _checkLocal(pattern, isConst, typeParams, annotation, value)),
+    Expression(value) => checkEffect(value, 0),
     Return(value) => {
       if (value == null) { throw "value function requires a return value"; }
-      let checked = checkOperand(value, 0, result);
-      if (typeOf(checked) != result) { throw "return type mismatch"; }
-      _unary(Op.Return, 0, checked)
+      _unary(Op.Return, 0, _checkResult(value, 0, "return type mismatch"))
     },
     Throw(value) => _unary(Op.Throw, 0, _value(value, 0)),
     Break => {
-      if (loopDepth == 0) { throw "break outside loop"; }
+      if (_loops == 0) { throw "break outside loop"; }
       _leaf(Op.Break, 0, 0)
     },
     Continue => {
-      if (loopDepth == 0) { throw "continue outside loop"; }
+      if (_loops == 0) { throw "continue outside loop"; }
       _leaf(Op.Continue, 0, 0)
     },
     While(condition, body) => {
       let checkedCondition = _value(condition, 0);
       if (typeOf(checkedCondition) != TYPE_BOOL) { throw "while condition must be bool"; }
-      let start = _names.len();
-      let (checkedBody, _) = _checkStatements(body, 1, result, loopDepth + 1);
-      _popTo(start);
-      let children = [checkedCondition];
-      let i = 0;
-
-      while (i < checkedBody.len()) {
-        children.push(checkedBody[i]);
-        i++;
-      }
-      node(Op.While, 0, 0, 0, children)
+      _loops++;
+      let checkedBody = _checkBlockBody(body, null, 1, -1, _STATEMENT_TAIL);
+      _loops--;
+      node(Op.While, 0, 0, 0, [checkedCondition, checkedBody])
     },
     _ => {
       throw "unsupported statement in function body";
@@ -573,42 +684,38 @@ let _checkStatement = fn(statement: Stmt, syntax: Syntax, result: I32, loopDepth
   id
 };
 
-_checkStatements = fn(statements, first, result, loopDepth) {
-  let checked = Array.new<I32>(0);
-  let reachable = true;
-  let i = 0;
-
-  while (i < statements.len()) {
-    if (!reachable) {
-      enterSyntax(syntaxChild(first + i));
-      throw "unreachable statement after return";
-    }
-    let statement = _checkStatement(statements[i], syntaxChild(first + i), result, loopDepth);
-    reachable = match (statements[i]) { Return(_), Throw(_), Break, Continue => false, _ => true };
-    checked.push(statement);
-    i++;
-  }
-  (checked, reachable)
-};
-
 export let checkFunctionBody: (I32, AstBlock, Syntax) -> Bool = fn(index, body, syntax) {
   let outer = enterSyntax(syntax);
   let outerNames = _names;
   let outerIds = _ids;
   let outerTypes = _types;
   let outerMutable = _mutable;
+  let outerLoops = _loops;
+  let outerStart = _scopeStart;
+  let enclosing = _enclosing.len();
+  let k = 0;
+
+  while (k < outerNames.len()) {
+    _enclosing.push(outerNames[k]);
+    k++;
+  }
   _names = Array.new<Bytes>(0);
   _ids = Array.new<I32>(0);
   _types = Array.new<I32>(0);
   _mutable = Array.new<Bool>(0);
+  _loops = 0;
+  _scopeStart = 0;
   let ty = _functionTypes[index];
   let name = _functionNames[index];
   let paramNames = _functionParams[index];
+  let paramTypes = _functionParamTypes[index];
+  let outerResult = _result;
+  _result = ty < 0 ? -1 : innerOf(ty);
   let children = Array.new<I32>(0);
   let i = 0;
 
   while (i < paramNames.len()) {
-    let paramType = H.typeArg(ty, i);
+    let paramType = paramTypes[i];
     let parent = enterSyntax(syntaxChild(i));
     children.push(node(Op.Parameter, paramType, _declare(paramNames[i], paramType, false), bytesId(paramNames[i]), []));
     enterSyntax(parent);
@@ -617,64 +724,35 @@ export let checkFunctionBody: (I32, AstBlock, Syntax) -> Bool = fn(index, body, 
   let first = paramNames.len() as I32;
 
   match (body) { Block(statements, tail) => {
-    let (checked, reachable) = _checkStatements(statements, first, innerOf(ty), 0);
+    let checked = _checkBlockBody(statements, tail, first, -1, _RESULT_TAIL);
+    if (_result < 0) { throw name + " never returns a value; annotate its result type"; }
 
-    if (reachable) {
-      if (tail == null) { throw "function can fall through without a value: " + name; }
-      let checkedTail = checkOperand(tail, first + (statements.len() as I32), innerOf(ty));
-      if (typeOf(checkedTail) != innerOf(ty)) { throw "function result type mismatch: " + name; }
-      checked.push(checkedTail);
-    } else if (tail != null) { throw "unreachable function tail"; }
-    children.push(node(Op.Body, 0, 0, reachable ? 1 : 0, checked));
+    if (ty < 0) {
+      ty = H.functionType(paramTypes, _result);
+      _functionTypes[index] = ty;
+    }
+    children.push(checked);
     _functionNodes[index] = node(Op.Function, ty, bytesId(name), 0, children);
   } };
   _names = outerNames;
   _ids = outerIds;
   _types = outerTypes;
   _mutable = outerMutable;
+  _result = outerResult;
+  _loops = outerLoops;
+  _scopeStart = outerStart;
+  while (_enclosing.len() > enclosing) { _enclosing.pop(); }
   enterSyntax(outer);
   true
 };
 
-export let checkEffect: (AstExpr) -> I32 = fn(value) {
-  let checked = _value(value, 0);
-  node(Op.Const, typeOf(checked), _declare("", typeOf(checked), false), bytesId(""), [checked])
+_checkFunctionLiteral = fn(params, result, body, expected) {
+  let index = _addFunction("fn", params, result, expected);
+  checkFunctionBody(index, body, _syntax);
+  _leaf(Op.FunctionRef, _functionType(index), index + 1)
 };
 
-_checkBlock = fn(statements, tail, expected) {
-  let start = _names.len();
-  let children = Array.new<I32>(0);
-  let i = 0;
-
-  while (i < statements.len()) {
-    let outer = enterSyntax(syntaxChild(i));
-
-    match (statements[i]) {
-      LetStmt(_, _, _, _, _, _) when (isDirectFunction(statements[i])) => {
-        throw "function declarations are only supported at module scope";
-        null
-      },
-      LetStmt(isConst, exported, pattern, typeParams, annotation, value) when (!exported && isBindPattern(pattern)) => {
-        children.push(_checkLocal(pattern, isConst, typeParams, annotation, value, start));
-        null
-      },
-      Expression(value) => {
-        children.push(checkEffect(value));
-        null
-      },
-      _ => {
-        throw "unsupported statement in initial semantic slice";
-        null
-      },
-    };
-    enterSyntax(outer);
-    i++;
-  }
-  let checkedTail = checkOperand(tail, statements.len() as I32, expected);
-  _popTo(start);
-  children.push(checkedTail);
-  node(Op.Block, typeOf(checkedTail), 0, 0, children)
-};
+_checkBlock = fn(statements, tail, expected) { _checkBlockBody(statements, tail, 0, expected, _VALUE_TAIL) };
 
 export let beginCheck: () -> Bool = fn() {
   H.beginHir();
@@ -687,10 +765,15 @@ export let beginCheck: () -> Bool = fn() {
   _mutable = Array.new<Bool>(0);
   _nextBinding = 0;
   _syntax = _noSyntax();
+  _enclosing = Array.new<Bytes>(0);
+  _scopeStart = 0;
+  _loops = 0;
   _functionNames = Array.new<Bytes>(0);
   _functionTypes = Array.new<I32>(0);
   _functionParams = Array.new<Array<Bytes>>(0);
   _functionNodes = Array.new<I32>(0);
+  _functionParamTypes = Array.new<Array<I32>>(0);
+  _result = -1;
   true
 };
 

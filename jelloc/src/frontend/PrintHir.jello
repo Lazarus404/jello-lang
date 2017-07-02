@@ -10,7 +10,7 @@ let _typed = fn(id: I32): Bytes { ": " + typeName(typeOf(id)) + "\n" };
 let _id = fn(id: I32): Bytes { Std.string(valueOf(id)) };
 
 let _expr: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
-let _statements: (I32, I32, I32, Bytes) -> Bytes = fn(_parent, _from, _to, _indent) { "" };
+let _statements: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
 
 let _children = fn(parent: I32, start: I32, end: I32, indent: Bytes): Bytes {
   let output = "";
@@ -73,16 +73,7 @@ _expr = fn(id, indent) {
     ArraySet => _operation("array.set", id, indent),
     BytesGet => _operation("bytes.get_u8", id, indent),
     Tuple => _operation("tuple", id, indent),
-    Block => {
-      let output = indent + "block" + _typed(id);
-      let i = 0;
-
-      while (i < childCount(id) - 1) {
-        output += _binding(childOf(id, i), indent + "  ");
-        i++;
-      }
-      output + _expr(lastChild(id), indent + "  ")
-    },
+    Block => indent + "block" + _typed(id) + _statements(id, indent + "  ") + _expr(lastChild(id), indent + "  "),
     If => indent + "if" + _typed(id) + _section("condition", id, 0, indent) + _section("then", id, 1, indent) + _section("else", id, 2, indent),
     _ => {
       throw "invalid HIR expression op";
@@ -91,7 +82,8 @@ _expr = fn(id, indent) {
   }
 };
 
-let _statement = fn(id: I32, indent: Bytes): Bytes {
+let _statement: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
+_statement = fn(id, indent) {
   match (opOf(id)) {
     Declare => _binding(childOf(id, 0), indent),
     Expression => indent + "expression\n" + _expr(childOf(id, 0), indent + "  "),
@@ -99,8 +91,13 @@ let _statement = fn(id: I32, indent: Bytes): Bytes {
     Throw => indent + "throw\n" + _expr(childOf(id, 0), indent + "  "),
     Break => indent + "break\n",
     Continue => indent + "continue\n",
-    While => indent + "while\n" + _section("condition", id, 0, indent)
-      + indent + "  body\n" + _statements(id, 1, childCount(id), indent + "    "),
+    While => indent + "while\n" + _section("condition", id, 0, indent) + indent + "  body\n" + _statements(childOf(id, 1), indent + "    "),
+    IfStatement => {
+      let output = indent + "if\n" + _section("condition", id, 0, indent) + indent + "  then\n" + _statements(childOf(id, 1), indent + "    ");
+      if (childCount(id) < 3) { return output; }
+      let otherwise = childOf(id, 2);
+      output + indent + "  else\n" + match (opOf(otherwise)) { IfStatement => _statement(otherwise, indent + "    "), _ => _statements(otherwise, indent + "    ") }
+    },
     _ => {
       throw "invalid HIR statement op";
       ""
@@ -108,12 +105,12 @@ let _statement = fn(id: I32, indent: Bytes): Bytes {
   }
 };
 
-_statements = fn(parent, start, end, indent) {
+_statements = fn(id, indent) {
   let output = "";
-  let i = start;
+  let i = 0;
 
-  while (i < end) {
-    output += _statement(childOf(parent, i), indent);
+  while (i < childCount(id) - auxOf(id)) {
+    output += _statement(childOf(id, i), indent);
     i++;
   }
   output
@@ -130,8 +127,7 @@ let _function = fn(id: I32, functionId: I32): Bytes {
     i++;
   }
   let body = lastChild(id);
-  let statements = childCount(body) - auxOf(body);
-  output += ") -> " + typeName(innerOf(typeOf(id))) + "\n" + _statements(body, 0, statements, "    ");
+  output += ") -> " + typeName(innerOf(typeOf(id))) + "\n" + _statements(body, "    ");
   if (auxOf(body) == 1) { output += "    tail\n" + _expr(lastChild(body), "      "); }
   output
 };
@@ -147,11 +143,5 @@ export let printHir: (Hir) -> Bytes = fn(program) {
     i++;
   }
   let body = lastChild(root);
-  i = 0;
-
-  while (i < childCount(body) - 1) {
-    output += _binding(childOf(body, i), "  ");
-    i++;
-  }
-  output + _expr(lastChild(body), "  ")
+  output + _statements(body, "  ") + _expr(lastChild(body), "  ")
 };

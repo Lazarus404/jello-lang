@@ -15,7 +15,10 @@ let _blocks = Array.new<BasicBlock>(0);
 let _block = 0;
 let _nextBlock = 1;
 let _bindings = Array.new<I32>(0);
+let _targeted = Array.new<Bool>(0);
 let _reachable = true;
+let _breakTarget = -1;
+let _continueTarget = -1;
 let _pool = Array.new<Bytes>(0);
 let _poolIndexes = Array.new<I32>(0);
 
@@ -56,11 +59,7 @@ let _fresh = fn(ty: I32): I32 {
   _registers.push(_valueType(ty));
   register
 };
-
-let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
-  _instructions.push(instruction(op, dst, args, imm));
-  null
-};
+let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) { if (_reachable) { _instructions.push(instruction(op, dst, args, imm)); } null };
 let _move = fn(dst: I32, src: I32) { _emit(Op.Move, dst, [src], 0) };
 
 let _poolIndex = fn(id: I32): I32 {
@@ -73,10 +72,28 @@ let _poolIndex = fn(id: I32): I32 {
   _poolIndexes[id]
 };
 
+let _target = fn(block: I32) {
+  while (_targeted.len() <= block) { _targeted.push(false); }
+  _targeted[block] = true;
+  null
+};
+
 let _end = fn(terminator: Terminator, next: I32) {
-  _blocks.push(BasicBlock.Block(_block, _instructions, terminator, null));
+  if (_reachable) {
+    _blocks.push(BasicBlock.Block(_block, _instructions, terminator, null));
+
+    match (terminator) {
+      Jump(target) => _target(target),
+      Branch(_, thenTarget, elseTarget) => {
+        _target(thenTarget);
+        _target(elseTarget)
+      },
+      _ => null,
+    };
+  }
   _instructions = Array.new<Instruction>(0);
   _block = next;
+  _reachable = (next >= 0) && (next < _targeted.len()) && _targeted[next];
   null
 };
 
@@ -87,6 +104,7 @@ let _bindRegister = fn(binding: I32, register: I32) {
 };
 
 let _expr: (I32) -> I32 = fn(_id) { -1 };
+let _lowerBlock: (I32) -> I32 = fn(_id) { -1 };
 
 let _bind = fn(binding: I32) {
   let value = _expr(childOf(binding, 0));
@@ -180,15 +198,7 @@ _expr = fn(id) {
       _emit(Op.ArraySet, -1, operands, 0);
       operands[2]
     },
-    Block => {
-      let i = 0;
-
-      while (i < childCount(id) - 1) {
-        _bind(childOf(id, i));
-        i++;
-      }
-      _expr(lastChild(id))
-    },
+    Block => _lowerBlock(id),
     If => _if(id),
     And, Or => _shortCircuit(id),
     _ => {
@@ -220,13 +230,7 @@ _expr = fn(id) {
   }
 };
 
-let _statements: (I32, I32, I32, I32, I32) -> Bool = fn(_parent, _from, _to, _breakTarget, _continueTarget) { false };
-
-let _exit = fn(terminator: Terminator) {
-  _end(terminator, _block);
-  _reachable = false;
-  null
-};
+let _exit = fn(terminator: Terminator) { _end(terminator, -1) };
 
 let _while = fn(id: I32) {
   let conditionBlock = _nextBlock;
@@ -236,41 +240,74 @@ let _while = fn(id: I32) {
   _end(Terminator.Jump(conditionBlock), conditionBlock);
   let condition = _expr(childOf(id, 0));
   _end(Terminator.Branch(condition, bodyBlock, exitBlock), bodyBlock);
-  let outerReachable = _reachable;
-  _reachable = true;
-  _statements(id, 1, childCount(id), exitBlock, conditionBlock);
-  if (_reachable) { _end(Terminator.Jump(conditionBlock), exitBlock); }
-  _instructions = Array.new<Instruction>(0);
-  _block = exitBlock;
-  _reachable = outerReachable;
+  let outerBreak = _breakTarget;
+  let outerContinue = _continueTarget;
+  _breakTarget = exitBlock;
+  _continueTarget = conditionBlock;
+  _lowerBlock(childOf(id, 1));
+  _breakTarget = outerBreak;
+  _continueTarget = outerContinue;
+  _end(Terminator.Jump(conditionBlock), exitBlock);
   null
 };
 
-_statements = fn(parent, start, end, breakTarget, continueTarget) {
-  let i = start;
+let _statement: (I32) -> Bool = fn(_id) { false };
 
-  while (i < end) {
-    let id = childOf(parent, i);
+let _ifStatement = fn(id: I32) {
+  let condition = _expr(childOf(id, 0));
+  let thenBlock = _nextBlock;
+  let joinBlock = thenBlock + 1;
+  let hasElse = childCount(id) == 3;
+  let elseBlock = hasElse ? thenBlock + 2 : joinBlock;
+  _nextBlock += hasElse ? 3 : 2;
+  _end(Terminator.Branch(condition, thenBlock, elseBlock), thenBlock);
+  _lowerBlock(childOf(id, 1));
+  _end(Terminator.Jump(joinBlock), elseBlock);
 
-    match (opOf(id)) {
-      Declare => _bind(childOf(id, 0)),
-      Expression => {
-        _expr(childOf(id, 0));
-        null
-      },
-      Return => _exit(Terminator.ReturnValue(_expr(childOf(id, 0)))),
-      Throw => _exit(Terminator.Throw(_expr(childOf(id, 0)))),
-      Break => _exit(Terminator.Jump(breakTarget)),
-      Continue => _exit(Terminator.Jump(continueTarget)),
-      While => _while(id),
-      _ => {
-        throw "invalid HIR statement op";
-        null
-      },
+  if (hasElse) {
+    let otherwise = childOf(id, 2);
+
+    match (opOf(otherwise)) {
+      IfStatement => _statement(otherwise), _ => {
+        _lowerBlock(otherwise);
+        true
+      }
     };
+    _end(Terminator.Jump(joinBlock), joinBlock);
+  }
+  null
+};
+
+_statement = fn(id) {
+  match (opOf(id)) {
+    Declare => _bind(childOf(id, 0)),
+    Expression => {
+      _expr(childOf(id, 0));
+      null
+    },
+    Return => _exit(Terminator.ReturnValue(_expr(childOf(id, 0)))),
+    Throw => _exit(Terminator.Throw(_expr(childOf(id, 0)))),
+    Break => _exit(Terminator.Jump(_breakTarget)),
+    Continue => _exit(Terminator.Jump(_continueTarget)),
+    While => _while(id),
+    IfStatement => _ifStatement(id),
+    _ => {
+      throw "invalid HIR statement op";
+      null
+    },
+  };
+  true
+};
+
+_lowerBlock = fn(id) {
+  let statements = childCount(id) - auxOf(id);
+  let i = 0;
+
+  while (i < statements) {
+    _statement(childOf(id, i));
     i++;
   }
-  true
+  (_reachable && (auxOf(id) == 1)) ? _expr(lastChild(id)) : -1
 };
 
 let _begin = fn() {
@@ -280,7 +317,10 @@ let _begin = fn() {
   _block = 0;
   _nextBlock = 1;
   _bindings = Array.new<I32>(0);
+  _targeted = [true];
   _reachable = true;
+  _breakTarget = -1;
+  _continueTarget = -1;
   null
 };
 
@@ -296,9 +336,8 @@ let _function = fn(id: I32, functionId: I32): IrFunction {
     _bindRegister(param, register);
     i++;
   }
-  let body = lastChild(id);
-  _statements(body, 0, childCount(body) - auxOf(body), -1, -1);
-  if (_reachable) { _end(Terminator.ReturnValue(_expr(lastChild(body))), _block); }
+  let result = _lowerBlock(lastChild(id));
+  _end(Terminator.ReturnValue(result), -1);
   IrFunction.Function(functionId, params, _registers, ReturnType.Value(_valueType(innerOf(typeOf(id)))), _blocks, 0)
 };
 
@@ -316,8 +355,8 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
   }
   _begin();
   let body = lastChild(root);
-  let result = _expr(body);
-  _end(Terminator.ReturnValue(result), _block);
+  let result = _lowerBlock(body);
+  _end(Terminator.ReturnValue(result), -1);
   functions.push(IrFunction.Function(0, [], _registers, ReturnType.Value(_valueType(typeOf(body))), _blocks, 0));
   let globals = Array.new<ValueType>(0);
   i = 0;

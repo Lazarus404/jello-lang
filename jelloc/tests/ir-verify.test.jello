@@ -60,9 +60,18 @@ test("rejects invalid register types and block targets", fn(t) {
     [BasicBlock.Block(0, [], Terminator.Jump(9), null)],
     0
   );
+  let duplicateBlock = Function.Function(
+    2,
+    [],
+    [],
+    ReturnType.Void,
+    [BasicBlock.Block(0, [], Terminator.Jump(1), null), BasicBlock.Block(1, [], Terminator.ReturnVoid, null), BasicBlock.Block(1, [], Terminator.ReturnVoid, null)],
+    0
+  );
 
   t.throws(fn(_t) { verifyFunction(wrongType); });
   t.throws(fn(_t) { verifyFunction(badTarget); });
+  t.throws(fn(_t) { verifyFunction(duplicateBlock); });
 });
 
 test("rejects return and handler mismatches", fn(t) {

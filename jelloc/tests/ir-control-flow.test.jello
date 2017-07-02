@@ -198,6 +198,45 @@ test("lowers break and continue to the nearest loop targets", fn(t) {
   });
 });
 
+test("lowers statement if and drops code after the end of every path", fn(t) {
+  let hir = typeCheckProgram(parseProgram(lex(
+    "let f = fn(flag: Bool): I32 { if (flag) { return 1; } else if (!flag) { return 2; } 3 }; f(true)"
+  )));
+  t.is(printHir(hir), "program\n"
+    + "  fn @1 f(%0 flag: bool) -> i32\n"
+    + "    if\n"
+    + "      condition\n"
+    + "        local %0: bool\n"
+    + "      then\n"
+    + "        return\n"
+    + "          i32 1: i32\n"
+    + "      else\n"
+    + "        if\n"
+    + "          condition\n"
+    + "            not.bool: bool\n"
+    + "              local %0: bool\n"
+    + "          then\n"
+    + "            return\n"
+    + "              i32 2: i32\n"
+    + "    tail\n"
+    + "      i32 3: i32\n"
+    + "  call @1: i32\n"
+    + "    bool true: bool\n");
+  t.is(printIr(lowerProgram(hir)).indexOf("i32 3") >= 0, true);
+  let dead = lowerProgram(typeCheckProgram(parseProgram(lex(
+    "let f = fn(flag: Bool): I32 { if (flag) { return 1; } else { return 2; } 3 }; f(true)"
+  ))));
+  t.is(printIr(dead).indexOf("i32 3") < 0, true);
+  t.is(printIr(dead).indexOf("block 2") < 0, true);
+  t.is(verifyProgram(lowerProgram(typeCheckProgram(parseProgram(lex(
+    "let f = fn(flag: Bool) { if (flag) { return 1; } 2 }; f(true)"
+  ))))), true);
+  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
+    "let f = fn(flag: Bool): I32 { if (flag) { return 1; } }; f(true)"
+  )));
+  });
+});
+
 test("lowers explicit throw as a terminating control-flow edge", fn(t) {
   let hir = typeCheckProgram(parseProgram(lex(
     "let fail = fn(value: I32): I32 { throw value + 1i32; }; fail(1i32)"
@@ -235,10 +274,9 @@ test("lowers explicit throw as a terminating control-flow edge", fn(t) {
     "let fail = fn(): I32 { throw 1i32; return 1i32; }; fail()"
   )));
   });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
+  t.is(verifyProgram(lowerProgram(typeCheckProgram(parseProgram(lex(
     "let fail = fn(): I32 { throw 1i32; 1i32 }; fail()"
-  )));
-  });
+  ))))), true);
 });
 
 test("keeps ?I32 distinct and executes null and present checks", fn(t) {

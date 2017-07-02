@@ -2,8 +2,8 @@ package frontend;
 
 import type { Hir } from frontend.Hir;
 import {
-  Kind, TYPE_BOOL, TYPE_BYTES, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, globalCount,
-  globalIsMutable, globalTypeOf, innerOf, isKind, lastChild, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf, spanStartOf,
+  Kind, TYPE_BOOL, TYPE_BYTES, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, globalCount,
+  globalIsMutable, globalTypeOf, innerOf, isKind, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf, spanStartOf,
   typeArg, typeArgCount, typeOf, useHir, valueOf,
 } from frontend.Hir;
 
@@ -14,6 +14,8 @@ let _visibleTypes = Array.new<I32>(0);
 let _visibleMutable = Array.new<Bool>(0);
 let _declared = Array.new<Bool>(0);
 let _nextGlobal = 0;
+let _result = 0;
+let _loops = 0;
 
 let _fail = fn(message: Bytes) {
   throw "invalid HIR: " + message;
@@ -150,19 +152,7 @@ let _array = fn(id: I32, operands: I32): I32 {
   innerOf(array)
 };
 
-let _block = fn(id: I32, programBody: Bool): I32 {
-  if (childCount(id) < 1) { _fail("block without tail"); }
-  let scope = _visibleIds.len();
-  let i = 0;
-
-  while (i < childCount(id) - 1) {
-    _binding(id, i, programBody);
-    i++;
-  }
-  let tail = _operand(id, childCount(id) - 1);
-  _popTo(scope);
-  tail
-};
+let _block: (I32, Bool) -> I32 = fn(_id, _programBody) { -1 };
 
 _expr = fn(id) {
   let ty = typeOf(id);
@@ -249,7 +239,10 @@ _expr = fn(id) {
     },
     Call => _arguments(id, _functionType(valueOf(id)), 0, "direct call signature mismatch"),
     CallIndirect => _arguments(id, _operand(id, 0), 1, "indirect call signature mismatch"),
-    Block => _block(id, false),
+    Block => {
+      if (auxOf(id) != 1) { _fail("value block without a tail"); }
+      _block(id, false)
+    },
     If => _typed(id, [TYPE_BOOL, ty, ty], ty, "if operand type"),
     _ => {
       _fail("expected expression");
@@ -260,64 +253,97 @@ _expr = fn(id) {
   ty
 };
 
-let _statements: (I32, I32, I32, I32, I32) -> Bool = fn(_parent, _from, _to, _result, _loopDepth) { false };
-
-let _statement = fn(id: I32, result: I32, loopDepth: I32): Bool {
-  let reachable = match (opOf(id)) {
+let _statement: (I32, Bool) -> Bool = fn(_id, _programBody) { false };
+_statement = fn(id, programBody) {
+  match (opOf(id)) {
     Declare => {
       _arity(id, 1);
-      _binding(id, 0, false);
-      true
+      _binding(id, 0, programBody)
     },
     Expression => {
       _arity(id, 1);
       _operand(id, 0);
-      true
+      null
     },
     Return => {
-      _typed(id, [result], 0, "return type mismatch");
-      false
+      _typed(id, [_result], 0, "return type mismatch");
+      null
     },
     Throw => {
       _arity(id, 1);
       _operand(id, 0);
-      false
+      null
     },
     Break => {
-      if (loopDepth == 0) { _fail("break outside loop"); }
+      if (_loops == 0) { _fail("break outside loop"); }
       _arity(id, 0);
-      false
+      null
     },
     Continue => {
-      if (loopDepth == 0) { _fail("continue outside loop"); }
+      if (_loops == 0) { _fail("continue outside loop"); }
       _arity(id, 0);
-      false
+      null
     },
     While => {
+      _arity(id, 2);
       if (_operand(id, 0) != TYPE_BOOL) { _fail("while condition must be bool"); }
-      let scope = _visibleIds.len();
-      _statements(id, 1, childCount(id), result, loopDepth + 1);
-      _popTo(scope);
-      true
+      _loops++;
+      _block(_child(id, 1), false);
+      _loops--;
+      null
+    },
+    IfStatement => {
+      if ((childCount(id) != 2) && (childCount(id) != 3)) { _fail("wrong operand count"); }
+      if (_operand(id, 0) != TYPE_BOOL) { _fail("if condition must be bool"); }
+      _block(_child(id, 1), false);
+
+      if (childCount(id) == 3) {
+        let otherwise = _child(id, 2);
+
+        match (opOf(otherwise)) {
+          Block => {
+            _block(otherwise, false);
+            null
+          }, IfStatement => {
+            _statement(otherwise, false);
+            null
+          }, _ => {
+            _fail("else branch must be a block or if");
+            null
+          }
+        };
+      }
+      null
     },
     _ => {
       _fail("expected statement");
-      false
+      null
     },
   };
-  reachable
+  true
 };
 
-_statements = fn(parent, start, end, result, loopDepth) {
-  let reachable = true;
-  let i = start;
+_block = fn(id, programBody) {
+  match (opOf(id)) {
+    Block => null, _ => {
+      _fail("expected block");
+      null
+    }
+  };
+  if ((auxOf(id) != 0) && (auxOf(id) != 1)) { _fail("block tail flag"); }
+  let statements = childCount(id) - auxOf(id);
+  let scope = _visibleIds.len();
+  let i = 0;
 
-  while (i < end) {
-    if (!reachable) { _fail("statement after return"); }
-    reachable = _statement(_child(parent, i), result, loopDepth);
+  while (i < statements) {
+    if ((i > 0) && endsPath(childOf(id, i - 1))) { _fail("statement after the end of every path"); }
+    _statement(_child(id, i), programBody);
     i++;
   }
-  reachable
+  let ty = auxOf(id) == 1 ? _operand(id, statements) : 0;
+  _popTo(scope);
+  if (ty != typeOf(id)) { _fail("block type mismatch"); }
+  ty
 };
 
 let _function = fn(id: I32, functionId: I32) {
@@ -335,21 +361,15 @@ let _function = fn(id: I32, functionId: I32) {
     _declare(valueOf(param), typeOf(param), false);
     i++;
   }
+  _result = innerOf(ty);
+  _loops = 0;
   let body = _child(id, typeArgCount(ty));
+  let tail = _block(body, false);
 
-  match (opOf(body)) {
-    Body => null, _ => {
-      _fail("expected function body");
-      null
-    }
-  };
-  let hasTail = auxOf(body) == 1;
-  if ((auxOf(body) != 0) && !hasTail) { _fail("function body tail flag"); }
-  let statements = childCount(body) - auxOf(body);
-  let reachable = _statements(body, 0, statements, innerOf(ty), 0);
-  if (reachable && !hasTail) { _fail("function falls through without value"); }
-  if (!reachable && hasTail) { _fail("unreachable function tail"); }
-  if (hasTail && (_operand(body, statements) != innerOf(ty))) { _fail("function result type mismatch"); }
+  if (!endsPath(body)) {
+    if (auxOf(body) != 1) { _fail("function falls through without value"); }
+    if (tail != innerOf(ty)) { _fail("function result type mismatch"); }
+  }
   null
 };
 
@@ -396,7 +416,8 @@ export let verifyHir: (Hir) -> Bool = fn(program) {
       null
     }
   };
-  if (_block(body, true) != typeOf(body)) { _fail("expression type mismatch"); }
+  if (auxOf(body) != 1) { _fail("program body without a tail"); }
+  _block(body, true);
   if (_nextGlobal != globalCount()) { _fail("global never initialized"); }
   _spans();
   true

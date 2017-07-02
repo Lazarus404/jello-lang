@@ -128,10 +128,13 @@ export let firstUninitializedRead: () -> Tuple<I32, I32> = fn() {
     }
 
     match (opOf(binding)) {
-      InitGlobal => {
-        bitsAdd(initialized, valueOf(binding));
-        null
-      }, _ => null
+      Declare => match (opOf(childOf(binding, 0))) {
+        InitGlobal => {
+          bitsAdd(initialized, valueOf(childOf(binding, 0)));
+          null
+        }, _ => null
+      },
+      _ => null,
     };
     i++;
   }

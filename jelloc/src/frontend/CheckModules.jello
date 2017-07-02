@@ -45,12 +45,12 @@ let _checkModule = fn(modules: Array<Module>, index: I32): I32 {
           if (ty < 0) { ty = typeOf(checked); } else if (ty != typeOf(checked)) { throw "binding annotation type mismatch: " + name; }
           let global = declareGlobal(name, ty, !isConst);
           declareScoped(name, Binding.Global(global));
-          _initializers.push(node(Op.InitGlobal, ty, global, 0, [checked]));
+          _initializers.push(node(Op.Declare, 0, 0, 0, [node(Op.InitGlobal, ty, global, 0, [checked])]));
           if (exported) { exportScoped(index, name); }
           null
         },
         Expression(value) => {
-          _initializers.push(checkEffect(value));
+          _initializers.push(checkEffect(value, 0));
           null
         },
         Enum(exported, name, _, _) when (!exported) => {
@@ -99,7 +99,7 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
     if (tail < 0) { throw "program requires a trailing expression"; }
   } };
   _initializers.push(tail);
-  let hir = finishProgram(node(Op.Block, typeOf(tail), 0, 0, _initializers));
+  let hir = finishProgram(node(Op.Block, typeOf(tail), 0, 1, _initializers));
   _checkInitOrder();
   verifyHir(hir);
   hir

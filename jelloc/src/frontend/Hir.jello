@@ -7,7 +7,7 @@ export enum Op {
   Bool; I32; Bytes; Null; Local; Assign; Global; SetGlobal; InitGlobal; FunctionRef;
   Add; Sub; Mul; Neg; Not; And; Or; Eq; Lt; Gt; Sext; Trunc; Present; IsNull; IsPresent;
   ArrayNew; ArrayLen; ArrayGet; ArraySet; BytesGet; Tuple; TupleField; Call; CallIndirect; Block; If;
-  Let; Const; Parameter; Declare; Expression; Return; Throw; Break; Continue; While; Body; Function; Program;
+  Let; Const; Parameter; Declare; Expression; Return; Throw; Break; Continue; IfStatement; While; Function; Program;
 }
 
 export enum Kind { Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; }
@@ -70,6 +70,20 @@ export let auxOf: (I32) -> I32 = fn(id) { _nodes[id * _NODE_WIDTH + 2] };
 export let childCount: (I32) -> I32 = fn(id) { _nodes[id * _NODE_WIDTH + 4] };
 export let childOf: (I32, I32) -> I32 = fn(id, index) { _edges[_nodes[id * _NODE_WIDTH + 3] + index] };
 export let lastChild: (I32) -> I32 = fn(id) { childOf(id, childCount(id) - 1) };
+
+let _endsPath: (I32) -> Bool = fn(_id) { false };
+_endsPath = fn(id) {
+  match (opOf(id)) {
+    Return, Throw, Break, Continue => true,
+    IfStatement => (childCount(id) == 3) && _endsPath(childOf(id, 1)) && _endsPath(childOf(id, 2)),
+    Block => {
+      let statements = childCount(id) - auxOf(id);
+      (statements > 0) && _endsPath(childOf(id, statements - 1))
+    },
+    _ => false,
+  }
+};
+export let endsPath: (I32) -> Bool = fn(id) { _endsPath(id) };
 
 export let childrenInBounds: (I32) -> Bool = fn(id) {
   let first = _nodes[id * _NODE_WIDTH + 3];
