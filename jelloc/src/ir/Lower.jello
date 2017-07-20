@@ -2,11 +2,11 @@ package ir;
 
 import type { Hir } from frontend.Hir;
 import {
-  TYPE_BOOL, TYPE_I32, auxOf, bytesOf, childCount, childOf, innerOf, kindOf, lastChild, opOf, rootNode, typeArg, typeArgCount,
-  globalCount, globalTypeOf, typeOf, useHir, valueOf,
+  TYPE_BOOL, TYPE_I32, auxOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, kindOf, lastChild, opOf, rootNode, typeArg,
+  typeArgCount, typeCount, globalCount, globalTypeOf, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
-import type { BasicBlock, Function as IrFunction, Instruction, Op, Program as IrProgram, Terminator, ValueType } from ir.Model;
-import { BasicBlock, Op, Program as IrProgram, ReturnType, Terminator, ValueType, instruction } from ir.Model;
+import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Op, Program as IrProgram, Terminator, ValueType } from ir.Model;
+import { BasicBlock, EnumSchema, Op, Program as IrProgram, ReturnType, Terminator, ValueType, instruction } from ir.Model;
 import { verifyProgram } from ir.Verify;
 
 let _registers = Array.new<ValueType>(0);
@@ -21,6 +21,7 @@ let _breakTarget = -1;
 let _continueTarget = -1;
 let _pool = Array.new<Bytes>(0);
 let _poolIndexes = Array.new<I32>(0);
+let _enumIndexes = Array.new<I32>(0);
 
 let _valueType: (I32) -> ValueType = fn(_ty) { ValueType.Bool };
 
@@ -47,10 +48,7 @@ _valueType = fn(ty) {
     },
     Tuple => ValueType.TupleOf(_valueTypes(ty)),
     Function => ValueType.Function(_valueTypes(ty), ReturnType.Value(_valueType(innerOf(ty)))),
-    Enum => {
-      throw "enum values cannot be lowered yet";
-      ValueType.Bool
-    },
+    Enum => ValueType.Nominal(_enumIndexes[ty]),
   }
 };
 
@@ -168,6 +166,7 @@ let _operation = fn(id: I32): Op {
     Sext => Op.Sext, Trunc => Op.Trunc, Present => Op.Box, IsNull, IsPresent => Op.IsNull,
     ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet, BytesGet => Op.BytesGet,
     Tuple => Op.TupleNew, TupleField => Op.TupleGet, Call => Op.Call, CallIndirect => Op.CallIndirect,
+    EnumNew => Op.EnumNew, EnumTag => Op.EnumTag, EnumField => Op.EnumGet,
     _ => {
       throw "invalid HIR expression op";
       Op.Move
@@ -206,7 +205,7 @@ _expr = fn(id) {
       let op = _operation(id);
 
       let imm = match (opOf(id)) {
-        Bool, I32, FunctionRef, TupleField, Call => valueOf(id),
+        Bool, I32, FunctionRef, TupleField, Call, EnumNew, EnumField => valueOf(id),
         Bytes => _poolIndex(valueOf(id)),
         _ => 0,
       };
@@ -291,6 +290,10 @@ _statement = fn(id) {
     Continue => _exit(Terminator.Jump(_continueTarget)),
     While => _while(id),
     IfStatement => _ifStatement(id),
+    Block => {
+      _lowerBlock(id);
+      null
+    },
     _ => {
       throw "invalid HIR statement op";
       null
@@ -345,6 +348,40 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
   useHir(program);
   _pool = Array.new<Bytes>(0);
   _poolIndexes = Array.new<I32>(0);
+  _enumIndexes = Array.new<I32>(0);
+  let enumTypes = Array.new<I32>(0);
+  let ty = 0;
+
+  while (ty < typeCount()) {
+    _enumIndexes.push(match (kindOf(ty)) {
+      Enum => {
+        enumTypes.push(ty);
+        (enumTypes.len() - 1) as I32
+      }, _ => -1
+    });
+    ty++;
+  }
+  let enums = Array.new<EnumSchema>(0);
+  let e = 0;
+
+  while (e < enumTypes.len()) {
+    let variants = Array.new<Array<ValueType>>(0);
+    let tag = 0;
+
+    while (tag < variantCount(enumTypes[e])) {
+      let fields = Array.new<ValueType>(0);
+      let f = 0;
+
+      while (f < fieldCount(enumTypes[e], tag)) {
+        fields.push(_valueType(fieldType(enumTypes[e], tag, f)));
+        f++;
+      }
+      variants.push(fields);
+      tag++;
+    }
+    enums.push(EnumSchema.Enum(variants));
+    e++;
+  }
   let root = rootNode();
   let functions = Array.new<IrFunction>(0);
   let i = 0;
@@ -365,7 +402,7 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
     globals.push(_valueType(globalTypeOf(i)));
     i++;
   }
-  let lowered = IrProgram.Program(functions, _pool, [], globals);
+  let lowered = IrProgram.Program(functions, _pool, enums, globals);
   verifyProgram(lowered);
   lowered
 };

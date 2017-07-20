@@ -2,27 +2,34 @@ package frontend;
 
 import type { Program as AstProgram } from frontend.Ast;
 import { bindPatternName, isBindPattern } from frontend.Ast;
+import { checkEnumExpr, declareEnums } from frontend.CheckEnums;
 import type { Hir } from frontend.Hir;
-import { Op, declareEnum, declareGlobal, globalNameOf, node, spanOf, typeOf } from frontend.Hir;
+import { Op, declareGlobal, globalNameOf, node, spanOf, typeOf } from frontend.Hir;
 import { firstUninitializedRead } from frontend.InitOrder;
 import { Binding, declareScoped, enterModule, exportScoped, resetExports } from frontend.ModuleScope;
 import type { Import, Module } from frontend.Modules;
-import { Module } from frontend.Modules;
+import { Import, Module } from frontend.Modules;
 import { programSyntax } from frontend.Parser;
 import type { Syntax } from frontend.Source;
 import { Syntax } from frontend.Source;
 import {
   beginCheck, checkEffect, checkFunctionBody, checkOperand, checkType, declareFunctions, enterSyntax, finishProgram,
-  isDirectFunction, syntaxChild,
+  isDirectFunction, syntaxChild, useEnumChecks,
 } from frontend.TypeCheck;
 import { verifyHir } from frontend.VerifyHir;
 
 let _initializers = Array.new<I32>(0);
 
-let _checkModule = fn(modules: Array<Module>, index: I32): I32 {
+let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
   match (modules[index]) { Module(_, statements, syntax, tail, imports) => {
     let outer = enterSyntax(syntax);
-    enterModule(imports, modules);
+    enterModule(imports, modules, !runs);
+    declareEnums(statements, index);
+
+    if (!runs) {
+      enterSyntax(outer);
+      return -1;
+    }
     let functionIndex = declareFunctions(statements);
     let i = 0;
 
@@ -53,10 +60,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32): I32 {
           _initializers.push(checkEffect(value, 0));
           null
         },
-        Enum(exported, name, _, _) when (!exported) => {
-          declareEnum(name);
-          null
-        },
+        Enum(_, _, _, _) => null,
         _ => {
           throw "unsupported statement in initial semantic slice";
           null
@@ -84,13 +88,36 @@ let _checkInitOrder = fn() {
 export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
   beginCheck();
   resetExports();
+  useEnumChecks(checkEnumExpr);
   _initializers = Array.new<I32>(0);
   let entry = (modules.len() - 1) as I32;
   let i = 0;
   let tail = -1;
+  let runs = Array.new<Bool>(0);
 
   while (i <= entry) {
-    tail = _checkModule(modules, i);
+    runs.push(i == entry);
+    i++;
+  }
+  i = entry;
+
+  while (i >= 0) {
+    if (runs[i]) {
+      match (modules[i]) { Module(_, _, _, _, imports) => {
+        let j = 0;
+
+        while (j < imports.len()) {
+          match (imports[j]) { Import(_, module, _, typeOnly) => { if (!typeOnly) { runs[module] = true; } } };
+          j++;
+        }
+      } };
+    }
+    i--;
+  }
+  i = 0;
+
+  while (i <= entry) {
+    tail = _checkModule(modules, i, runs[i]);
     i++;
   }
 

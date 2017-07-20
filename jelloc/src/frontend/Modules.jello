@@ -6,7 +6,7 @@ import { parseSource, programSyntax } from frontend.Parser;
 import type { Syntax } from frontend.Source;
 import { readText } from std.io.File;
 
-export enum Import { Import(local: Bytes, module: I32, name: Bytes); }
+export enum Import { Import(local: Bytes, module: I32, name: Bytes, typeOnly: Bool); }
 
 export enum Module {
   Module(path: Bytes, statements: Array<Stmt>, syntax: Syntax, tail: ?Expr, imports: Array<Import>);
@@ -94,10 +94,10 @@ _load = fn(path, parts) {
     while (i < statements.len()) {
       match (statements[i]) {
         ImportFrom(kind, items, importParts) => {
-          match (kind) {
-            Value => null, _ => {
-              throw "type imports are not supported yet";
-              null
+          let typeOnly = match (kind) {
+            Value => false, TypeOnly => true, _ => {
+              throw "macro and native imports are not supported";
+              false
             }
           };
           let dependency = _load(_modulePath(_root, importParts), importParts);
@@ -109,7 +109,7 @@ _load = fn(path, parts) {
               if (alias != null) { local = alias; }
               if (_indexOf(locals, local) >= 0) { throw "duplicate import name: " + local; }
               locals.push(local);
-              imports.push(Import.Import(local, dependency, name));
+              imports.push(Import.Import(local, dependency, name, typeOnly));
             } };
             j++;
           }

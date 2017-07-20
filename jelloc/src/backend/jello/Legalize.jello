@@ -37,9 +37,10 @@ let _instruction = fn(insn: Instruction) {
       _emit(Op.ConstNull, nullValue, Array.new<I32>(0), 0);
       _emit(Op.PhysEq, dst, [args[0], nullValue], 0)
     },
-    EnumNew, EnumTag, EnumGet => {
-      throw "JLO legalization does not support enum values yet";
-      null
+    EnumGet => {
+      let index = _fresh(ValueType.I32);
+      _emit(Op.ConstI32, index, Array.new<I32>(0), immOf(insn));
+      _emit(Op.EnumGet, dst, [args[0], index], immOf(insn))
     },
     _ => {
       _out.push(insn);

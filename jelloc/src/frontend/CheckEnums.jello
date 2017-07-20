@@ -1,0 +1,226 @@
+package frontend;
+
+import type { Expr as AstExpr, MatchArm, Stmt } from frontend.Ast;
+import {
+  Kind, Op, TYPE_BOOL, TYPE_I32, auxOf, bytesId, declareEnum, defineVariants, fieldCount, fieldType, isKind, node, typeName, typeOf,
+  variantCount, variantName, variantTag,
+} from frontend.Hir;
+import { declareScopedType, exportScopedType, scopedType } from frontend.ModuleScope;
+import { checkArm, checkOperand, checkType, enterSyntax, newBinding, syntaxChild } from frontend.TypeCheck;
+
+export let declareEnums: (Array<Stmt>, I32) -> Bool = fn(statements, module) {
+  let i = 0;
+
+  while (i < statements.len()) {
+    match (statements[i]) {
+      Enum(exported, name, typeParams, _) => {
+        let parent = enterSyntax(syntaxChild(i));
+        if (typeParams.len() != 0) { throw "enum type parameters are not supported yet: " + name; }
+        declareScopedType(name, declareEnum(name));
+        if (exported) { exportScopedType(module, name); }
+        enterSyntax(parent);
+        null
+      },
+      _ => null,
+    };
+    i++;
+  }
+  i = 0;
+
+  while (i < statements.len()) {
+    match (statements[i]) {
+      Enum(_, name, _, constructors) => {
+        let parent = enterSyntax(syntaxChild(i));
+        let names = Array.new<Bytes>(0);
+        let fieldNames = Array.new<Array<Bytes>>(0);
+        let fieldTypes = Array.new<Array<I32>>(0);
+        let c = 0;
+
+        while (c < constructors.len()) {
+          match (constructors[c]) { Constructor(variant, fields) => {
+            let v = 0;
+
+            while (v < names.len()) {
+              if (names[v] == variant) { throw "duplicate variant " + variant + " of " + name; }
+              v++;
+            }
+            let fieldName = Array.new<Bytes>(0);
+            let fieldType = Array.new<I32>(0);
+            let f = 0;
+
+            while (f < fields.len()) {
+              match (fields[f]) {
+                Field(field, ty) => {
+                  fieldName.push(field);
+                  fieldType.push(checkType(ty));
+                }
+              };
+              f++;
+            }
+            names.push(variant);
+            fieldNames.push(fieldName);
+            fieldTypes.push(fieldType);
+          } };
+          c++;
+        }
+        defineVariants(scopedType(name), names, fieldNames, fieldTypes);
+        enterSyntax(parent);
+        null
+      },
+      _ => null,
+    };
+    i++;
+  }
+  true
+};
+
+let _construct = fn(enumName: Bytes, variant: Bytes, args: Array<AstExpr>, called: Bool): I32 {
+  let ty = scopedType(enumName);
+  let tag = variantTag(ty, variant);
+  if (tag < 0) { throw "unknown variant " + variant + " of " + enumName; }
+  let count = fieldCount(ty, tag);
+  if ((called == (count == 0)) || (args.len() != count)) { throw "wrong payload count for enum variant " + enumName + "." + variant; }
+  let fields = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < count) {
+    let field = checkOperand(args[i], i + 1, fieldType(ty, tag, i));
+
+    if (typeOf(field) != fieldType(ty, tag, i)) {
+      enterSyntax(syntaxChild(i + 1));
+      throw "wrong payload type for enum variant " + enumName + "." + variant;
+    }
+    fields.push(field);
+    i++;
+  }
+  node(Op.EnumNew, ty, tag, 0, fields)
+};
+
+let _local = fn(binding: I32, ty: I32): I32 { node(Op.Local, ty, binding, 0, []) };
+
+let _const = fn(binding: I32, name: Bytes, value: I32): I32 {
+  node(Op.Declare, 0, 0, 0, [node(Op.Const, typeOf(value), binding, bytesId(name), [value])])
+};
+
+let _checkMatch = fn(subject: AstExpr, arms: Array<MatchArm>, expected: I32, statement: Bool): I32 {
+  let checkedSubject = checkOperand(subject, 0, -1);
+  let ty = typeOf(checkedSubject);
+  if (!isKind(ty, Kind.Enum)) { throw "match subject must be an enum value"; }
+  let subjectBinding = newBinding();
+  let tagBinding = newBinding();
+  let covered = Array.new<Bool>(0);
+  while (covered.len() < variantCount(ty)) { covered.push(false); }
+  let tags = Array.new<I32>(0);
+  let bodies = Array.new<I32>(0);
+  let resultType = expected;
+  let catchAll = false;
+  let index = 1;
+  let a = 0;
+
+  while (a < arms.len()) {
+    match (arms[a]) { Arm(pattern, guard, body) => {
+      if (guard != null) { throw "match guards are not supported yet"; }
+      if (catchAll) { throw "unreachable match arm after a catch-all arm"; }
+      let names = Array.new<Bytes>(0);
+      let values = Array.new<I32>(0);
+      let tag = -1;
+
+      match (pattern) {
+        Wildcard => {
+          catchAll = true;
+          null
+        },
+        BindPattern(name) => {
+          catchAll = true;
+          names.push(name);
+          values.push(_local(subjectBinding, ty));
+          null
+        },
+        Enum(name, args) => {
+          tag = variantTag(ty, name);
+          if (tag < 0) { throw "unknown variant " + name + " of " + typeName(ty); }
+          if (covered[tag]) { throw "unreachable match arm: " + name + " is already matched"; }
+          covered[tag] = true;
+          if (args.len() != fieldCount(ty, tag)) { throw "wrong payload count for enum variant pattern " + name; }
+          let f = 0;
+
+          while (f < args.len()) {
+            match (args[f]) {
+              Wildcard => null,
+              BindPattern(binder) => {
+                names.push(binder);
+                values.push(node(Op.EnumField, fieldType(ty, tag, f), f, tag, [_local(subjectBinding, ty)]));
+                null
+              },
+              _ => {
+                throw "nested patterns are not supported yet";
+                null
+              },
+            };
+            f++;
+          }
+          null
+        },
+        _ => {
+          throw "this pattern is not supported in match yet";
+          null
+        },
+      };
+
+      match (body) { Block(statements, tail) => {
+        let block = checkArm(names, values, statements, tail, index, resultType, statement);
+
+        if (!statement) {
+          if (auxOf(block) == 0) { throw "match arm requires a trailing expression"; }
+          if (resultType < 0) { resultType = typeOf(block); } else if (typeOf(block) != resultType) { throw "match arms must have the same type"; }
+        }
+        index += (statements.len() as I32) + (tail == null ? 0 : 1);
+        tags.push(tag);
+        bodies.push(block);
+      } };
+    } };
+    a++;
+  }
+  if (arms.len() == 0) { throw "match requires at least one arm"; }
+
+  if (!catchAll) {
+    let tag = 0;
+
+    while (tag < covered.len()) {
+      if (!covered[tag]) { throw "match is not exhaustive: missing " + variantName(ty, tag); }
+      tag++;
+    }
+  }
+  let last = bodies.len() - 1;
+  let result = bodies[last];
+  let i = last - 1;
+
+  while (i >= 0) {
+    let condition = node(Op.Eq, TYPE_BOOL, 0, 0, [_local(tagBinding, TYPE_I32), node(Op.I32, TYPE_I32, tags[i], 0, [])]);
+    result = node(statement ? Op.IfStatement : Op.If, statement ? 0 : resultType, 0, 0, [condition, bodies[i], result]);
+    i--;
+  }
+  let children = [_const(subjectBinding, "match", checkedSubject)];
+  if (last > 0) { children.push(_const(tagBinding, "match.tag", node(Op.EnumTag, TYPE_I32, 0, 0, [_local(subjectBinding, ty)]))); }
+  children.push(result);
+  statement ? node(Op.Block, 0, 0, 0, children) : node(Op.Block, resultType, 0, 1, children)
+};
+
+export let checkEnumExpr: (AstExpr, I32, Bool) -> I32 = fn(expr, expected, statement) {
+  match (expr) {
+    Match(subject, arms) => _checkMatch(subject, arms, expected, statement),
+    Member(base, variant) => match (base) { Variable(name) => _construct(name, variant, Array.new<AstExpr>(0), false), _ => -1 },
+    Call(callee, typeArgs, args) => {
+      if (typeArgs.len() != 0) { throw "enum constructors do not take type arguments"; }
+
+      match (callee) {
+        Member(base, variant) => match (base) { Variable(name) => _construct(name, variant, args, true), _ => -1 },
+        _ => -1,
+      }
+    },
+    _ => {
+      throw "expected an enum expression";
+      -1
+    },
+  }
+};

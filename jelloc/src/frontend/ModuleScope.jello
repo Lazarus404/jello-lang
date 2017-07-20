@@ -8,52 +8,81 @@ export enum Binding { Global(id: I32); Function(index: I32); Unbound; }
 let _names = Array.new<Bytes>(0);
 let _bindings = Array.new<Binding>(0);
 let _imported = Array.new<Bool>(0);
+let _typeNames = Array.new<Bytes>(0);
+let _types = Array.new<I32>(0);
 let _exportModules = Array.new<I32>(0);
 let _exportNames = Array.new<Bytes>(0);
 let _exportBindings = Array.new<Binding>(0);
+let _exportTypeModules = Array.new<I32>(0);
+let _exportTypeNames = Array.new<Bytes>(0);
+let _exportTypes = Array.new<I32>(0);
 
-let _index = fn(name: Bytes): I32 {
+let _indexIn = fn(names: Array<Bytes>, name: Bytes): I32 {
   let i = 0;
 
-  while (i < _names.len()) {
-    if (_names[i] == name) { return i; }
+  while (i < names.len()) {
+    if (names[i] == name) { return i; }
     i++;
   }
   -1
 };
+let _index = fn(name: Bytes): I32 { _indexIn(_names, name) };
+
+let _unique = fn(name: Bytes) {
+  if ((_index(name) >= 0) || (_indexIn(_typeNames, name) >= 0)) { throw "duplicate top-level name: " + name; }
+  null
+};
 
 let _add = fn(name: Bytes, binding: Binding, imported: Bool) {
-  if (_index(name) >= 0) { throw "duplicate top-level name: " + name; }
+  _unique(name);
   _names.push(name);
   _bindings.push(binding);
   _imported.push(imported);
   null
 };
 
+let _addType = fn(name: Bytes, ty: I32) {
+  _unique(name);
+  _typeNames.push(name);
+  _types.push(ty);
+  null
+};
+
+let _export = fn(modules: Array<I32>, names: Array<Bytes>, module: I32, name: Bytes): I32 {
+  let found = -1;
+  let e = 0;
+
+  while (e < names.len()) {
+    if ((modules[e] == module) && (names[e] == name)) { found = e; }
+    e++;
+  }
+  found
+};
+
 export let resetExports: () -> Bool = fn() {
   _exportModules = Array.new<I32>(0);
   _exportNames = Array.new<Bytes>(0);
   _exportBindings = Array.new<Binding>(0);
+  _exportTypeModules = Array.new<I32>(0);
+  _exportTypeNames = Array.new<Bytes>(0);
+  _exportTypes = Array.new<I32>(0);
   true
 };
 
-export let enterModule: (Array<Import>, Array<Module>) -> Bool = fn(imports, modules) {
+export let enterModule: (Array<Import>, Array<Module>, Bool) -> Bool = fn(imports, modules, typesOnly) {
   _names = Array.new<Bytes>(0);
   _bindings = Array.new<Binding>(0);
   _imported = Array.new<Bool>(0);
+  _typeNames = Array.new<Bytes>(0);
+  _types = Array.new<I32>(0);
   let i = 0;
 
   while (i < imports.len()) {
-    match (imports[i]) { Import(local, module, name) => {
-      let found = -1;
-      let e = 0;
+    match (imports[i]) { Import(local, module, name, typeOnly) => {
+      let value = typeOnly ? -1 : _export(_exportModules, _exportNames, module, name);
+      let ty = _export(_exportTypeModules, _exportTypeNames, module, name);
 
-      while (e < _exportNames.len()) {
-        if ((_exportModules[e] == module) && (_exportNames[e] == name)) { found = e; }
-        e++;
-      }
-
-      if (found < 0) {
+      if (value >= 0) { _add(local, _exportBindings[value], true); } else if (ty >= 0) { _addType(local, _exportTypes[ty]); } else if (!typesOnly) {
         match (modules[module]) {
           Module(path, _, _, _, _) => {
             throw "unknown export " + name + " in " + path;
@@ -61,7 +90,6 @@ export let enterModule: (Array<Import>, Array<Module>) -> Bool = fn(imports, mod
           }
         };
       }
-      _add(local, _exportBindings[found], true);
     } };
     i++;
   }
@@ -76,6 +104,23 @@ export let declareScoped: (Bytes, Binding) -> Bool = fn(name, binding) {
 export let scoped: (Bytes) -> Binding = fn(name) {
   let found = _index(name);
   if (found < 0) { Binding.Unbound } else { _bindings[found] }
+};
+
+export let declareScopedType: (Bytes, I32) -> Bool = fn(name, ty) {
+  _addType(name, ty);
+  true
+};
+
+export let scopedType: (Bytes) -> I32 = fn(name) {
+  let found = _indexIn(_typeNames, name);
+  found < 0 ? -1 : _types[found]
+};
+
+export let exportScopedType: (I32, Bytes) -> Bool = fn(module, name) {
+  _exportTypeModules.push(module);
+  _exportTypeNames.push(name);
+  _exportTypes.push(scopedType(name));
+  true
 };
 
 export let isImported: (Bytes) -> Bool = fn(name) {
