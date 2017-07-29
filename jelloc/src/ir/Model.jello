@@ -20,7 +20,7 @@ export enum ReturnType {
 export enum Op {
   ConstBool; ConstI32; ConstBytes; ConstNull; ConstFunction; Move;
   Add; Sub; Mul; Neg; Not; Eq; Lt; Sext; Trunc; Box; IsNull;
-  ArrayNew; ArrayLen; ArrayGet; ArraySet; BytesGet;
+  ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
   Call; CallIndirect; GlobalGet; GlobalSet;
   StructNew; StructSet; PhysEq; SpillPush; SpillPop;
@@ -90,6 +90,9 @@ export enum Program {
 export let opEffects: (Op) -> Array<Effect> = fn(op) {
   match (op) {
     Box, ConstFunction, ArrayNew, EnumNew, StructNew => [Effect.MayAllocate],
+    BytesSlice, BytesConcat => [Effect.MayAllocate, Effect.MayReadMemory, Effect.MayTrap],
+    ArrayResize => [Effect.MayAllocate, Effect.MayWriteMemory, Effect.MayTrap],
+    BytesLen, BytesEq => [Effect.MayReadMemory, Effect.MayTrap],
     Call, CallIndirect => [Effect.MayCall, Effect.MayThrow],
     BytesGet, ArrayLen, ArrayGet, TupleGet, EnumGet => [Effect.MayReadMemory, Effect.MayTrap],
     GlobalGet => [Effect.MayReadMemory],

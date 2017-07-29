@@ -164,7 +164,8 @@ let _operation = fn(id: I32): Op {
     Bool => Op.ConstBool, I32 => Op.ConstI32, Bytes => Op.ConstBytes, Null => Op.ConstNull, FunctionRef => Op.ConstFunction,
     Add => Op.Add, Sub => Op.Sub, Mul => Op.Mul, Neg => Op.Neg, Not => Op.Not, Eq => Op.Eq, Lt, Gt => Op.Lt,
     Sext => Op.Sext, Trunc => Op.Trunc, Present => Op.Box, IsNull, IsPresent => Op.IsNull,
-    ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet, BytesGet => Op.BytesGet,
+    ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet,
+    BytesLen => Op.BytesLen, BytesGet => Op.BytesGet, BytesSlice => Op.BytesSlice, BytesConcat => Op.BytesConcat, BytesEq => Op.BytesEq,
     Tuple => Op.TupleNew, TupleField => Op.TupleGet, Call => Op.Call, CallIndirect => Op.CallIndirect,
     EnumNew => Op.EnumNew, EnumTag => Op.EnumTag, EnumField => Op.EnumGet,
     _ => {
@@ -172,6 +173,56 @@ let _operation = fn(id: I32): Op {
       Op.Move
     },
   }
+};
+
+let _i32 = fn(value: I32): I32 {
+  let dst = _fresh(TYPE_I32);
+  _emit(Op.ConstI32, dst, Array.new<I32>(0), value);
+  dst
+};
+
+let _arithmetic = fn(op: Op, left: I32, right: I32): I32 {
+  let dst = _fresh(TYPE_I32);
+  _emit(op, dst, [left, right], 0);
+  dst
+};
+
+let _length = fn(array: I32): I32 {
+  let dst = _fresh(TYPE_I32);
+  _emit(Op.ArrayLen, dst, [array], 0);
+  dst
+};
+
+let _arrayLiteral = fn(id: I32): I32 {
+  let items = _values(id, 0);
+  let array = _fresh(typeOf(id));
+  _emit(Op.ArrayNew, array, [_i32(items.len() as I32)], 0);
+  let i = 0;
+
+  while (i < items.len()) {
+    _emit(Op.ArraySet, -1, [array, _i32(i as I32), items[i]], 0);
+    i++;
+  }
+  array
+};
+
+let _push = fn(id: I32): I32 {
+  let operands = _values(id, 0);
+  let array = operands[0];
+  let length = _length(array);
+  let grown = _arithmetic(Op.Add, length, _i32(1));
+  _emit(Op.ArrayResize, -1, [array, grown], 0);
+  _emit(Op.ArraySet, -1, [array, length, operands[1]], 0);
+  grown
+};
+
+let _pop = fn(id: I32): I32 {
+  let array = _expr(childOf(id, 0));
+  let last = _arithmetic(Op.Sub, _length(array), _i32(1));
+  let value = _fresh(typeOf(id));
+  _emit(Op.ArrayGet, value, [array, last], 0);
+  _emit(Op.ArrayResize, -1, [array, last], 0);
+  value
 };
 
 _expr = fn(id) {
@@ -196,6 +247,14 @@ _expr = fn(id) {
       let operands = _values(id, 0);
       _emit(Op.ArraySet, -1, operands, 0);
       operands[2]
+    },
+    ArrayLiteral => _arrayLiteral(id),
+    ArrayPush => _push(id),
+    ArrayPop => _pop(id),
+    ArrayResize => {
+      let operands = _values(id, 0);
+      _emit(Op.ArrayResize, -1, operands, 0);
+      operands[0]
     },
     Block => _lowerBlock(id),
     If => _if(id),
@@ -279,7 +338,14 @@ let _ifStatement = fn(id: I32) {
 
 _statement = fn(id) {
   match (opOf(id)) {
-    Declare => _bind(childOf(id, 0)),
+    Declare => {
+      let i = 0;
+
+      while (i < childCount(id)) {
+        _bind(childOf(id, i));
+        i++;
+      } null
+    },
     Expression => {
       _expr(childOf(id, 0));
       null

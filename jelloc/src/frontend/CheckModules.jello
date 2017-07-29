@@ -2,6 +2,7 @@ package frontend;
 
 import type { Program as AstProgram } from frontend.Ast;
 import { bindPatternName, isBindPattern } from frontend.Ast;
+import { checkAggregateExpr } from frontend.CheckAggregates;
 import { checkEnumExpr, declareEnums } from frontend.CheckEnums;
 import type { Hir } from frontend.Hir;
 import { Op, declareGlobal, globalNameOf, node, spanOf, typeOf } from frontend.Hir;
@@ -14,7 +15,7 @@ import type { Syntax } from frontend.Source;
 import { Syntax } from frontend.Source;
 import {
   beginCheck, checkEffect, checkFunctionBody, checkOperand, checkType, declareFunctions, enterSyntax, finishProgram,
-  isDirectFunction, syntaxChild, useEnumChecks,
+  isDirectFunction, syntaxChild, useAggregateChecks, useEnumChecks,
 } from frontend.TypeCheck;
 import { verifyHir } from frontend.VerifyHir;
 
@@ -56,6 +57,10 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
           if (exported) { exportScoped(index, name); }
           null
         },
+        LetStmt(_, _, _, _, _, _) => {
+          throw "top-level destructuring is not supported yet";
+          null
+        },
         Expression(value) => {
           _initializers.push(checkEffect(value, 0));
           null
@@ -89,6 +94,7 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
   beginCheck();
   resetExports();
   useEnumChecks(checkEnumExpr);
+  useAggregateChecks(checkAggregateExpr);
   _initializers = Array.new<I32>(0);
   let entry = (modules.len() - 1) as I32;
   let i = 0;

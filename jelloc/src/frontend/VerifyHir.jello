@@ -213,6 +213,38 @@ _expr = fn(id) {
       if (!isKind(ty, Kind.Array)) { _fail("array type"); }
       _typed(id, [TYPE_I32], ty, "array length must be i32")
     },
+    ArrayLiteral => {
+      if (!isKind(ty, Kind.Array)) { _fail("array type"); }
+      let i = 0;
+
+      while (i < childCount(id)) {
+        if (_operand(id, i) != innerOf(ty)) { _fail("array element type"); }
+        i++;
+      }
+      ty
+    },
+    ArrayPush => {
+      _arity(id, 2);
+      let array = _operand(id, 0);
+      if (!isKind(array, Kind.Array) || (_operand(id, 1) != innerOf(array))) { _fail("array push operand type"); }
+      TYPE_I32
+    },
+    ArrayPop => {
+      _arity(id, 1);
+      let array = _operand(id, 0);
+      if (!isKind(array, Kind.Array)) { _fail("array pop operand type"); }
+      innerOf(array)
+    },
+    ArrayResize => {
+      _arity(id, 2);
+      let array = _operand(id, 0);
+      if (!isKind(array, Kind.Array) || (_operand(id, 1) != TYPE_I32)) { _fail("array resize operand type"); }
+      array
+    },
+    BytesLen => _typed(id, [TYPE_BYTES], TYPE_I32, "bytes len operand type"),
+    BytesSlice => _typed(id, [TYPE_BYTES, TYPE_I32, TYPE_I32], TYPE_BYTES, "bytes slice operand type"),
+    BytesConcat => _typed(id, [TYPE_BYTES, TYPE_BYTES], TYPE_BYTES, "bytes concat operand type"),
+    BytesEq => _typed(id, [TYPE_BYTES, TYPE_BYTES], TYPE_BOOL, "bytes eq operand type"),
     ArrayLen => {
       _arity(id, 1);
       if (!isKind(_operand(id, 0), Kind.Array)) { _fail("array len source type"); }
@@ -282,8 +314,14 @@ let _statement: (I32, Bool) -> Bool = fn(_id, _programBody) { false };
 _statement = fn(id, programBody) {
   match (opOf(id)) {
     Declare => {
-      _arity(id, 1);
-      _binding(id, 0, programBody)
+      if (childCount(id) < 1) { _fail("declaration without a binding"); }
+      let i = 0;
+
+      while (i < childCount(id)) {
+        _binding(id, i, programBody);
+        i++;
+      }
+      null
     },
     Expression => {
       _arity(id, 1);

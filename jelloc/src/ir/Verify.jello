@@ -93,7 +93,7 @@ let _instruction = fn(instruction: Instruction) {
   }
 
   match (opOf(instruction)) {
-    ArraySet, StructSet, SpillPush, GlobalSet => { if (dst >= 0) { _fail("store defines a register"); } null },
+    ArraySet, ArrayResize, StructSet, SpillPush, GlobalSet => { if (dst >= 0) { _fail("store defines a register"); } null },
     Call => null,
     _ => {
       _type(dst);
@@ -218,11 +218,46 @@ let _instruction = fn(instruction: Instruction) {
         },
       }
     },
+    ArrayResize => {
+      _arity(args, 2);
+
+      match (_type(args[0])) {
+        ArrayOf(_) => null, _ => {
+          _fail("array.resize of a non-array");
+          null
+        }
+      };
+      _expect(args[1], ValueType.I32)
+    },
     BytesGet => {
       _arity(args, 2);
       _expect(dst, ValueType.I32);
       _expect(args[0], ValueType.Bytes);
       _expect(args[1], ValueType.I32)
+    },
+    BytesLen => {
+      _arity(args, 1);
+      _expect(dst, ValueType.I32);
+      _expect(args[0], ValueType.Bytes)
+    },
+    BytesSlice => {
+      _arity(args, 3);
+      _expect(dst, ValueType.Bytes);
+      _expect(args[0], ValueType.Bytes);
+      _expect(args[1], ValueType.I32);
+      _expect(args[2], ValueType.I32)
+    },
+    BytesConcat => {
+      _arity(args, 2);
+      _expect(dst, ValueType.Bytes);
+      _expect(args[0], ValueType.Bytes);
+      _expect(args[1], ValueType.Bytes)
+    },
+    BytesEq => {
+      _arity(args, 2);
+      _expect(dst, ValueType.Bool);
+      _expect(args[0], ValueType.Bytes);
+      _expect(args[1], ValueType.Bytes)
     },
     TupleNew => match (_type(dst)) {
       TupleOf(elements) => {

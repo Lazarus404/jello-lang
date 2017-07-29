@@ -992,7 +992,7 @@ test("carries phase 1 primitives through IR and JLO", fn(t) {
   t.is(ir.indexOf("sext.i32.i64") >= 0, true);
   t.is(ir.indexOf("trunc.i64.i32") >= 0, true);
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("true as I64"))); });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("1i32 as I32"))); });
+  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("1i32 as Bool"))); });
   t.is(ir.indexOf("call @1") < ir.indexOf("call @2"), true);
   let jlo = legalizeJlo(lowerProgram(hir));
   let printed = printJlo(jlo);

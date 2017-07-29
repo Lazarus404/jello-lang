@@ -1,0 +1,299 @@
+package frontend;
+
+import type { Expr as AstExpr, Type as AstType } from frontend.Ast;
+import frontend.Hir as H;
+import { Kind, Op } from frontend.Hir;
+import { checkOperand, checkType, enterSyntax, isBound, syntaxChild } from frontend.TypeCheck;
+
+let _isName = fn(expr: AstExpr, name: Bytes): Bool { match (expr) { Variable(found) => found == name, _ => false } };
+
+let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
+  let checked = checkOperand(expr, index, H.TYPE_I32);
+
+  if (H.typeOf(checked) != H.TYPE_I32) {
+    enterSyntax(syntaxChild(index));
+    throw what + " must be I32";
+  }
+  checked
+};
+
+let _of = fn(expr: AstExpr, index: I32, kind: Kind, what: Bytes): I32 {
+  let checked = checkOperand(expr, index, -1);
+
+  if (!H.isKind(H.typeOf(checked), kind)) {
+    enterSyntax(syntaxChild(index));
+    throw what;
+  }
+  checked
+};
+
+let _codePoint = fn(value: Bytes): I32 {
+  if (value.len() == 0) { return -1; }
+  let first = Bytes.get_u8(value, 0);
+  let size = first < 128 ? 1 : first < 194 ? 0 : first < 224 ? 2 : first < 240 ? 3 : first < 245 ? 4 : 0;
+  if ((size == 0) || (value.len() != size)) { return -1; }
+  let code = size == 1 ? first : first & (255 >> (size + 1));
+  let i = 1;
+
+  while (i < size) {
+    let next = Bytes.get_u8(value, i);
+    if ((next & 192) != 128) { return -1; }
+    code = (code << 6) | (next & 63);
+    i++;
+  }
+  let least = size == 2 ? 128 : size == 3 ? 2048 : size == 4 ? 65536 : 0;
+  if ((code < least) || ((code >= 55296) && (code <= 57343)) || (code > 1114111)) { return -1; }
+  code
+};
+
+let _member = fn(base: AstExpr, member: Bytes): I32 {
+  match (base) {
+    Bytes(value) when (member == "code") => {
+      let code = _codePoint(value);
+      if (code < 0) { throw "'.code' requires one Unicode character"; }
+      return H.node(Op.I32, H.TYPE_I32, code, 0, []);
+    },
+    _ => null,
+  };
+  let tuple = _of(base, 0, Kind.Tuple, "unknown member: " + member);
+  let ty = H.typeOf(tuple);
+  let field = 0;
+  let i = 0;
+
+  while (i < member.len()) {
+    let digit = Bytes.get_u8(member, i) - 48;
+
+    if ((digit < 0) || (digit > 9) || ((i > 0) && (field == 0)) || (field > 1000)) {
+      field = -1;
+      i = member.len();
+    } else {
+      field = field * 10 + digit;
+      i++;
+    }
+  }
+  if ((field < 0) || (field >= H.typeArgCount(ty))) { throw "tuple " + H.typeName(ty) + " has no field " + member; }
+  H.node(Op.TupleField, H.typeArg(ty, field), field, 0, [tuple])
+};
+
+let _tuple = fn(items: Array<AstExpr>, expected: I32): I32 {
+  let fits = H.isKind(expected, Kind.Tuple) && (H.typeArgCount(expected) == items.len());
+  let values = Array.new<I32>(0);
+  let types = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < items.len()) {
+    let value = checkOperand(items[i], i, fits ? H.typeArg(expected, i) : -1);
+    values.push(value);
+    types.push(H.typeOf(value));
+    i++;
+  }
+  H.node(Op.Tuple, H.tupleType(types), 0, 0, values)
+};
+
+let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
+  let element = H.isKind(expected, Kind.Array) ? H.innerOf(expected) : -1;
+  if ((element < 0) && (items.len() == 0)) { throw "empty array literal needs a type from its context"; }
+  let values = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < items.len()) {
+    let value = checkOperand(items[i], i, element);
+    if (element < 0) { element = H.typeOf(value); }
+
+    if (H.typeOf(value) != element) {
+      enterSyntax(syntaxChild(i));
+      throw "array element must be " + H.typeName(element);
+    }
+    values.push(value);
+    i++;
+  }
+  H.node(Op.ArrayLiteral, H.arrayType(element), 0, 0, values)
+};
+
+let _index = fn(base: AstExpr, index: AstExpr): I32 {
+  let value = checkOperand(base, 0, -1);
+  let checkedIndex = _i32(index, 1, "index");
+  let ty = H.typeOf(value);
+
+  match (H.kindOf(ty)) {
+    Bytes => H.node(Op.BytesGet, H.TYPE_I32, 0, 0, [value, checkedIndex]),
+    Array => H.node(Op.ArrayGet, H.innerOf(ty), 0, 0, [value, checkedIndex]),
+    _ => {
+      enterSyntax(syntaxChild(0));
+      throw "cannot index " + H.typeName(ty);
+      -1
+    },
+  }
+};
+
+let _assignIndex = fn(base: AstExpr, index: AstExpr, value: AstExpr): I32 {
+  let outer = enterSyntax(syntaxChild(0));
+  let array = checkOperand(base, 0, -1);
+  let ty = H.typeOf(array);
+  if (H.isKind(ty, Kind.Bytes)) { throw "Bytes values are immutable"; }
+
+  if (!H.isKind(ty, Kind.Array)) {
+    enterSyntax(syntaxChild(0));
+    throw "cannot index " + H.typeName(ty);
+  }
+  let checkedIndex = _i32(index, 1, "index");
+  enterSyntax(outer);
+  let checked = checkOperand(value, 1, H.innerOf(ty));
+
+  if (H.typeOf(checked) != H.innerOf(ty)) {
+    enterSyntax(syntaxChild(1));
+    throw "array element must be " + H.typeName(H.innerOf(ty));
+  }
+  H.node(Op.ArraySet, H.innerOf(ty), 0, 0, [array, checkedIndex, checked])
+};
+
+let _arrayNew = fn(element: AstType, length: AstExpr): I32 {
+  H.node(Op.ArrayNew, H.arrayType(checkType(element)), 0, 0, [_i32(length, 1, "array length")])
+};
+
+let _arity = fn(args: Array<AstExpr>, count: I32, name: Bytes) {
+  if (args.len() != count) { throw name + " takes " + Std.string(count) + (count == 1 ? " argument" : " arguments"); }
+  null
+};
+
+let _static = fn(space: Bytes, name: Bytes, args: Array<AstExpr>): I32 {
+  let qualified = space + "." + name;
+
+  match (qualified) {
+    "Array.len" => {
+      _arity(args, 1, qualified);
+      H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [_of(args[0], 1, Kind.Array, "Array.len requires an array")])
+    },
+    "Array.resize" => {
+      _arity(args, 2, qualified);
+      let array = _of(args[0], 1, Kind.Array, "Array.resize requires an array");
+      H.node(Op.ArrayResize, H.typeOf(array), 0, 0, [array, _i32(args[1], 2, "array length")])
+    },
+    "Bytes.len" => {
+      _arity(args, 1, qualified);
+      H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [_of(args[0], 1, Kind.Bytes, "Bytes.len requires Bytes")])
+    },
+    "Bytes.get_u8" => {
+      _arity(args, 2, qualified);
+      let bytes = _of(args[0], 1, Kind.Bytes, "Bytes.get_u8 requires Bytes");
+      H.node(Op.BytesGet, H.TYPE_I32, 0, 0, [bytes, _i32(args[1], 2, "byte index")])
+    },
+    "Bytes.slice" => {
+      _arity(args, 3, qualified);
+      let bytes = _of(args[0], 1, Kind.Bytes, "Bytes.slice requires Bytes");
+      let start = _i32(args[1], 2, "slice start");
+      H.node(Op.BytesSlice, H.TYPE_BYTES, 0, 0, [bytes, start, _i32(args[2], 3, "slice length")])
+    },
+    _ => {
+      throw "unknown function " + qualified;
+      -1
+    },
+  }
+};
+
+let _method = fn(base: AstExpr, name: Bytes, args: Array<AstExpr>): I32 {
+  let outer = enterSyntax(syntaxChild(0));
+  let receiver = checkOperand(base, 0, -1);
+  enterSyntax(outer);
+  let ty = H.typeOf(receiver);
+
+  match (H.kindOf(ty)) {
+    Bytes when (name == "len") => {
+      _arity(args, 0, "len");
+      H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [receiver])
+    },
+    Array => match (name) {
+      "len" => {
+        _arity(args, 0, name);
+        H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [receiver])
+      },
+      "push" => {
+        _arity(args, 1, name);
+        let value = checkOperand(args[0], 1, H.innerOf(ty));
+
+        if (H.typeOf(value) != H.innerOf(ty)) {
+          enterSyntax(syntaxChild(1));
+          throw "array element must be " + H.typeName(H.innerOf(ty));
+        }
+        H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [receiver, value])
+      },
+      "pop" => {
+        _arity(args, 0, name);
+        H.node(Op.ArrayPop, H.innerOf(ty), 0, 0, [receiver])
+      },
+      _ => {
+        throw "unknown array method: " + name;
+        -1
+      },
+    },
+    _ => {
+      throw "unknown method " + name + " of " + H.typeName(ty);
+      -1
+    },
+  }
+};
+
+let _call = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>): I32 {
+  match (callee) {
+    TypeApply(base, applied) => match (base) {
+      Member(space, name) when (_isName(space, "Array") && (name == "new") && (typeArgs.len() == 0) && (applied.len() == 1)) => {
+        _arity(args, 1, "Array.new");
+        _arrayNew(applied[0], args[0])
+      },
+      _ => {
+        throw "unsupported type-applied call";
+        -1
+      },
+    },
+    Member(base, name) => {
+      if (_isName(base, "Array") && (name == "new")) {
+        if (typeArgs.len() != 1) { throw "Array.new needs an element type: Array.new<T>(length)"; }
+        _arity(args, 1, "Array.new");
+        return _arrayNew(typeArgs[0], args[0]);
+      }
+      if (typeArgs.len() != 0) { throw name + " does not take type arguments"; }
+
+      match (base) {
+        Variable(space) when ((space == "Array") || (space == "Bytes")) => _static(space, name, args),
+        Variable(space) when (!isBound(space)) => {
+          throw "module-qualified calls are not supported yet: " + space + "." + name;
+          -1
+        },
+        _ => _method(base, name, args),
+      }
+    },
+    _ => {
+      throw "unsupported call";
+      -1
+    },
+  }
+};
+
+export let checkAggregateExpr: (AstExpr, I32) -> I32 = fn(expr, expected) {
+  match (expr) {
+    Tuple(items) => _tuple(items, expected),
+    Array(items) => _array(items, expected),
+    Member(base, member) => _member(base, member),
+    Index(base, index) => _index(base, index),
+    Call(callee, typeArgs, args) => _call(callee, typeArgs, args),
+    Assign(op, target, value) => match (target) {
+      Index(base, index) => {
+        match (op) {
+          Assign => null, _ => {
+            throw "compound assignment to an element is not supported yet";
+            null
+          }
+        };
+        _assignIndex(base, index, value)
+      },
+      _ => {
+        throw "expected an indexed assignment";
+        -1
+      },
+    },
+    _ => {
+      throw "expected an aggregate expression";
+      -1
+    },
+  }
+};
