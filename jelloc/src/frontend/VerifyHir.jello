@@ -2,8 +2,8 @@ package frontend;
 
 import type { Hir } from frontend.Hir;
 import {
-  Kind, TYPE_BOOL, TYPE_BYTES, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
-  fieldType, globalCount, globalIsMutable, globalTypeOf, innerOf, isKind, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
+  Kind, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
+  fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, isKind, kindOf, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
   spanStartOf, typeArg, typeArgCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 
@@ -168,7 +168,7 @@ _expr = fn(id) {
       _typed(id, [], TYPE_BYTES, "")
     },
     Null => {
-      if (!isKind(ty, Kind.Null)) { _fail("null literal type"); }
+      if (!holdsNull(ty)) { _fail("null literal type"); }
       _typed(id, [], ty, "")
     },
     Local => {
@@ -201,13 +201,32 @@ _expr = fn(id) {
     Sext => _typed(id, [TYPE_I32], TYPE_I64, "i32 to i64 cast requires i32 operand"),
     Trunc => _typed(id, [TYPE_I64], TYPE_I32, "i64 to i32 cast requires i64 operand"),
     Present => {
-      if (!isKind(ty, Kind.Null)) { _fail("present requires a nullable type"); }
+      if (!isKind(ty, Kind.Null) || (innerOf(ty) < 0)) { _fail("present requires a nullable type"); }
       _typed(id, [innerOf(ty)], ty, "present requires the inner type")
     },
     IsNull, IsPresent => {
       _arity(id, 1);
-      if (!isKind(_operand(id, 0), Kind.Null)) { _fail("null check requires a nullable operand"); }
+      if (!holdsNull(_operand(id, 0))) { _fail("null check requires a nullable operand"); }
       TYPE_BOOL
+    },
+    ToDynamic => {
+      _arity(id, 1);
+      _operand(id, 0);
+      TYPE_DYNAMIC
+    },
+    FromDynamic => {
+      if (!match (kindOf(ty)) { Bool, I32, I64, Bytes, Enum => true, _ => false }) { _fail("extraction from Dynamic to an unchecked type"); }
+      _typed(id, [TYPE_DYNAMIC], ty, "extraction requires a Dynamic operand")
+    },
+    IsKind => {
+      if (!match (valueOf(id)) { 1, 2, 4, 7 => true, _ => false }) { _fail("kind test of an unknown kind"); }
+      _typed(id, [TYPE_DYNAMIC], TYPE_BOOL, "kind test requires a Dynamic operand")
+    },
+    Unwrap => {
+      _arity(id, 1);
+      let operand = _operand(id, 0);
+      if (!isKind(operand, Kind.Null) || (innerOf(operand) != ty)) { _fail("unwrap requires a Null<T> operand and a T result"); }
+      ty
     },
     ArrayNew => {
       if (!isKind(ty, Kind.Array)) { _fail("array type"); }

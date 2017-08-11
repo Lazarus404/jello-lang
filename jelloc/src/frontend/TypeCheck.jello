@@ -8,6 +8,9 @@ import type { Hir } from frontend.Hir;
 import frontend.Hir as H;
 import { Kind, Op } from frontend.Hir;
 import { Binding, declareScoped, isImported, scoped, scopedType } from frontend.ModuleScope;
+import {
+  assignLocal, assignmentMark, enterLoop, isNarrowed, keepNarrowings, leaveLoop, narrow, narrowings, resetNarrowing, setNarrowings,
+} from frontend.Narrowing;
 import type { SourceSpan, Syntax } from frontend.Source;
 import { SourceSpan, Syntax } from frontend.Source;
 
@@ -25,7 +28,6 @@ let _functionParams = Array.new<Array<Bytes>>(0);
 let _functionNodes = Array.new<I32>(0);
 let _functionParamTypes = Array.new<Array<I32>>(0);
 let _result = -1;
-let _nullI32 = 0;
 let _noSyntax = fn(): Syntax { Syntax.Node("", 0, 0, Array.new<Syntax>(0)) };
 let _syntax = _noSyntax();
 
@@ -73,8 +75,6 @@ let _leaf = fn(op: Op, ty: I32, value: I32): I32 { H.node(op, ty, value, 0, []) 
 let _unary = fn(op: Op, ty: I32, operand: I32): I32 { H.node(op, ty, 0, 0, [operand]) };
 let _binary = fn(op: Op, ty: I32, left: I32, right: I32): I32 { H.node(op, ty, 0, 0, [left, right]) };
 
-let _isAstI32 = fn(ty: AstType): Bool { match (ty) { Named(name) => name == "I32", _ => false } };
-
 export let checkType: (AstType) -> I32 = fn(_ty) { -1 };
 
 let _checkTypes = fn(types: Array<AstType>): Array<I32> {
@@ -93,6 +93,7 @@ checkType = fn(ty) { match (ty) {
     "I64" => H.TYPE_I64,
     "Bool" => H.TYPE_BOOL,
     "Bytes" => H.TYPE_BYTES,
+    "Dynamic" => H.TYPE_DYNAMIC,
     _ => {
       let named = scopedType(name);
       if (named < 0) { throw "unsupported type: " + name; }
@@ -102,16 +103,14 @@ checkType = fn(ty) { match (ty) {
   Generic(name, args) => match (name) {
     "Array" when (args.len() == 1) => H.arrayType(checkType(args[0])),
     "Tuple" when (args.len() >= 2) => H.tupleType(_checkTypes(args)),
+    "Null" when (args.len() == 1) => H.nullType(checkType(args[0])),
     _ => {
       throw "unsupported generic type: " + name;
       -1
     },
   },
   Function(args, result) => H.functionType(_checkTypes(args), checkType(result)),
-  OptionalArg(inner) => if (_isAstI32(inner)) { _nullI32 } else {
-    throw "only ?I32 is supported";
-    -1
-  },
+  OptionalArg(inner) => H.nullType(checkType(inner)),
   _ => {
     throw "unsupported type in initial semantic slice";
     -1
@@ -127,6 +126,12 @@ export let useEnumChecks: ((AstExpr, I32, Bool) -> I32) -> Bool = fn(check) {
   true
 };
 let _isEnumName = fn(base: AstExpr): Bool { match (base) { Variable(name) => (_find(name, 0) < 0) && (scopedType(name) >= 0), _ => false } };
+let _checkValue: (AstExpr, I32) -> I32 = fn(_expr, _expected) { -1 };
+
+export let useValueChecks: ((AstExpr, I32) -> I32) -> Bool = fn(check) {
+  _checkValue = check;
+  true
+};
 let _checkAggregate: (AstExpr, I32) -> I32 = fn(_expr, _expected) { -1 };
 
 export let useAggregateChecks: ((AstExpr, I32) -> I32) -> Bool = fn(check) {
@@ -143,8 +148,75 @@ let _isEnumExpr = fn(expr: AstExpr): Bool {
   }
 };
 export let isBound: (Bytes) -> Bool = fn(name) { (_find(name, 0) >= 0) || match (scoped(name)) { Unbound => false, _ => true } };
-let _value = fn(expr: AstExpr, index: I32): I32 { _checkExpr(expr, syntaxChild(index), -1) };
 export let checkOperand: (AstExpr, I32, I32) -> I32 = fn(expr, index, expected) { _checkExpr(expr, syntaxChild(index), expected) };
+
+let _known = fn(id: I32): Bool { match (H.opOf(id)) { Local => isNarrowed(H.valueOf(id)), _ => false } };
+let _unwrap = fn(id: I32): I32 { H.node(Op.Unwrap, H.innerOf(H.typeOf(id)), _known(id) ? 0 : 1, 0, [id]) };
+export let presentKnown: (I32) -> I32 = fn(id) { (H.isKind(H.typeOf(id), Kind.Null) && _known(id)) ? _unwrap(id) : id };
+
+let _coerce = fn(id: I32, expected: I32): I32 {
+  let ty = H.typeOf(id);
+  if ((expected < 0) || (ty == expected)) { return id; }
+
+  if (H.holdsNull(expected)) {
+    if (ty == H.innerOf(expected)) { return _unary(Op.Present, expected, id); }
+
+    if (ty == H.TYPE_NULL) {
+      let typed = _leaf(Op.Null, expected, 0);
+      return match (H.opOf(id)) { Null => typed, _ => H.node(Op.Block, expected, 0, 1, [_unary(Op.Expression, 0, id), typed]) };
+    }
+  }
+  if (H.isKind(ty, Kind.Null) && (H.innerOf(ty) == expected)) { return _unwrap(id); }
+  if ((expected == H.TYPE_DYNAMIC) && (ty != H.TYPE_NULL)) { throw "a value becomes Dynamic only with `as Dynamic`"; }
+  id
+};
+
+let _presentAt = fn(id: I32, index: I32): I32 {
+  let ty = H.typeOf(id);
+  if (!H.isKind(ty, Kind.Null) || (H.innerOf(ty) < 0)) { return id; }
+  let outer = enterSyntax(syntaxChild(index));
+  let present = _unwrap(id);
+  enterSyntax(outer);
+  present
+};
+export let presentAt: (I32, I32) -> I32 = fn(id, index) { _presentAt(id, index) };
+
+let _coerceAt = fn(id: I32, expected: I32, index: I32): I32 {
+  let outer = enterSyntax(syntaxChild(index));
+  let coerced = _coerce(id, expected);
+  enterSyntax(outer);
+  coerced
+};
+export let coerceAt: (I32, I32, I32) -> I32 = fn(id, expected, index) { _coerceAt(id, expected, index) };
+
+let _value = fn(expr: AstExpr, index: I32): I32 { _presentAt(_checkExpr(expr, syntaxChild(index), -1), index) };
+export let checkPresent: (AstExpr, I32) -> I32 = fn(expr, index) { _value(expr, index) };
+
+export let joinTypes: (I32, I32) -> I32 = fn(a, b) {
+  if (a == b) { return a; }
+  if ((a == H.TYPE_NULL) || (H.isKind(b, Kind.Null) && (H.innerOf(b) == a))) { return H.nullType(b); }
+  if ((b == H.TYPE_NULL) || (H.isKind(a, Kind.Null) && (H.innerOf(a) == b))) { return H.nullType(a); }
+  -1
+};
+
+let _isNull = fn(value: AstExpr): Bool { match (value) { Null => true, _ => false } };
+
+let _isValueEquality = fn(op: BinaryOp, left: AstExpr, right: AstExpr): Bool {
+  match (op) { Equal, NotEqual => !_isNull(left) && !_isNull(right), _ => false }
+};
+
+let _narrowBy = fn(cond: AstExpr, present: Bool) {
+  match (cond) {
+    Binary(op, left, right) => {
+      let tests = match (op) { NotEqual => present, Equal => !present, _ => false };
+      let name = match (left) { Variable(found) when (_isNull(right)) => found, _ => match (right) { Variable(found) when (_isNull(left)) => found, _ => "" } };
+      let found = (tests && (name != "")) ? _find(name, 0) : -1;
+      if ((found >= 0) && H.isKind(_types[found], Kind.Null)) { narrow(_ids[found], _mutable[found]); }
+      null
+    },
+    _ => null,
+  }
+};
 
 let _checkInteger = fn(text: Bytes, size: IntSize, negative: Bool, expected: I32): I32 {
   let ty = match (size) {
@@ -178,11 +250,14 @@ let _checkUnary = fn(op: UnaryOp, value: AstExpr, expected: I32): I32 {
   }
 };
 
-let _isNull = fn(value: AstExpr): Bool { match (value) { Null => true, _ => false } };
-
 let _checkNullComparison = fn(op: BinaryOp, value: AstExpr, index: I32): I32 {
-  let operand = _value(value, index);
-  if (H.typeOf(operand) != _nullI32) { throw "null comparison requires ?I32"; }
+  let operand = checkOperand(value, index, -1);
+  let ty = H.typeOf(operand);
+
+  if (!H.holdsNull(ty) || (ty == H.TYPE_NULL)) {
+    enterSyntax(syntaxChild(index));
+    throw "only Null<T> values can be compared with null, not " + H.typeName(ty);
+  }
 
   match (op) {
     Equal => _unary(Op.IsNull, H.TYPE_BOOL, operand),
@@ -199,14 +274,10 @@ let _compare = fn(op: Op, left: I32, right: I32, negate: Bool): I32 {
   negate ? _unary(Op.Not, H.TYPE_BOOL, compared) : compared
 };
 
-let _checkBinary = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 {
-  let isEquality = match (op) { Equal, NotEqual => true, _ => false };
-
-  if (isEquality && (_isNull(leftExpr) || _isNull(rightExpr))) {
-    return _isNull(leftExpr) ? _checkNullComparison(op, rightExpr, 1) : _checkNullComparison(op, leftExpr, 0);
+export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
+  if ((H.typeOf(left) == H.TYPE_DYNAMIC) || (H.typeOf(right) == H.TYPE_DYNAMIC)) {
+    throw "a Dynamic value must be extracted with `as T` before use";
   }
-  let left = _value(leftExpr, 0);
-  let right = checkOperand(rightExpr, 1, H.typeOf(left));
 
   if ((H.typeOf(left) == H.TYPE_BYTES) && (H.typeOf(right) == H.TYPE_BYTES)) {
     return match (op) {
@@ -246,19 +317,18 @@ let _checkBinary = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 
   }
 };
 
-let _checkCast = fn(value: AstExpr, targetType: AstType): I32 {
-  let operand = _value(value, 0);
-  let target = checkType(targetType);
-  if (H.typeOf(operand) == target) { return operand; }
+let _checkBinary = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 {
+  let isEquality = match (op) { Equal, NotEqual => true, _ => false };
 
-  match ((H.kindOf(H.typeOf(operand)), H.kindOf(target))) {
-    (I32, I64) => _unary(Op.Sext, H.TYPE_I64, operand),
-    (I64, I32) => _unary(Op.Trunc, H.TYPE_I32, operand),
-    _ => {
-      throw "unsupported explicit cast";
-      -1
-    },
+  if (isEquality && (_isNull(leftExpr) || _isNull(rightExpr))) {
+    return _isNull(leftExpr) ? _checkNullComparison(op, rightExpr, 1) : _checkNullComparison(op, leftExpr, 0);
   }
+  let left = _value(leftExpr, 0);
+  let before = narrowings();
+  match (op) { And => _narrowBy(leftExpr, true), Or => _narrowBy(leftExpr, false), _ => null };
+  let right = checkOperand(rightExpr, 1, H.typeOf(left) == H.TYPE_DYNAMIC ? -1 : H.typeOf(left));
+  keepNarrowings(before);
+  binaryValues(op, left, right)
 };
 
 let _functionType = fn(index: I32): I32 {
@@ -287,7 +357,7 @@ let _checkVariable = fn(name: Bytes): I32 {
   }
 };
 
-let _arguments = fn(function: I32, args: Array<AstExpr>, children: Array<I32>, lift: Bool, message: Bytes): Array<I32> {
+let _arguments = fn(function: I32, args: Array<AstExpr>, children: Array<I32>, message: Bytes): Array<I32> {
   let i = 0;
 
   while (i < args.len()) {
@@ -295,10 +365,6 @@ let _arguments = fn(function: I32, args: Array<AstExpr>, children: Array<I32>, l
     let expected = H.typeArg(function, i);
     let arg = _checkExpr(args[i], syntax, expected);
     let outer = enterSyntax(syntax);
-
-    if (lift && (expected == _nullI32)) {
-      if (H.typeOf(arg) == H.TYPE_I32) { arg = _unary(Op.Present, expected, arg); } else if (H.typeOf(arg) != expected) { throw "?I32 requires I32 or null"; }
-    }
     if (H.typeOf(arg) != expected) { throw message; }
     enterSyntax(outer);
     children.push(arg);
@@ -311,14 +377,14 @@ let _checkIndirectCall = fn(callee: I32, args: Array<AstExpr>): I32 {
   let ty = H.typeOf(callee);
   if (!H.isKind(ty, Kind.Function)) { throw "call target is not a function"; }
   if (args.len() != H.typeArgCount(ty)) { throw "wrong indirect call argument count"; }
-  H.node(Op.CallIndirect, H.innerOf(ty), 0, 0, _arguments(ty, args, [callee], false, "wrong indirect call argument type"))
+  H.node(Op.CallIndirect, H.innerOf(ty), 0, 0, _arguments(ty, args, [callee], "wrong indirect call argument type"))
 };
 
 let _checkDirectCall = fn(index: I32, args: Array<AstExpr>): I32 {
   let ty = _functionType(index);
   let name = _functionNames[index];
   if (args.len() != H.typeArgCount(ty)) { throw "wrong argument count for " + name; }
-  H.node(Op.Call, H.innerOf(ty), index + 1, 0, _arguments(ty, args, [], true, "wrong argument type for " + name))
+  H.node(Op.Call, H.innerOf(ty), index + 1, 0, _arguments(ty, args, [], "wrong argument type for " + name))
 };
 
 let _checkCall = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>): I32 {
@@ -336,10 +402,16 @@ let _checkCall = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstEx
 let _checkIf = fn(condition: AstExpr, thenBranch: AstExpr, elseBranch: AstExpr, expected: I32): I32 {
   let checkedCondition = _value(condition, 0);
   if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "if condition must be bool"; }
+  let before = narrowings();
+  _narrowBy(condition, true);
   let checkedThen = checkOperand(thenBranch, 1, expected);
+  keepNarrowings(before);
+  _narrowBy(condition, false);
   let checkedElse = checkOperand(elseBranch, 2, expected);
-  if (H.typeOf(checkedThen) != H.typeOf(checkedElse)) { throw "if branches must have the same type"; }
-  H.node(Op.If, H.typeOf(checkedThen), 0, 0, [checkedCondition, checkedThen, checkedElse])
+  keepNarrowings(before);
+  let ty = joinTypes(H.typeOf(checkedThen), H.typeOf(checkedElse));
+  if (ty < 0) { throw "if branches must have the same type"; }
+  H.node(Op.If, ty, 0, 0, [checkedCondition, _coerceAt(checkedThen, ty, 1), _coerceAt(checkedElse, ty, 2)])
 };
 
 let _assignable = fn(name: Bytes): Tuple<Bool, I32, I32> {
@@ -371,6 +443,7 @@ let _checkVariableAssignment = fn(op: AssignOp, name: Bytes, value: AstExpr): I3
   let checked = checkOperand(value, 1, ty);
   if (H.typeOf(checked) != ty) { throw "assignment type mismatch: " + name; }
   let assign = global ? Op.SetGlobal : Op.Assign;
+  if (!global && H.isKind(ty, Kind.Null)) { assignLocal(id, H.typeOf(checked) == ty && match (H.opOf(checked)) { Present => true, _ => false }); }
 
   match (op) {
     Assign => H.node(assign, ty, id, 0, [checked]),
@@ -426,20 +499,26 @@ let _checkFunctionLiteral: (Array<Parameter>, ?AstType, AstBlock, I32) -> I32 = 
 
 _checkExpr = fn(expr, syntax, expected) {
   let outer = enterSyntax(syntax);
+  let literal = H.isKind(expected, Kind.Null) ? H.innerOf(expected) : expected;
 
   let id = match (expr) {
     _ when (_isEnumExpr(expr)) => _checkEnum(expr, expected, false),
     Bytes(value) => _leaf(Op.Bytes, H.TYPE_BYTES, H.bytesId(value)),
     Bool(value) => _leaf(Op.Bool, H.TYPE_BOOL, value ? 1 : 0),
-    Null => _leaf(Op.Null, _nullI32, 0),
-    Integer(digits, size) => _checkInteger(digits, size, false, expected),
-    Unary(op, value) => _checkUnary(op, value, expected),
+    Null => _leaf(Op.Null, H.holdsNull(expected) ? expected : H.TYPE_NULL, 0),
+    Integer(digits, size) => _checkInteger(digits, size, false, literal),
+    Unary(op, value) => _checkUnary(op, value, literal),
+    Binary(op, left, right) when (_isValueEquality(op, left, right)) => _checkValue(expr, expected),
     Binary(op, left, right) => _checkBinary(op, left, right),
-    Cast(value, ty) => _checkCast(value, ty),
+    Cast(_, _), Is(_, _) => _checkValue(expr, expected),
     Variable(name) => _checkVariable(name),
-    Tuple(_), Array(_), Member(_, _), Index(_, _) => _checkAggregate(expr, expected),
+    Tuple(_), Array(_), Member(_, _), Index(_, _) => _checkAggregate(expr, literal),
     Call(callee, _, _) when (match (callee) { Member(_, _), TypeApply(_, _) => true, _ => false }) => _checkAggregate(expr, expected),
     Call(callee, typeArgs, args) => _checkCall(callee, typeArgs, args),
+    If(_, _, elseBranch) when (_isNull(elseBranch)) => {
+      throw "an if used as a value needs an else branch";
+      -1
+    },
     If(condition, thenBranch, elseBranch), Conditional(condition, thenBranch, elseBranch) => _checkIf(condition, thenBranch, elseBranch, expected),
     IncDec(op, prefix, target) => _checkIncDec(op, prefix, target, false),
     BlockExpr(block) => match (block) { Block(statements, tail) => {
@@ -453,8 +532,9 @@ _checkExpr = fn(expr, syntax, expected) {
       -1
     },
   };
+  let coerced = _coerce(id, expected);
   enterSyntax(outer);
-  id
+  coerced
 };
 
 let _isFunctionValue = fn(value: AstExpr): Bool { match (value) { Function(_, _, _, isMethod) => !isMethod, _ => false } };
@@ -536,8 +616,12 @@ let _checkLocal = fn(pattern: Pattern, isConst: Bool, typeParams: Array<Bytes>, 
   if (_find(name, _scopeStart) >= 0) { throw "duplicate local: " + name; }
   let ty = annotation == null ? -1 : checkType(annotation);
   let checked = checkOperand(value, 0, ty);
+  if ((ty >= 0) && (H.typeOf(checked) == H.TYPE_NULL)) { throw "only Null<T> can hold null, not " + H.typeName(ty); }
   if (ty < 0) { ty = H.typeOf(checked); } else if (ty != H.typeOf(checked)) { throw "binding annotation type mismatch: " + name; }
-  H.node(isConst ? Op.Const : Op.Let, ty, _declare(name, ty, !isConst), H.bytesId(name), [checked])
+  if (ty == H.TYPE_NULL) { throw "null needs a type from its context: annotate " + name + " as Null<T>"; }
+  let binding = _declare(name, ty, !isConst);
+  match (H.opOf(checked)) { Present => narrow(binding, !isConst), _ => false };
+  H.node(isConst ? Op.Const : Op.Let, ty, binding, H.bytesId(name), [checked])
 };
 
 let _checkResult = fn(value: AstExpr, index: I32, message: Bytes): I32 {
@@ -580,6 +664,7 @@ let _RESULT_TAIL = 2;
 let _checkBlockBody = fn(prefix: Array<I32>, statements: Array<Stmt>, tail: ?AstExpr, first: I32, expected: I32, tailKind: I32): I32 {
   let outerStart = _scopeStart;
   _scopeStart = tailKind == _RESULT_TAIL ? 0 : _names.len();
+  let before = narrowings();
   let children = prefix;
   let ends = false;
   let i = 0;
@@ -610,6 +695,7 @@ let _checkBlockBody = fn(prefix: Array<I32>, statements: Array<Stmt>, tail: ?Ast
   } else if ((tailKind == _RESULT_TAIL) && !ends) { throw "function can fall through without a value"; }
   _popTo(_scopeStart);
   _scopeStart = outerStart;
+  keepNarrowings(before);
   H.node(Op.Block, ty, 0, hasTail ? 1 : 0, children)
 };
 
@@ -651,7 +737,11 @@ let _checkBranch = fn(branch: AstExpr, index: I32): I32 {
 _checkIfStatement = fn(condition, thenBranch, elseBranch) {
   let checkedCondition = _value(condition, 0);
   if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "if condition must be bool"; }
+  let before = narrowings();
+  _narrowBy(condition, true);
   let children = [checkedCondition, _checkBranch(thenBranch, 1)];
+  keepNarrowings(before);
+  _narrowBy(condition, false);
 
   match (elseBranch) {
     Null => null,
@@ -664,6 +754,11 @@ _checkIfStatement = fn(condition, thenBranch, elseBranch) {
       null
     },
   };
+  keepNarrowings(before);
+  let thenEnds = H.endsPath(children[1]);
+  let elseEnds = (children.len() == 3) && H.endsPath(children[2]);
+  if (thenEnds && !elseEnds) { _narrowBy(condition, false); }
+  if (elseEnds && !thenEnds) { _narrowBy(condition, true); }
   H.node(Op.IfStatement, 0, 0, 0, children)
 };
 
@@ -731,11 +826,16 @@ _checkStatement = fn(statement, syntax) {
       _leaf(Op.Continue, 0, 0)
     },
     While(condition, body) => {
+      let before = narrowings();
+      let mark = assignmentMark();
+      enterLoop();
       let checkedCondition = _value(condition, 0);
       if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "while condition must be bool"; }
+      _narrowBy(condition, true);
       _loops++;
       let checkedBody = _checkBlockBody([], body, null, 1, -1, _STATEMENT_TAIL);
       _loops--;
+      leaveLoop(before, mark);
       H.node(Op.While, 0, 0, 0, [checkedCondition, checkedBody])
     },
     _ => {
@@ -755,6 +855,8 @@ export let checkFunctionBody: (I32, AstBlock, Syntax) -> Bool = fn(index, body, 
   let outerMutable = _mutable;
   let outerLoops = _loops;
   let outerStart = _scopeStart;
+  let outerKnown = narrowings();
+  setNarrowings(Array.new<I32>(0));
   let enclosing = _enclosing.len();
   let k = 0;
 
@@ -804,6 +906,7 @@ export let checkFunctionBody: (I32, AstBlock, Syntax) -> Bool = fn(index, body, 
   _result = outerResult;
   _loops = outerLoops;
   _scopeStart = outerStart;
+  setNarrowings(outerKnown);
   while (_enclosing.len() > enclosing) { _enclosing.pop(); }
   enterSyntax(outer);
   true
@@ -819,7 +922,7 @@ _checkBlock = fn(statements, tail, expected) { _checkBlockBody([], statements, t
 
 export let beginCheck: () -> Bool = fn() {
   H.beginHir();
-  _nullI32 = H.nullType(H.TYPE_I32);
+  resetNarrowing();
   _names = Array.new<Bytes>(0);
   _ids = Array.new<I32>(0);
   _types = Array.new<I32>(0);

@@ -2,11 +2,39 @@ package frontend;
 
 import type { Expr as AstExpr, MatchArm, Stmt } from frontend.Ast;
 import {
-  Kind, Op, TYPE_BOOL, TYPE_I32, auxOf, bytesId, declareEnum, defineVariants, fieldCount, fieldType, isKind, node, typeName, typeOf,
+  Kind, Op, TYPE_BOOL, TYPE_I32, auxOf, bytesId, childCount, childOf, nullType, opOf, declareEnum, defineVariants, fieldCount, fieldType, isKind, node, typeName, typeOf,
   variantCount, variantName, variantTag,
 } from frontend.Hir;
 import { declareScopedType, exportScopedType, scopedType } from frontend.ModuleScope;
-import { checkArm, checkOperand, checkType, enterSyntax, newBinding, syntaxChild } from frontend.TypeCheck;
+import { checkArm, checkOperand, checkPresent, checkType, coerceAt, enterSyntax, joinTypes, newBinding, syntaxChild } from frontend.TypeCheck;
+
+let _unlift = fn(block: I32): I32 {
+  let last = childCount(block) - 1;
+  if ((auxOf(block) == 0) || !match (opOf(childOf(block, last))) { Present => true, _ => false }) { return block; }
+  let children = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < last) {
+    children.push(childOf(block, i));
+    i++;
+  }
+  let value = childOf(childOf(block, last), 0);
+  children.push(value);
+  node(Op.Block, typeOf(value), 0, 1, children)
+};
+
+let _coerceTail = fn(block: I32, ty: I32, tail: I32): I32 {
+  if (typeOf(block) == ty) { return block; }
+  let children = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < childCount(block)) {
+    children.push(childOf(block, i));
+    i++;
+  }
+  children[children.len() - 1] = coerceAt(children[children.len() - 1], ty, tail);
+  node(Op.Block, ty, 0, 1, children)
+};
 
 export let declareEnums: (Array<Stmt>, I32) -> Bool = fn(statements, module) {
   let i = 0;
@@ -103,7 +131,7 @@ let _const = fn(binding: I32, name: Bytes, value: I32): I32 {
 };
 
 let _checkMatch = fn(subject: AstExpr, arms: Array<MatchArm>, expected: I32, statement: Bool): I32 {
-  let checkedSubject = checkOperand(subject, 0, -1);
+  let checkedSubject = checkPresent(subject, 0);
   let ty = typeOf(checkedSubject);
   if (!isKind(ty, Kind.Enum)) { throw "match subject must be an enum value"; }
   let subjectBinding = newBinding();
@@ -112,7 +140,8 @@ let _checkMatch = fn(subject: AstExpr, arms: Array<MatchArm>, expected: I32, sta
   while (covered.len() < variantCount(ty)) { covered.push(false); }
   let tags = Array.new<I32>(0);
   let bodies = Array.new<I32>(0);
-  let resultType = expected;
+  let tails = Array.new<I32>(0);
+  let resultType = -1;
   let catchAll = false;
   let index = 1;
   let a = 0;
@@ -168,12 +197,16 @@ let _checkMatch = fn(subject: AstExpr, arms: Array<MatchArm>, expected: I32, sta
       };
 
       match (body) { Block(statements, tail) => {
-        let block = checkArm(names, values, statements, tail, index, resultType, statement);
+        let context = (expected < 0) && (resultType >= 0) && !statement ? nullType(resultType) : expected;
+        let block = checkArm(names, values, statements, tail, index, context, statement);
+        if (context != expected) { block = _unlift(block); }
 
         if (!statement) {
           if (auxOf(block) == 0) { throw "match arm requires a trailing expression"; }
-          if (resultType < 0) { resultType = typeOf(block); } else if (typeOf(block) != resultType) { throw "match arms must have the same type"; }
+          resultType = resultType < 0 ? typeOf(block) : joinTypes(resultType, typeOf(block));
+          if (resultType < 0) { throw "match arms must have the same type"; }
         }
+        tails.push(index + (statements.len() as I32));
         index += (statements.len() as I32) + (tail == null ? 0 : 1);
         tags.push(tag);
         bodies.push(block);
@@ -189,6 +222,15 @@ let _checkMatch = fn(subject: AstExpr, arms: Array<MatchArm>, expected: I32, sta
     while (tag < covered.len()) {
       if (!covered[tag]) { throw "match is not exhaustive: missing " + variantName(ty, tag); }
       tag++;
+    }
+  }
+
+  if (!statement) {
+    let b = 0;
+
+    while (b < bodies.len()) {
+      bodies[b] = _coerceTail(bodies[b], resultType, tails[b]);
+      b++;
     }
   }
   let last = bodies.len() - 1;

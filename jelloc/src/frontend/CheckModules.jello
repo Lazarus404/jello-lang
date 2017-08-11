@@ -4,8 +4,9 @@ import type { Program as AstProgram } from frontend.Ast;
 import { bindPatternName, isBindPattern } from frontend.Ast;
 import { checkAggregateExpr } from frontend.CheckAggregates;
 import { checkEnumExpr, declareEnums } from frontend.CheckEnums;
+import { checkValueExpr } from frontend.CheckValues;
 import type { Hir } from frontend.Hir;
-import { Op, declareGlobal, globalNameOf, node, spanOf, typeOf } from frontend.Hir;
+import { Op, TYPE_NULL, declareGlobal, globalNameOf, node, spanOf, typeOf } from frontend.Hir;
 import { firstUninitializedRead } from frontend.InitOrder;
 import { Binding, declareScoped, enterModule, exportScoped, resetExports } from frontend.ModuleScope;
 import type { Import, Module } from frontend.Modules;
@@ -15,7 +16,7 @@ import type { Syntax } from frontend.Source;
 import { Syntax } from frontend.Source;
 import {
   beginCheck, checkEffect, checkFunctionBody, checkOperand, checkType, declareFunctions, enterSyntax, finishProgram,
-  isDirectFunction, syntaxChild, useAggregateChecks, useEnumChecks,
+  isDirectFunction, syntaxChild, useAggregateChecks, useEnumChecks, useValueChecks,
 } from frontend.TypeCheck;
 import { verifyHir } from frontend.VerifyHir;
 
@@ -51,6 +52,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
           let ty = annotation == null ? -1 : checkType(annotation);
           let checked = checkOperand(value, 0, ty);
           if (ty < 0) { ty = typeOf(checked); } else if (ty != typeOf(checked)) { throw "binding annotation type mismatch: " + name; }
+          if (ty == TYPE_NULL) { throw "null needs a type from its context: annotate " + name + " as Null<T>"; }
           let global = declareGlobal(name, ty, !isConst);
           declareScoped(name, Binding.Global(global));
           _initializers.push(node(Op.Declare, 0, 0, 0, [node(Op.InitGlobal, ty, global, 0, [checked])]));
@@ -95,6 +97,7 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
   resetExports();
   useEnumChecks(checkEnumExpr);
   useAggregateChecks(checkAggregateExpr);
+  useValueChecks(checkValueExpr);
   _initializers = Array.new<I32>(0);
   let entry = (modules.len() - 1) as I32;
   let i = 0;

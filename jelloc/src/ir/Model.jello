@@ -19,11 +19,11 @@ export enum ReturnType {
 
 export enum Op {
   ConstBool; ConstI32; ConstBytes; ConstNull; ConstFunction; Move;
-  Add; Sub; Mul; Neg; Not; Eq; Lt; Sext; Trunc; Box; IsNull;
+  Add; Sub; Mul; Neg; Not; Eq; Lt; Sext; Trunc; Box; Unbox; KindOf; IsNull; NullCheck;
   ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
   Call; CallIndirect; GlobalGet; GlobalSet;
-  StructNew; StructSet; PhysEq; SpillPush; SpillPop;
+  StructNew; StructSet; SpillPush; SpillPop;
 }
 
 export enum Instruction {
@@ -96,6 +96,7 @@ export let opEffects: (Op) -> Array<Effect> = fn(op) {
     Call, CallIndirect => [Effect.MayCall, Effect.MayThrow],
     BytesGet, ArrayLen, ArrayGet, TupleGet, EnumGet => [Effect.MayReadMemory, Effect.MayTrap],
     GlobalGet => [Effect.MayReadMemory],
+    Unbox, NullCheck => [Effect.MayTrap],
     GlobalSet => [Effect.MayWriteMemory],
     ArraySet, StructSet => [Effect.MayWriteMemory, Effect.MayTrap],
     TupleNew => [Effect.MayAllocate, Effect.MayWriteMemory],
@@ -137,3 +138,5 @@ _equal = fn(left, right) {
 };
 
 export let valueTypeEqual: (ValueType, ValueType) -> Bool = fn(left, right) { _equal(left, right) };
+
+export let canBeNull: (ValueType) -> Bool = fn(ty) { match (ty) { Bool, I32, I64 => false, _ => true } };

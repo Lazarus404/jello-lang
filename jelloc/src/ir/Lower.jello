@@ -2,7 +2,7 @@ package ir;
 
 import type { Hir } from frontend.Hir;
 import {
-  TYPE_BOOL, TYPE_I32, auxOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, kindOf, lastChild, opOf, rootNode, typeArg,
+  TYPE_BOOL, TYPE_I32, auxOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, isReference, kindOf, lastChild, opOf, rootNode, typeArg,
   typeArgCount, typeCount, globalCount, globalTypeOf, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Op, Program as IrProgram, Terminator, ValueType } from ir.Model;
@@ -42,15 +42,15 @@ _valueType = fn(ty) {
     I64 => ValueType.I64,
     Bytes => ValueType.Bytes,
     Array => ValueType.ArrayOf(_valueType(innerOf(ty))),
-    Null => {
-      if (innerOf(ty) != TYPE_I32) { throw "only ?I32 values can be lowered"; }
-      ValueType.Dynamic
-    },
+    Null => ((innerOf(ty) >= 0) && isReference(innerOf(ty))) ? _valueType(innerOf(ty)) : ValueType.Dynamic,
     Tuple => ValueType.TupleOf(_valueTypes(ty)),
     Function => ValueType.Function(_valueTypes(ty), ReturnType.Value(_valueType(innerOf(ty)))),
     Enum => ValueType.Nominal(_enumIndexes[ty]),
+    Dynamic => ValueType.Dynamic,
   }
 };
+
+let _isDynamic = fn(id: I32): Bool { match (_valueType(typeOf(id))) { Dynamic => true, _ => false } };
 
 let _fresh = fn(ty: I32): I32 {
   let register = _registers.len() as I32;
@@ -163,7 +163,7 @@ let _operation = fn(id: I32): Op {
   match (opOf(id)) {
     Bool => Op.ConstBool, I32 => Op.ConstI32, Bytes => Op.ConstBytes, Null => Op.ConstNull, FunctionRef => Op.ConstFunction,
     Add => Op.Add, Sub => Op.Sub, Mul => Op.Mul, Neg => Op.Neg, Not => Op.Not, Eq => Op.Eq, Lt, Gt => Op.Lt,
-    Sext => Op.Sext, Trunc => Op.Trunc, Present => Op.Box, IsNull, IsPresent => Op.IsNull,
+    Sext => Op.Sext, Trunc => Op.Trunc, IsNull, IsPresent => Op.IsNull,
     ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet,
     BytesLen => Op.BytesLen, BytesGet => Op.BytesGet, BytesSlice => Op.BytesSlice, BytesConcat => Op.BytesConcat, BytesEq => Op.BytesEq,
     Tuple => Op.TupleNew, TupleField => Op.TupleGet, Call => Op.Call, CallIndirect => Op.CallIndirect,
@@ -255,6 +255,46 @@ _expr = fn(id) {
       let operands = _values(id, 0);
       _emit(Op.ArrayResize, -1, operands, 0);
       operands[0]
+    },
+    Present => {
+      let value = _expr(childOf(id, 0));
+      if (isReference(innerOf(typeOf(id)))) { return value; }
+      let dst = _fresh(typeOf(id));
+      _emit(Op.Box, dst, [value], 0);
+      dst
+    },
+    ToDynamic => {
+      let value = _expr(childOf(id, 0));
+      if (_isDynamic(childOf(id, 0))) { return value; }
+      let dst = _fresh(typeOf(id));
+      _emit(Op.Box, dst, [value], 0);
+      dst
+    },
+    FromDynamic => {
+      let value = _expr(childOf(id, 0));
+      let dst = _fresh(typeOf(id));
+      _emit(Op.Unbox, dst, [value], 0);
+      if (isReference(typeOf(id))) { _emit(Op.NullCheck, -1, [dst], 0); }
+      dst
+    },
+    IsKind => {
+      let kind = _fresh(TYPE_I32);
+      _emit(Op.KindOf, kind, [_expr(childOf(id, 0))], 0);
+      let tested = valueOf(id) != 7 ? kind : _arithmetic(Op.Mul, _arithmetic(Op.Sub, kind, _i32(2)), _arithmetic(Op.Sub, kind, _i32(7)));
+      let dst = _fresh(TYPE_BOOL);
+      _emit(Op.Eq, dst, [tested, _i32(valueOf(id) != 7 ? valueOf(id) : 0)], 0);
+      dst
+    },
+    Unwrap => {
+      let value = _expr(childOf(id, 0));
+
+      if (!isReference(typeOf(id))) {
+        let dst = _fresh(typeOf(id));
+        _emit(Op.Unbox, dst, [value], 0);
+        return dst;
+      }
+      if (valueOf(id) == 1) { _emit(Op.NullCheck, -1, [value], 0); }
+      value
     },
     Block => _lowerBlock(id),
     If => _if(id),

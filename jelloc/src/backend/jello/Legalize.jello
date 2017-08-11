@@ -32,11 +32,6 @@ let _instruction = fn(insn: Instruction) {
       }
       null
     },
-    IsNull => {
-      let nullValue = _fresh(ValueType.Dynamic);
-      _emit(Op.ConstNull, nullValue, Array.new<I32>(0), 0);
-      _emit(Op.PhysEq, dst, [args[0], nullValue], 0)
-    },
     EnumGet => {
       let index = _fresh(ValueType.I32);
       _emit(Op.ConstI32, index, Array.new<I32>(0), immOf(insn));

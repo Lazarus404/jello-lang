@@ -1,7 +1,7 @@
 package ir;
 
 import type { BasicBlock, EnumSchema, Function, Instruction, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { ReturnType, ValueType, argsOf, dstOf, immOf, instructionMayThrow, opOf, returnTypeEqual, valueTypeEqual } from ir.Model;
+import { ReturnType, ValueType, argsOf, canBeNull, dstOf, immOf, instructionMayThrow, opOf, returnTypeEqual, valueTypeEqual } from ir.Model;
 import { normalSuccessors } from ir.Cfg;
 import { bitsAdd, bitsCopy, bitsEqual, bitsFull, bitsHas, bitsIntersect, bitsNew, bitsUnion } from ir.Bits;
 
@@ -93,7 +93,7 @@ let _instruction = fn(instruction: Instruction) {
   }
 
   match (opOf(instruction)) {
-    ArraySet, ArrayResize, StructSet, SpillPush, GlobalSet => { if (dst >= 0) { _fail("store defines a register"); } null },
+    ArraySet, ArrayResize, StructSet, SpillPush, GlobalSet, NullCheck => { if (dst >= 0) { _fail("store defines a register"); } null },
     Call => null,
     _ => {
       _type(dst);
@@ -118,7 +118,7 @@ let _instruction = fn(instruction: Instruction) {
     },
     ConstNull => {
       _arity(args, 0);
-      _expect(dst, ValueType.Dynamic)
+      if (!canBeNull(_type(dst))) { _fail("null constant of a scalar type"); } null
     },
     ConstFunction => {
       _arity(args, 0);
@@ -172,14 +172,30 @@ let _instruction = fn(instruction: Instruction) {
       _arity(args, 1);
       _expect(dst, ValueType.Dynamic)
     },
+    Unbox => {
+      _arity(args, 1);
+
+      match (_type(dst)) {
+        Dynamic => {
+          _fail("unbox to Dynamic");
+          null
+        }, _ => null
+      };
+      _expect(args[0], ValueType.Dynamic)
+    },
+    KindOf => {
+      _arity(args, 1);
+      _expect(dst, ValueType.I32);
+      _expect(args[0], ValueType.Dynamic)
+    },
     IsNull => {
       _arity(args, 1);
       _expect(dst, ValueType.Bool);
-      _expect(args[0], ValueType.Dynamic)
+      if (!canBeNull(_type(args[0]))) { _fail("null test of a scalar"); } null
     },
-    PhysEq => {
-      _arity(args, 2);
-      _expect(dst, ValueType.Bool)
+    NullCheck => {
+      _arity(args, 1);
+      if (!canBeNull(_type(args[0]))) { _fail("null check of a scalar"); } null
     },
     ArrayNew => {
       _arity(args, 1);

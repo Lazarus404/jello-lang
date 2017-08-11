@@ -288,9 +288,7 @@ test("keeps ?I32 distinct and executes null and present checks", fn(t) {
   t.is(printedIr.indexOf("register %0: dynamic") >= 0, true);
   t.is(printedIr.indexOf("is_null") >= 0, true);
   let jlo = legalizeJlo(ir);
-  let printedJlo = printIr(jlo);
-  t.is(printedJlo.indexOf("= null") >= 0, true);
-  t.is(printedJlo.indexOf("physeq") >= 0, true);
+  t.is(printIr(jlo).indexOf("is_null") >= 0, true);
   t.is(emitJlo(jlo).len() > 0, true);
 });
 

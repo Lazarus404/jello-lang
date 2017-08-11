@@ -14,8 +14,16 @@ test("nullable i32 reaches executable JLO", fn(t) {
   let ir = lowerProgram(hir);
   t.is(printIr(ir).indexOf("is_null") >= 0, true);
   let jlo = legalizeJlo(ir);
-  t.is(printIr(jlo).indexOf("physeq") >= 0, true);
+  t.is(printIr(jlo).indexOf("is_null") >= 0, true);
   t.is(emitJlo(jlo).len() > 0, true);
+});
+
+test("a nullable reference keeps its register kind and converts with a check", fn(t) {
+  let ir = printIr(lowerProgram(typeCheckProgram(parseProgram(lex(
+    "let size = fn(value: ?Bytes): I32 { value.len() }; size(\"ab\")"
+  )))));
+  t.is(ir.indexOf("register %0: bytes") >= 0, true);
+  t.is(ir.indexOf("null_check %0") >= 0, true);
 });
 
 run()

@@ -3,7 +3,7 @@ package frontend;
 import type { Expr as AstExpr, Type as AstType } from frontend.Ast;
 import frontend.Hir as H;
 import { Kind, Op } from frontend.Hir;
-import { checkOperand, checkType, enterSyntax, isBound, syntaxChild } from frontend.TypeCheck;
+import { checkOperand, checkPresent, checkType, enterSyntax, isBound, syntaxChild } from frontend.TypeCheck;
 
 let _isName = fn(expr: AstExpr, name: Bytes): Bool { match (expr) { Variable(found) => found == name, _ => false } };
 
@@ -18,7 +18,7 @@ let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
 };
 
 let _of = fn(expr: AstExpr, index: I32, kind: Kind, what: Bytes): I32 {
-  let checked = checkOperand(expr, index, -1);
+  let checked = checkPresent(expr, index);
 
   if (!H.isKind(H.typeOf(checked), kind)) {
     enterSyntax(syntaxChild(index));
@@ -111,7 +111,7 @@ let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
 };
 
 let _index = fn(base: AstExpr, index: AstExpr): I32 {
-  let value = checkOperand(base, 0, -1);
+  let value = checkPresent(base, 0);
   let checkedIndex = _i32(index, 1, "index");
   let ty = H.typeOf(value);
 
@@ -128,7 +128,7 @@ let _index = fn(base: AstExpr, index: AstExpr): I32 {
 
 let _assignIndex = fn(base: AstExpr, index: AstExpr, value: AstExpr): I32 {
   let outer = enterSyntax(syntaxChild(0));
-  let array = checkOperand(base, 0, -1);
+  let array = checkPresent(base, 0);
   let ty = H.typeOf(array);
   if (H.isKind(ty, Kind.Bytes)) { throw "Bytes values are immutable"; }
 
@@ -193,7 +193,7 @@ let _static = fn(space: Bytes, name: Bytes, args: Array<AstExpr>): I32 {
 
 let _method = fn(base: AstExpr, name: Bytes, args: Array<AstExpr>): I32 {
   let outer = enterSyntax(syntaxChild(0));
-  let receiver = checkOperand(base, 0, -1);
+  let receiver = checkPresent(base, 0);
   enterSyntax(outer);
   let ty = H.typeOf(receiver);
 

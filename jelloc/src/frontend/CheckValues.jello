@@ -1,0 +1,107 @@
+package frontend;
+
+import type { BinaryOp, Expr as AstExpr, Type as AstType } from frontend.Ast;
+import { BinaryOp } from frontend.Ast;
+import frontend.Hir as H;
+import { Kind, Op } from frontend.Hir;
+import { binaryValues, checkOperand, checkType, enterSyntax, newBinding, presentAt, presentKnown, syntaxChild } from frontend.TypeCheck;
+
+let _local = fn(binding: I32, ty: I32): I32 { H.node(Op.Local, ty, binding, 0, []) };
+let _bool = fn(op: Op, children: Array<I32>): I32 { H.node(op, H.TYPE_BOOL, 0, 0, children) };
+
+let _lifted = fn(id: I32): I32 { match (H.opOf(id)) { Present => H.childOf(id, 0), _ => id } };
+
+let _present = fn(binding: I32, ty: I32): I32 {
+  H.isKind(ty, Kind.Null) ? H.node(Op.Unwrap, H.innerOf(ty), 0, 0, [_local(binding, ty)]) : _local(binding, ty)
+};
+
+let _equality = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 {
+  let left = presentKnown(checkOperand(leftExpr, 0, -1));
+  let leftType = H.typeOf(left);
+
+  if (H.isKind(leftType, Kind.Dynamic)) {
+    enterSyntax(syntaxChild(0));
+    throw "Dynamic values can only be compared with null";
+  }
+  let inner = H.isKind(leftType, Kind.Null) ? H.innerOf(leftType) : leftType;
+  let right = presentKnown(_lifted(checkOperand(rightExpr, 1, H.nullType(inner))));
+  let rightType = H.typeOf(right);
+
+  if (H.isKind(rightType, Kind.Dynamic)) {
+    enterSyntax(syntaxChild(1));
+    throw "Dynamic values can only be compared with null";
+  }
+  let leftNull = H.isKind(leftType, Kind.Null);
+  let rightNull = H.isKind(rightType, Kind.Null);
+  if (!leftNull && !rightNull) { return binaryValues(op, left, right); }
+  if ((rightNull ? H.innerOf(rightType) : rightType) != inner) { throw "cannot compare " + H.typeName(leftType) + " with " + H.typeName(rightType); }
+  let a = newBinding();
+  let b = newBinding();
+  let equal = binaryValues(BinaryOp.Equal, _present(a, leftType), _present(b, rightType));
+  let result = (leftNull && rightNull)
+    ? H.node(Op.If, H.TYPE_BOOL, 0, 0, [
+      _bool(Op.IsNull, [_local(a, leftType)]), _bool(Op.IsNull, [_local(b, rightType)]),
+      _bool(Op.And, [_bool(Op.IsPresent, [_local(b, rightType)]), equal])])
+    : _bool(Op.And, [_bool(Op.IsPresent, [leftNull ? _local(a, leftType) : _local(b, rightType)]), equal]);
+  let declareA = H.node(Op.Declare, 0, 0, 0, [H.node(Op.Const, leftType, a, H.bytesId("left"), [left])]);
+  let declareB = H.node(Op.Declare, 0, 0, 0, [H.node(Op.Const, rightType, b, H.bytesId("right"), [right])]);
+  let block = H.node(Op.Block, H.TYPE_BOOL, 0, 1, [declareA, declareB, result]);
+  match (op) { NotEqual => _bool(Op.Not, [block]), _ => block }
+};
+
+let _cast = fn(value: AstExpr, targetType: AstType): I32 {
+  let target = checkType(targetType);
+  let operand = checkOperand(value, 0, -1);
+  let ty = H.typeOf(operand);
+  if (ty == target) { return operand; }
+  if (target == H.TYPE_DYNAMIC) { return H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [operand]); }
+
+  if (ty == H.TYPE_DYNAMIC) {
+    if (!match (H.kindOf(target)) { Bool, I32, I64, Bytes, Enum => true, _ => false }) {
+      throw "cannot extract " + H.typeName(target) + " from Dynamic: only Bool, I32, I64, Bytes and enums are checked";
+    }
+    return H.node(Op.FromDynamic, target, 0, 0, [operand]);
+  }
+  let present = presentAt(operand, 0);
+  if (H.typeOf(present) == target) { return present; }
+
+  match ((H.kindOf(H.typeOf(present)), H.kindOf(target))) {
+    (I32, I64) => H.node(Op.Sext, H.TYPE_I64, 0, 0, [present]),
+    (I64, I32) => H.node(Op.Trunc, H.TYPE_I32, 0, 0, [present]),
+    _ => {
+      throw "cannot convert " + H.typeName(ty) + " to " + H.typeName(target);
+      -1
+    },
+  }
+};
+
+let _is = fn(value: AstExpr, targetType: AstType): I32 {
+  let operand = checkOperand(value, 0, -1);
+
+  if (H.typeOf(operand) != H.TYPE_DYNAMIC) {
+    enterSyntax(syntaxChild(0));
+    throw "is tests a Dynamic value, not " + H.typeName(H.typeOf(operand));
+  }
+  let target = checkType(targetType);
+
+  let code = match (H.kindOf(target)) {
+    Bool => 1, I32 => 2, Bytes => 4, I64 => 7,
+    _ => {
+      throw "is supports only Bool, I32, I64 and Bytes, not " + H.typeName(target);
+      -1
+    },
+  };
+  H.node(Op.IsKind, H.TYPE_BOOL, code, 0, [operand])
+};
+
+export let checkValueExpr: (AstExpr, I32) -> I32 = fn(expr, _expected) {
+  match (expr) {
+    Binary(op, left, right) => _equality(op, left, right),
+    Cast(value, ty) => _cast(value, ty),
+    Is(value, ty) => _is(value, ty),
+    _ => {
+      throw "expected a cast, kind test or comparison";
+      -1
+    },
+  }
+};
