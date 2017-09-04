@@ -2,11 +2,12 @@ package ir;
 
 import type { Hir } from frontend.Hir;
 import {
-  TYPE_BOOL, TYPE_I32, auxOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, isReference, kindOf, lastChild, opOf, rootNode, typeArg,
+  TYPE_BOOL, TYPE_DYNAMIC, TYPE_I32, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, isReference, kindOf, lastChild, opOf, rootNode, typeArg,
   typeArgCount, typeCount, globalCount, globalTypeOf, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
-import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Op, Program as IrProgram, Terminator, ValueType } from ir.Model;
-import { BasicBlock, EnumSchema, Op, Program as IrProgram, ReturnType, Terminator, ValueType, instruction } from ir.Model;
+import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
+import { BasicBlock, EnumSchema, Op, Program as IrProgram, ReturnType, Terminator, ThrowHandler, ValueType, handlerTarget, instruction } from ir.Model;
+import { blockMayThrow } from ir.Cfg;
 import { verifyProgram } from ir.Verify;
 
 let _registers = Array.new<ValueType>(0);
@@ -19,8 +20,10 @@ let _targeted = Array.new<Bool>(0);
 let _reachable = true;
 let _breakTarget = -1;
 let _continueTarget = -1;
+let _handler: ?ThrowHandler = null;
 let _pool = Array.new<Bytes>(0);
 let _poolIndexes = Array.new<I32>(0);
+let _wides = Array.new<I64>(0);
 let _enumIndexes = Array.new<I32>(0);
 
 let _valueType: (I32) -> ValueType = fn(_ty) { ValueType.Bool };
@@ -76,9 +79,16 @@ let _target = fn(block: I32) {
   null
 };
 
+let _open = fn(block: I32) {
+  _instructions = Array.new<Instruction>(0);
+  _block = block;
+  _reachable = (block >= 0) && (block < _targeted.len()) && _targeted[block];
+  null
+};
+
 let _end = fn(terminator: Terminator, next: I32) {
   if (_reachable) {
-    _blocks.push(BasicBlock.Block(_block, _instructions, terminator, null));
+    _blocks.push(BasicBlock.Block(_block, _instructions, terminator, _handler));
 
     match (terminator) {
       Jump(target) => _target(target),
@@ -89,10 +99,7 @@ let _end = fn(terminator: Terminator, next: I32) {
       _ => null,
     };
   }
-  _instructions = Array.new<Instruction>(0);
-  _block = next;
-  _reachable = (next >= 0) && (next < _targeted.len()) && _targeted[next];
-  null
+  _open(next)
 };
 
 let _bindRegister = fn(binding: I32, register: I32) {
@@ -161,7 +168,7 @@ let _shortCircuit = fn(id: I32): I32 {
 
 let _operation = fn(id: I32): Op {
   match (opOf(id)) {
-    Bool => Op.ConstBool, I32 => Op.ConstI32, Bytes => Op.ConstBytes, Null => Op.ConstNull, FunctionRef => Op.ConstFunction,
+    Bool => Op.ConstBool, I32 => Op.ConstI32, I64 => Op.ConstI64, Bytes => Op.ConstBytes, Null => Op.ConstNull, FunctionRef => Op.ConstFunction,
     Add => Op.Add, Sub => Op.Sub, Mul => Op.Mul, Neg => Op.Neg, Not => Op.Not, Eq => Op.Eq, Lt, Gt => Op.Lt,
     Sext => Op.Sext, Trunc => Op.Trunc, IsNull, IsPresent => Op.IsNull,
     ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet,
@@ -225,6 +232,49 @@ let _pop = fn(id: I32): I32 {
   value
 };
 
+let _try = fn(id: I32, value: Bool): I32 {
+  let bodyBlock = _nextBlock;
+  let catchBlock = bodyBlock + 1;
+  let joinBlock = bodyBlock + 2;
+  _nextBlock += 3;
+  let result = value ? _fresh(typeOf(id)) : -1;
+  let payload = _fresh(TYPE_DYNAMIC);
+  if (valueOf(id) >= 0) { _bindRegister(id, payload); }
+  _end(Terminator.Jump(bodyBlock), bodyBlock);
+  let outer = _handler;
+  let first = _blocks.len();
+  _handler = ThrowHandler.Catch(catchBlock, payload);
+  let body = _lowerBlock(childOf(id, 0));
+  if (value) { _move(result, body); }
+  _end(Terminator.Jump(joinBlock), -1);
+  _handler = outer;
+  let throws = false;
+  let i = first;
+
+  while (i < _blocks.len()) {
+    match (_blocks[i]) { Block(_, instructions, terminator, handler) => {
+      let catches = (handler != null) && (handlerTarget(handler) == catchBlock);
+      if (catches && blockMayThrow(instructions, terminator)) { throws = true; }
+    } };
+    i++;
+  }
+  i = first;
+
+  while (!throws && (i < _blocks.len())) {
+    match (_blocks[i]) { Block(block, instructions, terminator, handler) => {
+      let catches = (handler != null) && (handlerTarget(handler) == catchBlock);
+      if (catches) { _blocks[i] = BasicBlock.Block(block, instructions, terminator, outer); }
+    } };
+    i++;
+  }
+  if (throws) { _target(catchBlock); }
+  _open(catchBlock);
+  let caught = _lowerBlock(childOf(id, 1));
+  if (value) { _move(result, caught); }
+  _end(Terminator.Jump(joinBlock), joinBlock);
+  result
+};
+
 _expr = fn(id) {
   match (opOf(id)) {
     Local => _bindings[valueOf(id)],
@@ -277,6 +327,11 @@ _expr = fn(id) {
       if (isReference(typeOf(id))) { _emit(Op.NullCheck, -1, [dst], 0); }
       dst
     },
+    IsKind when (valueOf(id) == 14) => {
+      let dst = _fresh(TYPE_BOOL);
+      _emit(Op.IsEnum, dst, [_expr(childOf(id, 0))], _enumIndexes[auxOf(id)]);
+      dst
+    },
     IsKind => {
       let kind = _fresh(TYPE_I32);
       _emit(Op.KindOf, kind, [_expr(childOf(id, 0))], 0);
@@ -298,6 +353,7 @@ _expr = fn(id) {
     },
     Block => _lowerBlock(id),
     If => _if(id),
+    Try => _try(id, true),
     And, Or => _shortCircuit(id),
     _ => {
       let operands = _values(id, 0);
@@ -306,6 +362,10 @@ _expr = fn(id) {
       let imm = match (opOf(id)) {
         Bool, I32, FunctionRef, TupleField, Call, EnumNew, EnumField => valueOf(id),
         Bytes => _poolIndex(valueOf(id)),
+        I64 => {
+          _wides.push(wideValueOf(id));
+          (_wides.len() - 1) as I32
+        },
         _ => 0,
       };
 
@@ -396,6 +456,10 @@ _statement = fn(id) {
     Continue => _exit(Terminator.Jump(_continueTarget)),
     While => _while(id),
     IfStatement => _ifStatement(id),
+    TryStatement => {
+      _try(id, false);
+      null
+    },
     Block => {
       _lowerBlock(id);
       null
@@ -430,6 +494,7 @@ let _begin = fn() {
   _reachable = true;
   _breakTarget = -1;
   _continueTarget = -1;
+  _handler = null;
   null
 };
 
@@ -454,6 +519,7 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
   useHir(program);
   _pool = Array.new<Bytes>(0);
   _poolIndexes = Array.new<I32>(0);
+  _wides = Array.new<I64>(0);
   _enumIndexes = Array.new<I32>(0);
   let enumTypes = Array.new<I32>(0);
   let ty = 0;
@@ -508,7 +574,7 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
     globals.push(_valueType(globalTypeOf(i)));
     i++;
   }
-  let lowered = IrProgram.Program(functions, _pool, enums, globals);
+  let lowered = IrProgram.Program(functions, _pool, _wides, enums, globals);
   verifyProgram(lowered);
   lowered
 };

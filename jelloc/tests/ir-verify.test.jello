@@ -15,7 +15,7 @@ import { Op, instruction } from ir.Model;
 
 let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
 let none = fn(): Array<I32> { Array.new<I32>(0) };
-let program = fn(functions: Array<Function>, pool: Array<Bytes>): Program { Program.Program(functions, pool, Array.new<EnumSchema>(0), Array.new<ValueType>(0)) };
+let program = fn(functions: Array<Function>, pool: Array<Bytes>): Program { Program.Program(functions, pool, Array.new<I64>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0)) };
 
 test("verifies a typed branching function", fn(t) {
   let blocks: Array<BasicBlock> = [
@@ -157,8 +157,9 @@ test("defines a dynamic catch payload on throw edges", fn(t) {
     [ValueType.Dynamic, ValueType.Bytes],
     ReturnType.Value(ValueType.Dynamic),
     [
+      BasicBlock.Block(0, [], Terminator.Jump(2), null),
       BasicBlock.Block(
-        0,
+        2,
         [insn(Op.ConstBytes, 1, none(), 0)],
         Terminator.Throw(1),
         ThrowHandler.Catch(1, 0)
@@ -182,8 +183,9 @@ test("does not define post-call values on exceptional edges", fn(t) {
     [ValueType.I32, ValueType.I32, ValueType.Dynamic],
     ReturnType.Value(ValueType.I32),
     [
+      BasicBlock.Block(0, [], Terminator.Jump(2), null),
       BasicBlock.Block(
-        0,
+        2,
         [insn(Op.Call, 0, none(), 1), insn(Op.ConstI32, 1, none(), 2)],
         Terminator.ReturnValue(1),
         ThrowHandler.Catch(1, 2)
@@ -193,6 +195,27 @@ test("does not define post-call values on exceptional edges", fn(t) {
     0
   );
   t.throws(fn(_t) { verifyProgram(program([callee, caller], Array.new<Bytes>(0))); });
+});
+
+let regions = fn(entry: Terminator, first: ?ThrowHandler, second: ?ThrowHandler): Function {
+  let empty = Array.new<Instruction>(0);
+  Function.Function(0, none(), [ValueType.Dynamic, ValueType.Bool], ReturnType.Value(ValueType.Dynamic), [
+    BasicBlock.Block(0, [insn(Op.ConstNull, 0, none(), 0), insn(Op.ConstBool, 1, none(), 1)], entry, null),
+    BasicBlock.Block(1, empty, Terminator.ReturnValue(0), first),
+    BasicBlock.Block(2, empty, Terminator.ReturnValue(0), second)
+  ], 0)
+};
+
+test("checks that try regions nest", fn(t) {
+  t.is(verifyFunction(regions(Terminator.Jump(1), ThrowHandler.Catch(2, 0), null)), true);
+  t.throws(fn(_t) {
+    verifyFunction(Function.Function(0, none(), [ValueType.Dynamic], ReturnType.Value(ValueType.Dynamic), [
+      BasicBlock.Block(0, Array.new<Instruction>(0), Terminator.ReturnValue(0), ThrowHandler.Catch(1, 0)),
+      BasicBlock.Block(1, Array.new<Instruction>(0), Terminator.ReturnValue(0), null)
+    ], 0));
+  });
+  t.throws(fn(_t) { verifyFunction(regions(Terminator.Branch(1, 1, 2), ThrowHandler.Catch(2, 0), null)); });
+  t.throws(fn(_t) { verifyFunction(regions(Terminator.Jump(1), ThrowHandler.Catch(2, 0), ThrowHandler.Catch(1, 0))); });
 });
 
 test("converges on loop backedges", fn(t) {

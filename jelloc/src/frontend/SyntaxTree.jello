@@ -85,7 +85,8 @@ let _arms = fn(arms: Array<MatchArm>, out: Array<Syntax>) {
       Arm(_, guard, body) => {
         _optional(guard, out);
         _block(body, out)
-      }
+      },
+      Alternative(_, guard) => _optional(guard, out),
     };
     i++;
   }

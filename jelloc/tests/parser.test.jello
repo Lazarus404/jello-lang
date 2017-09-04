@@ -110,7 +110,7 @@ test("parses match regexp, fallthrough, and enum payload patterns", fn(t) {
 
   match (program) {
     Program(_, _, tail) => t.deepEqual(tail, Expr.Match(Expr.Variable("x"), [
-      MatchArm.Arm(Pattern.Enum("A", []), null, Block.Block([], null)),
+      MatchArm.Alternative(Pattern.Enum("A", []), null),
       MatchArm.Arm(Pattern.Enum("B", [Pattern.BindPattern("v")]), null, Block.Block([], Expr.Variable("v"))),
       MatchArm.Arm(Pattern.RegExp("a+", "", "m"), null, Block.Block([], Expr.Variable("m"))),
       MatchArm.Arm(Pattern.Wildcard, null, Block.Block([], Expr.Integer("0", IntSize.Infer)))
@@ -125,8 +125,8 @@ test("preserves guards on bodyless match arms", fn(t) {
 
   match (program) {
     Program(_, _, tail) => t.deepEqual(tail, Expr.Match(Expr.Variable("x"), [
-      MatchArm.Arm(Pattern.Enum("A", []), Expr.Variable("a"), Block.Block([], null)),
-      MatchArm.Arm(Pattern.Enum("B", []), Expr.Variable("b"), Block.Block([], null)),
+      MatchArm.Alternative(Pattern.Enum("A", []), Expr.Variable("a")),
+      MatchArm.Alternative(Pattern.Enum("B", []), Expr.Variable("b")),
       MatchArm.Arm(Pattern.Enum("C", []), null, Block.Block([], Expr.Variable("value")))
     ]))
   };

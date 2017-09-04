@@ -1,4 +1,5 @@
 import { test, run } from jellotest.Runner;
+import { integerValue, wideIntegerValue } from frontend.Ast;
 
 import type {
   BinaryOp,
@@ -79,6 +80,28 @@ test("preserves imported recursive enum payload types", fn(t) {
     },
     _ => t.fail("function type constructor changed"),
   };
+});
+
+let rejects = fn(text: Bytes, negative: Bool, wide: Bool): Bytes {
+  try { if (wide) { wideIntegerValue(text, negative); } else { integerValue(text, negative); } "accepted" } catch (e) { Std.string(e) }
+};
+
+test("reads integer literals at both widths", fn(t) {
+  t.is(integerValue("2147483647", false), 2147483647);
+  t.is(integerValue("2147483648", true), -2147483647 - 1);
+  t.is(integerValue("0x7FFF_FFFF", false), 2147483647);
+  t.is(rejects("2147483648", false, false), "integer literal 2147483648 is out of range for I32 (-2147483648 to 2147483647)");
+  t.is(rejects("2147483649", true, false), "integer literal -2147483649 is out of range for I32 (-2147483648 to 2147483647)");
+  t.is(rejects("0xFFFFFFFF", false, false), "integer literal 0xFFFFFFFF is out of range for I32 (-2147483648 to 2147483647)");
+  let max: I64 = 9223372036854775807;
+  t.is(wideIntegerValue("9223372036854775807", false), max);
+  t.is(wideIntegerValue("9223372036854775808", true), -max - 1);
+  t.is(wideIntegerValue("0x7fff_ffff_ffff_ffff", false), max);
+  t.is(wideIntegerValue("0b1_0000_0000_0000_0000_0000_0000_0000_0000", false), max - max + 4294967296);
+  t.is(wideIntegerValue("-1", false), max - max - 1);
+  t.is(rejects("9223372036854775808", false, true), "integer literal 9223372036854775808 is out of range for I64 (-9223372036854775808 to 9223372036854775807)");
+  t.is(rejects("9223372036854775809", true, true), "integer literal -9223372036854775809 is out of range for I64 (-9223372036854775808 to 9223372036854775807)");
+  t.is(rejects("0x1_0000_0000_0000_0000", false, true), "integer literal 0x1_0000_0000_0000_0000 is out of range for I64 (-9223372036854775808 to 9223372036854775807)");
 });
 
 run()

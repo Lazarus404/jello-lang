@@ -138,6 +138,7 @@ export enum BitPatternSegment {
 
 export enum MatchArm {
   Arm(pattern: Pattern, guard: ?Expr, body: Block);
+  Alternative(pattern: Pattern, guard: ?Expr);
 }
 
 export enum WithClause {
@@ -321,11 +322,11 @@ let _digitValue = fn(c: I32): I32 {
   if (c <= "9".code) { c - "0".code } else if (c <= "F".code) { c - "A".code + 10 } else { c - "a".code + 10 }
 };
 
-export let integerValue: (Bytes, Bool) -> I32 = fn(text, negative) {
+let _integer = fn(text: Bytes, negative: Bool, wide: Bool): I64 {
   let i = 0;
   let sign = negative;
 
-  if ((text.len() > 0) && (Bytes.get_u8(text, 0) == "-".code)) {
+  if ((text.len() > 0) && (Bytes.get_u8(text, i) == "-".code)) {
     sign = !sign;
     i = 1;
   }
@@ -335,20 +336,26 @@ export let integerValue: (Bytes, Bool) -> I32 = fn(text, negative) {
     radix = match (Bytes.get_u8(text, i + 1)) { "x".code, "X".code => 16, "b".code, "B".code => 2, "o".code, "O".code => 8, _ => 10 };
     if (radix != 10) { i += 2; }
   }
-  let limit: I64 = sign ? 2147483648 : 2147483647;
-  let magnitude: I64 = 0;
+  let max: I64 = wide ? 9223372036854775807 : 2147483647;
+  let least: I64 = sign ? -max - 1 : -max;
+  let value: I64 = 0;
 
   while (i < text.len()) {
     let c = Bytes.get_u8(text, i);
     i++;
 
     if (c != "_".code) {
-      magnitude = magnitude * (radix as I64) + (_digitValue(c) as I64);
+      let digit = _digitValue(c) as I64;
 
-      if (magnitude > limit) {
-        throw "integer literal " + (negative ? "-" : "") + text + " is out of range for I32 (-2147483648 to 2147483647)";
+      if (value < (least + digit) / (radix as I64)) {
+        throw "integer literal " + (negative ? "-" : "") + text + " is out of range for "
+          + (wide ? "I64 (-9223372036854775808 to 9223372036854775807)" : "I32 (-2147483648 to 2147483647)");
       }
+      value = value * (radix as I64) - digit;
     }
   }
-  (sign ? -magnitude : magnitude) as I32
+  sign ? value : -value
 };
+
+export let integerValue: (Bytes, Bool) -> I32 = fn(text, negative) { _integer(text, negative, false) as I32 };
+export let wideIntegerValue: (Bytes, Bool) -> I64 = fn(text, negative) { _integer(text, negative, true) };

@@ -57,6 +57,7 @@ let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, poo
   let text = match (opOf(instruction)) {
     ConstBool => "bool " + (immOf(instruction) == 1 ? "true" : "false"),
     ConstI32 => "i32 " + imm,
+    ConstI64 => "i64 #" + imm,
     ConstBytes => "bytes " + bytesLiteral(pool[immOf(instruction)]),
     ConstNull => "null",
     ConstFunction => "function @" + imm,
@@ -73,6 +74,7 @@ let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, poo
     Box => "box " + operands,
     Unbox => "unbox " + operands,
     KindOf => "kind_of " + operands,
+    IsEnum => "is_enum @" + imm + " " + operands,
     IsNull => "is_null " + operands,
     NullCheck => "null_check " + operands,
     ArrayNew => "array.new " + operands,
@@ -162,7 +164,7 @@ export let printFunction: (Function, Array<Bytes>) -> Bytes = fn(function, pool)
 };
 
 export let printIr: (Program) -> Bytes = fn(program) {
-  match (program) { Program(functions, pool, _, globals) => {
+  match (program) { Program(functions, pool, wides, _, globals) => {
     let out = "";
     let i = 0;
 
@@ -171,6 +173,13 @@ export let printIr: (Program) -> Bytes = fn(program) {
       i++;
     }
     if (globals.len() > 0) { out += "\n"; }
+    i = 0;
+
+    while (i < wides.len()) {
+      out += "i64 #" + Std.string(i) + " = " + Std.string(wides[i]) + "\n";
+      i++;
+    }
+    if (wides.len() > 0) { out += "\n"; }
     i = 0;
 
     while (i < functions.len()) {

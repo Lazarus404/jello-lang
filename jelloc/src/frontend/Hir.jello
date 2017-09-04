@@ -4,12 +4,12 @@ import type { SourceSpan } from frontend.Source;
 import { SourceSpan } from frontend.Source;
 
 export enum Op {
-  Bool; I32; Bytes; Null; Local; Assign; Global; SetGlobal; InitGlobal; FunctionRef;
+  Bool; I32; I64; Bytes; Null; Local; Assign; Global; SetGlobal; InitGlobal; FunctionRef;
   Add; Sub; Mul; Neg; Not; And; Or; Eq; Lt; Gt; Sext; Trunc; Present; IsNull; IsPresent; Unwrap; ToDynamic; FromDynamic; IsKind;
   ArrayNew; ArrayLiteral; ArrayLen; ArrayGet; ArraySet; ArrayPush; ArrayPop; ArrayResize;
   BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq; Tuple; TupleField; EnumNew; EnumTag; EnumField;
-  Call; CallIndirect; Block; If;
-  Let; Const; Parameter; Declare; Expression; Return; Throw; Break; Continue; IfStatement; While; Function; Program;
+  Call; CallIndirect; Block; If; Try;
+  Let; Const; Parameter; Declare; Expression; Return; Throw; Break; Continue; IfStatement; TryStatement; While; Function; Program;
 }
 
 export enum Kind { Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; Dynamic; }
@@ -80,6 +80,7 @@ export let valueOf: (I32) -> I32 = fn(id) { _nodes[id * _NODE_WIDTH + 1] };
 export let auxOf: (I32) -> I32 = fn(id) { _nodes[id * _NODE_WIDTH + 2] };
 export let childCount: (I32) -> I32 = fn(id) { _nodes[id * _NODE_WIDTH + 4] };
 export let childOf: (I32, I32) -> I32 = fn(id, index) { _edges[_nodes[id * _NODE_WIDTH + 3] + index] };
+export let wideValueOf: (I32) -> I64 = fn(id) { ((auxOf(id) as I64) << 32) | ((valueOf(id) as I64) & 4294967295) };
 export let lastChild: (I32) -> I32 = fn(id) { childOf(id, childCount(id) - 1) };
 
 let _endsPath: (I32) -> Bool = fn(_id) { false };
@@ -87,6 +88,7 @@ _endsPath = fn(id) {
   match (opOf(id)) {
     Return, Throw, Break, Continue => true,
     IfStatement => (childCount(id) == 3) && _endsPath(childOf(id, 1)) && _endsPath(childOf(id, 2)),
+    TryStatement => _endsPath(childOf(id, 0)) && _endsPath(childOf(id, 1)),
     Block => {
       let statements = childCount(id) - auxOf(id);
       (statements > 0) && _endsPath(childOf(id, statements - 1))
@@ -161,6 +163,10 @@ export let node: (Op, I32, I32, I32, Array<I32>) -> I32 = fn(op, ty, value, aux,
     i++;
   }
   id
+};
+
+export let wideLiteral: (I64) -> I32 = fn(value) {
+  node(Op.I64, TYPE_I64, value as I32, (value >> 32) as I32, [])
 };
 
 let _mix = fn(hash: I32, word: I32): I32 { (hash ^ word) * 16777619 };

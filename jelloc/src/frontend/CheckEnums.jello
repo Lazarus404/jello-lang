@@ -1,40 +1,10 @@
 package frontend;
 
-import type { Expr as AstExpr, MatchArm, Stmt } from frontend.Ast;
-import {
-  Kind, Op, TYPE_BOOL, TYPE_I32, auxOf, bytesId, childCount, childOf, nullType, opOf, declareEnum, defineVariants, fieldCount, fieldType, isKind, node, typeName, typeOf,
-  variantCount, variantName, variantTag,
-} from frontend.Hir;
+import type { Expr as AstExpr, Stmt } from frontend.Ast;
+import { Op, declareEnum, defineVariants, fieldCount, fieldType, node, typeOf, variantTag } from frontend.Hir;
+import { checkMatch } from frontend.CheckMatch;
 import { declareScopedType, exportScopedType, scopedType } from frontend.ModuleScope;
-import { checkArm, checkOperand, checkPresent, checkType, coerceAt, enterSyntax, joinTypes, newBinding, syntaxChild } from frontend.TypeCheck;
-
-let _unlift = fn(block: I32): I32 {
-  let last = childCount(block) - 1;
-  if ((auxOf(block) == 0) || !match (opOf(childOf(block, last))) { Present => true, _ => false }) { return block; }
-  let children = Array.new<I32>(0);
-  let i = 0;
-
-  while (i < last) {
-    children.push(childOf(block, i));
-    i++;
-  }
-  let value = childOf(childOf(block, last), 0);
-  children.push(value);
-  node(Op.Block, typeOf(value), 0, 1, children)
-};
-
-let _coerceTail = fn(block: I32, ty: I32, tail: I32): I32 {
-  if (typeOf(block) == ty) { return block; }
-  let children = Array.new<I32>(0);
-  let i = 0;
-
-  while (i < childCount(block)) {
-    children.push(childOf(block, i));
-    i++;
-  }
-  children[children.len() - 1] = coerceAt(children[children.len() - 1], ty, tail);
-  node(Op.Block, ty, 0, 1, children)
-};
+import { checkOperand, checkType, enterSyntax, syntaxChild } from frontend.TypeCheck;
 
 export let declareEnums: (Array<Stmt>, I32) -> Bool = fn(statements, module) {
   let i = 0;
@@ -124,133 +94,9 @@ let _construct = fn(enumName: Bytes, variant: Bytes, args: Array<AstExpr>, calle
   node(Op.EnumNew, ty, tag, 0, fields)
 };
 
-let _local = fn(binding: I32, ty: I32): I32 { node(Op.Local, ty, binding, 0, []) };
-
-let _const = fn(binding: I32, name: Bytes, value: I32): I32 {
-  node(Op.Declare, 0, 0, 0, [node(Op.Const, typeOf(value), binding, bytesId(name), [value])])
-};
-
-let _checkMatch = fn(subject: AstExpr, arms: Array<MatchArm>, expected: I32, statement: Bool): I32 {
-  let checkedSubject = checkPresent(subject, 0);
-  let ty = typeOf(checkedSubject);
-  if (!isKind(ty, Kind.Enum)) { throw "match subject must be an enum value"; }
-  let subjectBinding = newBinding();
-  let tagBinding = newBinding();
-  let covered = Array.new<Bool>(0);
-  while (covered.len() < variantCount(ty)) { covered.push(false); }
-  let tags = Array.new<I32>(0);
-  let bodies = Array.new<I32>(0);
-  let tails = Array.new<I32>(0);
-  let resultType = -1;
-  let catchAll = false;
-  let index = 1;
-  let a = 0;
-
-  while (a < arms.len()) {
-    match (arms[a]) { Arm(pattern, guard, body) => {
-      if (guard != null) { throw "match guards are not supported yet"; }
-      if (catchAll) { throw "unreachable match arm after a catch-all arm"; }
-      let names = Array.new<Bytes>(0);
-      let values = Array.new<I32>(0);
-      let tag = -1;
-
-      match (pattern) {
-        Wildcard => {
-          catchAll = true;
-          null
-        },
-        BindPattern(name) => {
-          catchAll = true;
-          names.push(name);
-          values.push(_local(subjectBinding, ty));
-          null
-        },
-        Enum(name, args) => {
-          tag = variantTag(ty, name);
-          if (tag < 0) { throw "unknown variant " + name + " of " + typeName(ty); }
-          if (covered[tag]) { throw "unreachable match arm: " + name + " is already matched"; }
-          covered[tag] = true;
-          if (args.len() != fieldCount(ty, tag)) { throw "wrong payload count for enum variant pattern " + name; }
-          let f = 0;
-
-          while (f < args.len()) {
-            match (args[f]) {
-              Wildcard => null,
-              BindPattern(binder) => {
-                names.push(binder);
-                values.push(node(Op.EnumField, fieldType(ty, tag, f), f, tag, [_local(subjectBinding, ty)]));
-                null
-              },
-              _ => {
-                throw "nested patterns are not supported yet";
-                null
-              },
-            };
-            f++;
-          }
-          null
-        },
-        _ => {
-          throw "this pattern is not supported in match yet";
-          null
-        },
-      };
-
-      match (body) { Block(statements, tail) => {
-        let context = (expected < 0) && (resultType >= 0) && !statement ? nullType(resultType) : expected;
-        let block = checkArm(names, values, statements, tail, index, context, statement);
-        if (context != expected) { block = _unlift(block); }
-
-        if (!statement) {
-          if (auxOf(block) == 0) { throw "match arm requires a trailing expression"; }
-          resultType = resultType < 0 ? typeOf(block) : joinTypes(resultType, typeOf(block));
-          if (resultType < 0) { throw "match arms must have the same type"; }
-        }
-        tails.push(index + (statements.len() as I32));
-        index += (statements.len() as I32) + (tail == null ? 0 : 1);
-        tags.push(tag);
-        bodies.push(block);
-      } };
-    } };
-    a++;
-  }
-  if (arms.len() == 0) { throw "match requires at least one arm"; }
-
-  if (!catchAll) {
-    let tag = 0;
-
-    while (tag < covered.len()) {
-      if (!covered[tag]) { throw "match is not exhaustive: missing " + variantName(ty, tag); }
-      tag++;
-    }
-  }
-
-  if (!statement) {
-    let b = 0;
-
-    while (b < bodies.len()) {
-      bodies[b] = _coerceTail(bodies[b], resultType, tails[b]);
-      b++;
-    }
-  }
-  let last = bodies.len() - 1;
-  let result = bodies[last];
-  let i = last - 1;
-
-  while (i >= 0) {
-    let condition = node(Op.Eq, TYPE_BOOL, 0, 0, [_local(tagBinding, TYPE_I32), node(Op.I32, TYPE_I32, tags[i], 0, [])]);
-    result = node(statement ? Op.IfStatement : Op.If, statement ? 0 : resultType, 0, 0, [condition, bodies[i], result]);
-    i--;
-  }
-  let children = [_const(subjectBinding, "match", checkedSubject)];
-  if (last > 0) { children.push(_const(tagBinding, "match.tag", node(Op.EnumTag, TYPE_I32, 0, 0, [_local(subjectBinding, ty)]))); }
-  children.push(result);
-  statement ? node(Op.Block, 0, 0, 0, children) : node(Op.Block, resultType, 0, 1, children)
-};
-
 export let checkEnumExpr: (AstExpr, I32, Bool) -> I32 = fn(expr, expected, statement) {
   match (expr) {
-    Match(subject, arms) => _checkMatch(subject, arms, expected, statement),
+    Match(subject, arms) => checkMatch(subject, arms, expected, statement),
     Member(base, variant) => match (base) { Variable(name) => _construct(name, variant, Array.new<AstExpr>(0), false), _ => -1 },
     Call(callee, typeArgs, args) => {
       if (typeArgs.len() != 0) { throw "enum constructors do not take type arguments"; }

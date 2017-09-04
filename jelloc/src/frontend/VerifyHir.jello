@@ -133,6 +133,8 @@ let _arguments = fn(id: I32, functionType: I32, first: I32, message: Bytes): I32
   innerOf(functionType)
 };
 
+let _width = fn(ty: I32): I32 { ty == TYPE_I64 ? TYPE_I64 : TYPE_I32 };
+
 let _typed = fn(id: I32, operands: Array<I32>, result: I32, message: Bytes): I32 {
   _arity(id, operands.len() as I32);
   let i = 0;
@@ -154,6 +156,18 @@ let _array = fn(id: I32, operands: I32): I32 {
 
 let _block: (I32, Bool) -> I32 = fn(_id, _programBody) { -1 };
 
+let _try = fn(id: I32, value: Bool) {
+  _arity(id, 2);
+  let ty = typeOf(id);
+  let body = value ? _operand(id, 0) : _block(_child(id, 0), false);
+  let scope = _visibleIds.len();
+  if (valueOf(id) >= 0) { _declare(valueOf(id), TYPE_DYNAMIC, false); }
+  let handler = value ? _operand(id, 1) : _block(_child(id, 1), false);
+  _popTo(scope);
+  if (value && ((body != ty) || (handler != ty))) { _fail("try operand type"); }
+  null
+};
+
 _expr = fn(id) {
   let ty = typeOf(id);
 
@@ -163,6 +177,7 @@ _expr = fn(id) {
       _typed(id, [], TYPE_BOOL, "")
     },
     I32 => _typed(id, [], TYPE_I32, ""),
+    I64 => _typed(id, [], TYPE_I64, ""),
     Bytes => {
       if ((valueOf(id) < 0) || (valueOf(id) >= bytesCount())) { _fail("bytes index"); }
       _typed(id, [], TYPE_BYTES, "")
@@ -193,9 +208,18 @@ _expr = fn(id) {
       _arity(id, 0);
       _functionType(valueOf(id))
     },
-    Add, Sub, Mul => _typed(id, [TYPE_I32, TYPE_I32], TYPE_I32, "i32 operation requires i32 operands"),
-    Eq, Lt, Gt => _typed(id, [TYPE_I32, TYPE_I32], TYPE_BOOL, "i32 operation requires i32 operands"),
-    Neg => _typed(id, [TYPE_I32], TYPE_I32, "i32 negation requires i32 operand"),
+    Add, Sub, Mul => {
+      let width = _width(ty);
+      _typed(id, [width, width], width, "integer operation requires operands of its type")
+    },
+    Eq, Lt, Gt => {
+      let width = _width(childCount(id) > 0 ? typeOf(childOf(id, 0)) : TYPE_I32);
+      _typed(id, [width, width], TYPE_BOOL, "integer comparison requires operands of one integer type")
+    },
+    Neg => {
+      let width = _width(ty);
+      _typed(id, [width], width, "integer negation requires an operand of its type")
+    },
     Not => _typed(id, [TYPE_BOOL], TYPE_BOOL, "bool not requires bool operand"),
     And, Or => _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "logical operation requires bool operands"),
     Sext => _typed(id, [TYPE_I32], TYPE_I64, "i32 to i64 cast requires i32 operand"),
@@ -219,7 +243,7 @@ _expr = fn(id) {
       _typed(id, [TYPE_DYNAMIC], ty, "extraction requires a Dynamic operand")
     },
     IsKind => {
-      if (!match (valueOf(id)) { 1, 2, 4, 7 => true, _ => false }) { _fail("kind test of an unknown kind"); }
+      if (!match (valueOf(id)) { 1, 2, 4, 7 => true, 14 => isKind(auxOf(id), Kind.Enum), _ => false }) { _fail("kind test of an unknown kind"); }
       _typed(id, [TYPE_DYNAMIC], TYPE_BOOL, "kind test requires a Dynamic operand")
     },
     Unwrap => {
@@ -320,6 +344,10 @@ _expr = fn(id) {
       _block(id, false)
     },
     If => _typed(id, [TYPE_BOOL, ty, ty], ty, "if operand type"),
+    Try => {
+      _try(id, true);
+      ty
+    },
     _ => {
       _fail("expected expression");
       -1
@@ -377,6 +405,10 @@ _statement = fn(id, programBody) {
       _loops++;
       _block(_child(id, 1), false);
       _loops--;
+      null
+    },
+    TryStatement => {
+      _try(id, false);
       null
     },
     IfStatement => {

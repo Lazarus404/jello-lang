@@ -863,7 +863,7 @@ let _matchArms = fn(): Array<MatchArm> {
 
     while (!_at(Token.FatArrow)) {
       expect(Token.Comma);
-      arms.push(MatchArm.Arm(pattern, guard, Block.Block([], null)));
+      arms.push(MatchArm.Alternative(pattern, guard));
       pattern = _matchPattern();
       guard = _optionalGuard();
     }

@@ -1,9 +1,9 @@
 package backend.jello;
 
-import type { BasicBlock, Function, Instruction, Program, Terminator, ValueType } from ir.Model;
-import { BasicBlock, Function, Op, Program, Terminator, argsOf, dstOf, immOf, instruction, opOf, valueTypeEqual } from ir.Model;
-import { normalSuccessors } from ir.Cfg;
-import { bitsAdd, bitsCopy, bitsHas, bitsNew, bitsRemove } from ir.Bits;
+import type { BasicBlock, Function, Instruction, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
+import { BasicBlock, Function, Op, Program, Terminator, ThrowHandler, argsOf, dstOf, handlerPayload, handlerTarget, immOf, instruction, opOf, valueTypeEqual } from ir.Model;
+import { blockMayThrow, normalSuccessors } from ir.Cfg;
+import { bitsAdd, bitsCopy, bitsHas, bitsNew, bitsRemove, bitsUnion } from ir.Bits;
 import { verifyProgram } from ir.Verify;
 
 let _REGISTER_LIMIT = 256;
@@ -45,7 +45,21 @@ let _terminatorUses = fn(terminator: Terminator): Array<I32> {
   match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value) => [value], _ => Array.new<I32>(0) }
 };
 
-let _liveOut = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>> {
+let _catch = fn(block: BasicBlock, indexes: Array<I32>): Tuple<I32, I32> {
+  match (block) { Block(_, instructions, terminator, handler) => {
+    if ((handler == null) || !blockMayThrow(instructions, terminator)) { return (-1, -1); }
+    (indexes[handlerTarget(handler)], handlerPayload(handler))
+  } }
+};
+
+let _caught = fn(liveIn: Array<Array<I32>>, c: Tuple<I32, I32>): Array<I32> {
+  let (target, payload) = c;
+  let caught = bitsCopy(liveIn[target]);
+  bitsRemove(caught, payload);
+  caught
+};
+
+let _liveness = fn(blocks: Array<BasicBlock>, count: I32): Tuple<Array<Array<I32>>, Array<Array<I32>>> {
   let indexes = _blockIndexes(blocks);
   let uses = Array.new<Array<I32>>(0);
   let defs = Array.new<Array<I32>>(0);
@@ -95,6 +109,7 @@ let _liveOut = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>> {
     liveOut.push(bitsNew(count));
     i++;
   }
+  let none = bitsNew(count);
   let changed = true;
 
   while (changed) {
@@ -115,10 +130,14 @@ let _liveOut = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>> {
         }
         s++;
       }
+      let c = _catch(blocks[i], indexes);
+      let (target, _) = c;
+      let caught = target >= 0 ? _caught(liveIn, c) : none;
+      bitsUnion(out, caught);
       let w = 0;
 
       while (w < out.len()) {
-        let next = uses[i][w] | (out[w] & (defs[i][w] ^ -1));
+        let next = uses[i][w] | (out[w] & (defs[i][w] ^ -1)) | caught[w];
 
         if (next != liveIn[i][w]) {
           liveIn[i][w] = next;
@@ -129,11 +148,12 @@ let _liveOut = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>> {
       i--;
     }
   }
-  liveOut
+  (liveIn, liveOut)
 };
 
 let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>> {
-  let liveOut = _liveOut(blocks, count);
+  let indexes = _blockIndexes(blocks);
+  let (liveIn, liveOut) = _liveness(blocks, count);
   let neighbors = Array.new<Array<I32>>(0);
   let i = 0;
 
@@ -141,9 +161,33 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
     neighbors.push(Array.new<I32>(0));
     i++;
   }
+  let payloadsDone = Array.new<Bool>(blocks.len());
   i = 0;
 
   while (i < blocks.len()) {
+    payloadsDone[i] = false;
+    i++;
+  }
+  i = 0;
+
+  while (i < blocks.len()) {
+    let c = _catch(blocks[i], indexes);
+    let (target, payload) = c;
+    let caught = target >= 0 ? _caught(liveIn, c) : bitsNew(count);
+
+    if ((target >= 0) && !payloadsDone[target]) {
+      payloadsDone[target] = true;
+      let other = 0;
+
+      while (other < count) {
+        if (bitsHas(caught, other)) {
+          neighbors[payload].push(other);
+          neighbors[other].push(payload);
+        }
+        other++;
+      }
+    }
+
     match (blocks[i]) { Block(_, instructions, terminator, _) => {
       let live = bitsCopy(liveOut[i]);
       let last = _terminatorUses(terminator);
@@ -188,6 +232,7 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
           bitsAdd(live, args[a]);
           a++;
         }
+        bitsUnion(live, caught);
         j--;
       }
     } };
@@ -196,7 +241,7 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
   neighbors
 };
 
-let _color = fn(params: Array<I32>, neighbors: Array<Array<I32>>, limit: I32): Array<I32> {
+let _color = fn(params: Array<I32>, first: Array<I32>, neighbors: Array<Array<I32>>, limit: I32): Array<I32> {
   let count = _keys.len();
   let colors = Array.new<I32>(count);
   let colorKeys = Array.new<I32>(limit);
@@ -221,9 +266,11 @@ let _color = fn(params: Array<I32>, neighbors: Array<Array<I32>>, limit: I32): A
     colorKeys[i] = _keys[params[i]];
     i++;
   }
-  i = 0;
+  let k = 0;
 
-  while (i < count) {
+  while (k < first.len() + count) {
+    i = k < first.len() ? first[k] : k - (first.len() as I32);
+
     if (colors[i] < 0) {
       let n = 0;
 
@@ -240,7 +287,7 @@ let _color = fn(params: Array<I32>, neighbors: Array<Array<I32>>, limit: I32): A
         colorKeys[color] = _keys[i];
       }
     }
-    i++;
+    k++;
   }
   colors
 };
@@ -352,7 +399,9 @@ let _rewriteBlock = fn(block: BasicBlock): BasicBlock {
       Throw(value) => Terminator.Throw(_read(value)),
       _ => terminator,
     };
-    BasicBlock.Block(id, _out, allocated, handler)
+    let caught: ?ThrowHandler = null;
+    if (handler != null) { caught = ThrowHandler.Catch(handlerTarget(handler), _colors[handlerPayload(handler)]); }
+    BasicBlock.Block(id, _out, allocated, caught)
   } }
 };
 
@@ -391,6 +440,13 @@ let _allocate = fn(function: Function): Function {
       i++;
     }
     let neighbors = _interference(blocks, registers.len() as I32);
+    let payloads = Array.new<I32>(0);
+    i = 0;
+
+    while (i < blocks.len()) {
+      match (blocks[i]) { Block(_, _, _, handler) => { if (handler != null) { payloads.push(handlerPayload(handler)); } null } };
+      i++;
+    }
     let spilled = Array.new<Bool>(_keyTypes.len());
     i = 0;
 
@@ -399,7 +455,7 @@ let _allocate = fn(function: Function): Function {
       i++;
     }
     let temps = 0;
-    _colors = _color(params, neighbors, _REGISTER_LIMIT - _scratch.len());
+    _colors = _color(params, payloads, neighbors, _REGISTER_LIMIT - _scratch.len());
     let changed = true;
 
     while (changed) {
@@ -414,7 +470,13 @@ let _allocate = fn(function: Function): Function {
         }
         i++;
       }
-      if (changed) { _colors = _color(params, neighbors, _REGISTER_LIMIT - _scratch.len() - temps); }
+      if (changed) { _colors = _color(params, payloads, neighbors, _REGISTER_LIMIT - _scratch.len() - temps); }
+    }
+    i = 0;
+
+    while (i < payloads.len()) {
+      if (_colors[payloads[i]] < 0) { throw "a catch value needs a register, and all 256 are in use"; }
+      i++;
     }
     let physical = Array.new<ValueType>(0);
     i = 0;
@@ -467,7 +529,7 @@ let _allocate = fn(function: Function): Function {
 };
 
 export let allocateProgram: (Program) -> Program = fn(program) {
-  let allocated = match (program) { Program(functions, pool, enums, globals) => {
+  let allocated = match (program) { Program(functions, pool, wides, enums, globals) => {
     let out = Array.new<Function>(0);
     let i = 0;
 
@@ -475,7 +537,7 @@ export let allocateProgram: (Program) -> Program = fn(program) {
       try { out.push(_allocate(functions[i])); } catch (e) { throw "function " + Std.string(i) + ": " + Std.string(e); }
       i++;
     }
-    Program.Program(out, pool, enums, globals)
+    Program.Program(out, pool, wides, enums, globals)
   } };
   verifyProgram(allocated);
   allocated

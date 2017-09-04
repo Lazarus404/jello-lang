@@ -46,7 +46,6 @@ let _instruction = fn(insn: Instruction) {
 
 let _block = fn(block: BasicBlock): BasicBlock {
   match (block) { Block(id, instructions, terminator, handler) => {
-    if (handler != null) { throw "JLO legalization does not support catch handlers"; }
     _out = Array.new<Instruction>(0);
     let i = 0;
 
@@ -56,6 +55,7 @@ let _block = fn(block: BasicBlock): BasicBlock {
     }
 
     let selected = match (terminator) {
+      Throw(value) when (match (_registers[value]) { Dynamic => true, _ => false }) => terminator,
       Throw(value) => {
         let payload = _fresh(ValueType.Dynamic);
         _emit(Op.Box, payload, [value], 0);
@@ -67,7 +67,7 @@ let _block = fn(block: BasicBlock): BasicBlock {
       },
       _ => terminator,
     };
-    BasicBlock.Block(id, _out, selected, null)
+    BasicBlock.Block(id, _out, selected, handler)
   } }
 };
 
@@ -92,7 +92,7 @@ let _function = fn(function: Function): Function {
 };
 
 export let legalizeJlo: (Program) -> Program = fn(program) {
-  let legalized = match (program) { Program(functions, pool, enums, globals) => {
+  let legalized = match (program) { Program(functions, pool, wides, enums, globals) => {
     let selected = Array.new<Function>(0);
     let i = 0;
 
@@ -100,7 +100,7 @@ export let legalizeJlo: (Program) -> Program = fn(program) {
       selected.push(_function(functions[i]));
       i++;
     }
-    Program.Program(selected, pool, enums, globals)
+    Program.Program(selected, pool, wides, enums, globals)
   } };
   verifyProgram(legalized);
   legalized

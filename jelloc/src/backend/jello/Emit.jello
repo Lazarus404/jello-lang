@@ -1,7 +1,7 @@
 package backend.jello;
 
 import type { BasicBlock, EnumSchema, Function, Instruction, Program, Terminator, ValueType } from ir.Model;
-import { ValueType, argsOf, dstOf, immOf, opOf, valueTypeEqual } from ir.Model;
+import { ValueType, argsOf, dstOf, handlerPayload, handlerTarget, immOf, opOf, valueTypeEqual } from ir.Model;
 import { allocateProgram } from backend.jello.Allocate;
 
 let _buffer = Bytes.new(0);
@@ -184,6 +184,7 @@ let _instruction = fn(insn: Instruction, scratchStart: I32) {
   match (opOf(insn)) {
     ConstBool => _insn(24, dst, 0, 0, imm),
     ConstI32 => _insn(19, dst, 0, 0, imm),
+    ConstI64 => _insn(20, dst, 0, 0, imm),
     ConstBytes => _insn(27, dst, 0, 0, imm),
     ConstNull => _insn(25, dst, 0, 0, 0),
     ConstFunction => _insn(15, dst, 0, 0, _functionIndex(imm)),
@@ -200,6 +201,7 @@ let _instruction = fn(insn: Instruction, scratchStart: I32) {
     Box => _insn(96, dst, a, 0, 0),
     Unbox => _insn(match (_registerTypes[dst]) { Bool => 104, I32 => 99, I64 => 100, _ => 106 }, dst, a, 0, 0),
     KindOf => _insn(110, dst, a, 0, 0),
+    IsEnum => _insn(192, dst, a, 0, _find(ValueType.Nominal(imm))),
     IsNull => _insn(190, dst, a, 0, 0),
     NullCheck => _insn(191, a, 0, 0, 0),
     ArrayNew => _insn(116, dst, a, 0, 0),
@@ -244,6 +246,43 @@ let _terminatorSize = fn(terminator: Terminator): I32 {
   }
 };
 
+let _catchTargets = Array.new<I32>(0);
+let _catchPayloads = Array.new<I32>(0);
+
+let _regions: (I32) -> Array<I32> = fn(_block) { Array.new<I32>(0) };
+_regions = fn(block) {
+  if (_catchTargets[block] < 0) { return Array.new<I32>(0); }
+  let regions = _regions(_catchTargets[block]);
+  regions.push(block);
+  regions
+};
+
+let _sameRegion = fn(a: I32, b: I32): Bool { (_catchTargets[a] == _catchTargets[b]) && (_catchPayloads[a] == _catchPayloads[b]) };
+
+let _transition = fn(source: I32, to: I32): Tuple<I32, Array<I32>> {
+  let left = _regions(source);
+  let entered = _regions(to);
+  let shared = 0;
+  while ((shared < left.len()) && (shared < entered.len()) && _sameRegion(left[shared], entered[shared])) { shared++; }
+  let opened = Array.new<I32>(0);
+  let i = shared;
+
+  while (i < entered.len()) {
+    opened.push(entered[i]);
+    i++;
+  }
+  ((left.len() as I32) - shared, opened)
+};
+
+let _transitionSize = fn(source: I32, terminator: Terminator): I32 {
+  match (terminator) {
+    Jump(target) => {
+      let (left, opened) = _transition(source, target);
+      left + (opened.len() as I32)
+    }, _ => 0
+  }
+};
+
 let _function = fn(function: Function) {
   match (function) { Function(_, params, registers, _, blocks, entry) => {
     _registerTypes = registers;
@@ -260,6 +299,25 @@ let _function = fn(function: Function) {
       if (_blockId(blocks[i]) != entry) { order.push(blocks[i]); }
       i++;
     }
+    _catchTargets = Array.new<I32>(0);
+    _catchPayloads = Array.new<I32>(0);
+    i = 0;
+
+    while (i < blocks.len()) {
+      match (blocks[i]) { Block(id, _, _, handler) => {
+        while (_catchTargets.len() <= id) {
+          _catchTargets.push(-1);
+          _catchPayloads.push(-1);
+        }
+
+        if (handler != null) {
+          _catchTargets[id] = handlerTarget(handler);
+          _catchPayloads[id] = handlerPayload(handler);
+        }
+        null
+      } };
+      i++;
+    }
     let pcs = Array.new<I32>(0);
     let count = 0;
     i = 0;
@@ -268,7 +326,7 @@ let _function = fn(function: Function) {
       match (order[i]) { Block(id, instructions, terminator, _) => {
         while (pcs.len() <= id) { pcs.push(-1); }
         pcs[id] = count;
-        count += (instructions.len() as I32) + _terminatorSize(terminator);
+        count += (instructions.len() as I32) + _transitionSize(id, terminator) + _terminatorSize(terminator);
       } };
       i++;
     }
@@ -288,7 +346,7 @@ let _function = fn(function: Function) {
     i = 0;
 
     while (i < order.len()) {
-      match (order[i]) { Block(_, instructions, terminator, _) => {
+      match (order[i]) { Block(id, instructions, terminator, _) => {
         let j = 0;
 
         while (j < instructions.len()) {
@@ -298,7 +356,25 @@ let _function = fn(function: Function) {
         }
 
         match (terminator) {
-          Jump(target) => _insn(2, 0, 0, 0, pcs[target] - pc - 1),
+          Jump(target) => {
+            let (left, opened) = _transition(id, target);
+            j = 0;
+
+            while (j < left) {
+              _insn(6, 0, 0, 0, 0);
+              pc++;
+              j++;
+            }
+            j = 0;
+
+            while (j < opened.len()) {
+              let region = opened[j];
+              _insn(5, _catchPayloads[region], 0, 0, pcs[_catchTargets[region]] - pc - 1);
+              pc++;
+              j++;
+            }
+            _insn(2, 0, 0, 0, pcs[target] - pc - 1)
+          },
           Branch(condition, thenTarget, elseTarget) => {
             _insn(3, condition, 0, 0, pcs[thenTarget] - pc - 1);
             pc++;
@@ -325,7 +401,7 @@ let _typeEntry = fn(kind: I32, detail: I32) {
 };
 
 let _module = fn(program: Program): Bytes {
-  match (program) { Program(functions, pool, enums, globals) => {
+  match (program) { Program(functions, pool, wides, enums, globals) => {
     _types = Array.new<ValueType>(0);
     _typeKinds = Array.new<I32>(0);
     _typeDetails = Array.new<I32>(0);
@@ -381,7 +457,7 @@ let _module = fn(program: Program): Bytes {
     }
     _buffer = Bytes.new(4096);
     _size = 0;
-    let features = (pool.len() > 0 ? 2 : 0) | (enums.len() > 0 ? 16384 : 0) | (globals.len() > 0 ? 32768 : 0);
+    let features = (wides.len() > 0 ? 1 : 0) | (pool.len() > 0 ? 2 : 0) | (enums.len() > 0 ? 16384 : 0) | (globals.len() > 0 ? 32768 : 0);
     _u32(1246517570);
     _u32(1);
     _u32(features);
@@ -393,6 +469,11 @@ let _module = fn(program: Program): Bytes {
     _u32(_functionIndex(0));
     _u32(0);
     if (enums.len() > 0) { _u32(enums.len() as I32); }
+
+    if (wides.len() > 0) {
+      _u32(wides.len() as I32);
+      _u32(0);
+    }
     if (pool.len() > 0) { _u32(pool.len() as I32); }
     if (globals.len() > 0) { _u32(globals.len() as I32); }
     i = 0;
@@ -448,6 +529,13 @@ let _module = fn(program: Program): Bytes {
           v++;
         }
       } };
+      i++;
+    }
+    i = 0;
+
+    while (i < wides.len()) {
+      _u32(wides[i] as I32);
+      _u32((wides[i] >> 32) as I32);
       i++;
     }
     i = 0;

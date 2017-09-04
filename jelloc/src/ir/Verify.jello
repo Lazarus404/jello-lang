@@ -1,7 +1,7 @@
 package ir;
 
 import type { BasicBlock, EnumSchema, Function, Instruction, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { ReturnType, ValueType, argsOf, canBeNull, dstOf, immOf, instructionMayThrow, opOf, returnTypeEqual, valueTypeEqual } from ir.Model;
+import { ReturnType, ValueType, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, instructionMayThrow, opOf, returnTypeEqual, valueTypeEqual } from ir.Model;
 import { normalSuccessors } from ir.Cfg;
 import { bitsAdd, bitsCopy, bitsEqual, bitsFull, bitsHas, bitsIntersect, bitsNew, bitsUnion } from ir.Bits;
 
@@ -14,6 +14,7 @@ let _inProgram = false;
 let _functionIds = Array.new<I32>(0);
 let _signatures = Array.new<ValueType>(0);
 let _poolSize = 0;
+let _wideCount = 0;
 let _enums = Array.new<EnumSchema>(0);
 let _globals = Array.new<ValueType>(0);
 
@@ -111,6 +112,11 @@ let _instruction = fn(instruction: Instruction) {
       _arity(args, 0);
       _expect(dst, ValueType.I32)
     },
+    ConstI64 => {
+      _arity(args, 0);
+      _expect(dst, ValueType.I64);
+      if (_inProgram && ((imm < 0) || (imm >= _wideCount))) { _fail("i64 constant out of range"); } null
+    },
     ConstBytes => {
       _arity(args, 0);
       _expect(dst, ValueType.Bytes);
@@ -187,6 +193,13 @@ let _instruction = fn(instruction: Instruction) {
       _arity(args, 1);
       _expect(dst, ValueType.I32);
       _expect(args[0], ValueType.Dynamic)
+    },
+    IsEnum => {
+      _arity(args, 1);
+      _expect(dst, ValueType.Bool);
+      _expect(args[0], ValueType.Dynamic);
+      if (_inProgram && ((imm < 0) || (imm >= _enums.len()))) { _fail("enum test of an unknown enum"); }
+      null
     },
     IsNull => {
       _arity(args, 1);
@@ -389,10 +402,40 @@ let _instruction = fn(instruction: Instruction) {
   null
 };
 
-let _handlerTarget = fn(handler: ThrowHandler): I32 { match (handler) { Catch(target, _) => target } };
-let _handlerPayload = fn(handler: ThrowHandler): I32 { match (handler) { Catch(_, payload) => payload } };
-
 let _blockId = fn(block: BasicBlock): I32 { match (block) { Block(id, _, _, _) => id } };
+let _blockHandler = fn(block: BasicBlock): ?ThrowHandler { match (block) { Block(_, _, _, handler) => handler } };
+
+let _sameHandler = fn(a: ?ThrowHandler, b: ?ThrowHandler): Bool {
+  if ((a == null) || (b == null)) { return (a == null) && (b == null); }
+  (handlerTarget(a) == handlerTarget(b)) && (handlerPayload(a) == handlerPayload(b))
+};
+
+let _regions = fn(blocks: Array<BasicBlock>, indexes: Array<I32>, entry: I32) {
+  if (_blockHandler(blocks[indexes[entry]]) != null) { _fail("entry block inside a try region"); }
+  let i = 0;
+
+  while (i < blocks.len()) {
+    let handler = _blockHandler(blocks[i]);
+
+    match (blocks[i]) { Block(_, _, terminator, _) => match (terminator) {
+      Branch(_, thenTarget, elseTarget) => {
+        let same = _sameHandler(handler, _blockHandler(blocks[indexes[thenTarget]])) && _sameHandler(handler, _blockHandler(blocks[indexes[elseTarget]]));
+        if (!same) { _fail("branch into another try region"); }
+        null
+      },
+      _ => null,
+    } };
+    let depth = 0;
+
+    while (handler != null) {
+      depth++;
+      if (depth > 16) { _fail("try regions nested more than 16 deep"); }
+      handler = _blockHandler(blocks[indexes[handlerTarget(handler)]]);
+    }
+    i++;
+  }
+  null
+};
 
 let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   let indexes = Array.new<I32>(0);
@@ -501,8 +544,8 @@ let _definitions = fn(params: Array<I32>, blocks: Array<BasicBlock>, indexes: Ar
       let target = -1;
 
       if ((handler != null) && throws) {
-        bitsAdd(beforeThrow, _handlerPayload(handler));
-        target = _target(indexes, _handlerTarget(handler));
+        bitsAdd(beforeThrow, handlerPayload(handler));
+        target = _target(indexes, handlerTarget(handler));
       }
       normal.push(all);
       exceptional.push(beforeThrow);
@@ -613,9 +656,9 @@ let _function = fn(function: Function) {
     while (i < blocks.len()) {
       match (blocks[i]) { Block(id, instructions, terminator, handler) => {
         if (handler != null) {
-          _target(indexes, _handlerTarget(handler));
-          _expect(_handlerPayload(handler), ValueType.Dynamic);
-          if (_handlerTarget(handler) == id) { _fail("block handles its own throw"); }
+          _target(indexes, handlerTarget(handler));
+          _expect(handlerPayload(handler), ValueType.Dynamic);
+          if (handlerTarget(handler) == id) { _fail("block handles its own throw"); }
         }
         let j = 0;
 
@@ -634,6 +677,7 @@ let _function = fn(function: Function) {
       } };
       i++;
     }
+    _regions(blocks, indexes, entry);
     _definitions(params, blocks, indexes, entry, slotTypes.len() as I32);
   } };
   true
@@ -658,7 +702,7 @@ let _signatureOf = fn(function: Function): ValueType {
 };
 
 export let verifyProgram: (Program) -> Bool = fn(program) {
-  match (program) { Program(functions, pool, enums, globals) => {
+  match (program) { Program(functions, pool, wides, enums, globals) => {
     _functionIds = Array.new<I32>(0);
     _signatures = Array.new<ValueType>(0);
     let i = 0;
@@ -683,6 +727,7 @@ export let verifyProgram: (Program) -> Bool = fn(program) {
       i++;
     }
     _poolSize = pool.len() as I32;
+    _wideCount = wides.len() as I32;
     _enums = enums;
     _globals = globals;
     _inProgram = true;

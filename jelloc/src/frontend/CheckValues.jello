@@ -4,7 +4,7 @@ import type { BinaryOp, Expr as AstExpr, Type as AstType } from frontend.Ast;
 import { BinaryOp } from frontend.Ast;
 import frontend.Hir as H;
 import { Kind, Op } from frontend.Hir;
-import { binaryValues, checkOperand, checkType, enterSyntax, newBinding, presentAt, presentKnown, syntaxChild } from frontend.TypeCheck;
+import { binaryValues, checkOperand, checkType, enterSyntax, isInferredInteger, newBinding, presentAt, presentKnown, syntaxChild } from frontend.TypeCheck;
 
 let _local = fn(binding: I32, ty: I32): I32 { H.node(Op.Local, ty, binding, 0, []) };
 let _bool = fn(op: Op, children: Array<I32>): I32 { H.node(op, H.TYPE_BOOL, 0, 0, children) };
@@ -16,7 +16,9 @@ let _present = fn(binding: I32, ty: I32): I32 {
 };
 
 let _equality = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 {
-  let left = presentKnown(checkOperand(leftExpr, 0, -1));
+  let early = isInferredInteger(leftExpr) && !isInferredInteger(rightExpr) ? presentKnown(checkOperand(rightExpr, 1, -1)) : -1;
+  let hint = (early < 0) || (H.typeOf(early) == H.TYPE_DYNAMIC) ? -1 : H.typeOf(early);
+  let left = presentKnown(checkOperand(leftExpr, 0, H.isKind(hint, Kind.Null) ? H.innerOf(hint) : hint));
   let leftType = H.typeOf(left);
 
   if (H.isKind(leftType, Kind.Dynamic)) {
@@ -24,7 +26,7 @@ let _equality = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 {
     throw "Dynamic values can only be compared with null";
   }
   let inner = H.isKind(leftType, Kind.Null) ? H.innerOf(leftType) : leftType;
-  let right = presentKnown(_lifted(checkOperand(rightExpr, 1, H.nullType(inner))));
+  let right = early >= 0 ? early : presentKnown(_lifted(checkOperand(rightExpr, 1, H.nullType(inner))));
   let rightType = H.typeOf(right);
 
   if (H.isKind(rightType, Kind.Dynamic)) {
@@ -85,13 +87,13 @@ let _is = fn(value: AstExpr, targetType: AstType): I32 {
   let target = checkType(targetType);
 
   let code = match (H.kindOf(target)) {
-    Bool => 1, I32 => 2, Bytes => 4, I64 => 7,
+    Bool => 1, I32 => 2, Bytes => 4, I64 => 7, Enum => 14,
     _ => {
-      throw "is supports only Bool, I32, I64 and Bytes, not " + H.typeName(target);
+      throw "is supports only Bool, I32, I64, Bytes and enums, not " + H.typeName(target);
       -1
     },
   };
-  H.node(Op.IsKind, H.TYPE_BOOL, code, 0, [operand])
+  H.node(Op.IsKind, H.TYPE_BOOL, code, code == 14 ? target : 0, [operand])
 };
 
 export let checkValueExpr: (AstExpr, I32) -> I32 = fn(expr, _expected) {

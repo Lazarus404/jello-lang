@@ -2,7 +2,7 @@ package frontend;
 
 import type { Hir } from frontend.Hir;
 import {
-  auxOf, bytesOf, childCount, childOf, globalNameOf, innerOf, lastChild, opOf, rootNode, typeName, typeOf, useHir, valueOf, variantName,
+  auxOf, bytesOf, childCount, childOf, globalNameOf, innerOf, lastChild, opOf, rootNode, typeName, typeOf, useHir, valueOf, variantName, wideValueOf,
 } from frontend.Hir;
 import { bytesLiteral } from frontend.Tokens;
 
@@ -38,10 +38,13 @@ let _section = fn(name: Bytes, id: I32, index: I32, indent: Bytes): Bytes {
   indent + "  " + name + "\n" + _expr(childOf(id, index), indent + "    ")
 };
 
+let _catch = fn(id: I32): Bytes { valueOf(id) < 0 ? "catch" : "catch %" + _id(id) + " " + bytesOf(auxOf(id)) + ": Dynamic" };
+
 _expr = fn(id, indent) {
   match (opOf(id)) {
     Bool => indent + "bool " + (valueOf(id) == 1 ? "true" : "false") + _typed(id),
     I32 => indent + "i32 " + _id(id) + _typed(id),
+    I64 => indent + "i64 " + Std.string(wideValueOf(id)) + _typed(id),
     Bytes => indent + "bytes " + bytesLiteral(bytesOf(valueOf(id))) + _typed(id),
     Null => indent + "null" + _typed(id),
     Local => indent + "local %" + _id(id) + _typed(id),
@@ -73,7 +76,7 @@ _expr = fn(id, indent) {
     Unwrap => _operation(valueOf(id) == 1 ? "unwrap" : "unwrap.known", id, indent),
     ToDynamic => _operation("to_dynamic", id, indent),
     FromDynamic => _operation("from_dynamic", id, indent),
-    IsKind => _operation("is_kind " + _id(id), id, indent),
+    IsKind => _operation("is_kind " + _id(id) + (valueOf(id) == 14 ? " " + typeName(auxOf(id)) : ""), id, indent),
     ArrayNew => _operation("array.new", id, indent),
     ArrayLen => _operation("array.len", id, indent),
     ArrayGet => _operation("array.get", id, indent),
@@ -90,6 +93,7 @@ _expr = fn(id, indent) {
     Tuple => _operation("tuple", id, indent),
     Block => indent + "block" + _typed(id) + _statements(id, indent + "  ") + _expr(lastChild(id), indent + "  "),
     If => indent + "if" + _typed(id) + _section("condition", id, 0, indent) + _section("then", id, 1, indent) + _section("else", id, 2, indent),
+    Try => indent + "try" + _typed(id) + _section("body", id, 0, indent) + _section(_catch(id), id, 1, indent),
     _ => {
       throw "invalid HIR expression op";
       ""
@@ -122,6 +126,10 @@ _statement = fn(id, indent) {
       if (childCount(id) < 3) { return output; }
       let otherwise = childOf(id, 2);
       output + indent + "  else\n" + match (opOf(otherwise)) { IfStatement => _statement(otherwise, indent + "    "), _ => _statements(otherwise, indent + "    ") }
+    },
+    TryStatement => {
+      indent + "try\n" + indent + "  body\n" + _statements(childOf(id, 0), indent + "    ")
+        + indent + "  " + _catch(id) + "\n" + _statements(childOf(id, 1), indent + "    ")
     },
     _ => {
       throw "invalid HIR statement op";

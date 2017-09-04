@@ -18,8 +18,8 @@ export enum ReturnType {
 }
 
 export enum Op {
-  ConstBool; ConstI32; ConstBytes; ConstNull; ConstFunction; Move;
-  Add; Sub; Mul; Neg; Not; Eq; Lt; Sext; Trunc; Box; Unbox; KindOf; IsNull; NullCheck;
+  ConstBool; ConstI32; ConstI64; ConstBytes; ConstNull; ConstFunction; Move;
+  Add; Sub; Mul; Neg; Not; Eq; Lt; Sext; Trunc; Box; Unbox; KindOf; IsEnum; IsNull; NullCheck;
   ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
   Call; CallIndirect; GlobalGet; GlobalSet;
@@ -61,6 +61,9 @@ export enum ThrowHandler {
   Catch(target: I32, payload: I32);
 }
 
+export let handlerTarget: (ThrowHandler) -> I32 = fn(handler) { match (handler) { Catch(target, _) => target } };
+export let handlerPayload: (ThrowHandler) -> I32 = fn(handler) { match (handler) { Catch(_, payload) => payload } };
+
 export enum BasicBlock {
   Block(
     id: I32,
@@ -84,7 +87,7 @@ export enum Function {
 export enum EnumSchema { Enum(variants: Array<Array<ValueType>>); }
 
 export enum Program {
-  Program(functions: Array<Function>, bytes: Array<Bytes>, enums: Array<EnumSchema>, globals: Array<ValueType>);
+  Program(functions: Array<Function>, bytes: Array<Bytes>, wides: Array<I64>, enums: Array<EnumSchema>, globals: Array<ValueType>);
 }
 
 export let opEffects: (Op) -> Array<Effect> = fn(op) {
