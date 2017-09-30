@@ -8,7 +8,7 @@ export enum Op {
   Add; Sub; Mul; Neg; Not; And; Or; Eq; Lt; Gt; Sext; Trunc; Present; IsNull; IsPresent; Unwrap; ToDynamic; FromDynamic; IsKind;
   ArrayNew; ArrayLiteral; ArrayLen; ArrayGet; ArraySet; ArrayPush; ArrayPop; ArrayResize;
   BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq; Tuple; TupleField; EnumNew; EnumTag; EnumField;
-  Call; CallIndirect; Block; If; Try;
+  Call; CallIndirect; CallNative; Block; If; Try;
   Let; Const; Parameter; Declare; Expression; Return; Throw; Break; Continue; IfStatement; TryStatement; While; Function; Program;
 }
 
@@ -18,13 +18,14 @@ export enum Hir {
   Hir(
     ops: Array<Op>, nodes: Array<I32>, edges: Array<I32>, bytes: Array<Bytes>,
     kinds: Array<Kind>, types: Array<I32>, typeEdges: Array<I32>, root: I32, spans: Array<I32>, globals: Array<I32>,
-    variants: Array<I32>, fields: Array<I32>
+    natives: Array<I32>, variants: Array<I32>, fields: Array<I32>
   );
 }
 
 let _NODE_WIDTH = 5;
 let _TYPE_WIDTH = 3;
 let _GLOBAL_WIDTH = 3;
+let _NATIVE_WIDTH = 3;
 let _VARIANT_WIDTH = 3;
 let _FIELD_WIDTH = 2;
 let _SPAN_WIDTH = 3;
@@ -48,6 +49,7 @@ let _typeSlots = Array.new<I32>(0);
 let _root = -1;
 let _spans = Array.new<I32>(0);
 let _globals = Array.new<I32>(0);
+let _natives = Array.new<I32>(0);
 let _variants = Array.new<I32>(0);
 let _fields = Array.new<I32>(0);
 let _spanPath = -1;
@@ -55,7 +57,7 @@ let _spanStart = -1;
 let _spanEnd = -1;
 
 export let useHir: (Hir) -> Hir = fn(program) {
-  match (program) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, variants, fields) => {
+  match (program) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
     _ops = ops;
     _nodes = nodes;
     _edges = edges;
@@ -66,6 +68,7 @@ export let useHir: (Hir) -> Hir = fn(program) {
     _root = root;
     _spans = spans;
     _globals = globals;
+    _natives = natives;
     _variants = variants;
     _fields = fields;
   } };
@@ -115,6 +118,10 @@ export let globalCount: () -> I32 = fn() { (_globals.len() / _GLOBAL_WIDTH) as I
 export let globalTypeOf: (I32) -> I32 = fn(global) { _globals[global * _GLOBAL_WIDTH] };
 export let globalNameOf: (I32) -> Bytes = fn(global) { _bytes[_globals[global * _GLOBAL_WIDTH + 1]] };
 export let globalIsMutable: (I32) -> Bool = fn(global) { _globals[global * _GLOBAL_WIDTH + 2] == 1 };
+export let nativeCount: () -> I32 = fn() { (_natives.len() / _NATIVE_WIDTH) as I32 };
+export let nativeLibraryOf: (I32) -> Bytes = fn(native) { _bytes[_natives[native * _NATIVE_WIDTH]] };
+export let nativeNameOf: (I32) -> Bytes = fn(native) { _bytes[_natives[native * _NATIVE_WIDTH + 1]] };
+export let nativeTypeOf: (I32) -> I32 = fn(native) { _natives[native * _NATIVE_WIDTH + 2] };
 
 let _kindCode = fn(kind: Kind): I32 {
   match (kind) { Bool => 0, I32 => 1, I64 => 2, Bytes => 3, Array => 4, Tuple => 5, Null => 6, Function => 7, Enum => 8, Dynamic => 9 }
@@ -230,6 +237,22 @@ export let declareGlobal: (Bytes, I32, Bool) -> I32 = fn(name, ty, mutable) {
   id
 };
 
+export let declareNative: (Bytes, Bytes, I32) -> I32 = fn(library, name, ty) {
+  let i = 0;
+
+  while (i < nativeCount()) {
+    if ((nativeLibraryOf(i) == library) && (nativeNameOf(i) == name)) {
+      if (nativeTypeOf(i) != ty) { throw "native " + library + "." + name + " is declared with two different types"; }
+      return i;
+    }
+    i++;
+  }
+  _natives.push(bytesId(library));
+  _natives.push(bytesId(name));
+  _natives.push(ty);
+  nativeCount() - 1
+};
+
 export let setSpan: (Bytes, I32, I32) -> Bool = fn(path, start, end) {
   if ((_spanPath < 0) || (_bytes[_spanPath] != path)) { _spanPath = bytesId(path); }
   _spanStart = start;
@@ -328,6 +351,10 @@ export let isReference: (I32) -> Bool = fn(ty) {
 };
 export let tupleType: (Array<I32>) -> I32 = fn(elements) { _intern(Kind.Tuple, -1, elements) };
 export let functionType: (Array<I32>, I32) -> I32 = fn(params, result) { _intern(Kind.Function, result, params) };
+
+export let stdNative: (Bytes, Array<I32>, I32) -> I32 = fn(name, params, result) {
+  declareNative("std", name, functionType(params, result))
+};
 export let declareEnum: (Bytes) -> I32 = fn(name) { _addType(Kind.Enum, bytesId(name), []) };
 
 export let defineVariants: (I32, Array<Bytes>, Array<Array<Bytes>>, Array<Array<I32>>) -> Bool = fn(ty, names, fieldNames, fieldTypes) {
@@ -364,6 +391,7 @@ export let beginHir: () -> Bool = fn() {
   _root = -1;
   _spans = Array.new<I32>(0);
   _globals = Array.new<I32>(0);
+  _natives = Array.new<I32>(0);
   _variants = Array.new<I32>(0);
   _fields = Array.new<I32>(0);
   _spanPath = -1;
@@ -380,7 +408,7 @@ export let beginHir: () -> Bool = fn() {
 
 export let finishHir: (I32) -> Hir = fn(root) {
   _root = root;
-  Hir.Hir(_ops, _nodes, _edges, _bytes, _kinds, _types, _typeEdges, root, _spans, _globals, _variants, _fields)
+  Hir.Hir(_ops, _nodes, _edges, _bytes, _kinds, _types, _typeEdges, root, _spans, _globals, _natives, _variants, _fields)
 };
 
 let _typeName: (I32) -> Bytes = fn(_ty) { "" };

@@ -1,8 +1,8 @@
 package ir;
 
 import { bytesLiteral } from frontend.Tokens;
-import type { BasicBlock, Function, Instruction, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { argsOf, dstOf, immOf, opOf } from ir.Model;
+import type { BasicBlock, Function, Instruction, Native, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
+import { ReturnType, ValueType, argsOf, dstOf, immOf, opOf } from ir.Model;
 
 let _type: (ValueType) -> Bytes = fn(_ty) { "" };
 
@@ -94,6 +94,7 @@ let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, poo
     EnumGet => "enum.get " + operands + ", " + imm,
     Call => "call @" + imm + "(" + operands + ")",
     CallIndirect => "call " + _register(args[0]) + "(" + _registers(args, 1) + ")",
+    CallNative => "call native n" + imm + "(" + operands + ")",
     StructNew => "struct.new",
     StructSet => "struct.set " + _register(args[0]) + ", " + imm + ", " + _register(args[1]),
     SpillPush => "spill.push " + operands + ", " + imm,
@@ -164,7 +165,7 @@ export let printFunction: (Function, Array<Bytes>) -> Bytes = fn(function, pool)
 };
 
 export let printIr: (Program) -> Bytes = fn(program) {
-  match (program) { Program(functions, pool, wides, _, globals) => {
+  match (program) { Program(functions, pool, wides, _, globals, natives) => {
     let out = "";
     let i = 0;
 
@@ -173,6 +174,15 @@ export let printIr: (Program) -> Bytes = fn(program) {
       i++;
     }
     if (globals.len() > 0) { out += "\n"; }
+    i = 0;
+
+    while (i < natives.len()) {
+      match (natives[i]) { Native(library, name, params, result) => {
+        out += "native n" + Std.string(i) + ": " + library + "." + name + " " + _type(ValueType.Function(params, ReturnType.Value(result))) + "\n";
+      } };
+      i++;
+    }
+    if (natives.len() > 0) { out += "\n"; }
     i = 0;
 
     while (i < wides.len()) {

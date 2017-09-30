@@ -6,7 +6,7 @@ import type { SourceSpan } from frontend.Source;
 import { printTokens } from frontend.Tokens;
 import { typeCheckModules } from frontend.CheckModules;
 import { checkFailureSpan } from frontend.TypeCheck;
-import { loadModules } from frontend.Modules;
+import { loadFailureSpan, loadModules } from frontend.Modules;
 import { printHir } from frontend.PrintHir;
 import { lowerProgram } from ir.Lower;
 import { printIr } from ir.Print;
@@ -19,6 +19,8 @@ import type { Program as AstProgram } from frontend.Ast;
 import type { Hir } from frontend.Hir;
 
 enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; }
+
+let _std = "";
 
 let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
   let input = "";
@@ -41,6 +43,12 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
           output = List.head(cur);
           null
         },
+        "--std" => {
+          cur = List.tail(cur);
+          if (List.is_nil(cur)) { throw "--std requires a directory"; }
+          _std = List.head(cur);
+          null
+        },
         _ when (input == "") => {
           input = arg;
           null
@@ -53,11 +61,11 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
     }
     cur = List.tail(cur);
   }
-  if (input == "") { throw "usage: jelloc <input.jello> [--lex|--parse|--hir|--ir|--jlo|--out path]"; }
+  if (input == "") { throw "usage: jelloc <input.jello> [--lex|--parse|--hir|--ir|--jlo|--out path] [--std dir]"; }
   (input, mode == null ? Mode.Emit : mode, output)
 };
 
-let _checked = fn(input: Bytes): Hir { typeCheckModules(loadModules(input)) };
+let _checked = fn(input: Bytes): Hir { typeCheckModules(loadModules(input, _std)) };
 
 let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
   match (span) { Span(path, start, _) => sourceDiagnostic(path, readText(path), start, message) }
@@ -65,6 +73,7 @@ let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
 
 let _located = fn(message: Bytes): Bytes {
   let span = checkFailureSpan();
+  if (span == null) { span = loadFailureSpan(); }
   if (span == null) { message } else { _diagnostic(span, message) }
 };
 

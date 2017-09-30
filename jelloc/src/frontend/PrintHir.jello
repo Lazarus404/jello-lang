@@ -2,7 +2,7 @@ package frontend;
 
 import type { Hir } from frontend.Hir;
 import {
-  auxOf, bytesOf, childCount, childOf, globalNameOf, innerOf, lastChild, opOf, rootNode, typeName, typeOf, useHir, valueOf, variantName, wideValueOf,
+  auxOf, bytesOf, childCount, childOf, globalNameOf, innerOf, lastChild, nativeLibraryOf, nativeNameOf, opOf, rootNode, typeName, typeOf, useHir, valueOf, variantName, wideValueOf,
 } from frontend.Hir;
 import { bytesLiteral } from frontend.Tokens;
 
@@ -58,6 +58,7 @@ _expr = fn(id, indent) {
     EnumField => _operation("enum.field " + variantName(typeOf(childOf(id, 0)), auxOf(id)) + "." + _id(id), id, indent),
     Call => _operation("call @" + _id(id), id, indent),
     CallIndirect => _operation("call.indirect", id, indent),
+    CallNative => _operation("call.native " + nativeLibraryOf(valueOf(id)) + "." + nativeNameOf(valueOf(id)), id, indent),
     Add => _operation("add.wrap", id, indent),
     Sub => _operation("sub.wrap", id, indent),
     Mul => _operation("mul.wrap", id, indent),

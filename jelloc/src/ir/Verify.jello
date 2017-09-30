@@ -1,6 +1,6 @@
 package ir;
 
-import type { BasicBlock, EnumSchema, Function, Instruction, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
+import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
 import { ReturnType, ValueType, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, instructionMayThrow, opOf, returnTypeEqual, valueTypeEqual } from ir.Model;
 import { normalSuccessors } from ir.Cfg;
 import { bitsAdd, bitsCopy, bitsEqual, bitsFull, bitsHas, bitsIntersect, bitsNew, bitsUnion } from ir.Bits;
@@ -17,6 +17,7 @@ let _poolSize = 0;
 let _wideCount = 0;
 let _enums = Array.new<EnumSchema>(0);
 let _globals = Array.new<ValueType>(0);
+let _natives = Array.new<Native>(0);
 
 let _registers = Array.new<ValueType>(0);
 
@@ -371,6 +372,13 @@ let _instruction = fn(instruction: Instruction) {
       }
     },
     Call => { if (_inProgram) { match (_signature(imm)) { Function(params, result) => _call(params, result, dst, args, 0), _ => null }; } null },
+    CallNative => {
+      if (_inProgram) {
+        if ((imm < 0) || (imm >= _natives.len())) { _fail("native out of range"); }
+        match (_natives[imm]) { Native(_, _, params, result) => _call(params, ReturnType.Value(result), dst, args, 0) };
+      }
+      null
+    },
     CallIndirect => {
       if (args.len() == 0) { _fail("indirect call without a callee"); }
 
@@ -702,7 +710,7 @@ let _signatureOf = fn(function: Function): ValueType {
 };
 
 export let verifyProgram: (Program) -> Bool = fn(program) {
-  match (program) { Program(functions, pool, wides, enums, globals) => {
+  match (program) { Program(functions, pool, wides, enums, globals, natives) => {
     _functionIds = Array.new<I32>(0);
     _signatures = Array.new<ValueType>(0);
     let i = 0;
@@ -730,6 +738,7 @@ export let verifyProgram: (Program) -> Bool = fn(program) {
     _wideCount = wides.len() as I32;
     _enums = enums;
     _globals = globals;
+    _natives = natives;
     _inProgram = true;
     i = 0;
 

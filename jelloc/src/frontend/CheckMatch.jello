@@ -3,10 +3,10 @@ package frontend;
 import type { Expr as AstExpr, MatchArm, Pattern } from frontend.Ast;
 import { Pattern, integerValue, wideIntegerValue } from frontend.Ast;
 import {
-  Kind, Op, TYPE_BOOL, TYPE_BYTES, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, fieldCount, fieldType, isKind, node,
-  nullType, opOf, tupleType, typeArg, typeArgCount, typeName, typeOf, variantCount, variantName, variantTag, wideLiteral,
+  Kind, Op, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, fieldCount, fieldType, isKind, node,
+  nullType, opOf, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, variantCount, variantName, variantTag, wideLiteral,
 } from frontend.Hir;
-import { checkArm, checkOperand, checkPresent, coerceAt, enterSyntax, joinTypes, newBinding, syntaxChild } from frontend.TypeCheck;
+import { checkArm, checkOperand, checkPresent, coerceAt, enterSyntax, joinTypes, newBinding, regexpGlobal, syntaxChild } from frontend.TypeCheck;
 
 enum Subject { Subject(roots: Array<I32>, types: Array<I32>, tuple: I32, tag: I32); }
 
@@ -122,8 +122,25 @@ _test = fn(subject, pattern, path, ty, tests, names, paths) {
       tests.push(node(Op.BytesEq, TYPE_BOOL, 0, 0, [_read(subject, path), node(Op.Bytes, TYPE_BYTES, bytesId(value), 0, [])]));
       null
     },
-    RegExp(_, _, _) => {
-      throw "regexp patterns are not supported yet";
+    RegExp(source, flags, binding) => {
+      if (ty != TYPE_BYTES) { _mismatch("regexp", ty); }
+      let regexp = node(Op.Global, TYPE_DYNAMIC, regexpGlobal(source, flags), 0, []);
+      let matchPrefix = stdNative("regexp_match_prefix", [TYPE_BYTES, TYPE_DYNAMIC], TYPE_DYNAMIC);
+      let found = node(Op.CallNative, TYPE_DYNAMIC, matchPrefix, 0, [_read(subject, path), regexp]);
+
+      if (binding != null) {
+        let roots = match (subject) {
+          Subject(roots, types, _, _) => {
+            types.push(TYPE_DYNAMIC);
+            roots
+          }
+        };
+        roots.push(newBinding());
+        found = node(Op.Assign, TYPE_DYNAMIC, roots[roots.len() - 1], 0, [found]);
+        names.push(binding);
+        paths.push([(roots.len() - 1) as I32]);
+      }
+      tests.push(node(Op.IsPresent, TYPE_BOOL, 0, 0, [found]));
       null
     },
     IsType(_, _) => {
@@ -164,6 +181,7 @@ _describe = fn(pattern) {
     Bool(value) => value ? "true" : "false",
     Integer(digits, _) => digits,
     Bytes(value) => "\"" + value + "\"",
+    RegExp(source, flags, _) => "~r/" + source + "/" + flags,
     _ => "this pattern",
   }
 };
@@ -192,6 +210,8 @@ let _same = fn(a: Pattern, b: Pattern): Bool {
     (Bool(x), Bool(y)) => x == y,
     (Integer(x, _), Integer(y, _)) => wideIntegerValue(x, false) == wideIntegerValue(y, false),
     (Bytes(x), Bytes(y)) => x == y,
+    (RegExp(_, _, _), _) => false,
+    (_, RegExp(_, _, _)) => false,
     _ => true,
   }
 };
@@ -413,10 +433,25 @@ let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>)
   Subject.Subject(roots, types, -1, tag)
 };
 
+let _rootCount = fn(subject: Subject): I32 { match (subject) { Subject(roots, _, _, _) => roots.len() as I32 } };
+
+let _declareMatches = fn(subject: Subject, first: I32, children: Array<I32>) {
+  match (subject) { Subject(roots, _, _, _) => {
+    let r = first;
+
+    while (r < roots.len()) {
+      children.push(node(Op.Declare, 0, 0, 0, [node(Op.Let, TYPE_DYNAMIC, roots[r], bytesId("match.regexp"), [node(Op.Null, TYPE_DYNAMIC, 0, 0, [])])]));
+      r++;
+    }
+  } };
+  null
+};
+
 export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject, arms, expected, statement) {
   if (arms.len() == 0) { throw "match requires at least one arm"; }
   let children = Array.new<I32>(0);
   let checked = _subject(subject, arms, children);
+  let subjectRoots = _rootCount(checked);
   let ty = match (checked) { Subject(_, types, tuple, _) => tuple >= 0 ? tuple : types[0] };
   let top = match (checked) { Subject(_, _, tuple, _) => tuple >= 0 ? [-1] : [0] };
   let rows = Array.new<Array<Pattern>>(0);
@@ -499,6 +534,7 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
     a++;
   }
   if (pending.len() > 0) { throw "match alternative needs a body"; }
+  _declareMatches(checked, subjectRoots, children);
   if (_useful(rows, [Pattern.Wildcard], [ty])) { _notExhaustive(rows, ty); }
 
   if (!statement) {

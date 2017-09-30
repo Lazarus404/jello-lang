@@ -3,7 +3,8 @@ package frontend;
 import type { Expr, Package, Stmt } from frontend.Ast;
 import { lexFileSource } from frontend.Lexer;
 import { parseSource, programSyntax } from frontend.Parser;
-import type { Syntax } from frontend.Source;
+import type { SourceSpan, Syntax } from frontend.Source;
+import { SourceSpan } from frontend.Source;
 import { readText } from std.io.File;
 
 export enum Import { Import(local: Bytes, module: I32, name: Bytes, typeOnly: Bool); }
@@ -23,9 +24,26 @@ let _directory = fn(path: Bytes): Bytes {
   if (slash < 0) { "." } else { Bytes.slice(path, 0, slash) }
 };
 
-let _modulePath = fn(root: Bytes, parts: Array<Bytes>): Bytes {
+let _dotted = fn(parts: Array<Bytes>): Bytes {
+  let out = parts[0];
+  let i = 1;
+
+  while (i < parts.len()) {
+    out += "." + parts[i];
+    i++;
+  }
+  out
+};
+
+let _modulePath = fn(root: Bytes, std: Bytes, parts: Array<Bytes>): Bytes {
   let path = root;
   let i = 0;
+
+  if (parts[0] == "std") {
+    if (std == "") { throw "module " + _dotted(parts) + " is in the standard library; pass its directory with --std <dir>"; }
+    path = std;
+    i = 1;
+  }
 
   while (i < parts.len()) {
     path += "/" + parts[i];
@@ -64,6 +82,15 @@ let _modules = Array.new<Module>(0);
 let _paths = Array.new<Bytes>(0);
 let _visiting = Array.new<Bytes>(0);
 let _root = ".";
+let _stdRoot = "";
+
+let _failure: ?SourceSpan = null;
+
+export let loadFailureSpan: () -> ?SourceSpan = fn() { _failure };
+
+let _statementSpan = fn(syntax: Syntax, index: I32): SourceSpan {
+  match (syntax) { Node(path, _, _, children) => match (children[index]) { Node(_, start, end, _) => SourceSpan.Span(path, start, end) } }
+};
 
 let _load: (Bytes, Array<Bytes>) -> I32 = fn(_path, _parts) { -1 };
 _load = fn(path, parts) {
@@ -71,9 +98,12 @@ _load = fn(path, parts) {
   if (loaded >= 0) { return loaded; }
   if (_indexOf(_visiting, path) >= 0) { throw "import cycle through " + path; }
   _visiting.push(path);
+  let importing = _failure;
+  _failure = null;
   let (tokens, sourcePath, starts, ends) = lexFileSource(readText(path), path);
   let program = parseSource(tokens, sourcePath, starts, ends);
   let syntax = programSyntax(program);
+  _failure = importing;
 
   let module = match (program) { Program(packageName, statements, tail) => {
     if (parts.len() == 0) {
@@ -93,14 +123,19 @@ _load = fn(path, parts) {
 
     while (i < statements.len()) {
       match (statements[i]) {
+        ImportFrom(Native, _, _) => null,
         ImportFrom(kind, items, importParts) => {
+          let at: ?SourceSpan = _statementSpan(syntax, i);
+          _failure = at;
+
           let typeOnly = match (kind) {
             Value => false, TypeOnly => true, _ => {
-              throw "macro and native imports are not supported";
+              throw "macro imports are not supported";
               false
             }
           };
-          let dependency = _load(_modulePath(_root, importParts), importParts);
+          let dependency = _load(_modulePath(_root, _stdRoot, importParts), importParts);
+          _failure = at;
           let j = 0;
 
           while (j < items.len()) {
@@ -123,6 +158,7 @@ _load = fn(path, parts) {
       };
       i++;
     }
+    _failure = null;
     Module.Module(sourcePath, statements, syntax, tail, imports)
   } };
   _visiting.pop();
@@ -131,11 +167,13 @@ _load = fn(path, parts) {
   (_modules.len() - 1) as I32
 };
 
-export let loadModules: (Bytes) -> Array<Module> = fn(entryPath) {
+export let loadModules: (Bytes, Bytes) -> Array<Module> = fn(entryPath, std) {
   _modules = Array.new<Module>(0);
   _paths = Array.new<Bytes>(0);
   _visiting = Array.new<Bytes>(0);
+  _failure = null;
   _root = _directory(entryPath);
+  _stdRoot = std;
   _load(entryPath, Array.new<Bytes>(0));
   _modules
 };

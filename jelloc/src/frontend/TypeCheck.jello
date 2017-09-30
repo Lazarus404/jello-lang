@@ -370,6 +370,14 @@ let _checkVariable = fn(name: Bytes): I32 {
   match (scoped(name)) {
     Global(id) => _leaf(Op.Global, H.globalTypeOf(id), id),
     Function(index) => _leaf(Op.FunctionRef, _functionType(index), index + 1),
+    Loaded(_, _) => {
+      throw "native " + name + " needs a typed binding first: let f: (Bytes) -> I32 = " + name + ";";
+      -1
+    },
+    Native(_) => {
+      throw "native " + name + " can only be called; natives are not values yet";
+      -1
+    },
     Unbound => {
       throw "unknown local: " + name;
       -1
@@ -407,13 +415,24 @@ let _checkDirectCall = fn(index: I32, args: Array<AstExpr>): I32 {
   H.node(Op.Call, H.innerOf(ty), index + 1, 0, _arguments(ty, args, [], "wrong argument type for " + name))
 };
 
+let _checkNativeCall = fn(native: I32, name: Bytes, args: Array<AstExpr>): I32 {
+  let ty = H.nativeTypeOf(native);
+  if (args.len() != H.typeArgCount(ty)) { throw "wrong argument count for " + name; }
+  H.node(Op.CallNative, H.innerOf(ty), native, 0, _arguments(ty, args, [], "wrong argument type for " + name))
+};
+
 let _checkCall = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>): I32 {
   if (typeArgs.len() != 0) { throw "calls do not support type arguments"; }
 
   match (callee) {
     Variable(name) => {
       let direct = _find(name, 0) >= 0 ? Binding.Unbound : scoped(name);
-      match (direct) { Function(index) => _checkDirectCall(index, args), _ => _checkIndirectCall(_value(callee, 0), args) }
+
+      match (direct) {
+        Function(index) => _checkDirectCall(index, args),
+        Native(native) => _checkNativeCall(native, name, args),
+        _ => _checkIndirectCall(_value(callee, 0), args),
+      }
     },
     _ => _checkIndirectCall(_value(callee, 0), args),
   }
@@ -446,6 +465,10 @@ let _assignable = fn(name: Bytes): Tuple<Bool, I32, I32> {
     Global(target) => target,
     Function(_) => {
       throw "cannot assign to function: " + name;
+      -1
+    },
+    Loaded(_, _), Native(_) => {
+      throw "cannot assign to native: " + name;
       -1
     },
     Unbound => {
@@ -982,6 +1005,35 @@ _checkFunctionLiteral = fn(params, result, body, expected) {
 
 _checkBlock = fn(statements, tail, expected) { _checkBlockBody([], statements, tail, 0, expected, _VALUE_TAIL) };
 
+let _regexpKeys = Array.new<Bytes>(0);
+let _regexpGlobals = Array.new<I32>(0);
+let _regexpInits = Array.new<I32>(0);
+
+export let regexpGlobal: (Bytes, Bytes) -> I32 = fn(pattern, flags) {
+  let key = flags + "/" + pattern;
+  let i = 0;
+
+  while (i < _regexpKeys.len()) {
+    if (_regexpKeys[i] == key) { return _regexpGlobals[i]; }
+    i++;
+  }
+  let global = H.declareGlobal("~r/" + pattern + "/" + flags, H.TYPE_DYNAMIC, false);
+  let compile = H.stdNative("regexp_compile", [H.TYPE_BYTES, H.TYPE_BYTES], H.TYPE_DYNAMIC);
+  let compiled = H.node(Op.CallNative, H.TYPE_DYNAMIC, compile, 0, [_leaf(Op.Bytes, H.TYPE_BYTES, H.bytesId(pattern)), _leaf(Op.Bytes, H.TYPE_BYTES, H.bytesId(flags))]);
+  _regexpInits.push(H.node(Op.Declare, 0, 0, 0, [H.node(Op.InitGlobal, H.TYPE_DYNAMIC, global, 0, [compiled])]));
+  _regexpKeys.push(key);
+  _regexpGlobals.push(global);
+  global
+};
+
+export let takeRegexpInits: () -> Array<I32> = fn() {
+  let inits = _regexpInits;
+  _regexpKeys = Array.new<Bytes>(0);
+  _regexpGlobals = Array.new<I32>(0);
+  _regexpInits = Array.new<I32>(0);
+  inits
+};
+
 export let beginCheck: () -> Bool = fn() {
   H.beginHir();
   resetNarrowing();
@@ -1001,6 +1053,7 @@ export let beginCheck: () -> Bool = fn() {
   _functionNodes = Array.new<I32>(0);
   _functionParamTypes = Array.new<Array<I32>>(0);
   _result = -1;
+  takeRegexpInits();
   true
 };
 

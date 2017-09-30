@@ -22,7 +22,7 @@ let _key = fn(ty: ValueType): I32 {
   (_keyTypes.len() - 1) as I32
 };
 
-let _windowStart = fn(op: Op): I32 { match (op) { Call, EnumNew => 0, CallIndirect, BytesSlice => 1, _ => -1 } };
+let _windowStart = fn(op: Op): I32 { match (op) { Call, CallNative, EnumNew => 0, CallIndirect, BytesSlice => 1, _ => -1 } };
 
 let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   let indexes = Array.new<I32>(0);
@@ -529,7 +529,7 @@ let _allocate = fn(function: Function): Function {
 };
 
 export let allocateProgram: (Program) -> Program = fn(program) {
-  let allocated = match (program) { Program(functions, pool, wides, enums, globals) => {
+  let allocated = match (program) { Program(functions, pool, wides, enums, globals, natives) => {
     let out = Array.new<Function>(0);
     let i = 0;
 
@@ -537,7 +537,7 @@ export let allocateProgram: (Program) -> Program = fn(program) {
       try { out.push(_allocate(functions[i])); } catch (e) { throw "function " + Std.string(i) + ": " + Std.string(e); }
       i++;
     }
-    Program.Program(out, pool, wides, enums, globals)
+    Program.Program(out, pool, wides, enums, globals, natives)
   } };
   verifyProgram(allocated);
   allocated

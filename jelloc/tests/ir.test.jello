@@ -20,6 +20,7 @@ import type {
   BasicBlock,
   Effect,
   EnumSchema,
+  Native,
   Function,
   Instruction,
   Program,
@@ -31,9 +32,9 @@ import type {
 
 let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
 let none = fn(): Array<I32> { Array.new<I32>(0) };
-let program = fn(functions: Array<Function>): Program { Program.Program(functions, Array.new<Bytes>(0), Array.new<I64>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0)) };
+let program = fn(functions: Array<Function>): Program { Program.Program(functions, Array.new<Bytes>(0), Array.new<I64>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0)) };
 let printJlo = fn(legalized: Program): Bytes { printIr(allocateProgram(legalized)) };
-let allocated = fn(legalized: Program): Function { match (allocateProgram(legalized)) { Program(functions, _, _, _, _) => functions[0] } };
+let allocated = fn(legalized: Program): Function { match (allocateProgram(legalized)) { Program(functions, _, _, _, _, _) => functions[0] } };
 let registerCount = fn(function: Function): I32 { match (function) { Function(_, _, registers, _, _, _) => registers.len() as I32 } };
 
 let spillCount = fn(function: Function, push: Bool): I32 {
@@ -56,10 +57,10 @@ let spillCount = fn(function: Function, push: Bool): I32 {
   } }
 };
 
-let checkFile = fn(path: Bytes): Hir { typeCheckModules(loadModules(path)) };
+let checkFile = fn(path: Bytes): Hir { typeCheckModules(loadModules(path, "")) };
 
 let initializationOrder = fn(path: Bytes): Array<Bytes> {
-  let modules = loadModules(path);
+  let modules = loadModules(path, "");
   let paths = Array.new<Bytes>(0);
   let i = 0;
 
@@ -225,7 +226,7 @@ test("keeps source spans with explicit frontend results", fn(t) {
 
   t.throws(fn(_t) { parseSource(tokens, path, Array.new<I32>(0), Array.new<I32>(0)); });
 
-  let loaded = loadModules("itests/emit/modules/main.jello");
+  let loaded = loadModules("itests/emit/modules/main.jello", "");
   parseProgram(lex("false"));
   t.is(spansBothModules(spansOf(typeCheckModules(loaded))), true);
 });
@@ -748,7 +749,7 @@ test("carries a deduplicated bytes pool through selected JLO", fn(t) {
   let jlo = legalizeJlo(lowerProgram(typeCheckProgram(parseProgram(lex("\"A\"[0i32] + \"A\"[0i32]")))));
 
   match (jlo) {
-    Program(_, pool, _, _, _) => {
+    Program(_, pool, _, _, _, _) => {
       t.is(pool.len(), 1);
       t.is(pool[0], "A");
     },
@@ -964,7 +965,7 @@ test("loads transitive direct functions dependency-first and rejects cycles", fn
   let ir = printIr(lowerProgram(hir));
   t.is(ir.indexOf("fn @1") >= 0, true);
   t.is(ir.indexOf("fn @2") > ir.indexOf("fn @1"), true);
-  t.throws(fn(_t) { loadModules("itests/emit/cycle/main.jello"); });
+  t.throws(fn(_t) { loadModules("itests/emit/cycle/main.jello", ""); });
 });
 
 test("canonicalizes aliases across a diamond import graph", fn(t) {

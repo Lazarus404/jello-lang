@@ -46,15 +46,15 @@ let copy = fn(values: Array<I32>): Array<I32> {
 };
 
 let mutate = fn(hir: Hir, id: I32, column: I32, value: I32): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, variants, fields) => {
+  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
     let changed = copy(nodes);
     changed[id * 5 + column] = value;
-    Hir.Hir(ops, changed, edges, bytes, kinds, types, typeEdges, root, spans, globals, variants, fields)
+    Hir.Hir(ops, changed, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields)
   } }
 };
 
 let mutateOp = fn(hir: Hir, id: I32, op: Op): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, variants, fields) => {
+  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
     let changed = Array.new<Op>(0);
     let i = 0;
 
@@ -62,20 +62,20 @@ let mutateOp = fn(hir: Hir, id: I32, op: Op): Hir {
       changed.push(i == id ? op : ops[i]);
       i++;
     }
-    Hir.Hir(changed, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, variants, fields)
+    Hir.Hir(changed, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields)
   } }
 };
 
 let mutateChild = fn(hir: Hir, parent: I32, index: I32, child: I32): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, variants, fields) => {
+  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
     let changed = copy(edges);
     changed[nodes[parent * 5 + 3] + index] = child;
-    Hir.Hir(ops, nodes, changed, bytes, kinds, types, typeEdges, root, spans, globals, variants, fields)
+    Hir.Hir(ops, nodes, changed, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields)
   } }
 };
 
 let mutateSpans = fn(hir: Hir, count: I32, id: I32, column: I32, value: I32): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, variants, fields) => {
+  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
     let changed = Array.new<I32>(0);
     let i = 0;
 
@@ -84,7 +84,7 @@ let mutateSpans = fn(hir: Hir, count: I32, id: I32, column: I32, value: I32): Hi
       i++;
     }
     if (id >= 0) { changed[id * 3 + column] = value; }
-    Hir.Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, changed, globals, variants, fields)
+    Hir.Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, changed, globals, natives, variants, fields)
   } }
 };
 

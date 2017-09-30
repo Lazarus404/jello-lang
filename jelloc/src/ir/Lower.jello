@@ -3,10 +3,10 @@ package ir;
 import type { Hir } from frontend.Hir;
 import {
   TYPE_BOOL, TYPE_DYNAMIC, TYPE_I32, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, isReference, kindOf, lastChild, opOf, rootNode, typeArg,
-  typeArgCount, typeCount, globalCount, globalTypeOf, typeOf, useHir, valueOf, variantCount,
+  typeArgCount, typeCount, globalCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
-import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { BasicBlock, EnumSchema, Op, Program as IrProgram, ReturnType, Terminator, ThrowHandler, ValueType, handlerTarget, instruction } from ir.Model;
+import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
+import { BasicBlock, EnumSchema, Native, Op, Program as IrProgram, ReturnType, Terminator, ThrowHandler, ValueType, handlerTarget, instruction } from ir.Model;
 import { blockMayThrow } from ir.Cfg;
 import { verifyProgram } from ir.Verify;
 
@@ -25,6 +25,8 @@ let _pool = Array.new<Bytes>(0);
 let _poolIndexes = Array.new<I32>(0);
 let _wides = Array.new<I64>(0);
 let _enumIndexes = Array.new<I32>(0);
+let _natives = Array.new<Native>(0);
+let _nativeIndexes = Array.new<I32>(0);
 
 let _valueType: (I32) -> ValueType = fn(_ty) { ValueType.Bool };
 
@@ -173,13 +175,22 @@ let _operation = fn(id: I32): Op {
     Sext => Op.Sext, Trunc => Op.Trunc, IsNull, IsPresent => Op.IsNull,
     ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet,
     BytesLen => Op.BytesLen, BytesGet => Op.BytesGet, BytesSlice => Op.BytesSlice, BytesConcat => Op.BytesConcat, BytesEq => Op.BytesEq,
-    Tuple => Op.TupleNew, TupleField => Op.TupleGet, Call => Op.Call, CallIndirect => Op.CallIndirect,
+    Tuple => Op.TupleNew, TupleField => Op.TupleGet, Call => Op.Call, CallIndirect => Op.CallIndirect, CallNative => Op.CallNative,
     EnumNew => Op.EnumNew, EnumTag => Op.EnumTag, EnumField => Op.EnumGet,
     _ => {
       throw "invalid HIR expression op";
       Op.Move
     },
   }
+};
+
+let _nativeIndex = fn(native: I32): I32 {
+  if (_nativeIndexes[native] < 0) {
+    let ty = nativeTypeOf(native);
+    _natives.push(Native.Native(nativeLibraryOf(native), nativeNameOf(native), _valueTypes(ty), _valueType(innerOf(ty))));
+    _nativeIndexes[native] = (_natives.len() - 1) as I32;
+  }
+  _nativeIndexes[native]
 };
 
 let _i32 = fn(value: I32): I32 {
@@ -362,6 +373,7 @@ _expr = fn(id) {
       let imm = match (opOf(id)) {
         Bool, I32, FunctionRef, TupleField, Call, EnumNew, EnumField => valueOf(id),
         Bytes => _poolIndex(valueOf(id)),
+        CallNative => _nativeIndex(valueOf(id)),
         I64 => {
           _wides.push(wideValueOf(id));
           (_wides.len() - 1) as I32
@@ -520,6 +532,9 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
   _pool = Array.new<Bytes>(0);
   _poolIndexes = Array.new<I32>(0);
   _wides = Array.new<I64>(0);
+  _natives = Array.new<Native>(0);
+  _nativeIndexes = Array.new<I32>(0);
+  while (_nativeIndexes.len() < nativeCount()) { _nativeIndexes.push(-1); }
   _enumIndexes = Array.new<I32>(0);
   let enumTypes = Array.new<I32>(0);
   let ty = 0;
@@ -574,7 +589,7 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
     globals.push(_valueType(globalTypeOf(i)));
     i++;
   }
-  let lowered = IrProgram.Program(functions, _pool, _wides, enums, globals);
+  let lowered = IrProgram.Program(functions, _pool, _wides, enums, globals, _natives);
   verifyProgram(lowered);
   lowered
 };

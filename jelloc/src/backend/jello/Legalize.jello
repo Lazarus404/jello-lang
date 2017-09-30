@@ -92,7 +92,7 @@ let _function = fn(function: Function): Function {
 };
 
 export let legalizeJlo: (Program) -> Program = fn(program) {
-  let legalized = match (program) { Program(functions, pool, wides, enums, globals) => {
+  let legalized = match (program) { Program(functions, pool, wides, enums, globals, natives) => {
     let selected = Array.new<Function>(0);
     let i = 0;
 
@@ -100,7 +100,7 @@ export let legalizeJlo: (Program) -> Program = fn(program) {
       selected.push(_function(functions[i]));
       i++;
     }
-    Program.Program(selected, pool, wides, enums, globals)
+    Program.Program(selected, pool, wides, enums, globals, natives)
   } };
   verifyProgram(legalized);
   legalized

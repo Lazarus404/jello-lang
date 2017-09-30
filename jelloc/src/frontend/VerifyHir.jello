@@ -3,7 +3,7 @@ package frontend;
 import type { Hir } from frontend.Hir;
 import {
   Kind, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
-  fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, isKind, kindOf, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
+  fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, isKind, kindOf, nativeCount, nativeTypeOf, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
   spanStartOf, typeArg, typeArgCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 
@@ -339,6 +339,10 @@ _expr = fn(id) {
     },
     Call => _arguments(id, _functionType(valueOf(id)), 0, "direct call signature mismatch"),
     CallIndirect => _arguments(id, _operand(id, 0), 1, "indirect call signature mismatch"),
+    CallNative => {
+      if ((valueOf(id) < 0) || (valueOf(id) >= nativeCount())) { _fail("native call target"); }
+      _arguments(id, nativeTypeOf(valueOf(id)), 0, "native call signature mismatch")
+    },
     Block => {
       if (auxOf(id) != 1) { _fail("value block without a tail"); }
       _block(id, false)

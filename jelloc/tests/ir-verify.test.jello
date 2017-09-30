@@ -3,6 +3,7 @@ import { verifyFunction, verifyProgram } from ir.Verify;
 import type {
   BasicBlock,
   EnumSchema,
+  Native,
   Function,
   Instruction,
   Program,
@@ -15,7 +16,7 @@ import { Op, instruction } from ir.Model;
 
 let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
 let none = fn(): Array<I32> { Array.new<I32>(0) };
-let program = fn(functions: Array<Function>, pool: Array<Bytes>): Program { Program.Program(functions, pool, Array.new<I64>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0)) };
+let program = fn(functions: Array<Function>, pool: Array<Bytes>): Program { Program.Program(functions, pool, Array.new<I64>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0)) };
 
 test("verifies a typed branching function", fn(t) {
   let blocks: Array<BasicBlock> = [

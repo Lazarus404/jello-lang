@@ -3,7 +3,7 @@ package frontend;
 import type { Import, Module } from frontend.Modules;
 import { Module } from frontend.Modules;
 
-export enum Binding { Global(id: I32); Function(index: I32); Unbound; }
+export enum Binding { Global(id: I32); Function(index: I32); Loaded(library: Bytes, name: Bytes); Native(id: I32); Unbound; }
 
 let _names = Array.new<Bytes>(0);
 let _bindings = Array.new<Binding>(0);

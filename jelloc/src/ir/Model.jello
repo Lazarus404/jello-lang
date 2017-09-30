@@ -22,7 +22,7 @@ export enum Op {
   Add; Sub; Mul; Neg; Not; Eq; Lt; Sext; Trunc; Box; Unbox; KindOf; IsEnum; IsNull; NullCheck;
   ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
-  Call; CallIndirect; GlobalGet; GlobalSet;
+  Call; CallIndirect; CallNative; GlobalGet; GlobalSet;
   StructNew; StructSet; SpillPush; SpillPop;
 }
 
@@ -86,8 +86,13 @@ export enum Function {
 
 export enum EnumSchema { Enum(variants: Array<Array<ValueType>>); }
 
+export enum Native { Native(library: Bytes, name: Bytes, params: Array<ValueType>, result: ValueType); }
+
 export enum Program {
-  Program(functions: Array<Function>, bytes: Array<Bytes>, wides: Array<I64>, enums: Array<EnumSchema>, globals: Array<ValueType>);
+  Program(
+    functions: Array<Function>, bytes: Array<Bytes>, wides: Array<I64>, enums: Array<EnumSchema>, globals: Array<ValueType>,
+    natives: Array<Native>
+  );
 }
 
 export let opEffects: (Op) -> Array<Effect> = fn(op) {
@@ -97,6 +102,7 @@ export let opEffects: (Op) -> Array<Effect> = fn(op) {
     ArrayResize => [Effect.MayAllocate, Effect.MayWriteMemory, Effect.MayTrap],
     BytesLen, BytesEq => [Effect.MayReadMemory, Effect.MayTrap],
     Call, CallIndirect => [Effect.MayCall, Effect.MayThrow],
+    CallNative => [Effect.MayCall, Effect.MayAllocate, Effect.MayTrap],
     BytesGet, ArrayLen, ArrayGet, TupleGet, EnumGet => [Effect.MayReadMemory, Effect.MayTrap],
     GlobalGet => [Effect.MayReadMemory],
     Unbox, NullCheck => [Effect.MayTrap],
