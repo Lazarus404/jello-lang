@@ -108,13 +108,17 @@ export let tokenName: (Token) -> Bytes = fn(token) {
   }
 };
 
-export let printTokens: (Array<Token>) -> Bytes = fn(tokens) {
-  let out = "";
-  let i = 0;
-
-  while (i < Array.len(tokens)) {
-    out = out + tokenName(tokens[i]) + "\n";
-    i++;
+let _tokenLines: (Array<Token>, I32, I32) -> Bytes = fn(tokens, lo, hi) {
+  if (hi - lo == 1) {
+    tokenName(tokens[lo]) + "\n"
+  } else if (hi <= lo) {
+    ""
+  } else {
+    let mid = lo + (hi - lo) / 2;
+    _tokenLines(tokens, lo, mid) + _tokenLines(tokens, mid, hi)
   }
-  out
+};
+
+export let printTokens: (Array<Token>) -> Bytes = fn(tokens) {
+  _tokenLines(tokens, 0, Array.len(tokens))
 };

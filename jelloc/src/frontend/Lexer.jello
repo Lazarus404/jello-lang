@@ -1,13 +1,7 @@
 package frontend;
 
-import { group, advance } from std.core.RegExp;
 import { sourceDiagnostic } from frontend.Source;
-import {
-  startsWith as bytesStartsWith,
-  indexOf as bytesIndexOf,
-  u8 as bytesU8,
-  utf8FromCodepoint,
-} from std.core.Bytes;
+import { u8 as bytesU8, utf8FromCodepoint, utf8Validate } from std.core.Bytes;
 
 export enum IntegerSize {
   Infer;
@@ -126,37 +120,53 @@ let _byteAt = fn(src: Bytes, i: I32) {
   ((i < 0) || (i >= src.len())) ? -1 : Bytes.get_u8(src, i)
 };
 
-let _restAfter = fn(src: Bytes) {
-  Bytes.slice(src, 1, src.len() - 1)
+let _isSpace = fn(c: I32) {
+  (c == " ".code) || ((c >= "\t".code) && (c <= "\r".code))
 };
 
-let _skipSpace = fn(rest: Bytes) {
-  let cur = rest;
+let _isDigit = fn(c: I32) {
+  (c >= "0".code) && (c <= "9".code)
+};
+
+let _digitsEnd = fn(src: Bytes, i: I32): I32 {
+  let end = i;
+  while (_isDigit(_byteAt(src, end))) { end++; }
+  end
+};
+
+let _startsAt = fn(src: Bytes, i: I32, text: Bytes): Bool {
+  let k = 0;
+  while ((k < text.len()) && (_byteAt(src, i + k) == Bytes.get_u8(text, k))) { k++; }
+  k == text.len()
+};
+
+let _find = fn(src: Bytes, text: Bytes, i: I32): I32 {
+  let at = i;
+  while ((at + text.len() <= src.len()) && !_startsAt(src, at, text)) { at++; }
+  (at + text.len() <= src.len()) ? at : -1
+};
+
+let _skipSpace = fn(src: Bytes, at: I32): I32 {
+  let pos = at;
   let cont = true;
 
   while (cont) {
-    let next = match (cur) {
-      when ~r/\s+/ as ws => advance(cur, ws),
-      when ~r/\/\/[^\n]*/ as m => advance(cur, m),
-      when ~r/#[^\n]*/ as m => advance(cur, m),
-      _ => {
-        (bytesStartsWith(cur, "/*"))
-          ? {
-          let close = bytesIndexOf(cur, "*/");
-          (close < 0)
-            ? {
-            throw "unterminated block comment";
-            cur
-          }
-          : Bytes.slice(cur, close + 2, cur.len() - close - 2)
-        }
-        : cur
-      },
-    };
-    cont = next.len() != cur.len();
-    cur = next;
+    let c = _byteAt(src, pos);
+    let next = pos;
+
+    if (_isSpace(c)) {
+      while (_isSpace(_byteAt(src, next))) { next++; }
+    } else if ((c == "#".code) || ((c == "/".code) && (_byteAt(src, pos + 1) == "/".code))) {
+      while ((next < src.len()) && (Bytes.get_u8(src, next) != "\n".code)) { next++; }
+    } else if ((c == "/".code) && (_byteAt(src, pos + 1) == "*".code)) {
+      let close = _find(src, "*/", pos + 1);
+      if (close < 0) { throw "unterminated block comment"; }
+      next = close + 2;
+    }
+    cont = next != pos;
+    pos = next;
   }
-  cur
+  pos
 };
 
 let _keywordToken = fn(word: Bytes) {
@@ -233,59 +243,6 @@ let _floatSize = fn(suffix: Bytes) {
   }
 };
 
-let _lexConstant = fn(digits: Bytes, after: Bytes) {
-  let (token, cur) = match (after) {
-    when ~r/(i8|i16|i32|i64|u8|u16|u32|u64)/ as m =>
-      (Token.IntegerConstant(digits, _integerSize(group(m, 0))), advance(after, m)),
-    when ~r/(f16|f32|f64)/ as m =>
-      (Token.FloatConstant(digits, _floatSize(group(m, 0))), advance(after, m)),
-    _ => (Token.IntegerConstant(digits, IntegerSize.Infer), after),
-  };
-  let cEnd = cur |> _byteAt(0);
-
-  if (_isWordChar(cEnd) || cEnd == ".".code) {
-    throw ("invalid constant: " + digits);
-    (Token.Eof, after)
-  } else {
-    (token, cur)
-  }
-};
-
-let _lexRadix = fn(text: Bytes, after: Bytes) {
-  let digits = 0;
-  let i = 2;
-
-  while (i < text.len()) {
-    if (_byteAt(text, i) != "_".code) { digits++; }
-    i++;
-  }
-  if (digits == 0) { throw ("invalid integer literal: " + text); }
-  let (token, cur) = _lexConstant(text, after);
-
-  match (token) {
-    IntegerConstant(_, _) => (token, cur),
-    _ => {
-      throw ("invalid integer literal: " + text);
-      (Token.Eof, after)
-    },
-  }
-};
-
-let _lexFloat = fn(lit: Bytes, after: Bytes) {
-  let (size, cur) = match (after) {
-    when ~r/(f16|f32|f64)/ as m => (_floatSize(group(m, 0)), advance(after, m)),
-    _ => (FloatSize.Infer, after),
-  };
-  let cEnd = cur |> _byteAt(0);
-
-  if ((_isWordChar(cEnd)) || (cEnd == ".".code)) {
-    throw ("invalid constant: " + lit);
-    (Token.Eof, after)
-  } else {
-    (Token.FloatConstant(lit, size), cur)
-  }
-};
-
 let _hexValue = fn(c: I32) {
   if ((c >= "0".code) && (c <= "9".code)) {
     c - "0".code
@@ -315,82 +272,194 @@ let _escapeByte = fn(c: I32) {
   }
 };
 
-let _lexBytesLiteral = fn(rest: Bytes) {
-  let delimiter = _byteAt(rest, 0);
-  let cur = _restAfter(rest);
+let _widthLength = fn(src: Bytes, i: I32, eight: Bool): I32 {
+  let a = _byteAt(src, i);
+  let b = _byteAt(src, i + 1);
+
+  if (eight && (a == "8".code)) {
+    1
+  } else if (((a == "1".code) && (b == "6".code)) || ((a == "3".code) && (b == "2".code))
+    || ((a == "6".code) && (b == "4".code))) {
+    2
+  } else {
+    0
+  }
+};
+
+let _integerSuffix = fn(src: Bytes, i: I32): Bytes {
+  let c = _byteAt(src, i);
+  let width = ((c == "i".code) || (c == "u".code)) ? _widthLength(src, i + 1, true) : 0;
+  Bytes.slice(src, i, (width > 0) ? width + 1 : 0)
+};
+
+let _floatSuffix = fn(src: Bytes, i: I32): Bytes {
+  let width = (_byteAt(src, i) == "f".code) ? _widthLength(src, i + 1, false) : 0;
+  Bytes.slice(src, i, (width > 0) ? width + 1 : 0)
+};
+
+let _checkConstantEnd = fn(src: Bytes, end: I32, text: Bytes) {
+  let c = _byteAt(src, end);
+  if (_isWordChar(c) || (c == ".".code)) { throw ("invalid constant: " + text); }
+  null
+};
+
+let _lexConstant = fn(src: Bytes, digits: Bytes, i: I32): Tuple<Token, I32> {
+  let integer = _integerSuffix(src, i);
+  let float = (integer.len() > 0) ? "" : _floatSuffix(src, i);
+  let token = (integer.len() > 0)
+    ? Token.IntegerConstant(digits, _integerSize(integer))
+    : (float.len() > 0) ? Token.FloatConstant(digits, _floatSize(float)) : Token.IntegerConstant(digits, IntegerSize.Infer);
+  let end = i + integer.len() + float.len();
+  _checkConstantEnd(src, end, digits);
+  (token, end)
+};
+
+let _radixEnd = fn(src: Bytes, i: I32): I32 {
+  let kind = _byteAt(src, i + 1);
+  let hex = (kind == "x".code) || (kind == "X".code);
+  let binary = (kind == "b".code) || (kind == "B".code);
+  let octal = (kind == "o".code) || (kind == "O".code);
+
+  if ((_byteAt(src, i) != "0".code) || !(hex || binary || octal)) {
+    -1
+  } else {
+    let end = i + 2;
+    let more = true;
+
+    while (more) {
+      let c = _byteAt(src, end);
+      more = (c == "_".code)
+        || (hex && (_hexValue(c) >= 0))
+        || (binary && ((c == "0".code) || (c == "1".code)))
+        || (octal && (c >= "0".code) && (c <= "7".code));
+      if (more) { end++; }
+    }
+    end
+  }
+};
+
+let _lexRadix = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
+  let text = Bytes.slice(src, i, end - i);
+  let digits = 0;
+  let k = 2;
+
+  while (k < text.len()) {
+    if (_byteAt(text, k) != "_".code) { digits++; }
+    k++;
+  }
+  if (digits == 0) { throw ("invalid integer literal: " + text); }
+  let (token, cur) = _lexConstant(src, text, end);
+
+  match (token) {
+    IntegerConstant(_, _) => (token, cur),
+    _ => {
+      throw ("invalid integer literal: " + text);
+      (Token.Eof, end)
+    },
+  }
+};
+
+let _exponentEnd = fn(src: Bytes, i: I32): I32 {
+  let e = _byteAt(src, i);
+  let sign = _byteAt(src, i + 1);
+  let digits = ((sign == "+".code) || (sign == "-".code)) ? i + 2 : i + 1;
+  let end = _digitsEnd(src, digits);
+  (((e == "e".code) || (e == "E".code)) && (end > digits)) ? end : -1
+};
+
+let _floatEnd = fn(src: Bytes, i: I32): I32 {
+  let whole = _digitsEnd(src, i);
+  let dot = _byteAt(src, whole) == ".".code;
+  let fraction = dot ? _digitsEnd(src, whole + 1) : whole;
+  let hasFraction = dot && (fraction > whole + 1);
+  let hasWhole = whole > i;
+  let pointExponent = hasFraction ? _exponentEnd(src, fraction) : -1;
+  let wholeExponent = hasWhole ? _exponentEnd(src, dot ? whole + 1 : whole) : -1;
+
+  if (pointExponent >= 0) {
+    pointExponent
+  } else if (wholeExponent >= 0) {
+    wholeExponent
+  } else if (hasFraction) {
+    fraction
+  } else if (hasWhole && dot) {
+    whole + 1
+  } else {
+    -1
+  }
+};
+
+let _lexFloat = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
+  let lit = Bytes.slice(src, i, end - i);
+  let suffix = _floatSuffix(src, end);
+  let cur = end + suffix.len();
+  _checkConstantEnd(src, cur, lit);
+  (Token.FloatConstant(lit, _floatSize(suffix)), cur)
+};
+
+let _unicodeEscape = fn(src: Bytes, at: I32): Tuple<I32, I32> {
+  let braced = _byteAt(src, at) == "{".code;
+  let i = braced ? at + 1 : at;
+  let limit = braced ? 6 : 4;
+  let digits = 0;
+  let cp = 0;
+  let reading = true;
+
+  while (reading) {
+    let c = _byteAt(src, i);
+    reading = braced ? (c != "}".code) : (digits < limit);
+
+    if (reading) {
+      let h = _hexValue(c);
+      if ((h < 0) || (digits >= limit)) { throw "invalid unicode escape"; }
+      cp = cp * 16 + h;
+      digits++;
+      i++;
+    }
+  }
+
+  if ((digits == 0) || (cp > 1114111) || ((cp >= 55296) && (cp <= 57343))
+    || (braced && (_byteAt(src, i) != "}".code))) {
+    throw "invalid unicode escape";
+  }
+  let end = braced ? i + 1 : i;
+  (cp, end)
+};
+
+let _lexBytesLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
+  let delimiter = _byteAt(src, at);
+  let i = at + 1;
+  let run = i;
   let out = "";
   let done = false;
 
-  while (done == false) {
-    let c = _byteAt(cur, 0);
-    let invalid = (c < 0) || (c == "\n".code) || (c == "\r".code);
-    let closing = (c == delimiter);
-    let escaped = (c == "\\".code);
+  while (!done) {
+    let c = _byteAt(src, i);
 
-    let ignored = match ((invalid, closing, escaped)) {
-      (true, _, _) => {
-        throw "unterminated bytes literal";
-        null
-      },
-      (_, true, _) => {
-        cur = _restAfter(cur);
-        done = true;
-        null
-      },
-      (_, _, false) => {
-        out = out + Bytes.slice(cur, 0, 1);
-        cur = _restAfter(cur);
-        null
-      },
-      _ => {
-        cur = _restAfter(cur);
-        let esc = _byteAt(cur, 0);
+    if ((c < 0) || (c == "\n".code) || (c == "\r".code)) {
+      throw "unterminated bytes literal";
+    } else if (c == delimiter) {
+      out = out + Bytes.slice(src, run, i - run);
+      i++;
+      done = true;
+    } else if (c == "\\".code) {
+      out = out + Bytes.slice(src, run, i - run);
+      let esc = _byteAt(src, i + 1);
 
-        match (esc) {
-          "u".code => {
-            cur = _restAfter(cur);
-            let braced = _byteAt(cur, 0) == "{".code;
-            cur = braced ? _restAfter(cur) : cur;
-            let limit = braced ? 6 : 4;
-            let digits = 0;
-            let cp = 0;
-            let reading = true;
-
-            while (reading) {
-              let cHex = _byteAt(cur, 0);
-              reading = braced ? (cHex != "}".code) : (digits < limit);
-
-              if (reading) {
-                let h = _hexValue(cHex);
-
-                if ((h < 0) || (digits >= limit)) {
-                  throw "invalid unicode escape";
-                  null
-                }
-                cp = cp * 16 + h;
-                digits++;
-                cur = _restAfter(cur);
-              }
-            }
-
-            if ((digits == 0) || (cp > 1114111) || ((cp >= 55296) && (cp <= 57343))
-              || (braced && (_byteAt(cur, 0) != "}".code))) {
-              throw "invalid unicode escape";
-              null
-            }
-            cur = braced ? _restAfter(cur) : cur;
-            out = out + utf8FromCodepoint(cp);
-          },
-          _ => {
-            out = out + bytesU8(_escapeByte(esc));
-            cur = _restAfter(cur);
-          },
-        }
-      },
-    };
-    ignored;
+      if (esc == "u".code) {
+        let (cp, end) = _unicodeEscape(src, i + 2);
+        out = out + utf8FromCodepoint(cp);
+        i = end;
+      } else {
+        out = out + bytesU8(_escapeByte(esc));
+        i = i + 2;
+      }
+      run = i;
+    } else {
+      i++;
+    }
   }
-  (Token.BytesLiteral(out), cur)
+  (Token.BytesLiteral(out), i)
 };
 
 let _isLetter = fn(c: I32) {
@@ -398,44 +467,32 @@ let _isLetter = fn(c: I32) {
     || ((c >= "a".code) && (c <= "z".code))
 };
 
-let _lexRegExpLiteral = fn(rest: Bytes) {
-  let cur = Bytes.slice(rest, 3, rest.len() - 3);
-  let pattern = "";
-  let done = false;
+let _lexRegExpLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
+  let i = at + 3;
+  let close = -1;
 
-  while (done == false) {
-    let c = _byteAt(cur, 0);
+  while (close < 0) {
+    let c = _byteAt(src, i);
 
     if ((c < 0) || (c == "\n".code) || (c == "\r".code)) {
       throw "unterminated regexp literal";
-      null
     } else if (c == "\\".code) {
-      if (_byteAt(cur, 1) < 0) {
-        throw "unterminated regexp literal";
-        null
-      }
-      pattern = pattern + Bytes.slice(cur, 0, 2);
-      cur = Bytes.slice(cur, 2, cur.len() - 2);
+      if (_byteAt(src, i + 1) < 0) { throw "unterminated regexp literal"; }
+      i = i + 2;
     } else if (c == "/".code) {
-      cur = _restAfter(cur);
-      done = true;
+      close = i;
     } else {
-      pattern = pattern + Bytes.slice(cur, 0, 1);
-      cur = _restAfter(cur);
+      i++;
     }
   }
-  let flags = "";
-
-  while (_isLetter(_byteAt(cur, 0))) {
-    flags = flags + Bytes.slice(cur, 0, 1);
-    cur = _restAfter(cur);
-  }
-  (Token.RegExpLiteral(pattern, flags), cur)
+  let flags = close + 1;
+  let end = flags;
+  while (_isLetter(_byteAt(src, end))) { end++; }
+  (Token.RegExpLiteral(Bytes.slice(src, at + 3, close - at - 3), Bytes.slice(src, flags, end - flags)), end)
 };
 
 let _opToken: (Bytes) -> Token = fn(op) {
   match (op) {
-    "..." => Token.DotDotDot,
     "==" => Token.EqualEqual,
     "=>" => Token.FatArrow,
     "!=" => Token.NotEqual,
@@ -454,93 +511,115 @@ let _opToken: (Bytes) -> Token = fn(op) {
     "&&" => Token.And,
     "||" => Token.PipePipe,
     "|>" => Token.PipeGreater,
-    _ => {
-      throw "unknown operator";
-      Token.Eof
-    },
+    _ => Token.Eof,
   }
 };
 
-let _lexOp = fn(rest: Bytes) {
-  match (rest) {
-    when ~r/(\.\.\.|==|=>|!=|<-|<=|>=|\+\+|\+=|--|-=|->|\*=|\/=|<<|>>|&&|\|\||\|>)/ as m =>
-      (_opToken(group(m, 0)), advance(rest, m)),
-    _ => {
-      let token = match (_byteAt(rest, 0)) {
-        "(".code => Token.LParen,
-        ")".code => Token.RParen,
-        "{".code => Token.LBrace,
-        "}".code => Token.RBrace,
-        "[".code => Token.LBracket,
-        "]".code => Token.RBracket,
-        ";".code => Token.Semicolon,
-        ":".code => Token.Colon,
-        ",".code => Token.Comma,
-        "?".code => Token.Question,
-        ".".code => Token.Dot,
-        "=".code => Token.Equal,
-        "!".code => Token.Not,
-        "<".code => Token.Less,
-        ">".code => Token.Greater,
-        "+".code => Token.Plus,
-        "-".code => Token.Minus,
-        "*".code => Token.Star,
-        "/".code => Token.Slash,
-        "%".code => Token.Percent,
-        "&".code => Token.Ampersand,
-        "|".code => Token.Pipe,
-        "^".code => Token.Caret,
-        "_".code => Token.Wildcard,
-        _ => {
-          throw "unexpected character";
-          Token.Eof
-        },
-      };
-      (token, _restAfter(rest))
-    },
-  }
-};
+let _lexOp = fn(src: Bytes, i: I32): Tuple<Token, I32> {
+  let three = (i + 3 <= src.len()) && _startsAt(src, i, "...");
+  let two = (i + 2 <= src.len()) ? _opToken(Bytes.slice(src, i, 2)) : Token.Eof;
 
-let _lexOne = fn(rest: Bytes, memberDot: Bool) {
-  match (rest.len() == 0) {
-    true => (Token.Eof, rest),
-    _ => {
-      if (memberDot && (_byteAt(rest, 0) == ".".code)
-        && (_byteAt(rest, 1) >= "0".code) && (_byteAt(rest, 1) <= "9".code)) {
-        _lexOp(rest)
-      } else {
-        match (rest) {
-          when ~r/~r\// as _m => _lexRegExpLiteral(rest),
-          when ~r/[a-zA-Z_][a-zA-Z0-9_]*/ as m => {
-            let word = group(m, 0);
-            (_keywordToken(word), advance(rest, m))
-          },
-          when ~r/0[xX][0-9a-fA-F_]*|0[bB][01_]*|0[oO][0-7_]*/ as m => _lexRadix(group(m, 0), advance(rest, m)),
-          when ~r/([0-9]*\.[0-9]+|[0-9]+\.?)[Ee][+-]?[0-9]+|[0-9]*\.[0-9]+|[0-9]+\./ as m => {
-            let lit = group(m, 0);
-            _lexFloat(lit, advance(rest, m))
-          },
-          when ~r/[0-9]+/ as m => {
-            let digits = group(m, 0);
-            _lexConstant(digits, advance(rest, m))
-          },
+  if (three) {
+    (Token.DotDotDot, i + 3)
+  } else {
+    match (two) {
+      Eof => {
+        let token = match (_byteAt(src, i)) {
+          "(".code => Token.LParen,
+          ")".code => Token.RParen,
+          "{".code => Token.LBrace,
+          "}".code => Token.RBrace,
+          "[".code => Token.LBracket,
+          "]".code => Token.RBracket,
+          ";".code => Token.Semicolon,
+          ":".code => Token.Colon,
+          ",".code => Token.Comma,
+          "?".code => Token.Question,
+          ".".code => Token.Dot,
+          "=".code => Token.Equal,
+          "!".code => Token.Not,
+          "<".code => Token.Less,
+          ">".code => Token.Greater,
+          "+".code => Token.Plus,
+          "-".code => Token.Minus,
+          "*".code => Token.Star,
+          "/".code => Token.Slash,
+          "%".code => Token.Percent,
+          "&".code => Token.Ampersand,
+          "|".code => Token.Pipe,
+          "^".code => Token.Caret,
+          "_".code => Token.Wildcard,
           _ => {
-            let c = _byteAt(rest, 0);
-            ((c == "\"".code) || (c == "'".code)) ? _lexBytesLiteral(rest) : _lexOp(rest)
+            throw "unexpected character";
+            Token.Eof
           },
-        }
-      }
-    },
+        };
+        (token, i + 1)
+      },
+      _ => (two, i + 2),
+    }
   }
 };
 
-let _memberDot = fn(src: Bytes, rest: Bytes): Bool {
-  let i: I32 = src.len() - rest.len() - 1;
+let _lexOne = fn(src: Bytes, i: I32, memberDot: Bool): Tuple<Token, I32> {
+  let c = _byteAt(src, i);
+  let radix = _radixEnd(src, i);
+  let float = _floatEnd(src, i);
 
-  if (i < 0) { false } else {
-    let c = Bytes.get_u8(src, i);
-    _isWordChar(c) || (c == ")".code) || (c == "]".code) || (c == "}".code)
+  if (c < 0) {
+    (Token.Eof, i)
+  } else if (memberDot && (c == ".".code) && _isDigit(_byteAt(src, i + 1))) {
+    _lexOp(src, i)
+  } else if (_startsAt(src, i, "~r/")) {
+    _lexRegExpLiteral(src, i)
+  } else if (_isLetter(c) || (c == "_".code)) {
+    let end = i + 1;
+    while (_isWordChar(_byteAt(src, end))) { end++; }
+    (_keywordToken(Bytes.slice(src, i, end - i)), end)
+  } else if (radix >= 0) {
+    _lexRadix(src, i, radix)
+  } else if (float >= 0) {
+    _lexFloat(src, i, float)
+  } else if (_isDigit(c)) {
+    let end = _digitsEnd(src, i);
+    _lexConstant(src, Bytes.slice(src, i, end - i), end)
+  } else if ((c == "\"".code) || (c == "'".code)) {
+    _lexBytesLiteral(src, i)
+  } else {
+    _lexOp(src, i)
   }
+};
+
+let _memberDot = fn(src: Bytes, i: I32): Bool {
+  let c = _byteAt(src, i - 1);
+  _isWordChar(c) || (c == ")".code) || (c == "]".code) || (c == "}".code)
+};
+
+let _utf8Length = fn(src: Bytes, i: I32): I32 {
+  let c = _byteAt(src, i);
+  let n = (c < 128) ? 1 : (c < 194) ? 0 : (c < 224) ? 2 : (c < 240) ? 3 : (c < 245) ? 4 : 0;
+  let lo = (c == 224) ? 160 : (c == 240) ? 144 : 128;
+  let hi = (c == 237) ? 159 : (c == 244) ? 143 : 191;
+  let k = 1;
+
+  while ((k < n) && (_byteAt(src, i + k) >= ((k == 1) ? lo : 128))
+    && (_byteAt(src, i + k) <= ((k == 1) ? hi : 191))) { k++; }
+  (k == n) ? n : 0
+};
+
+let _invalidUtf8 = fn(src: Bytes): I32 {
+  let i = utf8Validate(src) ? src.len() : 0;
+  let bad = -1;
+
+  while (i < src.len()) {
+    let n = _utf8Length(src, i);
+
+    if (n == 0) {
+      bad = i;
+      i = src.len();
+    } else { i = i + n; }
+  }
+  bad
 };
 
 let _lastPath = "<input>";
@@ -553,19 +632,21 @@ let _lexSource = fn(src: Bytes, filename: Bytes) {
   let ends = Array.new<I32>(64);
   let count = 0;
   let cap = 64;
-  let rest = src;
+  let pos = 0;
+  let invalid = _invalidUtf8(src);
+  if (invalid >= 0) { throw sourceDiagnostic(filename, src, invalid, "invalid UTF-8"); }
   let done = false;
 
   while (!done) {
-    let start: I32 = (src.len() as I32) - (rest.len() as I32);
+    let start = pos;
 
-    let result: Tuple<Token, Bytes> = try {
-      rest = _skipSpace(rest);
-      start = (src.len() as I32) - (rest.len() as I32);
-      _lexOne(rest, _memberDot(src, rest))
+    let result: Tuple<Token, I32> = try {
+      pos = _skipSpace(src, pos);
+      start = pos;
+      _lexOne(src, pos, _memberDot(src, pos))
     } catch (e) {
-      throw sourceDiagnostic(filename, src, (src.len() as I32) - (rest.len() as I32), Std.string(e));
-      (Token.Eof, rest)
+      throw sourceDiagnostic(filename, src, pos, Std.string(e));
+      (Token.Eof, pos)
     };
     let (t, next) = result;
 
@@ -577,9 +658,9 @@ let _lexSource = fn(src: Bytes, filename: Bytes) {
     }
     toks[count] = t;
     starts[count] = start;
-    ends[count] = (src.len() as I32) - (next.len() as I32);
+    ends[count] = next;
     count++;
-    rest = next;
+    pos = next;
     done = match (t) {
       Eof => true,
       _ => false,

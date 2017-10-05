@@ -1,6 +1,6 @@
 import { lexFile } from frontend.Lexer;
 import type { Token } from frontend.Lexer;
-import { parseProgram, programSyntax } from frontend.Parser;
+import { parseFailureSpan, parseProgram, programSyntax } from frontend.Parser;
 import { sourceDiagnostic } from frontend.Source;
 import type { SourceSpan } from frontend.Source;
 import { printTokens } from frontend.Tokens;
@@ -74,6 +74,7 @@ let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
 let _located = fn(message: Bytes): Bytes {
   let span = checkFailureSpan();
   if (span == null) { span = loadFailureSpan(); }
+  if (span == null) { span = parseFailureSpan(); }
   if (span == null) { message } else { _diagnostic(span, message) }
 };
 

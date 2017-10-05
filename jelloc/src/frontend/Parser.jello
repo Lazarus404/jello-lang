@@ -39,8 +39,8 @@ import type {
 } from frontend.Ast;
 import type { FloatSize as LexerFloatSize, IntegerSize, Token } from frontend.Lexer;
 import { tokenEnds, tokenPath, tokenStarts } from frontend.Lexer;
-import type { Syntax, SyntaxMark } from frontend.Source;
-import { SyntaxKind, SyntaxMark } from frontend.Source;
+import type { SourceSpan, Syntax, SyntaxMark } from frontend.Source;
+import { SourceSpan, SyntaxKind, SyntaxMark } from frontend.Source;
 import { syntaxTree } from frontend.SyntaxTree;
 import { exprTag, stmtTag } from frontend.Ast;
 import { tokenName } from frontend.Tokens;
@@ -118,17 +118,26 @@ let _sameToken = fn(a: Token, b: Token): Bool {
   _tokenTag(a) == _tokenTag(b)
 };
 
+let _seen = 0;
+
+let _failure: ?SourceSpan = null;
+export let parseFailureSpan: () -> ?SourceSpan = fn() { _failure };
+
 let _error = fn(msg: Bytes): I32 {
+  _failure = SourceSpan.Span(sourcePath, _offset(_seen, false), _offset(_seen, true));
   throw ("ParseError: " + msg);
   0
 };
 
 let peek = fn(): Token {
   if (pendingGreater > 0) {
+    _seen = pos - 1;
     Token.Greater
   } else if (pos < tokens.len()) {
+    _seen = pos;
     tokens[pos]
   } else {
+    _seen = pos;
     Token.Eof
   }
 };
@@ -1963,6 +1972,8 @@ _parseProgram = fn(input, path, tokenStartOffsets, tokenEndOffsets) {
   ends = tokenEndOffsets;
   marks = Array.new<SyntaxMark>(0);
   pos = 0;
+  _seen = 0;
+  _failure = null;
   pendingGreater = 0;
   pipelineDepth = 0;
   let pkg = Package.None;
