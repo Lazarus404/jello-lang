@@ -1,6 +1,6 @@
 package frontend;
 
-import { sourceDiagnostic } from frontend.Source;
+import { sourceDiagnostic, utf8Length } from frontend.Source;
 import { u8 as bytesU8, utf8FromCodepoint, utf8Validate } from std.core.Bytes;
 
 export enum IntegerSize {
@@ -258,9 +258,13 @@ let _hexValue = fn(c: I32) {
 let _escapeByte = fn(c: I32) {
   match (c) {
     "0".code => 0,
+    "a".code => 7,
+    "b".code => 8,
+    "f".code => 12,
     "n".code => "\n".code,
     "r".code => "\r".code,
     "t".code => "\t".code,
+    "v".code => 11,
     "'".code,
     "\"".code,
     "\\".code,
@@ -450,6 +454,12 @@ let _lexBytesLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
         let (cp, end) = _unicodeEscape(src, i + 2);
         out = out + utf8FromCodepoint(cp);
         i = end;
+      } else if (esc == "x".code) {
+        let hi = _hexValue(_byteAt(src, i + 2));
+        let lo = _hexValue(_byteAt(src, i + 3));
+        if ((hi < 0) || (lo < 0)) { throw "invalid hex escape"; }
+        out = out + bytesU8(hi * 16 + lo);
+        i = i + 4;
       } else {
         out = out + bytesU8(_escapeByte(esc));
         i = i + 2;
@@ -595,24 +605,12 @@ let _memberDot = fn(src: Bytes, i: I32): Bool {
   _isWordChar(c) || (c == ")".code) || (c == "]".code) || (c == "}".code)
 };
 
-let _utf8Length = fn(src: Bytes, i: I32): I32 {
-  let c = _byteAt(src, i);
-  let n = (c < 128) ? 1 : (c < 194) ? 0 : (c < 224) ? 2 : (c < 240) ? 3 : (c < 245) ? 4 : 0;
-  let lo = (c == 224) ? 160 : (c == 240) ? 144 : 128;
-  let hi = (c == 237) ? 159 : (c == 244) ? 143 : 191;
-  let k = 1;
-
-  while ((k < n) && (_byteAt(src, i + k) >= ((k == 1) ? lo : 128))
-    && (_byteAt(src, i + k) <= ((k == 1) ? hi : 191))) { k++; }
-  (k == n) ? n : 0
-};
-
 let _invalidUtf8 = fn(src: Bytes): I32 {
   let i = utf8Validate(src) ? src.len() : 0;
   let bad = -1;
 
   while (i < src.len()) {
-    let n = _utf8Length(src, i);
+    let n = utf8Length(src, i);
 
     if (n == 0) {
       bad = i;

@@ -39,7 +39,7 @@ export let bytesLiteral: (Bytes) -> Bytes = fn(value) {
       "\\".code => "\\\\",
       _ => ((c >= 32) && (c <= 126))
         ? Bytes.slice(value, i, 1)
-        : "\\x" + Std.string(c),
+        : "\\x" + Bytes.slice("0123456789abcdef", c / 16, 1) + Bytes.slice("0123456789abcdef", c % 16, 1),
     };
     i++;
   }
