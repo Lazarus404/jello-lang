@@ -82,7 +82,7 @@ export let enterModule: (Array<Import>, Array<Module>, Bool) -> Bool = fn(import
       let value = typeOnly ? -1 : _export(_exportModules, _exportNames, module, name);
       let ty = _export(_exportTypeModules, _exportTypeNames, module, name);
 
-      if (value >= 0) { _add(local, _exportBindings[value], true); } else if (ty >= 0) { _addType(local, _exportTypes[ty]); } else if (!typesOnly) {
+      if (value >= 0) { _add(local, _exportBindings[value], true); } else if (ty >= 0) { if (_indexIn(_typeNames, local) < 0) { _addType(local, _exportTypes[ty]); } } else if (!typesOnly) {
         match (modules[module]) {
           Module(path, _, _, _, _) => {
             throw "unknown export " + name + " in " + path;

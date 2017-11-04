@@ -632,10 +632,9 @@ test("desugars i32 compound assignment through existing operations", fn(t) {
     "let f = fn(): I32 { const value = 1i32; value += 1i32; value }; f()"
   )));
   });
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex(
-    "let f = fn(): I32 { let value = 1i32; value *= 2i32; value }; f()"
-  )));
-  });
+  t.is(verifyProgram(lowerProgram(typeCheckProgram(parseProgram(lex(
+    "let f = fn(): I32 { let value = 7i32; value *= 2i32; value /= 3i32; value }; f()"
+  ))))), true);
   t.is(verifyProgram(lowerProgram(typeCheckProgram(parseProgram(lex(
     "let f = fn(source: I32): I32 { let copy = source; copy += 1i32; source }; f(7i32)"
   ))))), true);

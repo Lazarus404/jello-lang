@@ -281,6 +281,21 @@ let _compare = fn(op: Op, left: I32, right: I32, negate: Bool): I32 {
   negate ? _unary(Op.Not, H.TYPE_BOOL, compared) : compared
 };
 
+let _isNullaryVariant = fn(id: I32): Bool { match (H.opOf(id)) { EnumNew => H.childCount(id) == 0, _ => false } };
+
+let _enumEquality = fn(op: BinaryOp, left: I32, right: I32): I32 {
+  let negate = match (op) {
+    Equal => false, NotEqual => true, _ => {
+      throw "enums support only == and !=";
+      false
+    }
+  };
+  let variant = _isNullaryVariant(right) ? right : left;
+  let value = _isNullaryVariant(right) ? left : right;
+  if (!_isNullaryVariant(variant)) { throw "enum values can be compared only with a variant without a payload, such as E.None; use match"; }
+  _compare(Op.Eq, _unary(Op.EnumTag, H.TYPE_I32, value), _leaf(Op.I32, H.TYPE_I32, H.valueOf(variant)), negate)
+};
+
 export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
   if ((H.typeOf(left) == H.TYPE_DYNAMIC) || (H.typeOf(right) == H.TYPE_DYNAMIC)) {
     throw "a Dynamic value must be extracted with `as T` before use";
@@ -297,6 +312,7 @@ export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
       },
     };
   }
+  if (H.isKind(H.typeOf(left), Kind.Enum) && (H.typeOf(right) == H.typeOf(left))) { return _enumEquality(op, left, right); }
 
   match (op) {
     And, Or => {
@@ -317,6 +333,8 @@ export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
     Add => _binary(Op.Add, ty, left, right),
     Subtract => _binary(Op.Sub, ty, left, right),
     Multiply => _binary(Op.Mul, ty, left, right),
+    Divide => _binary(Op.Div, ty, left, right),
+    Remainder => _binary(Op.Rem, ty, left, right),
     Equal => _compare(Op.Eq, left, right, false),
     NotEqual => _compare(Op.Eq, left, right, true),
     Less => _compare(Op.Lt, left, right, false),
@@ -490,18 +508,14 @@ let _checkVariableAssignment = fn(op: AssignOp, name: Bytes, value: AstExpr): I3
 
   match (op) {
     Assign => H.node(assign, ty, id, 0, [checked]),
-    Add, Subtract => {
+    _ => {
       let bytes = (ty == H.TYPE_BYTES) && match (op) { Add => true, _ => false };
       if ((ty != H.TYPE_I32) && (ty != H.TYPE_I64) && !bytes) { throw "compound assignment requires an I32 or I64 variable: " + name; }
-      let operation = bytes ? Op.BytesConcat : match (op) { Add => Op.Add, _ => Op.Sub };
+      let operation = bytes ? Op.BytesConcat : match (op) { Add => Op.Add, Subtract => Op.Sub, Multiply => Op.Mul, _ => Op.Div };
       let outer = enterSyntax(syntaxChild(0));
       let target = _leaf(global ? Op.Global : Op.Local, ty, id);
       enterSyntax(outer);
       H.node(assign, ty, id, 0, [_binary(operation, ty, target, checked)])
-    },
-    _ => {
-      throw "unsupported compound assignment";
-      -1
     },
   }
 };
@@ -885,6 +899,20 @@ let _checkDestructure = fn(pattern: Pattern, isConst: Bool, typeParams: Array<By
   H.node(Op.Declare, 0, 0, 0, children)
 };
 
+export let checkWhile: (AstExpr, Array<Stmt>) -> I32 = fn(condition, body) {
+  let before = narrowings();
+  let mark = assignmentMark();
+  enterLoop();
+  let checkedCondition = _value(condition, 0);
+  if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "while condition must be bool"; }
+  _narrowBy(condition, true);
+  _loops++;
+  let checkedBody = _checkBlockBody([], body, null, 1, -1, _STATEMENT_TAIL);
+  _loops--;
+  leaveLoop(before, mark);
+  H.node(Op.While, 0, 0, 0, [checkedCondition, checkedBody])
+};
+
 _checkStatement = fn(statement, syntax) {
   let outer = enterSyntax(syntax);
 
@@ -907,19 +935,7 @@ _checkStatement = fn(statement, syntax) {
       if (_loops == 0) { throw "continue outside loop"; }
       _leaf(Op.Continue, 0, 0)
     },
-    While(condition, body) => {
-      let before = narrowings();
-      let mark = assignmentMark();
-      enterLoop();
-      let checkedCondition = _value(condition, 0);
-      if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "while condition must be bool"; }
-      _narrowBy(condition, true);
-      _loops++;
-      let checkedBody = _checkBlockBody([], body, null, 1, -1, _STATEMENT_TAIL);
-      _loops--;
-      leaveLoop(before, mark);
-      H.node(Op.While, 0, 0, 0, [checkedCondition, checkedBody])
-    },
+    While(condition, body) => checkWhile(condition, body),
     _ => {
       throw "unsupported statement in function body";
       -1

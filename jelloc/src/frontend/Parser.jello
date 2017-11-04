@@ -678,6 +678,10 @@ _parsePattern = fn() {
       next();
       _namedPattern(name)
     },
+    ListLiteral => {
+      next();
+      Pattern.BindPattern("list")
+    },
     _ => {
       _error("expected pattern");
       Pattern.Wildcard
@@ -1316,7 +1320,7 @@ let _looksLikeTypeArgs = fn(): Bool {
   let depth = 1;
 
   while (i < tokens.len()) {
-    let ignored = match (tokens[i]) {
+    match (tokens[i]) {
       Less => {
         depth++;
         null
@@ -1351,7 +1355,6 @@ let _looksLikeTypeArgs = fn(): Bool {
         null
       },
     };
-    ignored;
     i++;
   }
   false
@@ -1591,6 +1594,11 @@ let _selfDelimiting = fn(start: Token, value: Expr): Bool {
     LBrace => match (value) { BlockExpr(_) => true, _ => false },
     _ => false,
   }
+};
+
+let _endJump = fn() {
+  if (!_at(Token.RBrace)) { expect(Token.Semicolon); }
+  null
 };
 
 _parseStatement = fn() {
@@ -1875,7 +1883,7 @@ _parseStmtInner = fn() {
           next();
 
           while (!_at(Token.RParen)) {
-            let field = _ident();
+            let field = _name();
             expect(Token.Colon);
             fields.push(StructField.Field(field, _parseType()));
             if (_at(Token.Comma)) { next(); } else { break; }
@@ -1933,16 +1941,16 @@ _parseStmtInner = fn() {
       Stmt.DoWhile(body, condition)
     },
     Break => {
-      expect(Token.Semicolon);
+      _endJump();
       Stmt.Break
     },
     Continue => {
-      expect(Token.Semicolon);
+      _endJump();
       Stmt.Continue
     },
     Throw => {
       let value = _parseExpr(0);
-      expect(Token.Semicolon);
+      _endJump();
       Stmt.Throw(value)
     },
     Return => {
@@ -1951,7 +1959,7 @@ _parseStmtInner = fn() {
         Stmt.Return(null)
       } else {
         let value: ?Expr = _parseExpr(0);
-        expect(Token.Semicolon);
+        _endJump();
         Stmt.Return(value)
       }
     },

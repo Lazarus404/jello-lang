@@ -8,15 +8,16 @@ import { typeCheckModules } from frontend.CheckModules;
 import { checkFailureSpan } from frontend.TypeCheck;
 import { loadFailureSpan, loadModules } from frontend.Modules;
 import { printHir } from frontend.PrintHir;
-import { lowerProgram } from ir.Lower;
+import { functionNode, lowerProgram } from ir.Lower;
 import { printIr } from ir.Print;
 import { legalizeJlo } from backend.jello.Legalize;
-import { allocateProgram } from backend.jello.Allocate;
+import { allocateProgram, allocationFailure } from backend.jello.Allocate;
 import { emitJlo } from backend.jello.Emit;
 import { readText, writeText } from std.io.File;
 
 import type { Program as AstProgram } from frontend.Ast;
 import type { Hir } from frontend.Hir;
+import { spanOf, spanPathOf } from frontend.Hir;
 
 enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; }
 
@@ -71,10 +72,21 @@ let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
   match (span) { Span(path, start, _) => sourceDiagnostic(path, readText(path), start, message) }
 };
 
+let _allocationSpan = fn(): ?SourceSpan {
+  let span: ?SourceSpan = null;
+
+  if (allocationFailure() >= 0) {
+    let node = functionNode(allocationFailure());
+    if (spanPathOf(node) >= 0) { span = spanOf(node); }
+  }
+  span
+};
+
 let _located = fn(message: Bytes): Bytes {
   let span = checkFailureSpan();
   if (span == null) { span = loadFailureSpan(); }
   if (span == null) { span = parseFailureSpan(); }
+  if (span == null) { span = _allocationSpan(); }
   if (span == null) { message } else { _diagnostic(span, message) }
 };
 

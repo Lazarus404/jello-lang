@@ -4,7 +4,7 @@ import type { BasicBlock, Function, Instruction, Program, Terminator, ThrowHandl
 import { BasicBlock, Function, Op, Program, Terminator, ThrowHandler, argsOf, dstOf, handlerPayload, handlerTarget, immOf, instruction, opOf, valueTypeEqual } from ir.Model;
 import { blockMayThrow, normalSuccessors } from ir.Cfg;
 import { bitsAdd, bitsCopy, bitsHas, bitsNew, bitsRemove, bitsUnion } from ir.Bits;
-import { verifyProgram } from ir.Verify;
+import { verifyAllocatedProgram } from ir.Verify;
 
 let _REGISTER_LIMIT = 256;
 
@@ -405,6 +405,11 @@ let _rewriteBlock = fn(block: BasicBlock): BasicBlock {
   } }
 };
 
+let _tooMany = fn(id: I32) {
+  throw "function @" + Std.string(id) + " needs more than 256 registers; split it into smaller functions";
+  null
+};
+
 let _allocate = fn(function: Function): Function {
   match (function) { Function(id, params, registers, result, blocks, entry) => {
     _keyTypes = Array.new<ValueType>(0);
@@ -439,6 +444,7 @@ let _allocate = fn(function: Function): Function {
       } };
       i++;
     }
+    if (params.len() + _scratch.len() > _REGISTER_LIMIT) { _tooMany(id); }
     let neighbors = _interference(blocks, registers.len() as I32);
     let payloads = Array.new<I32>(0);
     i = 0;
@@ -509,7 +515,7 @@ let _allocate = fn(function: Function): Function {
       physical.push(_keyTypes[_scratch[i]]);
       i++;
     }
-    if (physical.len() > _REGISTER_LIMIT) { throw "function @" + Std.string(id) + " needs more than 256 registers"; }
+    if (physical.len() > _REGISTER_LIMIT) { _tooMany(id); }
     let allocated = Array.new<BasicBlock>(0);
     i = 0;
 
@@ -528,17 +534,25 @@ let _allocate = fn(function: Function): Function {
   } }
 };
 
+let _failed = -1;
+export let allocationFailure: () -> I32 = fn() { _failed };
+
 export let allocateProgram: (Program) -> Program = fn(program) {
+  _failed = -1;
+
   let allocated = match (program) { Program(functions, pool, wides, enums, globals, natives) => {
     let out = Array.new<Function>(0);
     let i = 0;
 
     while (i < functions.len()) {
-      try { out.push(_allocate(functions[i])); } catch (e) { throw "function " + Std.string(i) + ": " + Std.string(e); }
+      try { out.push(_allocate(functions[i])); } catch (e) {
+        _failed = match (functions[i]) { Function(id, _, _, _, _, _) => id };
+        throw Std.string(e);
+      }
       i++;
     }
     Program.Program(out, pool, wides, enums, globals, natives)
   } };
-  verifyProgram(allocated);
+  verifyAllocatedProgram(allocated);
   allocated
 };

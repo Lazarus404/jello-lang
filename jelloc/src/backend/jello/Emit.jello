@@ -152,11 +152,16 @@ let _functionIndex = fn(id: I32): I32 {
   _functionIndexes[id]
 };
 
+let _operand = fn(value: I32, name: Bytes): I32 {
+  if ((value < 0) || (value > 255)) { throw "JLO emission: operand " + name + " is " + Std.string(value) + ", outside 0..255"; }
+  value
+};
+
 let _insn = fn(opcode: I32, a: I32, b: I32, c: I32, imm: I32) {
   _byte(opcode);
-  _byte(a);
-  _byte(b);
-  _byte(c);
+  _byte(_operand(a, "a"));
+  _byte(_operand(b, "b"));
+  _byte(_operand(c, "c"));
   _u32(imm);
   null
 };
@@ -164,17 +169,17 @@ let _insn = fn(opcode: I32, a: I32, b: I32, c: I32, imm: I32) {
 let _registerTypes = Array.new<ValueType>(0);
 let _wide = fn(register: I32): Bool { match (_registerTypes[register]) { I64 => true, _ => false } };
 
-let _window = fn(args: Array<I32>, start: I32, empty: I32): I32 {
+let _window = fn(args: Array<I32>, start: I32): I32 {
   let i = start + 1;
 
   while (i < args.len()) {
     if (args[i] != args[i - 1] + 1) { throw "JLO emission requires consecutive call arguments"; }
     i++;
   }
-  args.len() > start ? args[start] : empty
+  args.len() > start ? args[start] : 0
 };
 
-let _instruction = fn(insn: Instruction, scratchStart: I32) {
+let _instruction = fn(insn: Instruction) {
   let dst = dstOf(insn);
   let args = argsOf(insn);
   let imm = immOf(insn);
@@ -192,6 +197,8 @@ let _instruction = fn(insn: Instruction, scratchStart: I32) {
     Add => _insn(_wide(a) ? 42 : 28, dst, a, b, 0),
     Sub => _insn(_wide(a) ? 43 : 29, dst, a, b, 0),
     Mul => _insn(_wide(a) ? 44 : 30, dst, a, b, 0),
+    Div => _insn(_wide(a) ? 45 : 31, dst, a, b, 0),
+    Rem => _insn(_wide(a) ? 46 : 32, dst, a, b, 0),
     Neg => _insn(_wide(a) ? 47 : 36, dst, a, 0, 0),
     Not => _insn(66, dst, a, 0, 0),
     Eq => _insn(_wide(a) ? 71 : 67, dst, a, b, 0),
@@ -211,16 +218,16 @@ let _instruction = fn(insn: Instruction, scratchStart: I32) {
     ArrayResize => _insn(121, 0, a, b, 0),
     BytesLen => _insn(123, dst, a, 0, 0),
     BytesGet => _insn(124, dst, a, b, 0),
-    BytesSlice => _insn(189, dst, a, _window(args, 1, scratchStart), 0),
+    BytesSlice => _insn(189, dst, a, _window(args, 1), 0),
     BytesConcat => _insn(126, dst, a, b, 0),
     BytesEq => _insn(128, dst, a, b, 0),
     StructNew => _insn(150, dst, 0, 0, 0),
     TupleGet => _insn(151, dst, a, 0, imm),
     StructSet => _insn(152, b, a, 0, imm),
-    Call => _insn(11, dst, _window(args, 0, scratchStart), args.len() as I32, _functionIndex(imm)),
-    CallIndirect => _insn(12, dst, a, (args.len() as I32) - 1, _window(args, 1, scratchStart)),
-    CallNative => _insn(167, dst, _window(args, 0, scratchStart), args.len() as I32, imm),
-    EnumNew => _insn(164, dst, _window(args, 0, scratchStart), args.len() as I32, imm),
+    Call => _insn(11, dst, _window(args, 0), args.len() as I32, _functionIndex(imm)),
+    CallIndirect => _insn(12, dst, a, (args.len() as I32) - 1, _window(args, 1)),
+    CallNative => _insn(167, dst, _window(args, 0), args.len() as I32, imm),
+    EnumNew => _insn(164, dst, _window(args, 0), args.len() as I32, imm),
     EnumTag => _insn(165, dst, a, 0, 0),
     EnumGet => _insn(166, dst, a, b, 0),
     SpillPush => _insn(107, a, 0, 0, imm),
@@ -331,7 +338,6 @@ let _function = fn(function: Function) {
       } };
       i++;
     }
-    let scratchStart = registers.len() as I32;
     _u32(-1);
     _u32(registers.len() as I32);
     _u32(registers.len() as I32);
@@ -351,7 +357,7 @@ let _function = fn(function: Function) {
         let j = 0;
 
         while (j < instructions.len()) {
-          _instruction(instructions[j], scratchStart);
+          _instruction(instructions[j]);
           pc++;
           j++;
         }
@@ -572,6 +578,7 @@ let _module = fn(program: Program): Bytes {
 
     while (i < natives.len()) {
       match (natives[i]) { Native(library, name, params, result) => {
+        if (params.len() > 8) { throw "native " + name + " takes " + Std.string(params.len()) + " arguments; at most 8 are supported"; }
         _u32(atom(library));
         _u32(atom(name));
         _byte(_typeKinds[_find(result)]);

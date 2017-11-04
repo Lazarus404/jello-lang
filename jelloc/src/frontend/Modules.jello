@@ -68,6 +68,18 @@ let _packageMatches = fn(packageName: Package, parts: Array<Bytes>): Bool {
   } }
 };
 
+let _repeats = fn(imports: Array<Import>, local: Bytes, module: I32, name: Bytes, typeOnly: Bool): Bool {
+  let i = 0;
+
+  while (i < imports.len()) {
+    match (imports[i]) { Import(other, otherModule, otherName, otherTypeOnly) => {
+      if ((other == local) && ((otherTypeOnly == typeOnly) || (otherModule != module) || (otherName != name))) { return true; }
+    } };
+    i++;
+  }
+  false
+};
+
 let _indexOf = fn(values: Array<Bytes>, value: Bytes): I32 {
   let i = 0;
 
@@ -118,7 +130,6 @@ _load = fn(path, parts) {
       if (tail != null) { throw "dependency module cannot have a tail expression: " + path; }
     }
     let imports = Array.new<Import>(0);
-    let locals = Array.new<Bytes>(0);
     let i = 0;
 
     while (i < statements.len()) {
@@ -142,8 +153,7 @@ _load = fn(path, parts) {
             match (items[j]) { Item(name, alias) => {
               let local = name;
               if (alias != null) { local = alias; }
-              if (_indexOf(locals, local) >= 0) { throw "duplicate import name: " + local; }
-              locals.push(local);
+              if (_repeats(imports, local, dependency, name, typeOnly)) { throw "duplicate import name: " + local; }
               imports.push(Import.Import(local, dependency, name, typeOnly));
             } };
             j++;

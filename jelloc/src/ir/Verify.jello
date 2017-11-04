@@ -143,7 +143,7 @@ let _instruction = fn(instruction: Instruction) {
       _arity(args, 1);
       if (!valueTypeEqual(_type(dst), _type(args[0]))) { _fail("move type mismatch"); } null
     },
-    Add, Sub, Mul => {
+    Add, Sub, Mul, Div, Rem => {
       _arity(args, 2);
       if (!_isNumeric(_type(dst))) { _fail("arithmetic requires an integer type"); }
       _expect(args[0], _type(dst));
@@ -659,6 +659,7 @@ let _function = fn(function: Function) {
       i++;
     }
     let slotTypes = Array.new<ValueType>(0);
+    let seen = Array.new<Bool>(0);
     i = 0;
 
     while (i < blocks.len()) {
@@ -676,7 +677,16 @@ let _function = fn(function: Function) {
 
           if (slot >= 0) {
             let ty = match (opOf(instructions[j])) { SpillPush => _type(argsOf(instructions[j])[0]), _ => _type(dstOf(instructions[j])) };
-            while (slotTypes.len() <= slot) { slotTypes.push(ty); }
+
+            while (slotTypes.len() <= slot) {
+              slotTypes.push(ty);
+              seen.push(false);
+            }
+
+            if (!seen[slot]) {
+              slotTypes[slot] = ty;
+              seen[slot] = true;
+            }
             if (!valueTypeEqual(slotTypes[slot], ty)) { _fail("spill slot type mismatch"); }
           }
           j++;
@@ -749,4 +759,18 @@ export let verifyProgram: (Program) -> Bool = fn(program) {
     _inProgram = false;
   } };
   true
+};
+
+export let verifyAllocatedProgram: (Program) -> Bool = fn(program) {
+  match (program) { Program(functions, _, _, _, _, _) => {
+    let i = 0;
+
+    while (i < functions.len()) {
+      match (functions[i]) { Function(id, _, registers, _, _, _) => {
+        if (registers.len() > 256) { _fail("function @" + Std.string(id) + " uses " + Std.string(registers.len()) + " registers; JLO allows 256"); }
+      } };
+      i++;
+    }
+  } };
+  verifyProgram(program)
 };

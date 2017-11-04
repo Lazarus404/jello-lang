@@ -1,6 +1,6 @@
 package frontend;
 
-import type { Expr as AstExpr, MatchArm, Pattern } from frontend.Ast;
+import type { Block as AstBlock, Expr as AstExpr, MatchArm, Pattern } from frontend.Ast;
 import { Pattern, integerValue, wideIntegerValue } from frontend.Ast;
 import {
   Kind, Op, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, fieldCount, fieldType, isKind, node,
@@ -436,15 +436,130 @@ let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>)
 let _rootCount = fn(subject: Subject): I32 { match (subject) { Subject(roots, _, _, _) => roots.len() as I32 } };
 
 let _declareMatches = fn(subject: Subject, first: I32, children: Array<I32>) {
-  match (subject) { Subject(roots, _, _, _) => {
+  match (subject) { Subject(roots, types, _, _) => {
     let r = first;
 
     while (r < roots.len()) {
-      children.push(node(Op.Declare, 0, 0, 0, [node(Op.Let, TYPE_DYNAMIC, roots[r], bytesId("match.regexp"), [node(Op.Null, TYPE_DYNAMIC, 0, 0, [])])]));
+      children.push(node(Op.Declare, 0, 0, 0, [node(Op.Let, types[r], roots[r], bytesId("match.bound"), [node(Op.Null, types[r], 0, 0, [])])]));
       r++;
     }
   } };
   null
+};
+
+let _alternativeRoots = fn(subject: Subject, values: Array<I32>): Array<I32> {
+  let out = Array.new<I32>(0);
+
+  match (subject) { Subject(roots, types, _, _) => {
+    let i = 0;
+
+    while (i < values.len()) {
+      out.push(roots.len() as I32);
+      roots.push(newBinding());
+      types.push(nullType(typeOf(values[i])));
+      i++;
+    }
+  } };
+  out
+};
+
+enum Group { Group(names: Array<Bytes>, types: Array<I32>, roots: Array<I32>); }
+
+let _noGroup = fn(): Group { Group.Group(Array.new<Bytes>(0), Array.new<I32>(0), Array.new<I32>(0)) };
+
+let _store = fn(subject: Subject, root: I32, value: I32): I32 {
+  let ty = match (subject) { Subject(_, types, _, _) => types[root] };
+  let stored = typeOf(value) == ty ? value : node(Op.Present, ty, 0, 0, [value]);
+  let binding = match (subject) { Subject(roots, _, _, _) => roots[root] };
+  let assign = node(Op.Expression, 0, 0, 0, [node(Op.Assign, ty, binding, 0, [stored])]);
+  node(Op.Block, TYPE_BOOL, 0, 1, [assign, node(Op.Bool, TYPE_BOOL, 1, 0, [])])
+};
+
+let _position = fn(names: Array<Bytes>, name: Bytes): I32 {
+  let i = 0;
+
+  while (i < names.len()) {
+    if (names[i] == name) { return i as I32; }
+    i++;
+  }
+  -1
+};
+
+let _bindAlternative = fn(subject: Subject, current: Group, first: Bool, names: Array<Bytes>, paths: Array<Array<I32>>, tests: Array<I32>): Group {
+  let values = _reads(subject, paths);
+  let group = current;
+
+  if (first) {
+    let types = Array.new<I32>(0);
+    let v = 0;
+
+    while (v < values.len()) {
+      types.push(typeOf(values[v]));
+      v++;
+    }
+    group = Group.Group(names, types, _alternativeRoots(subject, values));
+  }
+
+  match (group) { Group(groupNames, types, roots) => {
+    let n = 0;
+
+    while (n < names.len()) {
+      if (_position(groupNames, names[n]) < 0) { throw names[n] + " must be bound by every alternative"; }
+      n++;
+    }
+    let g = 0;
+
+    while (g < groupNames.len()) {
+      let k = _position(names, groupNames[g]);
+      if (k < 0) { throw groupNames[g] + " must be bound by every alternative"; }
+      if (typeOf(values[k]) != types[g]) { throw groupNames[g] + " has a different type in each alternative: " + typeName(types[g]) + " and " + typeName(typeOf(values[k])); }
+      tests.push(_store(subject, roots[g], values[k]));
+      g++;
+    }
+  } };
+  group
+};
+
+let _stored = fn(subject: Subject, group: Group): Array<I32> {
+  let out = Array.new<I32>(0);
+
+  match (group) { Group(_, types, roots) => {
+    let g = 0;
+
+    while (g < roots.len()) {
+      let value = _read(subject, [roots[g]]);
+      out.push(typeOf(value) == types[g] ? value : node(Op.Unwrap, types[g], 0, 0, [value]));
+      g++;
+    }
+  } };
+  out
+};
+
+let _armPattern = fn(subject: Subject, pattern: Pattern, path: Array<I32>, ty: I32, rows: Array<Array<Pattern>>, tests: Array<I32>, names: Array<Bytes>, paths: Array<Array<I32>>) {
+  _test(subject, pattern, path, ty, tests, names, paths);
+  let n = 0;
+
+  while (n < names.len()) {
+    let m = 0;
+
+    while (m < n) {
+      if (names[m] == names[n]) { throw names[n] + " is bound more than once in this pattern"; }
+      m++;
+    }
+    n++;
+  }
+  if (!_useful(rows, [pattern], [ty])) { throw "unreachable match arm: earlier arms already match " + _describe(pattern); }
+  null
+};
+
+let _armBody = fn(names: Array<Bytes>, values: Array<I32>, body: AstBlock, index: I32, expected: I32, resultType: I32, statement: Bool): I32 {
+  match (body) { Block(statements, tail) => {
+    let context = (expected < 0) && (resultType >= 0) && !statement ? nullType(resultType) : expected;
+    let block = checkArm(names, values, statements, tail, index, context, statement);
+    if (context != expected) { block = _unlift(block); }
+    if (!statement && (auxOf(block) == 0)) { throw "match arm requires a trailing expression"; }
+    block
+  } }
 };
 
 export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject, arms, expected, statement) {
@@ -460,6 +575,7 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
   let tails = Array.new<I32>(0);
   let pending = Array.new<I32>(0);
   let guarded = false;
+  let group = _noGroup();
   let resultType = -1;
   let index = 1;
   let a = 0;
@@ -474,21 +590,10 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
     let tests = Array.new<I32>(0);
     let names = Array.new<Bytes>(0);
     let paths = Array.new<Array<I32>>(0);
-    _test(checked, pattern, top, ty, tests, names, paths);
-    let n = 0;
-
-    while (n < names.len()) {
-      let m = 0;
-
-      while (m < n) {
-        if (names[m] == names[n]) { throw names[n] + " is bound more than once in this pattern"; }
-        m++;
-      }
-      n++;
-    }
-    if (!_useful(rows, [pattern], [ty])) { throw "unreachable match arm: earlier arms already match " + _describe(pattern); }
+    _armPattern(checked, pattern, top, ty, rows, tests, names, paths);
     let alternative = match (arms[a]) { Alternative(_, _) => true, _ => false };
-    if ((names.len() > 0) && (alternative || (pending.len() > 0))) { throw "alternative patterns cannot bind names yet"; }
+    let grouped = alternative || (pending.len() > 0);
+    if (grouped) { group = _bindAlternative(checked, group, pending.len() == 0, names, paths, tests); }
     if (located) { enterSyntax(outer); }
 
     if (guard == null) { rows.push([pattern]); } else {
@@ -512,14 +617,11 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
         pending.push(_fold(Op.And, tests, true));
         conditions.push(_fold(Op.Or, pending, false));
         pending = Array.new<I32>(0);
+        if (grouped) { names = match (group) { Group(groupNames, _, _) => groupNames }; }
+        let block = _armBody(names, grouped ? _stored(checked, group) : _reads(checked, paths), body, index, expected, resultType, statement);
 
         match (body) { Block(statements, tail) => {
-          let context = (expected < 0) && (resultType >= 0) && !statement ? nullType(resultType) : expected;
-          let block = checkArm(names, _reads(checked, paths), statements, tail, index, context, statement);
-          if (context != expected) { block = _unlift(block); }
-
           if (!statement) {
-            if (auxOf(block) == 0) { throw "match arm requires a trailing expression"; }
             resultType = resultType < 0 ? typeOf(block) : joinTypes(resultType, typeOf(block));
             if (resultType < 0) { throw "match arms must have the same type"; }
           }
@@ -527,6 +629,8 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
           index += (statements.len() as I32) + (tail == null ? 0 : 1);
           bodies.push(block);
         } };
+        if (grouped && (names.len() > 0)) { guarded = true; }
+        group = _noGroup();
         if (a < arms.len() - 1) { guarded = false; }
         null
       },

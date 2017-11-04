@@ -211,6 +211,50 @@ let _length = fn(array: I32): I32 {
   dst
 };
 
+let _widened = fn(ty: I32, value: I32): I32 {
+  if (ty == TYPE_I32) { return value; }
+  let dst = _fresh(ty);
+  _emit(Op.Sext, dst, [value], 0);
+  dst
+};
+
+let _byMinusOne = fn(remainder: Bool, ty: I32, left: I32): I32 {
+  if (remainder) { return _widened(ty, _i32(0)); }
+  let dst = _fresh(ty);
+  _emit(Op.Neg, dst, [left], 0);
+  dst
+};
+
+let _divide = fn(id: I32): I32 {
+  let ty = typeOf(id);
+  let divisor = childOf(id, 1);
+  let remainder = match (opOf(id)) { Rem => true, _ => false };
+  let op = remainder ? Op.Rem : Op.Div;
+  let constant = match (opOf(divisor)) { I32, I64 => true, _ => false };
+  let minusOne = constant && (valueOf(divisor) == -1) && ((ty == TYPE_I32) || (auxOf(divisor) == -1));
+  let left = _expr(childOf(id, 0));
+  let right = _expr(divisor);
+  if (minusOne) { return _byMinusOne(remainder, ty, left); }
+  let result = _fresh(ty);
+
+  if (constant) {
+    _emit(op, result, [left, right], 0);
+    return result;
+  }
+  let isMinusOne = _fresh(TYPE_BOOL);
+  _emit(Op.Eq, isMinusOne, [right, _widened(ty, _i32(-1))], 0);
+  let wrapBlock = _nextBlock;
+  let divideBlock = wrapBlock + 1;
+  let joinBlock = wrapBlock + 2;
+  _nextBlock += 3;
+  _end(Terminator.Branch(isMinusOne, wrapBlock, divideBlock), wrapBlock);
+  _move(result, _byMinusOne(remainder, ty, left));
+  _end(Terminator.Jump(joinBlock), divideBlock);
+  _emit(op, result, [left, right], 0);
+  _end(Terminator.Jump(joinBlock), joinBlock);
+  result
+};
+
 let _arrayLiteral = fn(id: I32): I32 {
   let items = _values(id, 0);
   let array = _fresh(typeOf(id));
@@ -366,6 +410,7 @@ _expr = fn(id) {
     If => _if(id),
     Try => _try(id, true),
     And, Or => _shortCircuit(id),
+    Div, Rem => _divide(id),
     _ => {
       let operands = _values(id, 0);
       let op = _operation(id);
@@ -525,6 +570,11 @@ let _function = fn(id: I32, functionId: I32): IrFunction {
   let result = _lowerBlock(lastChild(id));
   _end(Terminator.ReturnValue(result), -1);
   IrFunction.Function(functionId, params, _registers, ReturnType.Value(_valueType(innerOf(typeOf(id)))), _blocks, 0)
+};
+
+export let functionNode: (I32) -> I32 = fn(functionId) {
+  let root = rootNode();
+  functionId == 0 ? lastChild(root) : childOf(root, functionId - 1)
 };
 
 export let lowerProgram: (Hir) -> IrProgram = fn(program) {

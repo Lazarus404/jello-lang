@@ -151,6 +151,21 @@ test("requires a spill slot written on every path to a pop", fn(t) {
   t.throws(fn(_t) { verifyFunction(spilled(3, [insn(Op.SpillPush, -1, [1], -1)], ValueType.I32)); });
 });
 
+test("types sparse spill slots independently", fn(t) {
+  let sparse = fn(id: I32, popped: ValueType, instructions: Array<Instruction>): Function {
+    Function.Function(
+      id,
+      [0],
+      [ValueType.Bool, ValueType.I32, popped],
+      ReturnType.Value(ValueType.I32),
+      [BasicBlock.Block(0, instructions, Terminator.ReturnValue(1), null)],
+      0
+    )
+  };
+  t.is(verifyFunction(sparse(0, ValueType.I32, [insn(Op.ConstI32, 1, none(), 7), insn(Op.SpillPush, -1, [1], 5), insn(Op.SpillPush, -1, [0], 0), insn(Op.SpillPop, 2, none(), 5)])), true);
+  t.throws(fn(_t) { verifyFunction(sparse(1, ValueType.Bool, [insn(Op.ConstI32, 1, none(), 7), insn(Op.SpillPush, -1, [1], 5), insn(Op.SpillPop, 2, none(), 5)])); });
+});
+
 test("defines a dynamic catch payload on throw edges", fn(t) {
   let function = Function.Function(
     0,

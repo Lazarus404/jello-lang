@@ -16,7 +16,7 @@ import type { Syntax } from frontend.Source;
 import { Syntax } from frontend.Source;
 import {
   beginCheck, checkEffect, checkFunctionBody, checkOperand, checkType, declareFunctions, enterSyntax, finishProgram,
-  isDirectFunction, syntaxChild, takeRegexpInits, useAggregateChecks, useEnumChecks, useValueChecks,
+  checkWhile, isDirectFunction, syntaxChild, takeRegexpInits, useAggregateChecks, useEnumChecks, useValueChecks,
 } from frontend.TypeCheck;
 import { verifyHir } from frontend.VerifyHir;
 
@@ -124,11 +124,16 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
           let name = bindPatternName(pattern);
           if (typeParams.len() != 0) { throw "globals do not support type parameters"; }
           let ty = annotation == null ? -1 : checkType(annotation);
+          let global = ty < 0 ? -1 : declareGlobal(name, ty, !isConst);
+          if (global >= 0) { declareScoped(name, Binding.Global(global)); }
           let checked = checkOperand(value, 0, ty);
           if (ty < 0) { ty = typeOf(checked); } else if (ty != typeOf(checked)) { throw "binding annotation type mismatch: " + name; }
           if (ty == TYPE_NULL) { throw "null needs a type from its context: annotate " + name + " as Null<T>"; }
-          let global = declareGlobal(name, ty, !isConst);
-          declareScoped(name, Binding.Global(global));
+
+          if (global < 0) {
+            global = declareGlobal(name, ty, !isConst);
+            declareScoped(name, Binding.Global(global));
+          }
           _initializers.push(node(Op.Declare, 0, 0, 0, [node(Op.InitGlobal, ty, global, 0, [checked])]));
           if (exported) { exportScoped(index, name); }
           null
@@ -139,6 +144,10 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
         },
         Expression(value) => {
           _initializers.push(checkEffect(value, 0));
+          null
+        },
+        While(condition, body) => {
+          _initializers.push(checkWhile(condition, body));
           null
         },
         Enum(_, _, _, _) => null,
