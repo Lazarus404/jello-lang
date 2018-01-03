@@ -271,7 +271,7 @@ let _call = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>):
         Variable(space) when ((space == "Array") || (space == "Bytes")) => _static(space, name, args),
         Variable(space) when ((space == "Std") && (name == "string") && !isBound(space)) => _string(args),
         Variable(space) when (!isBound(space)) => {
-          throw "module-qualified calls are not supported yet: " + space + "." + name;
+          throw "unknown name " + space + " in " + space + "." + name + "; import a module as " + space + " to call its exports";
           -1
         },
         _ => _method(base, name, args),

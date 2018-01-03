@@ -7,7 +7,7 @@ import { Block as AstBlock, Expr as AstExpr, bindPatternName, integerValue, isBi
 import type { Hir } from frontend.Hir;
 import frontend.Hir as H;
 import { Kind, Op } from frontend.Hir;
-import { Binding, declareScoped, isImported, scoped, scopedType } from frontend.ModuleScope;
+import { Binding, declareScoped, isImported, namespaceMember, scoped, scopedType } from frontend.ModuleScope;
 import {
   assignLocal, assignmentMark, enterLoop, isNarrowed, keepNarrowings, leaveLoop, narrow, narrowings, resetNarrowing, setNarrowings,
 } from frontend.Narrowing;
@@ -392,17 +392,26 @@ let _functionType = fn(index: I32): I32 {
   ty
 };
 
-let _checkVariable = fn(name: Bytes): I32 {
-  let found = _find(name, 0);
-  if (found >= 0) { return _leaf(Op.Local, _types[found], _ids[found]); }
+let _enclosingHas = fn(name: Bytes): Bool {
   let i = 0;
 
   while (i < _enclosing.len()) {
-    if (_enclosing[i] == name) { throw "closures that capture variables are not supported yet: " + name; }
+    if (_enclosing[i] == name) { return true; }
     i++;
   }
+  false
+};
 
-  match (scoped(name)) {
+let _moduleBinding = fn(name: Bytes): Binding { ((_find(name, 0) >= 0) || _enclosingHas(name)) ? Binding.Unbound : scoped(name) };
+
+let _isNamespace = fn(name: Bytes): Bool { match (_moduleBinding(name)) { Namespace(_, _) => true, _ => false } };
+
+let _inNamespace = fn(space: Bytes, name: Bytes): Binding {
+  match (scoped(space)) { Namespace(module, path) => namespaceMember(module, path, name), _ => Binding.Unbound }
+};
+
+let _bindingValue = fn(binding: Binding, name: Bytes): I32 {
+  match (binding) {
     Global(id) => _leaf(Op.Global, H.globalTypeOf(id), id),
     Function(index) => _leaf(Op.FunctionRef, _functionType(index), index + 1),
     Loaded(_, _) => {
@@ -413,11 +422,22 @@ let _checkVariable = fn(name: Bytes): I32 {
       throw "native " + name + " can only be called; natives are not values yet";
       -1
     },
+    Namespace(_, _) => {
+      throw name + " is a module namespace, not a value; name one of its exports, as in " + name + ".x";
+      -1
+    },
     Unbound => {
       throw "unknown local: " + name;
       -1
     },
   }
+};
+
+let _checkVariable = fn(name: Bytes): I32 {
+  let found = _find(name, 0);
+  if (found >= 0) { return _leaf(Op.Local, _types[found], _ids[found]); }
+  if (_enclosingHas(name)) { throw "closures that capture variables are not supported yet: " + name; }
+  _bindingValue(scoped(name), name)
 };
 
 let _arguments = fn(function: I32, args: Array<AstExpr>, children: Array<I32>, message: Bytes): Array<I32> {
@@ -456,19 +476,20 @@ let _checkNativeCall = fn(native: I32, name: Bytes, args: Array<AstExpr>): I32 {
   H.node(Op.CallNative, H.innerOf(ty), native, 0, _arguments(ty, args, [], "wrong argument type for " + name))
 };
 
+let _checkBindingCall = fn(binding: Binding, name: Bytes, callee: AstExpr, args: Array<AstExpr>): I32 {
+  match (binding) {
+    Function(index) => _checkDirectCall(index, args),
+    Native(native) => _checkNativeCall(native, name, args),
+    _ => _checkIndirectCall(_value(callee, 0), args),
+  }
+};
+
 let _checkCall = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>): I32 {
   if (typeArgs.len() != 0) { throw "calls do not support type arguments"; }
 
   match (callee) {
-    Variable(name) => {
-      let direct = _find(name, 0) >= 0 ? Binding.Unbound : scoped(name);
-
-      match (direct) {
-        Function(index) => _checkDirectCall(index, args),
-        Native(native) => _checkNativeCall(native, name, args),
-        _ => _checkIndirectCall(_value(callee, 0), args),
-      }
-    },
+    Variable(name) => _checkBindingCall(_moduleBinding(name), name, callee, args),
+    Member(Variable(space), name) => _checkBindingCall(_inNamespace(space, name), space + "." + name, callee, args),
     _ => _checkIndirectCall(_value(callee, 0), args),
   }
 };
@@ -488,6 +509,8 @@ let _checkIf = fn(condition: AstExpr, thenBranch: AstExpr, elseBranch: AstExpr, 
   H.node(Op.If, ty, 0, 0, [checkedCondition, _coerceAt(checkedThen, ty, 1), _coerceAt(checkedElse, ty, 2)])
 };
 
+let _importedTarget = fn(name: Bytes): Bytes { "cannot assign to imported binding: " + name };
+
 let _assignable = fn(name: Bytes): Tuple<Bool, I32, I32> {
   let found = _find(name, 0);
 
@@ -506,12 +529,16 @@ let _assignable = fn(name: Bytes): Tuple<Bool, I32, I32> {
       throw "cannot assign to native: " + name;
       -1
     },
+    Namespace(_, _) => {
+      throw "cannot assign to module namespace: " + name;
+      -1
+    },
     Unbound => {
       throw "unknown local: " + name;
       -1
     },
   };
-  if (isImported(name)) { throw "cannot assign to imported binding: " + name; }
+  if (isImported(name)) { throw _importedTarget(name); }
   if (!H.globalIsMutable(id)) { throw "cannot assign to immutable global: " + name; }
   (true, id, H.globalTypeOf(id))
 };
@@ -537,8 +564,20 @@ let _checkVariableAssignment = fn(op: AssignOp, name: Bytes, value: AstExpr): I3
   }
 };
 
+let _rejectNamespaceTarget = fn(target: AstExpr): Bool {
+  match (target) {
+    Member(Variable(space), name) when (_isNamespace(space)) => {
+      _inNamespace(space, name);
+      throw _importedTarget(space + "." + name);
+      false
+    },
+    _ => true,
+  }
+};
+
 let _checkAssignment = fn(expr: AstExpr, op: AssignOp, target: AstExpr, value: AstExpr): I32 {
   let isAssign = match (op) { Assign => true, _ => false };
+  _rejectNamespaceTarget(target);
 
   match (target) {
     Variable(name) => _checkVariableAssignment(op, name, value),
@@ -561,6 +600,8 @@ let _checkAssignment = fn(expr: AstExpr, op: AssignOp, target: AstExpr, value: A
 let _one = fn(ty: I32): I32 { ty == H.TYPE_I64 ? H.wideLiteral(1) : _leaf(Op.I32, H.TYPE_I32, 1) };
 
 let _checkIncDec = fn(op: IncDecOp, prefix: Bool, target: AstExpr, discarded: Bool): I32 {
+  _rejectNamespaceTarget(target);
+
   let name = match (target) {
     Variable(found) => found, _ => {
       throw "increment and decrement support only variables yet";
@@ -643,7 +684,9 @@ _checkExpr = fn(expr, syntax, expected) {
     Binary(op, left, right) => _checkBinary(op, left, right, literal),
     Cast(_, _), Is(_, _) => _checkValue(expr, expected),
     Variable(name) => _checkVariable(name),
+    Member(Variable(space), name) when (_isNamespace(space)) => _bindingValue(_inNamespace(space, name), space + "." + name),
     Tuple(_), Array(_), Member(_, _), Index(_, _) => _checkAggregate(expr, literal),
+    Call(callee, typeArgs, args) when (match (callee) { Member(Variable(space), _) => _isNamespace(space), _ => false }) => _checkCall(callee, typeArgs, args),
     Call(callee, _, _) when (match (callee) { Member(_, _), TypeApply(_, _) => true, _ => false }) => _checkAggregate(expr, expected),
     Call(callee, typeArgs, args) => _checkCall(callee, typeArgs, args),
     If(_, _, elseBranch) when (_isNull(elseBranch)) => {

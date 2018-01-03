@@ -5,9 +5,12 @@ import { lexFileSource } from frontend.Lexer;
 import { parseSource, programSyntax } from frontend.Parser;
 import type { SourceSpan, Syntax } from frontend.Source;
 import { SourceSpan } from frontend.Source;
-import { readText } from std.io.File;
+import { exists, readText } from std.io.File;
 
-export enum Import { Import(local: Bytes, module: I32, name: Bytes, typeOnly: Bool); }
+export enum Import {
+  Import(local: Bytes, module: I32, name: Bytes, typeOnly: Bool);
+  Namespace(local: Bytes, module: I32);
+}
 
 export enum Module {
   Module(path: Bytes, statements: Array<Stmt>, syntax: Syntax, tail: ?Expr, imports: Array<Import>);
@@ -68,13 +71,20 @@ let _packageMatches = fn(packageName: Package, parts: Array<Bytes>): Bool {
   } }
 };
 
-let _repeats = fn(imports: Array<Import>, local: Bytes, module: I32, name: Bytes, typeOnly: Bool): Bool {
+let _localOf = fn(imported: Import): Bytes { match (imported) { Import(local, _, _, _), Namespace(local, _) => local } };
+
+let _repeats = fn(imports: Array<Import>, added: Import): Bool {
   let i = 0;
 
   while (i < imports.len()) {
-    match (imports[i]) { Import(other, otherModule, otherName, otherTypeOnly) => {
-      if ((other == local) && ((otherTypeOnly == typeOnly) || (otherModule != module) || (otherName != name))) { return true; }
-    } };
+    if (_localOf(imports[i]) == _localOf(added)) {
+      let allowed = match ((imports[i], added)) {
+        (Import(_, module, name, typeOnly), Import(_, addedModule, addedName, addedTypeOnly)) =>
+          (module == addedModule) && (name == addedName) && (typeOnly != addedTypeOnly),
+        _ => false,
+      };
+      if (!allowed) { return true; }
+    }
     i++;
   }
   false
@@ -105,6 +115,15 @@ let _statementSpan = fn(syntax: Syntax, index: I32): SourceSpan {
 };
 
 let _load: (Bytes, Array<Bytes>) -> I32 = fn(_path, _parts) { -1 };
+
+let _import = fn(parts: Array<Bytes>): I32 {
+  let at = _failure;
+  let path = _modulePath(_root, _stdRoot, parts);
+  if ((_indexOf(_paths, path) < 0) && !exists(path)) { throw "module " + _dotted(parts) + " not found: " + path; }
+  let dependency = _load(path, parts);
+  _failure = at;
+  dependency
+};
 _load = fn(path, parts) {
   let loaded = _indexOf(_paths, path);
   if (loaded >= 0) { return loaded; }
@@ -136,8 +155,7 @@ _load = fn(path, parts) {
       match (statements[i]) {
         ImportFrom(Native, _, _) => null,
         ImportFrom(kind, items, importParts) => {
-          let at: ?SourceSpan = _statementSpan(syntax, i);
-          _failure = at;
+          _failure = _statementSpan(syntax, i);
 
           let typeOnly = match (kind) {
             Value => false, TypeOnly => true, _ => {
@@ -145,23 +163,40 @@ _load = fn(path, parts) {
               false
             }
           };
-          let dependency = _load(_modulePath(_root, _stdRoot, importParts), importParts);
-          _failure = at;
+          let dependency = _import(importParts);
           let j = 0;
 
           while (j < items.len()) {
             match (items[j]) { Item(name, alias) => {
-              let local = name;
-              if (alias != null) { local = alias; }
-              if (_repeats(imports, local, dependency, name, typeOnly)) { throw "duplicate import name: " + local; }
-              imports.push(Import.Import(local, dependency, name, typeOnly));
+              let added = Import.Import(alias == null ? name : alias, dependency, name, typeOnly);
+              if (_repeats(imports, added)) { throw "duplicate import name: " + _localOf(added); }
+              imports.push(added);
             } };
             j++;
           }
           null
         },
-        ImportModule(_, _, _) => {
-          throw "module namespace imports are not supported";
+        ImportModule(kind, importParts, alias) => {
+          _failure = _statementSpan(syntax, i);
+
+          match (kind) {
+            Value => null,
+            TypeOnly => {
+              throw "a namespace import names values; import types with import type { T } from " + _dotted(importParts);
+              null
+            },
+            Native => {
+              throw "a native library's exports are named: load { name } from " + _dotted(importParts) + ";";
+              null
+            },
+            _ => {
+              throw "macro imports are not supported";
+              null
+            },
+          };
+          let added = Import.Namespace(alias, _import(importParts));
+          if (_repeats(imports, added)) { throw "duplicate import name: " + alias; }
+          imports.push(added);
           null
         },
         _ => null,

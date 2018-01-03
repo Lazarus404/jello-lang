@@ -100,7 +100,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
           }
           null
         },
-        ImportFrom(_, _, _) => null,
+        ImportFrom(_, _, _), ImportModule(_, _, _) => null,
         LetStmt(_, exported, pattern, _, annotation, value) when (_isLoaded(value)) => {
           let name = bindPatternName(pattern);
           if ((annotation != null) && _returnsVoid(annotation)) { throw "native " + name + " needs a result type: natives without a result are not supported yet"; }
@@ -200,7 +200,7 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
         let j = 0;
 
         while (j < imports.len()) {
-          match (imports[j]) { Import(_, module, _, typeOnly) => { if (!typeOnly) { runs[module] = true; } } };
+          match (imports[j]) { Import(_, module, _, false), Namespace(_, module) => { runs[module] = true; }, _ => null };
           j++;
         }
       } };
