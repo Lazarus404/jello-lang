@@ -1,7 +1,7 @@
 package backend.jello;
 
 import type { BasicBlock, Function, Instruction, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { BasicBlock, Function, Op, Program, Terminator, ThrowHandler, argsOf, dstOf, handlerPayload, handlerTarget, immOf, instruction, opOf, valueTypeEqual } from ir.Model;
+import { BasicBlock, Function, Op, Program, Terminator, ThrowHandler, argsOf, dstOf, handlerPayload, handlerTarget, immOf, instructionAt, nodeOf, opOf, valueTypeEqual } from ir.Model;
 import { blockMayThrow, normalSuccessors } from ir.Cfg;
 import { bitsAdd, bitsCopy, bitsHas, bitsNew, bitsRemove, bitsUnion } from ir.Bits;
 import { verifyAllocatedProgram } from ir.Verify;
@@ -42,7 +42,7 @@ let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
 };
 
 let _terminatorUses = fn(terminator: Terminator): Array<I32> {
-  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value) => [value], _ => Array.new<I32>(0) }
+  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => [value], _ => Array.new<I32>(0) }
 };
 
 let _catch = fn(block: BasicBlock, indexes: Array<I32>): Tuple<I32, I32> {
@@ -201,6 +201,7 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
 
       while (j >= 0) {
         let dst = dstOf(instructions[j]);
+        let source = match (opOf(instructions[j])) { Move => argsOf(instructions[j])[0], _ => -1 };
 
         if (dst >= 0) {
           let w = 0;
@@ -214,7 +215,7 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
               while (bit < 32) {
                 let other = (w << 5) + bit;
 
-                if ((((word >> bit) & 1) == 1) && (other != dst)) {
+                if ((((word >> bit) & 1) == 1) && (other != dst) && (other != source)) {
                   neighbors[dst].push(other);
                   neighbors[other].push(dst);
                 }
@@ -241,18 +242,114 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
   neighbors
 };
 
-let _color = fn(params: Array<I32>, first: Array<I32>, neighbors: Array<Array<I32>>, limit: I32): Array<I32> {
+let _moves = fn(blocks: Array<BasicBlock>): Array<Tuple<I32, I32>> {
+  let moves = Array.new<Tuple<I32, I32>>(0);
+  let i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) { Block(_, instructions, _, _) => {
+      let j = 0;
+
+      while (j < instructions.len()) {
+        match (opOf(instructions[j])) {
+          Move => {
+            moves.push((dstOf(instructions[j]), argsOf(instructions[j])[0]));
+            null
+          }, _ => null
+        };
+        j++;
+      }
+    } };
+    i++;
+  }
+  moves
+};
+
+let _groups = Array.new<I32>(0);
+let _members = Array.new<Array<I32>>(0);
+let _groupColors = Array.new<I32>(0);
+
+let _group = fn(register: I32): I32 {
+  let r = register;
+  while (_groups[r] != r) { r = _groups[r]; }
+  _groups[register] = r;
+  r
+};
+
+let _conflict = fn(a: I32, b: I32, color: I32, neighbors: Array<Array<I32>>): Bool {
+  let groups = [a, b];
+  let g = 0;
+
+  while (g < 2) {
+    let members = _members[groups[g]];
+    let m = 0;
+
+    while (m < members.len()) {
+      let n = 0;
+
+      while (n < neighbors[members[m]].len()) {
+        let other = _group(neighbors[members[m]][n]);
+        if ((other == a) || (other == b)) { return true; }
+        if ((color >= 0) && (_groupColors[other] == color)) { return true; }
+        n++;
+      }
+      m++;
+    }
+    g++;
+  }
+  false
+};
+
+let _coalesce = fn(moves: Array<Tuple<I32, I32>>, fixed: Array<I32>, neighbors: Array<Array<I32>>) {
+  let count = fixed.len();
+  _groups = Array.new<I32>(count);
+  _members = Array.new<Array<I32>>(count);
+  _groupColors = Array.new<I32>(count);
+  let i = 0;
+
+  while (i < count) {
+    _groups[i] = i;
+    _members[i] = [i];
+    _groupColors[i] = fixed[i];
+    i++;
+  }
+  i = 0;
+
+  while (i < moves.len()) {
+    let (dst, src) = moves[i];
+    let a = _group(dst);
+    let b = _group(src);
+    let colorA = _groupColors[a];
+    let colorB = _groupColors[b];
+    let color = colorA >= 0 ? colorA : colorB;
+
+    if ((a != b) && (_keys[a] == _keys[b]) && ((colorA < 0) || (colorB < 0) || (colorA == colorB)) && !_conflict(a, b, color, neighbors)) {
+      _groups[b] = a;
+      _groupColors[a] = color;
+      let m = 0;
+
+      while (m < _members[b].len()) {
+        _members[a].push(_members[b][m]);
+        m++;
+      }
+      _members[b] = Array.new<I32>(0);
+    }
+    i++;
+  }
+  null
+};
+
+let _free = fn(color: I32, register: I32, marks: Array<I32>, colorKeys: Array<I32>): Bool {
+  (color >= 0) && (color < marks.len()) && (marks[color] != register) && ((colorKeys[color] < 0) || (colorKeys[color] == _keys[register]))
+};
+
+let _color = fn(first: Array<I32>, neighbors: Array<Array<I32>>, moves: Array<Tuple<I32, I32>>, limit: I32): Array<I32> {
   let count = _keys.len();
   let colors = Array.new<I32>(count);
   let colorKeys = Array.new<I32>(limit);
   let marks = Array.new<I32>(limit);
+  let partners = Array.new<Array<I32>>(0);
   let i = 0;
-
-  while (i < count) {
-    colors[i] = -1;
-    i++;
-  }
-  i = 0;
 
   while (i < limit) {
     colorKeys[i] = -1;
@@ -261,26 +358,56 @@ let _color = fn(params: Array<I32>, first: Array<I32>, neighbors: Array<Array<I3
   }
   i = 0;
 
-  while (i < params.len()) {
-    colors[params[i]] = i;
-    colorKeys[i] = _keys[params[i]];
+  while (i < count) {
+    partners.push(Array.new<I32>(0));
+    colors[i] = _groups[i] == i ? _groupColors[i] : -1;
+    if (colors[i] >= 0) { colorKeys[colors[i]] = _keys[i]; }
+    i++;
+  }
+  i = 0;
+
+  while (i < moves.len()) {
+    let (dst, src) = moves[i];
+    let a = _group(dst);
+    let b = _group(src);
+
+    if (a != b) {
+      partners[a].push(b);
+      partners[b].push(a);
+    }
     i++;
   }
   let k = 0;
 
   while (k < first.len() + count) {
-    i = k < first.len() ? first[k] : k - (first.len() as I32);
+    i = k < first.len() ? _group(first[k]) : k - (first.len() as I32);
 
-    if (colors[i] < 0) {
-      let n = 0;
+    if ((colors[i] < 0) && (_groups[i] == i)) {
+      let m = 0;
 
-      while (n < neighbors[i].len()) {
-        let color = colors[neighbors[i][n]];
-        if (color >= 0) { marks[color] = i; }
-        n++;
+      while (m < _members[i].len()) {
+        let n = 0;
+        let member = _members[i][m];
+
+        while (n < neighbors[member].len()) {
+          let color = colors[_group(neighbors[member][n])];
+          if (color >= 0) { marks[color] = i; }
+          n++;
+        }
+        m++;
       }
-      let color = 0;
-      while ((color < limit) && ((marks[color] == i) || ((colorKeys[color] >= 0) && (colorKeys[color] != _keys[i])))) { color++; }
+      let color = -1;
+      let p = 0;
+
+      while ((color < 0) && (p < partners[i].len())) {
+        if (_free(colors[partners[i][p]], i, marks, colorKeys)) { color = colors[partners[i][p]]; }
+        p++;
+      }
+
+      if (color < 0) {
+        color = 0;
+        while ((color < limit) && !_free(color, i, marks, colorKeys)) { color++; }
+      }
 
       if (color < limit) {
         colors[i] = color;
@@ -288,6 +415,23 @@ let _color = fn(params: Array<I32>, first: Array<I32>, neighbors: Array<Array<I3
       }
     }
     k++;
+  }
+  i = 0;
+
+  while (i < count) {
+    colors[i] = colors[_group(i)];
+    i++;
+  }
+  i = 0;
+
+  while (i < count) {
+    let n = 0;
+
+    while ((colors[i] >= 0) && (n < neighbors[i].len())) {
+      if (colors[neighbors[i][n]] == colors[i]) { throw "register allocation gave interfering registers %" + Std.string(i) + " and %" + Std.string(neighbors[i][n]) + " one register"; }
+      n++;
+    }
+    i++;
   }
   colors
 };
@@ -305,16 +449,90 @@ let _scratchOffset = fn(scratch: Array<I32>, args: Array<I32>, start: I32): I32 
   -1
 };
 
+let _registers = Array.new<ValueType>(0);
+let _slotOf = Array.new<I32>(0);
+let _scratch = Array.new<I32>(0);
+
+let _fresh = fn(ty: ValueType, key: I32, slot: I32): I32 {
+  _registers.push(ty);
+  _keys.push(key);
+  _slotOf.push(slot);
+  (_registers.len() - 1) as I32
+};
+
+let _withWindows = fn(blocks: Array<BasicBlock>): Array<BasicBlock> {
+  let windowed = Array.new<BasicBlock>(0);
+  let i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) { Block(id, instructions, terminator, handler) => {
+      let out = Array.new<Instruction>(0);
+      let j = 0;
+
+      while (j < instructions.len()) {
+        let insn = instructions[j];
+        let start = _windowStart(opOf(insn));
+        let args = argsOf(insn);
+
+        if (start < 0) { out.push(insn); } else {
+          let offset = _scratchOffset(_scratch, args, start);
+          let moved = Array.new<I32>(0);
+          let a = 0;
+
+          while (a < args.len()) {
+            if (a < start) { moved.push(args[a]); } else {
+              let slot = _fresh(_registers[args[a]], _keys[args[a]], offset + a - start);
+              out.push(instructionAt(Op.Move, slot, [args[a]], 0, nodeOf(insn)));
+              moved.push(slot);
+            }
+            a++;
+          }
+          out.push(instructionAt(opOf(insn), dstOf(insn), moved, immOf(insn), nodeOf(insn)));
+        }
+        j++;
+      }
+      windowed.push(BasicBlock.Block(id, out, terminator, handler));
+    } };
+    i++;
+  }
+  windowed
+};
+
+let _windowBase = fn(params: Array<I32>, neighbors: Array<Array<I32>>): I32 {
+  let base = 0;
+
+  while (base < params.len()) {
+    let fits = true;
+    let i = 0;
+
+    while (fits && (i < _scratch.len()) && (base + i < params.len())) {
+      let param = params[base + i];
+      fits = _keys[param] == _scratch[i];
+      let n = 0;
+
+      while (fits && (n < neighbors[param].len())) {
+        fits = _slotOf[neighbors[param][n]] != i;
+        n++;
+      }
+      i++;
+    }
+    if (fits) { return base; }
+    base++;
+  }
+  params.len() as I32
+};
+
 let _colors = Array.new<I32>(0);
+let _slots = Array.new<I32>(0);
 let _tempStart = 0;
 let _tempOffsets = Array.new<I32>(0);
 let _nextTemp = Array.new<I32>(0);
-let _scratch = Array.new<I32>(0);
-let _scratchStart = 0;
 let _out = Array.new<Instruction>(0);
 
+let _node = -1;
+
 let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
-  _out.push(instruction(op, dst, args, imm));
+  _out.push(instructionAt(op, dst, args, imm, _node));
   null
 };
 
@@ -323,13 +541,13 @@ let _read = fn(register: I32): I32 {
   let key = _keys[register];
   let temp = _tempStart + _tempOffsets[key] + _nextTemp[key];
   _nextTemp[key]++;
-  _emit(Op.SpillPop, temp, Array.new<I32>(0), register);
+  _emit(Op.SpillPop, temp, Array.new<I32>(0), _slots[register]);
   temp
 };
 
 let _write = fn(register: I32): I32 { _colors[register] >= 0 ? _colors[register] : _tempStart + _tempOffsets[_keys[register]] };
 
-let _written = fn(register: I32, physical: I32) { if (_colors[register] < 0) { _emit(Op.SpillPush, -1, [physical], register); } null };
+let _written = fn(register: I32, physical: I32) { if (_colors[register] < 0) { _emit(Op.SpillPush, -1, [physical], _slots[register]); } null };
 
 let _resetTemps = fn() {
   let i = 0;
@@ -342,43 +560,36 @@ let _resetTemps = fn() {
 
 let _rewrite = fn(insn: Instruction) {
   _resetTemps();
+  _node = nodeOf(insn);
   let op = opOf(insn);
   let dst = dstOf(insn);
   let args = argsOf(insn);
-  let start = _windowStart(op);
+  let moved = match (op) { Move => true, _ => false };
+
+  if (moved && (_colors[dst] >= 0) && (_colors[args[0]] < 0)) {
+    _emit(Op.SpillPop, _colors[dst], Array.new<I32>(0), _slots[args[0]]);
+    return null;
+  }
+
+  if (moved && (_colors[dst] < 0) && (_slots[dst] != _slots[args[0]])) {
+    _emit(Op.SpillPush, -1, [_read(args[0])], _slots[dst]);
+    return null;
+  }
+  if (moved && (_colors[dst] == _colors[args[0]])) { return null; }
   let physical = Array.new<I32>(0);
+  let i = 0;
 
-  if (start >= 0) {
-    let window = _scratchStart + _scratchOffset(_scratch, args, start);
-    let i = 0;
-
-    while (i < start) {
-      physical.push(_read(args[i]));
-      i++;
-    }
-
-    while (i < args.len()) {
-      let slot = window + i - start;
-      if (_colors[args[i]] >= 0) { _emit(Op.Move, slot, [_colors[args[i]]], 0); } else { _emit(Op.SpillPop, slot, Array.new<I32>(0), args[i]); }
-      physical.push(slot);
-      i++;
-    }
-  } else {
-    let i = 0;
-
-    while (i < args.len()) {
-      physical.push(_read(args[i]));
-      i++;
-    }
+  while (i < args.len()) {
+    physical.push(_read(args[i]));
+    i++;
   }
 
   if (dst < 0) {
     _emit(op, -1, physical, immOf(insn));
     return null;
   }
-  let target = match (op) { Move => _colors[dst] >= 0 ? _colors[dst] : physical[0], _ => _write(dst) };
-  let redundant = match (op) { Move => target == physical[0], _ => false };
-  if (!redundant) { _emit(op, target, physical, immOf(insn)); }
+  let target = _write(dst);
+  _emit(op, target, physical, immOf(insn));
   _written(dst, target)
 };
 
@@ -392,11 +603,15 @@ let _rewriteBlock = fn(block: BasicBlock): BasicBlock {
       i++;
     }
     _resetTemps();
+    _node = -1;
 
     let allocated = match (terminator) {
       Branch(value, thenTarget, elseTarget) => Terminator.Branch(_read(value), thenTarget, elseTarget),
       ReturnValue(value) => Terminator.ReturnValue(_read(value)),
-      Throw(value) => Terminator.Throw(_read(value)),
+      Throw(value, node) => {
+        _node = node;
+        Terminator.Throw(_read(value), node)
+      },
       _ => terminator,
     };
     let caught: ?ThrowHandler = null;
@@ -414,10 +629,14 @@ let _allocate = fn(function: Function): Function {
   match (function) { Function(id, params, registers, result, blocks, entry) => {
     _keyTypes = Array.new<ValueType>(0);
     _keys = Array.new<I32>(0);
+    _registers = Array.new<ValueType>(0);
+    _slotOf = Array.new<I32>(0);
     let i = 0;
 
     while (i < registers.len()) {
+      _registers.push(registers[i]);
       _keys.push(_key(registers[i]));
+      _slotOf.push(-1);
       i++;
     }
     _scratch = Array.new<I32>(0);
@@ -444,15 +663,32 @@ let _allocate = fn(function: Function): Function {
       } };
       i++;
     }
-    if (params.len() + _scratch.len() > _REGISTER_LIMIT) { _tooMany(id); }
-    let neighbors = _interference(blocks, registers.len() as I32);
+    let windowed = _withWindows(blocks);
+    let count = _registers.len() as I32;
+    let neighbors = _interference(windowed, count);
+    let moves = _moves(windowed);
     let payloads = Array.new<I32>(0);
     i = 0;
 
-    while (i < blocks.len()) {
-      match (blocks[i]) { Block(_, _, _, handler) => { if (handler != null) { payloads.push(handlerPayload(handler)); } null } };
+    while (i < windowed.len()) {
+      match (windowed[i]) { Block(_, _, _, handler) => { if (handler != null) { payloads.push(handlerPayload(handler)); } null } };
       i++;
     }
+    let base = _windowBase(params, neighbors);
+    let fixed = Array.new<I32>(count);
+    i = 0;
+
+    while (i < count) {
+      fixed[i] = _slotOf[i] >= 0 ? base + _slotOf[i] : -1;
+      i++;
+    }
+    i = 0;
+
+    while (i < params.len()) {
+      fixed[params[i]] = i as I32;
+      i++;
+    }
+    _coalesce(moves, fixed, neighbors);
     let spilled = Array.new<Bool>(_keyTypes.len());
     i = 0;
 
@@ -461,7 +697,9 @@ let _allocate = fn(function: Function): Function {
       i++;
     }
     let temps = 0;
-    _colors = _color(params, payloads, neighbors, _REGISTER_LIMIT - _scratch.len());
+    let reserved = base + (_scratch.len() as I32) > (params.len() as I32) ? base + (_scratch.len() as I32) : params.len() as I32;
+    if (reserved > _REGISTER_LIMIT) { _tooMany(id); }
+    _colors = _color(payloads, neighbors, moves, _REGISTER_LIMIT);
     let changed = true;
 
     while (changed) {
@@ -476,7 +714,11 @@ let _allocate = fn(function: Function): Function {
         }
         i++;
       }
-      if (changed) { _colors = _color(params, payloads, neighbors, _REGISTER_LIMIT - _scratch.len() - temps); }
+
+      if (changed) {
+        if (reserved > _REGISTER_LIMIT - temps) { _tooMany(id); }
+        _colors = _color(payloads, neighbors, moves, _REGISTER_LIMIT - temps);
+      }
     }
     i = 0;
 
@@ -484,12 +726,31 @@ let _allocate = fn(function: Function): Function {
       if (_colors[payloads[i]] < 0) { throw "a catch value needs a register, and all 256 are in use"; }
       i++;
     }
+    _slots = Array.new<I32>(_colors.len());
+    let slotCount = 0;
+    i = 0;
+
+    while (i < _colors.len()) {
+      _slots[i] = -1;
+
+      if ((_colors[i] < 0) && (_group(i) == i)) {
+        _slots[i] = slotCount;
+        slotCount++;
+      }
+      i++;
+    }
+    i = 0;
+
+    while (i < _colors.len()) {
+      _slots[i] = _slots[_group(i)];
+      i++;
+    }
     let physical = Array.new<ValueType>(0);
     i = 0;
 
     while (i < _colors.len()) {
-      while (physical.len() <= _colors[i]) { physical.push(registers[i]); }
-      if (_colors[i] >= 0) { physical[_colors[i]] = registers[i]; }
+      while (physical.len() <= _colors[i]) { physical.push(_registers[i]); }
+      if (_colors[i] >= 0) { physical[_colors[i]] = _registers[i]; }
       i++;
     }
     _tempStart = physical.len() as I32;
@@ -508,19 +769,12 @@ let _allocate = fn(function: Function): Function {
       }
       i++;
     }
-    _scratchStart = physical.len() as I32;
-    i = 0;
-
-    while (i < _scratch.len()) {
-      physical.push(_keyTypes[_scratch[i]]);
-      i++;
-    }
     if (physical.len() > _REGISTER_LIMIT) { _tooMany(id); }
     let allocated = Array.new<BasicBlock>(0);
     i = 0;
 
-    while (i < blocks.len()) {
-      allocated.push(_rewriteBlock(blocks[i]));
+    while (i < windowed.len()) {
+      allocated.push(_rewriteBlock(windowed[i]));
       i++;
     }
     let physicalParams = Array.new<I32>(0);

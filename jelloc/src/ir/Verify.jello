@@ -154,6 +154,16 @@ let _instruction = fn(instruction: Instruction) {
       if (!_isNumeric(_type(dst))) { _fail("negation requires an integer type"); }
       _expect(args[0], _type(dst))
     },
+    AddImm, SubImm, MulImm => {
+      _arity(args, 1);
+      _expect(dst, ValueType.I32);
+      _expect(args[0], ValueType.I32)
+    },
+    EqImm, LtImm => {
+      _arity(args, 1);
+      _expect(dst, ValueType.Bool);
+      _expect(args[0], ValueType.I32)
+    },
     Not => {
       _arity(args, 1);
       _expect(dst, ValueType.Bool);
@@ -484,7 +494,7 @@ let _terminator = fn(result: ReturnType, indexes: Array<I32>, terminator: Termin
         null
       }, Value(expected) => _expect(value, expected)
     },
-    Throw(value) => {
+    Throw(value, _) => {
       _type(value);
       null
     },
@@ -525,7 +535,7 @@ let _addAll = fn(set: Array<I32>, facts: Array<I32>) {
 };
 
 let _terminatorUses = fn(terminator: Terminator): Array<I32> {
-  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value) => [value], _ => Array.new<I32>(0) }
+  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => [value], _ => Array.new<I32>(0) }
 };
 
 let _definitions = fn(params: Array<I32>, blocks: Array<BasicBlock>, indexes: Array<I32>, entry: I32, slots: I32) {
@@ -548,7 +558,7 @@ let _definitions = fn(params: Array<I32>, blocks: Array<BasicBlock>, indexes: Ar
         if (!throwing) { _addAll(beforeThrow, _writes(instructions[j])); }
         j++;
       }
-      let throws = throwing || match (terminator) { Throw(_) => true, _ => false };
+      let throws = throwing || match (terminator) { Throw(_, _) => true, _ => false };
       let target = -1;
 
       if ((handler != null) && throws) {

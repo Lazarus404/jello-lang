@@ -4,7 +4,7 @@ import { handlerTarget, instructionMayThrow } from ir.Model;
 import type { BasicBlock, Instruction, Terminator, ThrowHandler } from ir.Model;
 
 export let terminatorThrows: (Terminator) -> Bool = fn(terminator) {
-  match (terminator) { Throw(_) => true, _ => false }
+  match (terminator) { Throw(_, _) => true, _ => false }
 };
 
 export let normalSuccessors: (Terminator) -> Array<I32> = fn(terminator) {

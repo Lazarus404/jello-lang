@@ -1,7 +1,7 @@
 package backend.jello;
 
 import type { BasicBlock, Function, Instruction, Program, Terminator, ValueType } from ir.Model;
-import { BasicBlock, Function, Op, Program, Terminator, ValueType, argsOf, dstOf, immOf, instruction, opOf } from ir.Model;
+import { BasicBlock, Function, Op, Program, Terminator, ValueType, argsOf, dstOf, handlerPayload, immOf, instructionAt, nodeOf, opOf } from ir.Model;
 import { verifyProgram } from ir.Verify;
 
 let _registers = Array.new<ValueType>(0);
@@ -11,15 +11,17 @@ let _fresh = fn(ty: ValueType): I32 {
   _registers.push(ty);
   (_registers.len() - 1) as I32
 };
+let _node = -1;
 
 let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
-  _out.push(instruction(op, dst, args, imm));
+  _out.push(instructionAt(op, dst, args, imm, _node));
   null
 };
 
 let _instruction = fn(insn: Instruction) {
   let dst = dstOf(insn);
   let args = argsOf(insn);
+  _node = nodeOf(insn);
 
   match (opOf(insn)) {
     TupleNew => {
@@ -55,11 +57,12 @@ let _block = fn(block: BasicBlock): BasicBlock {
     }
 
     let selected = match (terminator) {
-      Throw(value) when (match (_registers[value]) { Dynamic => true, _ => false }) => terminator,
-      Throw(value) => {
+      Throw(value, _) when (match (_registers[value]) { Dynamic => true, _ => false }) => terminator,
+      Throw(value, node) => {
+        _node = node;
         let payload = _fresh(ValueType.Dynamic);
         _emit(Op.Box, payload, [value], 0);
-        Terminator.Throw(payload)
+        Terminator.Throw(payload, node)
       },
       Unreachable => {
         throw "JLO legalization does not support unreachable terminators";
@@ -69,6 +72,166 @@ let _block = fn(block: BasicBlock): BasicBlock {
     };
     BasicBlock.Block(id, _out, selected, handler)
   } }
+};
+
+let _defs = Array.new<I32>(0);
+let _uses = Array.new<I32>(0);
+let _constants = Array.new<I32>(0);
+let _isConstant = Array.new<Bool>(0);
+
+let _terminatorUse = fn(terminator: Terminator): I32 {
+  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => value, _ => -1 }
+};
+
+let _count = fn(params: Array<I32>, blocks: Array<BasicBlock>) {
+  _defs = Array.new<I32>(_registers.len());
+  _uses = Array.new<I32>(_registers.len());
+  _constants = Array.new<I32>(_registers.len());
+  _isConstant = Array.new<Bool>(_registers.len());
+  let i = 0;
+
+  while (i < _registers.len()) {
+    _defs[i] = 0;
+    _uses[i] = 0;
+    _constants[i] = 0;
+    _isConstant[i] = false;
+    i++;
+  }
+  i = 0;
+
+  while (i < params.len()) {
+    _defs[params[i]]++;
+    i++;
+  }
+  i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) { Block(_, instructions, terminator, handler) => {
+      if (handler != null) { _defs[handlerPayload(handler)]++; }
+      let j = 0;
+
+      while (j < instructions.len()) {
+        let insn = instructions[j];
+        let dst = dstOf(insn);
+        let args = argsOf(insn);
+        let a = 0;
+
+        if (dst >= 0) {
+          _defs[dst]++;
+
+          match (opOf(insn)) {
+            ConstI32 => {
+              _isConstant[dst] = true;
+              _constants[dst] = immOf(insn);
+              null
+            }, _ => null
+          };
+        }
+
+        while (a < args.len()) {
+          _uses[args[a]]++;
+          a++;
+        }
+        j++;
+      }
+      let used = _terminatorUse(terminator);
+      if (used >= 0) { _uses[used]++; }
+      null
+    } };
+    i++;
+  }
+  null
+};
+
+let _known = fn(register: I32): Bool { _isConstant[register] && (_defs[register] == 1) };
+
+let _withImmediate = fn(insn: Instruction, op: Op, operand: I32, constant: I32): ?Instruction {
+  instructionAt(op, dstOf(insn), [operand], _constants[constant], nodeOf(insn))
+};
+
+let _immediate = fn(insn: Instruction): ?Instruction {
+  let args = argsOf(insn);
+  if (args.len() != 2) { return null; }
+  let narrow = match (_registers[args[0]]) { I32 => true, _ => false };
+  if (!narrow) { return null; }
+  let left = args[0];
+  let right = args[1];
+
+  match (opOf(insn)) {
+    Add when (_known(right)) => _withImmediate(insn, Op.AddImm, left, right),
+    Add when (_known(left)) => _withImmediate(insn, Op.AddImm, right, left),
+    Sub when (_known(right)) => _withImmediate(insn, Op.SubImm, left, right),
+    Mul when (_known(right)) => _withImmediate(insn, Op.MulImm, left, right),
+    Mul when (_known(left)) => _withImmediate(insn, Op.MulImm, right, left),
+    Eq when (_known(right)) => _withImmediate(insn, Op.EqImm, left, right),
+    Eq when (_known(left)) => _withImmediate(insn, Op.EqImm, right, left),
+    Lt when (_known(right)) => _withImmediate(insn, Op.LtImm, left, right),
+    _ => null,
+  }
+};
+
+let _select = fn(params: Array<I32>, blocks: Array<BasicBlock>): Array<BasicBlock> {
+  _count(params, blocks);
+  let folded = Array.new<BasicBlock>(0);
+  let i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) { Block(id, instructions, terminator, handler) => {
+      let out = Array.new<Instruction>(0);
+      let j = 0;
+
+      while (j < instructions.len()) {
+        let insn = instructions[j];
+        let immediate = _immediate(insn);
+
+        if (immediate != null) {
+          let args = argsOf(insn);
+          let a = 0;
+
+          while (a < args.len()) {
+            _uses[args[a]]--;
+            a++;
+          }
+          _uses[argsOf(immediate)[0]]++;
+          insn = immediate;
+        }
+        out.push(insn);
+        j++;
+      }
+      folded.push(BasicBlock.Block(id, out, terminator, handler));
+    } };
+    i++;
+  }
+  let selected = Array.new<BasicBlock>(0);
+  i = 0;
+
+  while (i < folded.len()) {
+    match (folded[i]) { Block(id, instructions, terminator, handler) => {
+      let out = Array.new<Instruction>(0);
+      let j = 0;
+
+      while (j < instructions.len()) {
+        let dst = dstOf(instructions[j]);
+        let dead = match (opOf(instructions[j])) { ConstI32 => _uses[dst] == 0, _ => false };
+        if (!dead) { out.push(instructions[j]); }
+        j++;
+      }
+      let last = out.len() - 1;
+
+      let chosen = match (terminator) {
+        Branch(condition, thenTarget, elseTarget) when ((last >= 0) && (dstOf(out[last]) == condition) && (_defs[condition] == 1) && (_uses[condition] == 1)
+          && (match (opOf(out[last])) { Not => true, _ => false })) => {
+          let negated = argsOf(out[last])[0];
+          out.pop();
+          Terminator.Branch(negated, elseTarget, thenTarget)
+        },
+        _ => terminator,
+      };
+      selected.push(BasicBlock.Block(id, out, chosen, handler));
+    } };
+    i++;
+  }
+  selected
 };
 
 let _function = fn(function: Function): Function {
@@ -87,7 +250,7 @@ let _function = fn(function: Function): Function {
       selected.push(_block(blocks[i]));
       i++;
     }
-    Function.Function(id, params, _registers, result, selected, entry)
+    Function.Function(id, params, _registers, result, _select(params, selected), entry)
   } }
 };
 

@@ -9,7 +9,7 @@ import { parseProgram, parseSource, programSyntax } from frontend.Parser;
 import { lowerProgram } from ir.Lower;
 import { legalizeJlo } from backend.jello.Legalize;
 import { allocateProgram } from backend.jello.Allocate;
-import { emitJlo } from backend.jello.Emit;
+import { emitJlo, noSource } from backend.jello.Emit;
 import { typeCheckModules, typeCheckProgram, typeCheckProgramWithSyntax } from frontend.CheckModules;
 import { loadModules, modulePath } from frontend.Modules;
 import type { SourceSpan } from frontend.Source;
@@ -108,7 +108,7 @@ test("centralizes instruction effects and CFG successors", fn(t) {
   let successors = blockSuccessors(BasicBlock.Block(
     0,
     [],
-    Terminator.Throw(0),
+    Terminator.Throw(0, -1),
     ThrowHandler.Catch(2, 1)
   ));
   t.is(successors.len(), 1);
@@ -234,13 +234,13 @@ test("keeps source spans with explicit frontend results", fn(t) {
 test("loads ordinary let declarations with their syntax", fn(t) {
   let path = "itests/emit/core.jello";
   let hir = checkFile(path);
-  t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
+  t.is(emitJlo(legalizeJlo(lowerProgram(hir)), noSource).len() > 64, true);
 });
 
 test("loads a comparison tail with its syntax", fn(t) {
   let path = "itests/emit/greater-i32.jello";
   let hir = checkFile(path);
-  t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
+  t.is(emitJlo(legalizeJlo(lowerProgram(hir)), noSource).len() > 64, true);
 });
 
 test("checks Array<I32> len, get, and set", fn(t) {
@@ -263,7 +263,7 @@ test("lowers Tuple<I32, I32> literal and fixed fields", fn(t) {
   t.is(printed.indexOf("tuple %") >= 0, true);
   t.is(printed.indexOf("tuple.get") >= 0, true);
   t.is(verifyProgram(ir), true);
-  t.is(emitJlo(legalizeJlo(ir)).len() > 128, true);
+  t.is(emitJlo(legalizeJlo(ir), noSource).len() > 128, true);
 });
 
 test("preserves exact spans through functions, assignments, branches, and loops", fn(t) {
@@ -475,7 +475,7 @@ test("lowers exact noncapturing function values and indirect calls", fn(t) {
   let jlo = printJlo(legalizeJlo(lowerProgram(hir)));
   t.is(jlo.indexOf("= function @1") >= 0, true);
   t.is(jlo.indexOf("= call %") >= 0, true);
-  t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 128, true);
+  t.is(emitJlo(legalizeJlo(lowerProgram(hir)), noSource).len() > 128, true);
   t.is(verifyProgram(lowerProgram(typeCheckProgram(parseProgram(lex(
     "let factorial = fn(value: I32): I32 { if (value < 2i32) { 1i32 } else { value * factorial(value - 1i32) } }; factorial(5i32)"
   ))))), true);
@@ -535,7 +535,11 @@ test("lowers typed i32 equality for changing loop conditions", fn(t) {
     + "    %1 = call @1(%0)\n"
     + "    return %1\n"
     + "}\n");
-  t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("true == false"))); });
+  t.is(printHir(typeCheckProgram(parseProgram(lex("true != false")))), "program\n"
+    + "  not.bool: bool\n"
+    + "    eq.bool: bool\n"
+    + "      bool true: bool\n"
+    + "      bool false: bool\n");
   t.throws(fn(_t) { typeCheckProgram(parseProgram(lex("1i32 == true"))); });
 });
 
@@ -702,17 +706,16 @@ test("legalizes the executable CFG subset to JLO operations", fn(t) {
   let jlo = legalizeJlo(lowerProgram(typeCheckProgram(parseProgram(lex(
     "let count = fn(limit: I32): I32 { let value = 0i32; while (value < limit) { value += 1i32; } value }; count(2i32)"
   )))));
-  let bytes = emitJlo(jlo);
+  let bytes = emitJlo(jlo, noSource);
   t.is(Bytes.get_u8(bytes, 0), "B".code);
   t.is(Bytes.get_u8(bytes, 1), "Y".code);
   t.is(Bytes.get_u8(bytes, 2), "L".code);
   t.is(Bytes.get_u8(bytes, 3), "J".code);
-  t.is(emitJlo(jlo), bytes);
+  t.is(emitJlo(jlo, noSource), bytes);
   t.is(printJlo(jlo), "fn @1(%0: i32) -> i32 entry 0 {\n"
     + "  register %0: i32\n"
     + "  register %1: i32\n"
     + "  register %2: bool\n"
-    + "  register %3: i32\n"
     + "  block 0:\n"
     + "    %1 = i32 0\n"
     + "    jump block 1\n"
@@ -720,8 +723,7 @@ test("legalizes the executable CFG subset to JLO operations", fn(t) {
     + "    %2 = lt.s.i32 %1, %0\n"
     + "    branch %2, block 2, block 3\n"
     + "  block 2:\n"
-    + "    %3 = i32 1\n"
-    + "    %1 = add.wrap.i32 %1, %3\n"
+    + "    %1 = add.wrap.i32 %1, 1\n"
     + "    jump block 1\n"
     + "  block 3:\n"
     + "    return %1\n"
@@ -729,11 +731,9 @@ test("legalizes the executable CFG subset to JLO operations", fn(t) {
     + "\n"
     + "fn @0() -> i32 entry 0 {\n"
     + "  register %0: i32\n"
-    + "  register %1: i32\n"
     + "  block 0:\n"
     + "    %0 = i32 2\n"
-    + "    %1 = move %0\n"
-    + "    %0 = call @1(%1)\n"
+    + "    %0 = call @1(%0)\n"
     + "    return %0\n"
     + "}\n");
   let throwing = legalizeJlo(lowerProgram(typeCheckProgram(parseProgram(lex(
@@ -741,7 +741,7 @@ test("legalizes the executable CFG subset to JLO operations", fn(t) {
   )))));
   t.is(printJlo(throwing).indexOf("= box %0") >= 0, true);
   t.is(printJlo(throwing).indexOf("throw %1") >= 0, true);
-  t.is(emitJlo(throwing).len() > 64, true);
+  t.is(emitJlo(throwing, noSource).len() > 64, true);
 });
 
 test("carries a deduplicated bytes pool through selected JLO", fn(t) {
@@ -754,7 +754,7 @@ test("carries a deduplicated bytes pool through selected JLO", fn(t) {
     },
   };
   t.is(printJlo(jlo).indexOf("bytes \"A\"") >= 0, true);
-  t.is(emitJlo(jlo).len() > 0, true);
+  t.is(emitJlo(jlo, noSource).len() > 0, true);
 });
 
 test("reuses one call scratch window", fn(t) {
@@ -778,7 +778,7 @@ test("reuses one call scratch window", fn(t) {
     [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)],
     0
   );
-  t.is(registerCount(allocated(program([caller, callee]))), 2);
+  t.is(registerCount(allocated(program([caller, callee]))), 1);
 });
 
 test("allocates compatible scratch windows for mixed call signatures", fn(t) {
@@ -899,7 +899,7 @@ test("verifies allocated code against the program", fn(t) {
 
 test("loads named direct-function imports as one typed program", fn(t) {
   let hir = checkFile("itests/emit/modules/main.jello");
-  t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
+  t.is(emitJlo(legalizeJlo(lowerProgram(hir)), noSource).len() > 64, true);
 });
 
 test("initializes imported primitive constants before the entry tail", fn(t) {
@@ -944,7 +944,7 @@ test("initializes all exports with one module identity", fn(t) {
   let initialization = initializationOrder(path);
   t.is(initialization.len(), 2);
   t.is(initialization[0].indexOf("/math/Values.jello") >= 0, true);
-  t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
+  t.is(emitJlo(legalizeJlo(lowerProgram(hir)), noSource).len() > 64, true);
 });
 
 test("initializes module diamonds dependency-first exactly once", fn(t) {
@@ -956,7 +956,7 @@ test("initializes module diamonds dependency-first exactly once", fn(t) {
   t.is(initialization[1].indexOf("/values/Left.jello") >= 0, true);
   t.is(initialization[2].indexOf("/values/Right.jello") >= 0, true);
   t.is(initialization[3], path);
-  t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
+  t.is(emitJlo(legalizeJlo(lowerProgram(hir)), noSource).len() > 64, true);
 });
 
 test("loads transitive direct functions dependency-first and rejects cycles", fn(t) {
@@ -969,7 +969,7 @@ test("loads transitive direct functions dependency-first and rejects cycles", fn
 
 test("canonicalizes aliases across a diamond import graph", fn(t) {
   let hir = checkFile("itests/emit/alias-diamond/main.jello");
-  t.is(emitJlo(legalizeJlo(lowerProgram(hir))).len() > 64, true);
+  t.is(emitJlo(legalizeJlo(lowerProgram(hir)), noSource).len() > 64, true);
 });
 
 test("lowers signed i32 greater-than by swapping less-than operands", fn(t) {
@@ -1001,7 +1001,7 @@ test("carries phase 1 primitives through IR and JLO", fn(t) {
   t.is(printed.indexOf("not.bool") >= 0, true);
   t.is(printed.indexOf("sext.i32.i64") >= 0, true);
   t.is(printed.indexOf("trunc.i64.i32") >= 0, true);
-  t.is(emitJlo(jlo).len() > 64, true);
+  t.is(emitJlo(jlo, noSource).len() > 64, true);
 });
 
 test("accepts only in-range signed i32 literal forms", fn(t) {

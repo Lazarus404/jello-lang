@@ -16,7 +16,7 @@ import type { Syntax } from frontend.Source;
 import { Syntax } from frontend.Source;
 import {
   beginCheck, checkEffect, checkFunctionBody, checkOperand, checkType, declareFunctions, enterSyntax, finishProgram,
-  checkWhile, isDirectFunction, syntaxChild, takeRegexpInits, useAggregateChecks, useEnumChecks, useValueChecks,
+  checkWhile, isDirectFunction, syntaxChild, takeRegexpInits, unsupportedStatement, useAggregateChecks, useEnumChecks, useValueChecks,
 } from frontend.TypeCheck;
 import { verifyHir } from frontend.VerifyHir;
 
@@ -152,7 +152,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
         },
         Enum(_, _, _, _) => null,
         _ => {
-          throw "unsupported statement in initial semantic slice";
+          throw unsupportedStatement(statements[i]);
           null
         },
       };
@@ -170,7 +170,7 @@ let _checkInitOrder = fn() {
   let (binding, global) = firstUninitializedRead();
 
   if (binding >= 0) {
-    match (spanOf(binding)) { Span(path, start, end) => enterSyntax(Syntax.Node(path, start, end, Array.new<Syntax>(0))) };
+    match (spanOf(binding)) { Span(path, start, end) => enterSyntax(Syntax.Node(path, start, end, Array.new<Syntax>(0), Array.new<Syntax>(0))) };
     throw "global " + globalNameOf(global) + " is read before it is initialized";
   }
   null
@@ -233,7 +233,7 @@ export let typeCheckProgramWithSyntax: (AstProgram, Syntax) -> Hir = fn(program,
         null
       }
     };
-    let path = match (syntax) { Node(path, _, _, _) => path };
+    let path = match (syntax) { Node(path, _, _, _, _) => path };
     typeCheckModules([Module.Module(path, statements, syntax, tail, Array.new<Import>(0))])
   } }
 };

@@ -99,6 +99,11 @@ let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, poo
     CallNative => "call native n" + imm + "(" + operands + ")",
     StructNew => "struct.new",
     StructSet => "struct.set " + _register(args[0]) + ", " + imm + ", " + _register(args[1]),
+    AddImm => "add.wrap.i32 " + operands + ", " + imm,
+    SubImm => "sub.wrap.i32 " + operands + ", " + imm,
+    MulImm => "mul.wrap.i32 " + operands + ", " + imm,
+    EqImm => "eq.i32 " + operands + ", " + imm,
+    LtImm => "lt.s.i32 " + operands + ", " + imm,
     SpillPush => "spill.push " + operands + ", " + imm,
     SpillPop => "spill.pop " + imm,
     GlobalGet => "global.get g" + imm,
@@ -115,7 +120,7 @@ let _terminator = fn(terminator: Terminator): Bytes {
       + ", block " + Std.string(thenTarget) + ", block " + Std.string(elseTarget),
     ReturnVoid => "return",
     ReturnValue(value) => "return " + _register(value),
-    Throw(value) => "throw " + _register(value),
+    Throw(value, _) => "throw " + _register(value),
     Unreachable => "unreachable",
   }
 };
@@ -166,6 +171,19 @@ export let printFunction: (Function, Array<Bytes>) -> Bytes = fn(function, pool)
   } }
 };
 
+let _wide = fn(value: I64): Bytes {
+  let rest = value > 0 ? -value : value;
+  let digits = "";
+
+  while (true) {
+    let digit = -(rest % 10) as I32;
+    digits = Bytes.slice("0123456789", digit, 1) + digits;
+    rest = rest / 10;
+    if (rest == 0) { break; }
+  }
+  value < 0 ? "-" + digits : digits
+};
+
 export let printIr: (Program) -> Bytes = fn(program) {
   match (program) { Program(functions, pool, wides, _, globals, natives) => {
     let out = "";
@@ -188,7 +206,7 @@ export let printIr: (Program) -> Bytes = fn(program) {
     i = 0;
 
     while (i < wides.len()) {
-      out += "i64 #" + Std.string(i) + " = " + Std.string(wides[i]) + "\n";
+      out += "i64 #" + Std.string(i) + " = " + _wide(wides[i]) + "\n";
       i++;
     }
     if (wides.len() > 0) { out += "\n"; }

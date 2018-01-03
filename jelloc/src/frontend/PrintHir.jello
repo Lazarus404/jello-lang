@@ -2,11 +2,20 @@ package frontend;
 
 import type { Hir } from frontend.Hir;
 import {
-  auxOf, bytesOf, childCount, childOf, globalNameOf, innerOf, lastChild, nativeLibraryOf, nativeNameOf, opOf, rootNode, typeName, typeOf, useHir, valueOf, variantName, wideValueOf,
+  auxOf, bytesOf, childCount, childOf, globalNameOf, innerOf, lastChild, nativeLibraryOf, nativeNameOf, opOf, rootNode, spanEndOf, spanOf,
+  spanPathOf, spanStartOf, typeName, typeOf, useHir, valueOf, variantName, wideValueOf,
 } from frontend.Hir;
 import { bytesLiteral } from frontend.Tokens;
 
-let _typed = fn(id: I32): Bytes { ": " + typeName(typeOf(id)) + "\n" };
+let _withSpans = false;
+
+let _at = fn(id: I32): Bytes {
+  if (!_withSpans) { return ""; }
+  let range = " @" + Std.string(spanStartOf(id)) + ".." + Std.string(spanEndOf(id));
+  if (spanPathOf(id) == spanPathOf(rootNode())) { return range; }
+  range + " " + match (spanOf(id)) { Span(path, _, _) => path }
+};
+let _typed = fn(id: I32): Bytes { ": " + typeName(typeOf(id)) + _at(id) + "\n" };
 let _id = fn(id: I32): Bytes { Std.string(valueOf(id)) };
 
 let _expr: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
@@ -68,9 +77,9 @@ _expr = fn(id, indent) {
     Not => _operation("not.bool", id, indent),
     And => _operation("and", id, indent),
     Or => _operation("or", id, indent),
-    Eq => _operation("eq.i32", id, indent),
-    Lt => _operation("lt.s.i32", id, indent),
-    Gt => _operation("gt.s.i32", id, indent),
+    Eq => _operation("eq." + typeName(typeOf(childOf(id, 0))), id, indent),
+    Lt => _operation("lt.s." + typeName(typeOf(childOf(id, 0))), id, indent),
+    Gt => _operation("gt.s." + typeName(typeOf(childOf(id, 0))), id, indent),
     Sext => _operation("sext.i32.i64", id, indent),
     Trunc => _operation("trunc.i64.i32", id, indent),
     Present => _operation("present", id, indent),
@@ -117,21 +126,21 @@ _statement = fn(id, indent) {
       }
       output
     },
-    Expression => indent + "expression\n" + _expr(childOf(id, 0), indent + "  "),
-    Block => indent + "block\n" + _statements(id, indent + "  "),
-    Return => indent + "return\n" + _expr(childOf(id, 0), indent + "  "),
-    Throw => indent + "throw\n" + _expr(childOf(id, 0), indent + "  "),
-    Break => indent + "break\n",
-    Continue => indent + "continue\n",
-    While => indent + "while\n" + _section("condition", id, 0, indent) + indent + "  body\n" + _statements(childOf(id, 1), indent + "    "),
+    Expression => indent + "expression" + _at(id) + "\n" + _expr(childOf(id, 0), indent + "  "),
+    Block => indent + "block" + _at(id) + "\n" + _statements(id, indent + "  "),
+    Return => indent + "return" + _at(id) + "\n" + _expr(childOf(id, 0), indent + "  "),
+    Throw => indent + "throw" + _at(id) + "\n" + _expr(childOf(id, 0), indent + "  "),
+    Break => indent + "break" + _at(id) + "\n",
+    Continue => indent + "continue" + _at(id) + "\n",
+    While => indent + "while" + _at(id) + "\n" + _section("condition", id, 0, indent) + indent + "  body\n" + _statements(childOf(id, 1), indent + "    "),
     IfStatement => {
-      let output = indent + "if\n" + _section("condition", id, 0, indent) + indent + "  then\n" + _statements(childOf(id, 1), indent + "    ");
+      let output = indent + "if" + _at(id) + "\n" + _section("condition", id, 0, indent) + indent + "  then\n" + _statements(childOf(id, 1), indent + "    ");
       if (childCount(id) < 3) { return output; }
       let otherwise = childOf(id, 2);
       output + indent + "  else\n" + match (opOf(otherwise)) { IfStatement => _statement(otherwise, indent + "    "), _ => _statements(otherwise, indent + "    ") }
     },
     TryStatement => {
-      indent + "try\n" + indent + "  body\n" + _statements(childOf(id, 0), indent + "    ")
+      indent + "try" + _at(id) + "\n" + indent + "  body\n" + _statements(childOf(id, 0), indent + "    ")
         + indent + "  " + _catch(id) + "\n" + _statements(childOf(id, 1), indent + "    ")
     },
     _ => {
@@ -159,16 +168,16 @@ let _function = fn(id: I32, functionId: I32): Bytes {
   while (i < childCount(id) - 1) {
     let param = childOf(id, i);
     if (i > 0) { output += ", "; }
-    output += "%" + _id(param) + " " + bytesOf(auxOf(param)) + ": " + typeName(typeOf(param));
+    output += "%" + _id(param) + " " + bytesOf(auxOf(param)) + ": " + typeName(typeOf(param)) + _at(param);
     i++;
   }
   let body = lastChild(id);
-  output += ") -> " + typeName(innerOf(typeOf(id))) + "\n" + _statements(body, "    ");
+  output += ") -> " + typeName(innerOf(typeOf(id))) + _at(id) + "\n" + _statements(body, "    ");
   if (auxOf(body) == 1) { output += "    tail\n" + _expr(lastChild(body), "      "); }
   output
 };
 
-export let printHir: (Hir) -> Bytes = fn(program) {
+let _print = fn(program: Hir): Bytes {
   useHir(program);
   let root = rootNode();
   let output = "program\n";
@@ -180,4 +189,14 @@ export let printHir: (Hir) -> Bytes = fn(program) {
   }
   let body = lastChild(root);
   output + _statements(body, "  ") + _expr(lastChild(body), "  ")
+};
+
+export let printHir: (Hir) -> Bytes = fn(program) {
+  _withSpans = false;
+  _print(program)
+};
+
+export let printHirWithSpans: (Hir) -> Bytes = fn(program) {
+  _withSpans = true;
+  _print(program)
 };

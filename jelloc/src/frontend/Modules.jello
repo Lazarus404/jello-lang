@@ -101,7 +101,7 @@ let _failure: ?SourceSpan = null;
 export let loadFailureSpan: () -> ?SourceSpan = fn() { _failure };
 
 let _statementSpan = fn(syntax: Syntax, index: I32): SourceSpan {
-  match (syntax) { Node(path, _, _, children) => match (children[index]) { Node(_, start, end, _) => SourceSpan.Span(path, start, end) } }
+  match (syntax) { Node(path, _, _, children, _) => match (children[index]) { Node(_, start, end, _, _) => SourceSpan.Span(path, start, end) } }
 };
 
 let _load: (Bytes, Array<Bytes>) -> I32 = fn(_path, _parts) { -1 };

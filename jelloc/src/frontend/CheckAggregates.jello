@@ -255,7 +255,7 @@ let _call = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>):
         _arrayNew(applied[0], args[0])
       },
       _ => {
-        throw "unsupported type-applied call";
+        throw "generic calls other than Array.new<T>(n) are not supported yet";
         -1
       },
     },
@@ -278,7 +278,7 @@ let _call = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>):
       }
     },
     _ => {
-      throw "unsupported call";
+      throw "calling this expression is not supported yet; bind the function to a name first";
       -1
     },
   }

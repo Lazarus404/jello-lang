@@ -1,27 +1,36 @@
 import { lexFile } from frontend.Lexer;
 import type { Token } from frontend.Lexer;
 import { parseFailureSpan, parseProgram, programSyntax } from frontend.Parser;
-import { sourceDiagnostic } from frontend.Source;
+import { lineColumn, lineStarts, sourceDiagnostic } from frontend.Source;
 import type { SourceSpan } from frontend.Source;
 import { printTokens } from frontend.Tokens;
 import { typeCheckModules } from frontend.CheckModules;
 import { checkFailureSpan } from frontend.TypeCheck;
 import { loadFailureSpan, loadModules } from frontend.Modules;
-import { printHir } from frontend.PrintHir;
+import { printHir, printHirWithSpans } from frontend.PrintHir;
 import { functionNode, lowerProgram } from ir.Lower;
 import { printIr } from ir.Print;
 import { legalizeJlo } from backend.jello.Legalize;
 import { allocateProgram, allocationFailure } from backend.jello.Allocate;
 import { emitJlo } from backend.jello.Emit;
-import { readText, writeText } from std.io.File;
+import { exists, readText, writeText } from std.io.File;
 
 import type { Program as AstProgram } from frontend.Ast;
 import type { Hir } from frontend.Hir;
 import { spanOf, spanPathOf } from frontend.Hir;
 
-enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; }
+enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; Help; }
+
+let _USAGE = "usage: jelloc <input.jello> [--out path] [--std dir] [--lex|--parse|--hir [--spans]|--ir|--jlo]\n\n  --out path   write the compiled module to path\n  --std dir    resolve std.* imports under dir\n  --lex        print the tokens\n  --parse      check the syntax only\n  --hir        print the typed HIR\n  --spans      with --hir, end each node's line with its source byte range\n  --ir         print the CFG IR\n  --jlo        print the allocated JLO instructions\n  --help       print this help\n\nExit status: 0 on success, 1 when the program does not compile (the\ndiagnostic is on standard error), 2 for a bad command line.\n";
+
+let _exit = fn(code: I32, message: Bytes) {
+  writeText("/dev/stderr", message);
+  System.exit(code);
+  null
+};
 
 let _std = "";
+let _spans = false;
 
 let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
   let input = "";
@@ -31,6 +40,13 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
 
   while (!List.is_nil(cur)) {
     let arg = List.head(cur);
+    if (arg == "--help") { return ("", Mode.Help, ""); }
+
+    if (arg == "--spans") {
+      _spans = true;
+      cur = List.tail(cur);
+      continue;
+    }
     let flag: ?Mode = match (arg) { "--lex" => Mode.Lex, "--parse" => Mode.Parse, "--hir" => Mode.Typed, "--ir" => Mode.Lowered, "--jlo" => Mode.Legalized, _ => null };
 
     if (flag != null) {
@@ -62,7 +78,9 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
     }
     cur = List.tail(cur);
   }
-  if (input == "") { throw "usage: jelloc <input.jello> [--lex|--parse|--hir|--ir|--jlo|--out path] [--std dir]"; }
+  if (input == "") { throw "no input file"; }
+  if (_spans && (mode != Mode.Typed)) { throw "--spans requires --hir"; }
+  if ((mode == null) && (output == "")) { throw "output path required; pass --out <path>"; }
   (input, mode == null ? Mode.Emit : mode, output)
 };
 
@@ -90,38 +108,67 @@ let _located = fn(message: Bytes): Bytes {
   if (span == null) { message } else { _diagnostic(span, message) }
 };
 
+let _locatedPaths = Array.new<Bytes>(0);
+let _locatedTexts = Array.new<Bytes>(0);
+let _locatedStarts = Array.new<Array<I32>>(0);
+
+let _location = fn(node: I32): Tuple<Bytes, I32, I32> {
+  if (spanPathOf(node) < 0) { return ("", 0, 0); }
+  let (path, start) = match (spanOf(node)) { Span(path, start, _) => (path, start) };
+  let i = 0;
+  while ((i < _locatedPaths.len()) && (_locatedPaths[i] != path)) { i++; }
+
+  if (i == _locatedPaths.len()) {
+    let text = readText(path);
+    _locatedPaths.push(path);
+    _locatedTexts.push(text);
+    _locatedStarts.push(lineStarts(text));
+  }
+  let (line, column) = lineColumn(_locatedTexts[i], _locatedStarts[i], start);
+  (path, line, column)
+};
+
 let _report: (Bytes, () -> Bytes) -> Bytes = fn(label, stage) {
-  try { stage() } catch (e) { label + "\t" + _located(Std.string(e)) + "\n" }
+  try { stage() } catch (e) {
+    let message = _located(Std.string(e));
+    _exit(1, (label == "" ? "" : label + "\t") + message + "\n");
+    ""
+  }
 };
 
 let _checkSyntax = fn(program: AstProgram): Bytes {
   try {
     programSyntax(program);
     ""
-  } catch (e) { "SYNTAX\t" + Std.string(e) + "\n" }
+  } catch (e) {
+    _exit(1, "SYNTAX\t" + Std.string(e) + "\n");
+    ""
+  }
 };
 
 let _parse = fn(input: Bytes): Bytes {
   let (tokens, lexError) = try { (lexFile(readText(input), input), "") } catch (e) { (Array.new<Token>(0), Std.string(e)) };
-  if (lexError != "") { return "LEXER\t" + lexError + "\n"; }
+  if (lexError != "") { _exit(1, "LEXER\t" + lexError + "\n"); }
   _report("PARSER", fn() { _checkSyntax(parseProgram(tokens)) })
 };
 
 export let run: (List<Bytes>) -> Bytes = fn(argv) {
-  let (input, mode, output) = _parseArgs(argv);
+  let (input, mode, output) = try { _parseArgs(argv) } catch (e) {
+    _exit(2, "jelloc: " + Std.string(e) + "\n" + _USAGE);
+    ("", Mode.Help, "")
+  };
+  if ((mode != Mode.Help) && !exists(input)) { _exit(1, "jelloc: cannot read " + input + "\n"); }
 
   match (mode) {
-    Lex => try { printTokens(lexFile(readText(input), input)) } catch (e) { "LexError: " + Std.string(e) + "\n" },
+    Help => _USAGE,
+    Lex => _report("", fn() { printTokens(lexFile(readText(input), input)) }),
     Parse => _parse(input),
-    Typed => _report("HIR", fn() { printHir(_checked(input)) }),
-    Lowered => _report("IR", fn() { printIr(lowerProgram(_checked(input))) }),
-    Legalized => _report("JLO", fn() { printIr(allocateProgram(legalizeJlo(lowerProgram(_checked(input))))) }),
-    Emit => {
-      if (output == "") { throw "output path required; pass --out <path>"; }
-      _report("EMIT", fn() {
-        if (!writeText(output, emitJlo(legalizeJlo(lowerProgram(_checked(input)))))) { throw "could not write output"; }
-        ""
-      })
-    },
+    Typed => _report("", fn() { _spans ? printHirWithSpans(_checked(input)) : printHir(_checked(input)) }),
+    Lowered => _report("", fn() { printIr(lowerProgram(_checked(input))) }),
+    Legalized => _report("", fn() { printIr(allocateProgram(legalizeJlo(lowerProgram(_checked(input))))) }),
+    Emit => _report("", fn() {
+      if (!writeText(output, emitJlo(legalizeJlo(lowerProgram(_checked(input))), _location))) { throw "could not write " + output; }
+      ""
+    }),
   }
 };

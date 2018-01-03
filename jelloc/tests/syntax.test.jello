@@ -5,9 +5,10 @@ import type { Syntax } from frontend.Source;
 
 let tree = fn(source: Bytes): Syntax { programSyntax(parseProgram(lex(source))) };
 
-let span = fn(node: Syntax): Bytes { match (node) { Node(_, start, end, _) => Std.string(start) + ".." + Std.string(end) } };
-let child = fn(node: Syntax, i: I32): Syntax { match (node) { Node(_, _, _, children) => children[i] } };
-let width = fn(node: Syntax): I32 { match (node) { Node(_, _, _, children) => children.len() } };
+let span = fn(node: Syntax): Bytes { match (node) { Node(_, start, end, _, _) => Std.string(start) + ".." + Std.string(end) } };
+let child = fn(node: Syntax, i: I32): Syntax { match (node) { Node(_, _, _, children, _) => children[i] } };
+let width = fn(node: Syntax): I32 { match (node) { Node(_, _, _, children, _) => children.len() } };
+let pattern = fn(node: Syntax, i: I32): Syntax { match (node) { Node(_, _, _, _, patterns) => patterns[i] } };
 
 let tail = fn(source: Bytes): Syntax {
   let root = tree(source);

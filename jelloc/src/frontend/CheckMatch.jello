@@ -6,7 +6,10 @@ import {
   Kind, Op, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, fieldCount, fieldType, isKind, node,
   nullType, opOf, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, variantCount, variantName, variantTag, wideLiteral,
 } from frontend.Hir;
-import { checkArm, checkOperand, checkPresent, coerceAt, enterSyntax, joinTypes, newBinding, regexpGlobal, syntaxChild } from frontend.TypeCheck;
+import type { Syntax } from frontend.Source;
+import {
+  checkArm, checkOperand, checkPresent, coerceAt, enterSyntax, joinTypes, newBinding, regexpGlobal, subPattern, syntaxChild, syntaxPattern,
+} from frontend.TypeCheck;
 
 enum Subject { Subject(roots: Array<I32>, types: Array<I32>, tuple: I32, tag: I32); }
 
@@ -47,12 +50,14 @@ let _read = fn(subject: Subject, path: Array<I32>): I32 {
   } }
 };
 
-let _reads = fn(subject: Subject, paths: Array<Array<I32>>): Array<I32> {
+let _reads = fn(subject: Subject, paths: Array<Array<I32>>, places: Array<Syntax>): Array<I32> {
   let out = Array.new<I32>(0);
   let i = 0;
 
   while (i < paths.len()) {
+    let outer = enterSyntax(places[i]);
     out.push(_read(subject, paths[i]));
+    enterSyntax(outer);
     i++;
   }
   out
@@ -70,15 +75,30 @@ let _tagOf = fn(ty: I32, name: Bytes): I32 {
   tag
 };
 
-let _test: (Subject, Pattern, Array<I32>, I32, Array<I32>, Array<Bytes>, Array<Array<I32>>) -> Bool = fn(_s, _p, _path, _ty, _tests, _names, _paths) { false };
-_test = fn(subject, pattern, path, ty, tests, names, paths) {
-  match (pattern) {
-    Wildcard => null,
-    BindPattern(name) => {
+enum Bound { Bound(names: Array<Bytes>, paths: Array<Array<I32>>, places: Array<Syntax>); }
+
+let _noBound = fn(): Bound { Bound.Bound(Array.new<Bytes>(0), Array.new<Array<I32>>(0), Array.new<Syntax>(0)) };
+let _names = fn(bound: Bound): Array<Bytes> { match (bound) { Bound(names, _, _) => names } };
+
+let _bind = fn(bound: Bound, name: Bytes, path: Array<I32>, place: Syntax) {
+  match (bound) {
+    Bound(names, paths, places) => {
       names.push(name);
       paths.push(path);
+      places.push(place);
       null
-    },
+    }
+  }
+};
+let _boundReads = fn(subject: Subject, bound: Bound): Array<I32> { match (bound) { Bound(_, paths, places) => _reads(subject, paths, places) } };
+
+let _test: (Subject, Pattern, Syntax, Array<I32>, I32, Array<I32>, Bound) -> Bool = fn(_s, _p, _syntax, _path, _ty, _tests, _bound) { false };
+_test = fn(subject, pattern, syntax, path, ty, tests, bound) {
+  let outer = enterSyntax(syntax);
+
+  match (pattern) {
+    Wildcard => null,
+    BindPattern(name) => _bind(bound, name, path, syntax),
     Enum(name, args) => {
       let tag = _tagOf(ty, name);
       if (args.len() != fieldCount(ty, tag)) { throw "wrong payload count for enum variant pattern " + name; }
@@ -90,7 +110,7 @@ _test = fn(subject, pattern, path, ty, tests, names, paths) {
       let f = 0;
 
       while (f < args.len()) {
-        _test(subject, args[f], _step(path, tag, f), fieldType(ty, tag, f), tests, names, paths);
+        _test(subject, args[f], subPattern(syntax, f), _step(path, tag, f), fieldType(ty, tag, f), tests, bound);
         f++;
       }
       null
@@ -100,7 +120,7 @@ _test = fn(subject, pattern, path, ty, tests, names, paths) {
       let i = 0;
 
       while (i < items.len()) {
-        _test(subject, items[i], _step(path, -1, i), typeArg(ty, i), tests, names, paths);
+        _test(subject, items[i], subPattern(syntax, i), _step(path, -1, i), typeArg(ty, i), tests, bound);
         i++;
       }
       null
@@ -137,8 +157,7 @@ _test = fn(subject, pattern, path, ty, tests, names, paths) {
         };
         roots.push(newBinding());
         found = node(Op.Assign, TYPE_DYNAMIC, roots[roots.len() - 1], 0, [found]);
-        names.push(binding);
-        paths.push([(roots.len() - 1) as I32]);
+        _bind(bound, binding, [(roots.len() - 1) as I32], syntax);
       }
       tests.push(node(Op.IsPresent, TYPE_BOOL, 0, 0, [found]));
       null
@@ -168,6 +187,7 @@ _test = fn(subject, pattern, path, ty, tests, names, paths) {
       null
     },
   };
+  enterSyntax(outer);
   true
 };
 
@@ -184,22 +204,6 @@ _describe = fn(pattern) {
     RegExp(source, flags, _) => "~r/" + source + "/" + flags,
     _ => "this pattern",
   }
-};
-
-let _syntaxCount = fn(arms: Array<MatchArm>): I32 {
-  let count = 1;
-  let a = 0;
-
-  while (a < arms.len()) {
-    match (arms[a]) {
-      Arm(_, guard, body) => match (body) { Block(statements, tail) => {
-        count += (guard == null ? 0 : 1) + (statements.len() as I32) + (tail == null ? 0 : 1);
-      } },
-      Alternative(_, guard) => { count += guard == null ? 0 : 1; },
-    };
-    a++;
-  }
-  count
 };
 
 let _wild = fn(pattern: Pattern): Bool { match (pattern) { Wildcard => true, BindPattern(_) => true, _ => false } };
@@ -485,8 +489,9 @@ let _position = fn(names: Array<Bytes>, name: Bytes): I32 {
   -1
 };
 
-let _bindAlternative = fn(subject: Subject, current: Group, first: Bool, names: Array<Bytes>, paths: Array<Array<I32>>, tests: Array<I32>): Group {
-  let values = _reads(subject, paths);
+let _bindAlternative = fn(subject: Subject, current: Group, first: Bool, bound: Bound, tests: Array<I32>): Group {
+  let names = _names(bound);
+  let values = _boundReads(subject, bound);
   let group = current;
 
   if (first) {
@@ -535,8 +540,9 @@ let _stored = fn(subject: Subject, group: Group): Array<I32> {
   out
 };
 
-let _armPattern = fn(subject: Subject, pattern: Pattern, path: Array<I32>, ty: I32, rows: Array<Array<Pattern>>, tests: Array<I32>, names: Array<Bytes>, paths: Array<Array<I32>>) {
-  _test(subject, pattern, path, ty, tests, names, paths);
+let _armPattern = fn(subject: Subject, pattern: Pattern, syntax: Syntax, path: Array<I32>, ty: I32, rows: Array<Array<Pattern>>, tests: Array<I32>, bound: Bound) {
+  _test(subject, pattern, syntax, path, ty, tests, bound);
+  let names = _names(bound);
   let n = 0;
 
   while (n < names.len()) {
@@ -579,26 +585,24 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
   let resultType = -1;
   let index = 1;
   let a = 0;
-  let syntaxCount = _syntaxCount(arms);
 
   while (a < arms.len()) {
     let pattern = match (arms[a]) { Arm(pattern, _, _) => pattern, Alternative(pattern, _) => pattern };
     let guard = match (arms[a]) { Arm(_, guard, _) => guard, Alternative(_, guard) => guard };
-    let located = index < syntaxCount;
-    let outer = syntaxChild(0);
-    if (located) { outer = enterSyntax(syntaxChild(index)); }
+    let place = syntaxPattern(a);
+    let outer = enterSyntax(place);
     let tests = Array.new<I32>(0);
-    let names = Array.new<Bytes>(0);
-    let paths = Array.new<Array<I32>>(0);
-    _armPattern(checked, pattern, top, ty, rows, tests, names, paths);
+    let bound = _noBound();
+    _armPattern(checked, pattern, place, top, ty, rows, tests, bound);
     let alternative = match (arms[a]) { Alternative(_, _) => true, _ => false };
     let grouped = alternative || (pending.len() > 0);
-    if (grouped) { group = _bindAlternative(checked, group, pending.len() == 0, names, paths, tests); }
-    if (located) { enterSyntax(outer); }
+    if (grouped) { group = _bindAlternative(checked, group, pending.len() == 0, bound, tests); }
+    enterSyntax(outer);
+    let names = _names(bound);
 
     if (guard == null) { rows.push([pattern]); } else {
       guarded = true;
-      let block = checkArm(names, _reads(checked, paths), [], guard, index, TYPE_BOOL, false);
+      let block = checkArm(names, _boundReads(checked, bound), [], guard, index, TYPE_BOOL, false);
 
       if (typeOf(block) != TYPE_BOOL) {
         enterSyntax(syntaxChild(index));
@@ -618,7 +622,7 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
         conditions.push(_fold(Op.Or, pending, false));
         pending = Array.new<I32>(0);
         if (grouped) { names = match (group) { Group(groupNames, _, _) => groupNames }; }
-        let block = _armBody(names, grouped ? _stored(checked, group) : _reads(checked, paths), body, index, expected, resultType, statement);
+        let block = _armBody(names, grouped ? _stored(checked, group) : _boundReads(checked, bound), body, index, expected, resultType, statement);
 
         match (body) { Block(statements, tail) => {
           if (!statement) {

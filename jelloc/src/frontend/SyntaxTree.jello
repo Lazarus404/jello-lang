@@ -1,7 +1,7 @@
 package frontend;
 
-import type { Block, Expr, ListLiteral, MatchArm, Parameter, Program, Stmt } from frontend.Ast;
-import { exprTag, stmtTag } from frontend.Ast;
+import type { Block, Expr, ListLiteral, MatchArm, Parameter, Pattern, Program, Stmt } from frontend.Ast;
+import { exprTag, patternTag, stmtTag } from frontend.Ast;
 import type { Syntax, SyntaxKind, SyntaxMark } from frontend.Source;
 import { Syntax, SyntaxKind } from frontend.Source;
 
@@ -10,31 +10,86 @@ let _next = 0;
 let _path = "";
 
 let _sameKind = fn(left: SyntaxKind, right: SyntaxKind): Bool {
-  match ((left, right)) { (Expression, Expression), (Statement, Statement), (Parameter, Parameter) => true, _ => false }
+  match ((left, right)) {
+    (Expression, Expression), (Statement, Statement), (Parameter, Parameter), (Pattern, Pattern) => true,
+    _ => false,
+  }
 };
 
-let _take = fn(kind: SyntaxKind, tag: I32, children: Array<Syntax>): Syntax {
+let _contains = fn(start: I32, end: I32, inner: Array<Syntax>): Bool {
+  let i = 0;
+
+  while (i < inner.len()) {
+    match (inner[i]) { Node(_, childStart, childEnd, _, _) => { if ((childStart < start) || (childEnd > end)) { return false; } } };
+    i++;
+  }
+  true
+};
+
+let _takeWith = fn(kind: SyntaxKind, tag: I32, children: Array<Syntax>, patterns: Array<Syntax>): Syntax {
   if (_next >= _marks.len()) { throw "syntax marks end before the AST"; }
 
   match (_marks[_next]) { Mark(markKind, markTag, start, end) => {
     if (!_sameKind(markKind, kind) || (markTag != tag)) {
       throw "syntax mark " + Std.string(_next) + " does not match its AST node";
     }
-    let i = 0;
 
-    while (i < children.len()) {
-      match (children[i]) { Node(_, childStart, childEnd, _) => {
-        if ((childStart < start) || (childEnd > end)) { throw "syntax mark " + Std.string(_next) + " does not contain its children"; }
-      } };
-      i++;
+    if (!_contains(start, end, children) || !_contains(start, end, patterns)) {
+      throw "syntax mark " + Std.string(_next) + " does not contain its children";
     }
     _next++;
-    Syntax.Node(_path, start, end, children)
+    Syntax.Node(_path, start, end, children, patterns)
   } }
 };
+let _take = fn(kind: SyntaxKind, tag: I32, children: Array<Syntax>): Syntax { _takeWith(kind, tag, children, []) };
 
-let _expr: (Expr) -> Syntax = fn(_value) { Syntax.Node("", 0, 0, []) };
-let _stmt: (Stmt) -> Syntax = fn(_value) { Syntax.Node("", 0, 0, []) };
+let _expr: (Expr) -> Syntax = fn(_value) { Syntax.Node("", 0, 0, [], []) };
+let _stmt: (Stmt) -> Syntax = fn(_value) { Syntax.Node("", 0, 0, [], []) };
+
+let _pattern: (Pattern) -> Syntax = fn(_value) { Syntax.Node("", 0, 0, [], []) };
+
+let _addPattern = fn(out: Array<Syntax>, value: Pattern) {
+  out.push(_pattern(value));
+  null
+};
+
+let _patternList = fn(values: Array<Pattern>, out: Array<Syntax>) {
+  let i = 0;
+
+  while (i < values.len()) {
+    _addPattern(out, values[i]);
+    i++;
+  }
+  null
+};
+_pattern = fn(value) {
+  let out = Array.new<Syntax>(0);
+
+  match (value) {
+    Wildcard, BindPattern(_), Pin(_), Bool(_), Integer(_, _), Bytes(_), Atom(_), RegExp(_, _, _), IsType(_, _) => null,
+    Object(fields) => {
+      let i = 0;
+
+      while (i < fields.len()) {
+        _addPattern(out, fields[i].1);
+        i++;
+      } null
+    },
+    Tuple(items), Array(items), ArrayRest(items, _) => _patternList(items, out),
+    ArrayCons(head, _) => _addPattern(out, head),
+    Enum(_, args) => _patternList(args, out),
+    Bits(segments) => {
+      let i = 0;
+
+      while (i < segments.len()) {
+        match (segments[i]) { Segment(_, _, _, _, segment) => _addPattern(out, segment) };
+        i++;
+      }
+      null
+    },
+  };
+  _take(SyntaxKind.Pattern, patternTag(value), out)
+};
 
 let _add = fn(out: Array<Syntax>, value: Expr) {
   out.push(_expr(value));
@@ -77,16 +132,20 @@ let _block = fn(block: Block, out: Array<Syntax>) {
   }
 };
 
-let _arms = fn(arms: Array<MatchArm>, out: Array<Syntax>) {
+let _arms = fn(arms: Array<MatchArm>, out: Array<Syntax>, patterns: Array<Syntax>) {
   let i = 0;
 
   while (i < arms.len()) {
     match (arms[i]) {
-      Arm(_, guard, body) => {
+      Arm(pattern, guard, body) => {
+        _addPattern(patterns, pattern);
         _optional(guard, out);
         _block(body, out)
       },
-      Alternative(_, guard) => _optional(guard, out),
+      Alternative(pattern, guard) => {
+        _addPattern(patterns, pattern);
+        _optional(guard, out)
+      },
     };
     i++;
   }
@@ -110,7 +169,7 @@ let _parameters = fn(params: Array<Parameter>, out: Array<Syntax>) {
   null
 };
 
-let _list = fn(value: ListLiteral, out: Array<Syntax>) {
+let _list = fn(value: ListLiteral, out: Array<Syntax>, patterns: Array<Syntax>) {
   match (value) {
     Empty => null,
     Elements(items) => _exprs(items, out),
@@ -129,7 +188,8 @@ let _list = fn(value: ListLiteral, out: Array<Syntax>) {
 
       while (i < generators.len()) {
         match (generators[i]) {
-          Generator(_, source, guard) => {
+          Generator(pattern, source, guard) => {
+            _addPattern(patterns, pattern);
             _add(out, source);
             _optional(guard, out)
           }
@@ -144,11 +204,12 @@ let _list = fn(value: ListLiteral, out: Array<Syntax>) {
 
 _expr = fn(value) {
   let out = Array.new<Syntax>(0);
+  let patterns = Array.new<Syntax>(0);
 
   match (value) {
     Bytes(_), RegExp(_, _), Atom(_), Bool(_), Integer(_, _), Float(_, _), Null, This, Super, Variable(_), Topic => null,
     Array(items), Tuple(items) => _exprs(items, out),
-    List(list) => _list(list, out),
+    List(list) => _list(list, out, patterns),
     Object(entries) => {
       let i = 0;
 
@@ -166,7 +227,11 @@ _expr = fn(value) {
       null
     },
     Spread(inner), Unary(_, inner), Await(inner), Unquote(inner), Member(inner, _), TypeApply(inner, _),
-    IncDec(_, _, inner), Cast(inner, _), Is(inner, _), LetExpr(_, _, _, inner) => _add(out, inner),
+    IncDec(_, _, inner), Cast(inner, _), Is(inner, _) => _add(out, inner),
+    LetExpr(pattern, _, _, inner) => {
+      _addPattern(patterns, pattern);
+      _add(out, inner)
+    },
     Bits(segments) => {
       let i = 0;
 
@@ -200,14 +265,15 @@ _expr = fn(value) {
     },
     Match(subject, arms) => {
       _add(out, subject);
-      _arms(arms, out)
+      _arms(arms, out, patterns)
     },
     With(clauses, body, elseArms) => {
       let i = 0;
 
       while (i < clauses.len()) {
         match (clauses[i]) {
-          Clause(_, guard, clause) => {
+          Clause(pattern, guard, clause) => {
+            _addPattern(patterns, pattern);
             _optional(guard, out);
             _add(out, clause)
           }
@@ -215,7 +281,7 @@ _expr = fn(value) {
         i++;
       }
       _block(body, out);
-      match (elseArms) { Some(arms) => _arms(arms, out), None => null }
+      match (elseArms) { Some(arms) => _arms(arms, out, patterns), None => null }
     },
     Try(body, _, catchBody) => {
       _block(body, out);
@@ -225,17 +291,23 @@ _expr = fn(value) {
       Expression(inner) => _add(out, inner),
       Statement(inner) => _addStmt(out, inner),
       Statements(inner) => _stmts(inner, out),
-      Type(_), Pattern(_) => null,
+      Pattern(pattern) => _addPattern(patterns, pattern),
+      Type(_) => null,
     },
   };
-  _take(SyntaxKind.Expression, exprTag(value), out)
+  _takeWith(SyntaxKind.Expression, exprTag(value), out, patterns)
 };
 
 _stmt = fn(value) {
   let out = Array.new<Syntax>(0);
+  let patterns = Array.new<Syntax>(0);
 
   match (value) {
-    LetStmt(_, _, _, _, _, inner), Throw(inner), Expression(inner) => _add(out, inner),
+    LetStmt(_, _, pattern, _, _, inner) => {
+      _addPattern(patterns, pattern);
+      _add(out, inner)
+    },
+    Throw(inner), Expression(inner) => _add(out, inner),
     Prototype(_, _, _, fields) => {
       let i = 0;
 
@@ -257,13 +329,13 @@ _stmt = fn(value) {
     Return(inner) => _optional(inner, out),
     Typedef(_, _, _, _), Enum(_, _, _, _), ImportModule(_, _, _), ImportFrom(_, _, _), Break, Continue => null,
   };
-  _take(SyntaxKind.Statement, stmtTag(value), out)
+  _takeWith(SyntaxKind.Statement, stmtTag(value), out, patterns)
 };
 
 export let rootSyntax: (Bytes, Array<Syntax>) -> Syntax = fn(path, children) {
   let end = 1;
-  if (children.len() > 0) { match (children[children.len() - 1]) { Node(_, _, last, _) => { if (last > end) { end = last; } } } };
-  Syntax.Node(path, 0, end, children)
+  if (children.len() > 0) { match (children[children.len() - 1]) { Node(_, _, last, _, _) => { if (last > end) { end = last; } } } };
+  Syntax.Node(path, 0, end, children, [])
 };
 
 export let syntaxTree: (Program, Bytes, Array<SyntaxMark>) -> Syntax = fn(program, path, marks) {

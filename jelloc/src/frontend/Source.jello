@@ -10,6 +10,7 @@ export enum SyntaxKind {
   Expression;
   Statement;
   Parameter;
+  Pattern;
 }
 
 export enum SyntaxMark {
@@ -17,7 +18,7 @@ export enum SyntaxMark {
 }
 
 export enum Syntax {
-  Node(path: Bytes, start: I32, end: I32, children: Array<Syntax>);
+  Node(path: Bytes, start: I32, end: I32, children: Array<Syntax>, patterns: Array<Syntax>);
 }
 
 export let spanPath: (SourceSpan) -> Bytes = fn(span) { match (span) { Span(path, _, _) => path } };
@@ -106,6 +107,35 @@ export let sourceLocation: (Bytes, I32) -> Tuple<I32, I32> = fn(source, offset) 
     }
   }
   (line, column)
+};
+
+export let lineStarts: (Bytes) -> Array<I32> = fn(source) {
+  let starts = [0];
+  let i = 0;
+
+  while (i < source.len()) {
+    if (Bytes.get_u8(source, i) == "\n".code) { starts.push(i + 1); }
+    i++;
+  }
+  starts
+};
+
+export let lineColumn: (Bytes, Array<I32>, I32) -> Tuple<I32, I32> = fn(source, starts, offset) {
+  let low = 0;
+  let high = (starts.len() as I32) - 1;
+
+  while (low < high) {
+    let middle = (low + high + 1) / 2;
+    if (starts[middle] <= offset) { low = middle; } else { high = middle - 1; }
+  }
+  let column = 1;
+  let i = starts[low];
+
+  while (i < offset) {
+    column++;
+    i += _step(source, i);
+  }
+  (low + 1, column)
 };
 
 export let sourceDiagnostic: (Bytes, Bytes, I32, Bytes) -> Bytes = fn(path, source, offset, message) {

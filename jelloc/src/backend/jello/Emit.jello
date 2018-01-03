@@ -1,7 +1,7 @@
 package backend.jello;
 
 import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, Terminator, ValueType } from ir.Model;
-import { ValueType, argsOf, dstOf, handlerPayload, handlerTarget, immOf, opOf, valueTypeEqual } from ir.Model;
+import { ValueType, argsOf, dstOf, handlerPayload, handlerTarget, immOf, nodeOf, opOf, valueTypeEqual } from ir.Model;
 import { allocateProgram } from backend.jello.Allocate;
 
 let _buffer = Bytes.new(0);
@@ -33,6 +33,29 @@ let _u32 = fn(value: I32) {
   _byte(value >> 8);
   _byte(value >> 16);
   _byte(value >> 24)
+};
+
+let _uleb = fn(value: I32) {
+  let v = value;
+
+  while (v >= 128) {
+    _byte(v | 128);
+    v = v >> 7;
+  }
+  _byte(v)
+};
+
+let _sleb = fn(value: I32) {
+  let v = value;
+  let more = true;
+
+  while (more) {
+    let b = v & 127;
+    v = v >> 7;
+    more = !(((v == 0) && ((b & 64) == 0)) || ((v == -1) && ((b & 64) != 0)));
+    _byte(more ? b | 128 : b);
+  }
+  null
 };
 
 let _bytes = fn(value: Bytes) {
@@ -230,6 +253,11 @@ let _instruction = fn(insn: Instruction) {
     EnumNew => _insn(164, dst, _window(args, 0), args.len() as I32, imm),
     EnumTag => _insn(165, dst, a, 0, 0),
     EnumGet => _insn(166, dst, a, b, 0),
+    AddImm => _insn(33, dst, a, 0, imm),
+    SubImm => _insn(34, dst, a, 0, imm),
+    MulImm => _insn(35, dst, a, 0, imm),
+    EqImm => _insn(69, dst, a, 0, imm),
+    LtImm => _insn(70, dst, a, 0, imm),
     SpillPush => _insn(107, a, 0, 0, imm),
     SpillPop => _insn(108, dst, 0, 0, imm),
     GlobalGet => _insn(187, dst, 0, 0, imm),
@@ -243,15 +271,45 @@ let _instruction = fn(insn: Instruction) {
 
 let _blockId = fn(block: BasicBlock): I32 { match (block) { Block(id, _, _, _) => id } };
 
-let _terminatorSize = fn(terminator: Terminator): I32 {
-  match (terminator) {
-    Branch(_, _, _) => 2,
-    Jump(_), ReturnValue(_), Throw(_) => 1,
-    _ => {
-      throw "JLO emission does not support terminator";
-      0
-    },
+export let noSource: (I32) -> Tuple<Bytes, I32, I32> = fn(_node) { ("", 0, 0) };
+
+let _locate = noSource;
+let _files = Array.new<Bytes>(0);
+let _runs = Array.new<Array<I32>>(0);
+let _run = Array.new<I32>(0);
+let _runNode = -1;
+
+let _file = fn(path: Bytes): I32 {
+  let i = 0;
+
+  while (i < _files.len()) {
+    if (_files[i] == path) { return i as I32; }
+    i++;
   }
+  _files.push(path);
+  (_files.len() - 1) as I32
+};
+
+let _at = fn(pc: I32, node: I32) {
+  if ((node < 0) || (node == _runNode)) { return null; }
+  _runNode = node;
+  let (path, line, column) = _locate(node);
+  if (path == "") { return null; }
+  let file = _file(path);
+  let n = _run.len();
+  if ((n > 0) && (_run[n - 3] == file) && (_run[n - 2] == line) && (_run[n - 1] == column)) { return null; }
+
+  if ((n > 0) && (_run[n - 4] == pc)) {
+    _run[n - 3] = file;
+    _run[n - 2] = line;
+    _run[n - 1] = column;
+    return null;
+  }
+  _run.push(pc);
+  _run.push(file);
+  _run.push(line);
+  _run.push(column);
+  null
 };
 
 let _catchTargets = Array.new<I32>(0);
@@ -282,48 +340,175 @@ let _transition = fn(source: I32, to: I32): Tuple<I32, Array<I32>> {
   ((left.len() as I32) - shared, opened)
 };
 
-let _transitionSize = fn(source: I32, terminator: Terminator): I32 {
+let _blocks = Array.new<BasicBlock>(0);
+let _indexes = Array.new<I32>(0);
+let _isCatch = Array.new<Bool>(0);
+
+let _block = fn(id: I32): BasicBlock { _blocks[_indexes[id]] };
+
+let _forward = fn(id: I32): I32 {
+  let target = id;
+  let steps = 0;
+
+  while (steps < _blocks.len()) {
+    let next = match (_block(target)) {
+      Block(_, instructions, Jump(to), _) when ((instructions.len() == 0) && !_isCatch[target]) => to,
+      _ => -1,
+    };
+    if ((next < 0) || (next == target)) { return target; }
+    target = next;
+    steps++;
+  }
+  target
+};
+
+let _branchTarget = fn(source: I32, target: I32): I32 {
+  let to = _forward(target);
+  _sameRegion(source, to) ? to : target
+};
+
+let _threaded = fn(source: I32, terminator: Terminator): Terminator {
+  match (terminator) {
+    Jump(target) => {
+      let to = _forward(target);
+      let (left, opened) = _transition(source, to);
+
+      match (_block(to)) {
+        Block(_, instructions, ReturnValue(value), _) when ((instructions.len() == 0) && (left == 0) && (opened.len() == 0)) => Terminator.ReturnValue(value),
+        _ => Terminator.Jump(to),
+      }
+    },
+    Branch(condition, thenTarget, elseTarget) => {
+      let thenTo = _branchTarget(source, thenTarget);
+      let elseTo = _branchTarget(source, elseTarget);
+      thenTo == elseTo ? Terminator.Jump(thenTo) : Terminator.Branch(condition, thenTo, elseTo)
+    },
+    _ => terminator,
+  }
+};
+
+let _terminatorOf = fn(block: BasicBlock): Terminator { match (block) { Block(_, _, terminator, _) => terminator } };
+
+let _successors = fn(terminator: Terminator): Array<I32> {
+  match (terminator) { Jump(target) => [target], Branch(_, thenTarget, elseTarget) => [elseTarget, thenTarget], _ => Array.new<I32>(0) }
+};
+
+let _layout = fn(entry: I32): Array<BasicBlock> {
+  let count = _blocks.len();
+  let threaded = Array.new<BasicBlock>(count);
+  let reachable = Array.new<Bool>(count);
+  let placed = Array.new<Bool>(count);
+  let i = 0;
+
+  while (i < count) {
+    match (_blocks[i]) {
+      Block(id, instructions, terminator, handler) => {
+        threaded[i] = BasicBlock.Block(id, instructions, _threaded(id, terminator), handler);
+        null
+      }
+    };
+    reachable[i] = false;
+    placed[i] = false;
+    i++;
+  }
+  let work = [entry];
+  reachable[_indexes[entry]] = true;
+  let reached = 1;
+
+  while (work.len() > 0) {
+    let id = work.pop();
+    let next = _successors(_terminatorOf(threaded[_indexes[id]]));
+    if (_catchTargets[id] >= 0) { next.push(_catchTargets[id]); }
+    let s = 0;
+
+    while (s < next.len()) {
+      if (!reachable[_indexes[next[s]]]) {
+        reachable[_indexes[next[s]]] = true;
+        reached++;
+        work.push(next[s]);
+      }
+      s++;
+    }
+  }
+  let order = Array.new<BasicBlock>(0);
+  let current = _indexes[entry];
+  let scan = 0;
+
+  while (order.len() < reached) {
+    if (current < 0) {
+      while (!reachable[scan] || placed[scan]) { scan++; }
+      current = scan;
+    }
+    placed[current] = true;
+    order.push(threaded[current]);
+    let next = _successors(_terminatorOf(threaded[current]));
+    current = -1;
+    let s = 0;
+
+    while ((current < 0) && (s < next.len())) {
+      if (!placed[_indexes[next[s]]]) { current = _indexes[next[s]]; }
+      s++;
+    }
+  }
+  order
+};
+
+let _terminatorSize = fn(source: I32, terminator: Terminator, next: I32): I32 {
   match (terminator) {
     Jump(target) => {
       let (left, opened) = _transition(source, target);
-      left + (opened.len() as I32)
-    }, _ => 0
+      left + (opened.len() as I32) + (target == next ? 0 : 1)
+    },
+    Branch(_, _, elseTarget) => elseTarget == next ? 1 : 2,
+    ReturnValue(_), Throw(_, _) => 1,
+    _ => {
+      throw "JLO emission does not support terminator";
+      0
+    },
   }
 };
 
 let _function = fn(function: Function) {
   match (function) { Function(_, params, registers, _, blocks, entry) => {
     _registerTypes = registers;
-    let order = Array.new<BasicBlock>(0);
+    _blocks = blocks;
+    _indexes = Array.new<I32>(0);
+    _isCatch = Array.new<Bool>(0);
+    _catchTargets = Array.new<I32>(0);
+    _catchPayloads = Array.new<I32>(0);
     let i = 0;
 
     while (i < blocks.len()) {
-      if (_blockId(blocks[i]) == entry) { order.push(blocks[i]); }
-      i++;
-    }
-    i = 0;
+      let id = _blockId(blocks[i]);
 
-    while (i < blocks.len()) {
-      if (_blockId(blocks[i]) != entry) { order.push(blocks[i]); }
+      while (_indexes.len() <= id) {
+        _indexes.push(-1);
+        _isCatch.push(false);
+        _catchTargets.push(-1);
+        _catchPayloads.push(-1);
+      }
+      _indexes[id] = i;
       i++;
     }
-    _catchTargets = Array.new<I32>(0);
-    _catchPayloads = Array.new<I32>(0);
     i = 0;
 
     while (i < blocks.len()) {
       match (blocks[i]) { Block(id, _, _, handler) => {
-        while (_catchTargets.len() <= id) {
-          _catchTargets.push(-1);
-          _catchPayloads.push(-1);
-        }
-
         if (handler != null) {
           _catchTargets[id] = handlerTarget(handler);
           _catchPayloads[id] = handlerPayload(handler);
+          _isCatch[handlerTarget(handler)] = true;
         }
         null
       } };
+      i++;
+    }
+    let order = _layout(entry);
+    let nexts = Array.new<I32>(order.len());
+    i = 0;
+
+    while (i < order.len()) {
+      nexts[i] = i + 1 < order.len() ? _blockId(order[i + 1]) : -1;
       i++;
     }
     let pcs = Array.new<I32>(0);
@@ -334,10 +519,12 @@ let _function = fn(function: Function) {
       match (order[i]) { Block(id, instructions, terminator, _) => {
         while (pcs.len() <= id) { pcs.push(-1); }
         pcs[id] = count;
-        count += (instructions.len() as I32) + _transitionSize(id, terminator) + _terminatorSize(terminator);
+        count += (instructions.len() as I32) + _terminatorSize(id, terminator, nexts[i]);
       } };
       i++;
     }
+    _run = Array.new<I32>(0);
+    _runNode = -1;
     _u32(-1);
     _u32(registers.len() as I32);
     _u32(registers.len() as I32);
@@ -357,6 +544,7 @@ let _function = fn(function: Function) {
         let j = 0;
 
         while (j < instructions.len()) {
+          _at(pc, nodeOf(instructions[j]));
           _instruction(instructions[j]);
           pc++;
           j++;
@@ -380,21 +568,37 @@ let _function = fn(function: Function) {
               pc++;
               j++;
             }
-            _insn(2, 0, 0, 0, pcs[target] - pc - 1)
+
+            if (target != nexts[i]) {
+              _insn(2, 0, 0, 0, pcs[target] - pc - 1);
+              pc++;
+            }
           },
           Branch(condition, thenTarget, elseTarget) => {
             _insn(3, condition, 0, 0, pcs[thenTarget] - pc - 1);
             pc++;
-            _insn(2, 0, 0, 0, pcs[elseTarget] - pc - 1)
+
+            if (elseTarget != nexts[i]) {
+              _insn(2, 0, 0, 0, pcs[elseTarget] - pc - 1);
+              pc++;
+            }
           },
-          ReturnValue(value) => _insn(1, value, 0, 0, 0),
-          Throw(value) => _insn(7, value, 0, 0, 0),
+          ReturnValue(value) => {
+            _insn(1, value, 0, 0, 0);
+            pc++;
+          },
+          Throw(value, node) => {
+            _at(pc, node);
+            _insn(7, value, 0, 0, 0);
+            pc++;
+          },
           _ => null,
         };
-        pc++;
       } };
       i++;
     }
+    if (pc != count) { throw "JLO emission laid out " + Std.string(count) + " instructions but wrote " + Std.string(pc); }
+    _runs.push(_run);
   } };
   null
 };
@@ -493,7 +697,7 @@ let _module = fn(program: Program): Bytes {
       i++;
     }
     let features = (wides.len() > 0 ? 1 : 0) | (pool.len() > 0 ? 2 : 0) | (natives.len() > 0 ? 8192 : 0) | (enums.len() > 0 ? 16384 : 0)
-      | (globals.len() > 0 ? 32768 : 0);
+      | (globals.len() > 0 ? 32768 : 0) | 8;
     _u32(1246517570);
     _u32(1);
     _u32(features);
@@ -612,14 +816,47 @@ let _module = fn(program: Program): Bytes {
       _u32(_find(globals[i]));
       i++;
     }
+    _files = Array.new<Bytes>(0);
+    _runs = Array.new<Array<I32>>(0);
     i = 0;
 
     while (i < functions.len()) {
       try { _function(functions[i]); } catch (e) { throw "function " + Std.string(i) + ": " + Std.string(e); }
       i++;
     }
+    _u32(_files.len() as I32);
+    i = 0;
+
+    while (i < _files.len()) {
+      _u32(_files[i].len() as I32);
+      _bytes(_files[i]);
+      i++;
+    }
+    i = 0;
+
+    while (i < _runs.len()) {
+      let run = _runs[i];
+      let r = 0;
+      let pc = 0;
+      let line = 0;
+      _uleb((run.len() / 4) as I32);
+
+      while (r < run.len()) {
+        _uleb(run[r] - pc);
+        _uleb(run[r + 1]);
+        _sleb(run[r + 2] - line);
+        _uleb(run[r + 3]);
+        pc = run[r];
+        line = run[r + 2];
+        r = r + 4;
+      }
+      i++;
+    }
     Bytes.slice(_buffer, 0, _size)
   } }
 };
 
-export let emitJlo: (Program) -> Bytes = fn(program) { _module(allocateProgram(program)) };
+export let emitJlo: (Program, (I32) -> Tuple<Bytes, I32, I32>) -> Bytes = fn(program, locate) {
+  _locate = locate;
+  _module(allocateProgram(program))
+};

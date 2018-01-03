@@ -23,21 +23,26 @@ export enum Op {
   ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
   Call; CallIndirect; CallNative; GlobalGet; GlobalSet;
-  StructNew; StructSet; SpillPush; SpillPop;
+  StructNew; StructSet; AddImm; SubImm; MulImm; EqImm; LtImm; SpillPush; SpillPop;
 }
 
 export enum Instruction {
-  Instruction(op: Op, dst: I32, args: Array<I32>, imm: I32);
+  Instruction(op: Op, dst: I32, args: Array<I32>, imm: I32, node: I32);
 }
 
-export let instruction: (Op, I32, Array<I32>, I32) -> Instruction = fn(op, dst, args, imm) {
-  Instruction.Instruction(op, dst, args, imm)
+export let instructionAt: (Op, I32, Array<I32>, I32, I32) -> Instruction = fn(op, dst, args, imm, node) {
+  Instruction.Instruction(op, dst, args, imm, node)
 };
 
-export let opOf: (Instruction) -> Op = fn(instruction) { match (instruction) { Instruction(op, _, _, _) => op } };
-export let dstOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, dst, _, _) => dst } };
-export let argsOf: (Instruction) -> Array<I32> = fn(instruction) { match (instruction) { Instruction(_, _, args, _) => args } };
-export let immOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, _, _, imm) => imm } };
+export let instruction: (Op, I32, Array<I32>, I32) -> Instruction = fn(op, dst, args, imm) {
+  Instruction.Instruction(op, dst, args, imm, -1)
+};
+
+export let opOf: (Instruction) -> Op = fn(instruction) { match (instruction) { Instruction(op, _, _, _, _) => op } };
+export let dstOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, dst, _, _, _) => dst } };
+export let argsOf: (Instruction) -> Array<I32> = fn(instruction) { match (instruction) { Instruction(_, _, args, _, _) => args } };
+export let immOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, _, _, imm, _) => imm } };
+export let nodeOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, _, _, _, node) => node } };
 
 export enum Effect {
   MayReadMemory;
@@ -53,7 +58,7 @@ export enum Terminator {
   Branch(condition: I32, thenTarget: I32, elseTarget: I32);
   ReturnVoid;
   ReturnValue(value: I32);
-  Throw(value: I32);
+  Throw(value: I32, node: I32);
   Unreachable;
 }
 

@@ -42,7 +42,7 @@ import { tokenEnds, tokenPath, tokenStarts } from frontend.Lexer;
 import type { SourceSpan, Syntax, SyntaxMark } from frontend.Source;
 import { SourceSpan, SyntaxKind, SyntaxMark } from frontend.Source;
 import { syntaxTree } from frontend.SyntaxTree;
-import { exprTag, stmtTag } from frontend.Ast;
+import { exprTag, patternTag, stmtTag } from frontend.Ast;
 import { tokenName } from frontend.Tokens;
 import { utf8Validate, utf8Length, utf8CharAt } from std.core.Bytes;
 
@@ -75,6 +75,11 @@ let _markExpr = fn(value: Expr, start: I32): Expr {
 
 let _markStmt = fn(value: Stmt, start: I32): Stmt {
   _mark(SyntaxKind.Statement, stmtTag(value), start);
+  value
+};
+
+let _markPattern = fn(value: Pattern, start: I32): Pattern {
+  _mark(SyntaxKind.Pattern, patternTag(value), start);
   value
 };
 
@@ -451,15 +456,17 @@ let _parsePatternList = fn(end: Token): Array<Pattern> {
 };
 
 let _declarationPattern = fn(): Pattern {
+  let start = pos;
+
   match (peek()) {
     Ident(name) => {
       next();
 
       if (_at(Token.LParen)) {
         next();
-        Pattern.Enum(name, _parsePatternList(Token.RParen))
+        _markPattern(Pattern.Enum(name, _parsePatternList(Token.RParen)), start)
       } else {
-        Pattern.BindPattern(name)
+        _markPattern(Pattern.BindPattern(name), start)
       }
     },
     _ => _parsePattern(),
@@ -538,7 +545,12 @@ let _parseBitPattern = fn(): Pattern {
   Pattern.Bits(segments)
 };
 
+let _patternInner: () -> Pattern = fn() { Pattern.Wildcard };
 _parsePattern = fn() {
+  let start = pos;
+  _markPattern(_patternInner(), start)
+};
+_patternInner = fn() {
   match (peek()) {
     Wildcard => {
       next();
@@ -830,11 +842,13 @@ let _optionalGuard = fn(): ?Expr {
 };
 
 let _matchPattern = fn(): Pattern {
+  let start = pos;
+
   if (!_at(Token.When)) {
     match (peek()) {
       Ident(name) => {
         next();
-        return _namedPattern(name)
+        return _markPattern(_namedPattern(name), start)
       },
       _ => {
         return _parsePattern();
@@ -850,7 +864,7 @@ let _matchPattern = fn(): Pattern {
         next();
         _ident()
       } : null;
-      Pattern.RegExp(value, flags, binding)
+      _markPattern(Pattern.RegExp(value, flags, binding), start)
     },
     _ => {
       _error("expected regexp after when");
@@ -1192,10 +1206,12 @@ let _primary = fn(start: I32): Expr {
       let more = true;
 
       while (more) {
+        let patternStart = pos;
+
         let pattern = match (peek()) {
           Ident(name) => {
             next();
-            _namedPattern(name)
+            _markPattern(_namedPattern(name), patternStart)
           },
           _ => _parsePattern(),
         };

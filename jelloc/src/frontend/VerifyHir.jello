@@ -212,6 +212,7 @@ _expr = fn(id) {
       let width = _width(ty);
       _typed(id, [width, width], width, "integer operation requires operands of its type")
     },
+    Eq when ((childCount(id) > 0) && (typeOf(childOf(id, 0)) == TYPE_BOOL)) => _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "bool equality requires bool operands"),
     Eq, Lt, Gt => {
       let width = _width(childCount(id) > 0 ? typeOf(childOf(id, 0)) : TYPE_I32);
       _typed(id, [width, width], TYPE_BOOL, "integer comparison requires operands of one integer type")

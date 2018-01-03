@@ -6,7 +6,7 @@ import { printHir } from frontend.PrintHir;
 import { lowerProgram } from ir.Lower;
 import { printIr } from ir.Print;
 import { legalizeJlo } from backend.jello.Legalize;
-import { emitJlo } from backend.jello.Emit;
+import { emitJlo, noSource } from backend.jello.Emit;
 
 test("nullable i32 reaches executable JLO", fn(t) {
   let hir = typeCheckProgram(parseProgram(lex("let check = fn(value: ?I32): Bool { value != null }; check(7i32)")));
@@ -15,7 +15,7 @@ test("nullable i32 reaches executable JLO", fn(t) {
   t.is(printIr(ir).indexOf("is_null") >= 0, true);
   let jlo = legalizeJlo(ir);
   t.is(printIr(jlo).indexOf("is_null") >= 0, true);
-  t.is(emitJlo(jlo).len() > 0, true);
+  t.is(emitJlo(jlo, noSource).len() > 0, true);
 });
 
 test("a nullable reference keeps its register kind and converts with a check", fn(t) {

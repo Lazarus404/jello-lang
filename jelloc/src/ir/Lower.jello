@@ -6,7 +6,7 @@ import {
   typeArgCount, typeCount, globalCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { BasicBlock, EnumSchema, Native, Op, Program as IrProgram, ReturnType, Terminator, ThrowHandler, ValueType, handlerTarget, instruction } from ir.Model;
+import { BasicBlock, EnumSchema, Native, Op, Program as IrProgram, ReturnType, Terminator, ThrowHandler, ValueType, handlerTarget, instructionAt } from ir.Model;
 import { blockMayThrow } from ir.Cfg;
 import { verifyProgram } from ir.Verify;
 
@@ -62,7 +62,8 @@ let _fresh = fn(ty: I32): I32 {
   _registers.push(_valueType(ty));
   register
 };
-let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) { if (_reachable) { _instructions.push(instruction(op, dst, args, imm)); } null };
+let _node = -1;
+let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) { if (_reachable) { _instructions.push(instructionAt(op, dst, args, imm, _node)); } null };
 let _move = fn(dst: I32, src: I32) { _emit(Op.Move, dst, [src], 0) };
 
 let _poolIndex = fn(id: I32): I32 {
@@ -149,6 +150,22 @@ let _if = fn(id: I32): I32 {
   _move(result, _expr(childOf(id, 1)));
   _end(Terminator.Jump(joinBlock), elseBlock);
   _move(result, _expr(childOf(id, 2)));
+  _end(Terminator.Jump(joinBlock), joinBlock);
+  result
+};
+
+let _boolEqual = fn(id: I32): I32 {
+  let left = _expr(childOf(id, 0));
+  let right = _expr(childOf(id, 1));
+  let sameBlock = _nextBlock;
+  let flipBlock = sameBlock + 1;
+  let joinBlock = sameBlock + 2;
+  _nextBlock += 3;
+  _end(Terminator.Branch(left, sameBlock, flipBlock), sameBlock);
+  let result = _fresh(TYPE_BOOL);
+  _move(result, right);
+  _end(Terminator.Jump(joinBlock), flipBlock);
+  _emit(Op.Not, result, [right], 0);
   _end(Terminator.Jump(joinBlock), joinBlock);
   result
 };
@@ -330,7 +347,16 @@ let _try = fn(id: I32, value: Bool): I32 {
   result
 };
 
+let _exprAt: (I32) -> I32 = fn(_id) { -1 };
 _expr = fn(id) {
+  let outer = _node;
+  _node = id;
+  let register = _exprAt(id);
+  _node = outer;
+  register
+};
+
+_exprAt = fn(id) {
   match (opOf(id)) {
     Local => _bindings[valueOf(id)],
     Assign => {
@@ -410,6 +436,7 @@ _expr = fn(id) {
     If => _if(id),
     Try => _try(id, true),
     And, Or => _shortCircuit(id),
+    Eq when (typeOf(childOf(id, 0)) == TYPE_BOOL) => _boolEqual(id),
     Div, Rem => _divide(id),
     _ => {
       let operands = _values(id, 0);
@@ -467,6 +494,7 @@ let _while = fn(id: I32) {
 };
 
 let _statement: (I32) -> Bool = fn(_id) { false };
+let _statementAt: (I32) -> Bool = fn(_id) { false };
 
 let _ifStatement = fn(id: I32) {
   let condition = _expr(childOf(id, 0));
@@ -494,6 +522,14 @@ let _ifStatement = fn(id: I32) {
 };
 
 _statement = fn(id) {
+  let outer = _node;
+  _node = id;
+  let done = _statementAt(id);
+  _node = outer;
+  done
+};
+
+_statementAt = fn(id) {
   match (opOf(id)) {
     Declare => {
       let i = 0;
@@ -508,7 +544,7 @@ _statement = fn(id) {
       null
     },
     Return => _exit(Terminator.ReturnValue(_expr(childOf(id, 0)))),
-    Throw => _exit(Terminator.Throw(_expr(childOf(id, 0)))),
+    Throw => _exit(Terminator.Throw(_expr(childOf(id, 0)), id)),
     Break => _exit(Terminator.Jump(_breakTarget)),
     Continue => _exit(Terminator.Jump(_continueTarget)),
     While => _while(id),
@@ -552,6 +588,7 @@ let _begin = fn() {
   _breakTarget = -1;
   _continueTarget = -1;
   _handler = null;
+  _node = -1;
   null
 };
 
