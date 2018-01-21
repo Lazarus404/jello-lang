@@ -188,7 +188,8 @@ let _shortCircuit = fn(id: I32): I32 {
 let _operation = fn(id: I32): Op {
   match (opOf(id)) {
     Bool => Op.ConstBool, I32 => Op.ConstI32, I64 => Op.ConstI64, Bytes => Op.ConstBytes, Null => Op.ConstNull, FunctionRef => Op.ConstFunction,
-    Add => Op.Add, Sub => Op.Sub, Mul => Op.Mul, Neg => Op.Neg, Not => Op.Not, Eq => Op.Eq, Lt, Gt => Op.Lt,
+    Add => Op.Add, Sub => Op.Sub, Mul => Op.Mul, Shl => Op.Shl, Shr => Op.Shr, BitAnd => Op.BitAnd, BitOr => Op.BitOr, BitXor => Op.BitXor,
+    Neg => Op.Neg, Not => Op.Not, Eq => Op.Eq, Lt, Gt => Op.Lt,
     Sext => Op.Sext, Trunc => Op.Trunc, IsNull, IsPresent => Op.IsNull,
     ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet,
     BytesLen => Op.BytesLen, BytesGet => Op.BytesGet, BytesSlice => Op.BytesSlice, BytesConcat => Op.BytesConcat, BytesEq => Op.BytesEq,

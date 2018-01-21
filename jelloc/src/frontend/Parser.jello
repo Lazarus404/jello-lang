@@ -1612,6 +1612,10 @@ let _selfDelimiting = fn(start: Token, value: Expr): Bool {
   }
 };
 
+let _statementExpr = fn(start: Token): Expr {
+  match (start) { If, Match, With, Try => _parsePrimary(), _ => _parseExpr(0) }
+};
+
 let _endJump = fn() {
   if (!_at(Token.RBrace)) { expect(Token.Semicolon); }
   null
@@ -1621,7 +1625,7 @@ _parseStatement = fn() {
   if (_stmtStarts(peek())) { _parseStmt() } else {
     let statementStart = pos;
     let start = peek();
-    let value = _parseExpr(0);
+    let value = _statementExpr(start);
     if (_at(Token.Semicolon)) { next(); } else if (!_selfDelimiting(start, value)) { _error("expected ';'"); }
     let statement = _expressionStatement(value);
     _markStmt(statement, statementStart)
@@ -1641,7 +1645,7 @@ _parseBlock = fn() {
       let saved = pos;
       let savedPending = pendingGreater;
       let savedMarks = marks.len();
-      let value = _parseExpr(0);
+      let value = _statementExpr(start);
 
       if (_at(Token.Semicolon)) {
         next();
@@ -2018,7 +2022,7 @@ _parseProgram = fn(input, path, tokenStartOffsets, tokenEndOffsets) {
       let saved = pos;
       let savedPending = pendingGreater;
       let savedMarks = marks.len();
-      let value = _parseExpr(0);
+      let value = _statementExpr(start);
 
       if (_at(Token.Semicolon)) {
         next();

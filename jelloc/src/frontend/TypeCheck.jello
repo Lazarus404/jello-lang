@@ -155,7 +155,6 @@ let _isEnumExpr = fn(expr: AstExpr): Bool {
     _ => false,
   }
 };
-export let isBound: (Bytes) -> Bool = fn(name) { (_find(name, 0) >= 0) || match (scoped(name)) { Unbound => false, _ => true } };
 export let checkOperand: (AstExpr, I32, I32) -> I32 = fn(expr, index, expected) { _checkExpr(expr, syntaxChild(index), expected) };
 
 let _known = fn(id: I32): Bool { match (H.opOf(id)) { Local => isNarrowed(H.valueOf(id)), _ => false } };
@@ -311,6 +310,14 @@ let _operatorText = fn(op: BinaryOp): Bytes {
   }
 };
 
+let _bitwiseHint = fn(op: BinaryOp, left: I32, right: I32): Bytes {
+  let leftBool = H.typeOf(left) == H.TYPE_BOOL;
+  let rightBool = H.typeOf(right) == H.TYPE_BOOL;
+  let logical = match (op) { BitAnd => "&&", BitOr => "||", BitXor => "!=", _ => "" };
+  if ((logical == "") || (!leftBool && !rightBool)) { return ""; }
+  leftBool && rightBool ? "; use " + logical + " on bool operands" : "; comparisons bind tighter, so write (a " + _operatorText(op) + " b) == c"
+};
+
 export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
   if ((H.typeOf(left) == H.TYPE_DYNAMIC) || (H.typeOf(right) == H.TYPE_DYNAMIC)) {
     throw "a Dynamic value must be extracted with `as T` before use";
@@ -343,7 +350,7 @@ export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
   if (((ty != H.TYPE_I32) && (ty != H.TYPE_I64)) || (H.typeOf(right) != ty)) {
     throw (ty == H.TYPE_I64) || (H.typeOf(right) == H.TYPE_I64)
       ? "integer operands must have the same type: " + H.typeName(ty) + " and " + H.typeName(H.typeOf(right))
-      : "operator " + _operatorText(op) + " is not defined for " + H.typeName(ty) + " and " + H.typeName(H.typeOf(right));
+      : "operator " + _operatorText(op) + " is not defined for " + H.typeName(ty) + " and " + H.typeName(H.typeOf(right)) + _bitwiseHint(op, left, right);
   }
 
   match (op) {
@@ -352,6 +359,11 @@ export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
     Multiply => _binary(Op.Mul, ty, left, right),
     Divide => _binary(Op.Div, ty, left, right),
     Remainder => _binary(Op.Rem, ty, left, right),
+    ShiftLeft => _binary(Op.Shl, ty, left, right),
+    ShiftRight => _binary(Op.Shr, ty, left, right),
+    BitAnd => _binary(Op.BitAnd, ty, left, right),
+    BitOr => _binary(Op.BitOr, ty, left, right),
+    BitXor => _binary(Op.BitXor, ty, left, right),
     Equal => _compare(Op.Eq, left, right, false),
     NotEqual => _compare(Op.Eq, left, right, true),
     Less => _compare(Op.Lt, left, right, false),
@@ -376,7 +388,7 @@ let _checkBinary = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr, expec
     let right = _value(rightExpr, 1);
     return binaryValues(op, checkOperand(leftExpr, 0, H.typeOf(right) == H.TYPE_DYNAMIC ? -1 : H.typeOf(right)), right);
   }
-  let arithmetic = match (op) { Add, Subtract, Multiply => true, _ => false };
+  let arithmetic = match (op) { Add, Subtract, Multiply, ShiftLeft, ShiftRight, BitAnd, BitOr, BitXor => true, _ => false };
   let integer = (expected == H.TYPE_I32) || (expected == H.TYPE_I64);
   let left = _presentAt(_checkExpr(leftExpr, syntaxChild(0), arithmetic && integer ? expected : -1), 0);
   let before = narrowings();
@@ -403,6 +415,10 @@ let _enclosingHas = fn(name: Bytes): Bool {
 };
 
 let _moduleBinding = fn(name: Bytes): Binding { ((_find(name, 0) >= 0) || _enclosingHas(name)) ? Binding.Unbound : scoped(name) };
+
+export let isBound: (Bytes) -> Bool = fn(name) {
+  (_find(name, 0) >= 0) || _enclosingHas(name) || match (scoped(name)) { Unbound => false, _ => true }
+};
 
 let _isNamespace = fn(name: Bytes): Bool { match (_moduleBinding(name)) { Namespace(_, _) => true, _ => false } };
 
@@ -867,8 +883,7 @@ let _checkBlockBody = fn(prefix: Array<I32>, statements: Array<Stmt>, tail: ?Ast
     let index = first + (statements.len() as I32);
 
     if ((tailKind == _STATEMENT_TAIL) && !ends) { children.push(checkEffect(tail, index)); } else {
-      let checked = ((tailKind == _RESULT_TAIL) && !ends) ? _checkResult(tail, index, "function result type mismatch")
-        : checkOperand(tail, index, tailKind == _RESULT_TAIL ? _result : expected);
+      let checked = tailKind == _RESULT_TAIL ? _checkResult(tail, index, "function result type mismatch") : checkOperand(tail, index, expected);
       ty = H.typeOf(checked);
       hasTail = true;
       children.push(checked);

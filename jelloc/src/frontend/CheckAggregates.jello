@@ -197,9 +197,9 @@ let _string = fn(args: Array<AstExpr>): I32 {
   let ty = H.typeOf(value);
   if (ty == H.TYPE_BYTES) { return value; }
 
-  if ((ty != H.TYPE_BOOL) && (ty != H.TYPE_I32) && (ty != H.TYPE_DYNAMIC)) {
+  if ((ty != H.TYPE_BOOL) && (ty != H.TYPE_I32) && (ty != H.TYPE_I64) && (ty != H.TYPE_DYNAMIC)) {
     enterSyntax(syntaxChild(1));
-    throw "Std.string supports Bool, I32, Bytes and Dynamic, not " + H.typeName(ty);
+    throw "Std.string supports Bool, I32, I64, Bytes and Dynamic, not " + H.typeName(ty);
   }
   let boxed = ty == H.TYPE_DYNAMIC ? value : H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [value]);
   H.node(Op.CallNative, H.TYPE_BYTES, H.stdNative("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES), 0, [boxed])

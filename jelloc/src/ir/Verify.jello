@@ -143,7 +143,7 @@ let _instruction = fn(instruction: Instruction) {
       _arity(args, 1);
       if (!valueTypeEqual(_type(dst), _type(args[0]))) { _fail("move type mismatch"); } null
     },
-    Add, Sub, Mul, Div, Rem => {
+    Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor => {
       _arity(args, 2);
       if (!_isNumeric(_type(dst))) { _fail("arithmetic requires an integer type"); }
       _expect(args[0], _type(dst));
