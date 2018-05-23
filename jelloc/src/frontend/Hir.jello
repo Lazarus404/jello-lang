@@ -6,13 +6,13 @@ import { SourceSpan } from frontend.Source;
 export enum Op {
   Bool; I32; I64; Bytes; Null; Local; Assign; Global; SetGlobal; InitGlobal; FunctionRef;
   Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; And; Or; Eq; Lt; Gt; Sext; Trunc; Present; IsNull; IsPresent; Unwrap; ToDynamic; FromDynamic; IsKind;
-  ArrayNew; ArrayLiteral; ArrayLen; ArrayGet; ArraySet; ArrayPush; ArrayPop; ArrayResize;
-  BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq; Tuple; TupleField; EnumNew; EnumTag; EnumField;
+  ArrayNew; ArrayLiteral; ArrayLen; ArrayGet; ArraySet; ArrayPush; ArrayPop; ArrayResize; ListNil; ListCons; ListHead; ListTail; ListIsNil;
+  BytesNew; BytesSet; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq; Tuple; TupleField; EnumNew; EnumTag; EnumField;
   Call; CallIndirect; CallNative; Block; If; Try;
-  Let; Const; Parameter; Declare; Expression; Return; Throw; Break; Continue; IfStatement; TryStatement; While; Function; Program;
+  Let; Const; Parameter; Capture; Declare; Expression; Return; Throw; Break; Continue; IfStatement; TryStatement; While; Function; Program;
 }
 
-export enum Kind { Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; Dynamic; }
+export enum Kind { Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; Dynamic; ByteBuffer; List; }
 
 export enum Hir {
   Hir(
@@ -36,6 +36,7 @@ export let TYPE_I64: I32 = 2;
 export let TYPE_BYTES: I32 = 3;
 export let TYPE_NULL: I32 = 4;
 export let TYPE_DYNAMIC: I32 = 5;
+export let TYPE_BYTE_BUFFER: I32 = 6;
 
 let _ops = Array.new<Op>(0);
 let _nodes = Array.new<I32>(0);
@@ -124,7 +125,7 @@ export let nativeNameOf: (I32) -> Bytes = fn(native) { _bytes[_natives[native * 
 export let nativeTypeOf: (I32) -> I32 = fn(native) { _natives[native * _NATIVE_WIDTH + 2] };
 
 let _kindCode = fn(kind: Kind): I32 {
-  match (kind) { Bool => 0, I32 => 1, I64 => 2, Bytes => 3, Array => 4, Tuple => 5, Null => 6, Function => 7, Enum => 8, Dynamic => 9 }
+  match (kind) { Bool => 0, I32 => 1, I64 => 2, Bytes => 3, Array => 4, Tuple => 5, Null => 6, Function => 7, Enum => 8, Dynamic => 9, ByteBuffer => 10, List => 11 }
 };
 
 export let typeCount: () -> I32 = fn() { _kinds.len() as I32 };
@@ -343,11 +344,16 @@ let _intern = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
 };
 
 export let arrayType: (I32) -> I32 = fn(element) { _intern(Kind.Array, element, []) };
-export let nullType: (I32) -> I32 = fn(inner) { (isKind(inner, Kind.Null) || isKind(inner, Kind.Dynamic)) ? inner : _intern(Kind.Null, inner, []) };
+export let listType: (I32) -> I32 = fn(element) { _intern(Kind.List, element, []) };
+
+export let nullType: (I32) -> I32 = fn(inner) {
+  if (isKind(inner, Kind.List)) { throw "a list cannot be null: its empty value is nil; test it with List.is_nil"; }
+  (isKind(inner, Kind.Null) || isKind(inner, Kind.Dynamic)) ? inner : _intern(Kind.Null, inner, [])
+};
 export let holdsNull: (I32) -> Bool = fn(ty) { isKind(ty, Kind.Null) || isKind(ty, Kind.Dynamic) };
 
 export let isReference: (I32) -> Bool = fn(ty) {
-  match (kindOf(ty)) { Bytes, Array, Tuple, Function, Enum => true, _ => false }
+  match (kindOf(ty)) { Bytes, ByteBuffer, Array, Tuple, Function, Enum => true, _ => false }
 };
 export let tupleType: (Array<I32>) -> I32 = fn(elements) { _intern(Kind.Tuple, -1, elements) };
 export let functionType: (Array<I32>, I32) -> I32 = fn(params, result) { _intern(Kind.Function, result, params) };
@@ -403,6 +409,7 @@ export let beginHir: () -> Bool = fn() {
   _intern(Kind.Bytes, 0, []);
   _intern(Kind.Null, -1, []);
   _intern(Kind.Dynamic, -1, []);
+  _intern(Kind.ByteBuffer, 0, []);
   true
 };
 
@@ -419,6 +426,7 @@ _typeName = fn(ty) {
     I64 => "i64",
     Bytes => "bytes",
     Array => "array<" + _typeName(innerOf(ty)) + ">",
+    List => "list<" + _typeName(innerOf(ty)) + ">",
     Null => innerOf(ty) < 0 ? "null" : "?" + _typeName(innerOf(ty)),
     Tuple => {
       let output = "tuple<";
@@ -434,6 +442,13 @@ _typeName = fn(ty) {
     Function => "function",
     Enum => _bytes[innerOf(ty)],
     Dynamic => "dynamic",
+    ByteBuffer => "bytebuffer",
   }
 };
 export let typeName: (I32) -> Bytes = fn(ty) { _typeName(ty) };
+
+export let local: (I32, I32) -> I32 = fn(binding, ty) { node(Op.Local, ty, binding, 0, []) };
+
+export let declareBinding: (Op, I32, Bytes, I32) -> I32 = fn(op, binding, name, value) {
+  node(Op.Declare, 0, 0, 0, [node(op, typeOf(value), binding, bytesId(name), [value])])
+};

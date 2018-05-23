@@ -7,6 +7,7 @@ export enum ValueType {
   Bytes;
   Dynamic;
   ArrayOf(element: ValueType);
+  ListOf(element: ValueType);
   TupleOf(elements: Array<ValueType>);
   Nominal(id: I32);
   Function(args: Array<ValueType>, result: ReturnType);
@@ -20,7 +21,7 @@ export enum ReturnType {
 export enum Op {
   ConstBool; ConstI32; ConstI64; ConstBytes; ConstNull; ConstFunction; Move;
   Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; Eq; Lt; Sext; Trunc; Box; Unbox; KindOf; IsEnum; IsNull; NullCheck;
-  ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq;
+  ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; ListNil; ListCons; ListHead; ListTail; ListIsNil; BytesNew; BytesSet; BytesBlit; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
   Call; CallIndirect; CallNative; GlobalGet; GlobalSet;
   StructNew; StructSet; AddImm; SubImm; MulImm; EqImm; LtImm; SpillPush; SpillPop;
@@ -82,6 +83,7 @@ export enum Function {
   Function(
     id: I32,
     params: Array<I32>,
+    captures: I32,
     registers: Array<ValueType>,
     result: ReturnType,
     blocks: Array<BasicBlock>,
@@ -100,15 +102,22 @@ export enum Program {
   );
 }
 
+export let argumentCount: (Function) -> I32 = fn(function) {
+  match (function) { Function(_, params, captures, _, _, _, _) => (params.len() as I32) - captures }
+};
+
 export let opEffects: (Op) -> Array<Effect> = fn(op) {
   match (op) {
-    Box, ConstFunction, ArrayNew, EnumNew, StructNew => [Effect.MayAllocate],
+    Box, ConstFunction, ArrayNew, ListCons, EnumNew, StructNew => [Effect.MayAllocate],
+    BytesNew => [Effect.MayAllocate, Effect.MayTrap],
+    BytesSet => [Effect.MayWriteMemory, Effect.MayTrap],
+    BytesBlit => [Effect.MayReadMemory, Effect.MayWriteMemory, Effect.MayTrap],
     BytesSlice, BytesConcat => [Effect.MayAllocate, Effect.MayReadMemory, Effect.MayTrap],
     ArrayResize => [Effect.MayAllocate, Effect.MayWriteMemory, Effect.MayTrap],
     BytesLen, BytesEq => [Effect.MayReadMemory, Effect.MayTrap],
     Call, CallIndirect => [Effect.MayCall, Effect.MayThrow],
     CallNative => [Effect.MayCall, Effect.MayAllocate, Effect.MayTrap],
-    BytesGet, ArrayLen, ArrayGet, TupleGet, EnumGet => [Effect.MayReadMemory, Effect.MayTrap],
+    BytesGet, ArrayLen, ArrayGet, ListHead, ListTail, TupleGet, EnumGet => [Effect.MayReadMemory, Effect.MayTrap],
     GlobalGet => [Effect.MayReadMemory],
     Unbox, NullCheck => [Effect.MayTrap],
     GlobalSet => [Effect.MayWriteMemory],
@@ -143,7 +152,7 @@ _equal = fn(left, right) {
   match ((left, right)) {
     (Bool, Bool), (I32, I32), (I64, I64), (Bytes, Bytes), (Dynamic, Dynamic) => true,
     (Nominal(a), Nominal(b)) => a == b,
-    (ArrayOf(a), ArrayOf(b)) => _equal(a, b),
+    (ArrayOf(a), ArrayOf(b)), (ListOf(a), ListOf(b)) => _equal(a, b),
     (TupleOf(a), TupleOf(b)) => valueTypesEqual(a, b),
     (Function(leftArgs, leftResult), Function(rightArgs, rightResult)) =>
       valueTypesEqual(leftArgs, rightArgs) && returnTypeEqual(leftResult, rightResult),
@@ -153,4 +162,4 @@ _equal = fn(left, right) {
 
 export let valueTypeEqual: (ValueType, ValueType) -> Bool = fn(left, right) { _equal(left, right) };
 
-export let canBeNull: (ValueType) -> Bool = fn(ty) { match (ty) { Bool, I32, I64 => false, _ => true } };
+export let canBeNull: (ValueType) -> Bool = fn(ty) { match (ty) { Bool, I32, I64, ListOf(_) => false, _ => true } };

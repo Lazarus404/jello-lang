@@ -3,12 +3,12 @@ package frontend;
 import type { Block as AstBlock, Expr as AstExpr, MatchArm, Pattern } from frontend.Ast;
 import { Pattern, integerValue, wideIntegerValue } from frontend.Ast;
 import {
-  Kind, Op, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, fieldCount, fieldType, isKind, node,
-  nullType, opOf, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, variantCount, variantName, variantTag, wideLiteral,
+  Kind, Op, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, declareBinding, fieldCount, fieldType, isKind,
+  local, node, nullType, opOf, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, variantCount, variantName, variantTag, wideLiteral,
 } from frontend.Hir;
 import type { Syntax } from frontend.Source;
 import {
-  checkArm, checkOperand, checkPresent, coerceAt, enterSyntax, joinTypes, newBinding, regexpGlobal, subPattern, syntaxChild, syntaxPattern,
+  bufferHint, checkArm, checkOperand, checkPresent, coerceAt, enterSyntax, joinTypes, newBinding, regexpGlobal, subPattern, syntaxChild, syntaxPattern,
 } from frontend.TypeCheck;
 
 enum Subject { Subject(roots: Array<I32>, types: Array<I32>, tuple: I32, tag: I32); }
@@ -27,16 +27,10 @@ let _step = fn(path: Array<I32>, tag: I32, index: I32): Array<I32> {
   out
 };
 
-let _local = fn(binding: I32, ty: I32): I32 { node(Op.Local, ty, binding, 0, []) };
-
-let _const = fn(binding: I32, name: Bytes, value: I32): I32 {
-  node(Op.Declare, 0, 0, 0, [node(Op.Const, typeOf(value), binding, bytesId(name), [value])])
-};
-
 let _read = fn(subject: Subject, path: Array<I32>): I32 {
   match (subject) { Subject(roots, types, _, _) => {
     let ty = types[path[0]];
-    let value = _local(roots[path[0]], ty);
+    let value = local(roots[path[0]], ty);
     let i = 1;
 
     while (i < path.len()) {
@@ -64,7 +58,7 @@ let _reads = fn(subject: Subject, paths: Array<Array<I32>>, places: Array<Syntax
 };
 
 let _mismatch = fn(what: Bytes, ty: I32): Bool {
-  throw "a " + what + " pattern cannot match " + typeName(ty);
+  throw "a " + what + " pattern cannot match " + typeName(ty) + bufferHint(ty);
   false
 };
 
@@ -104,7 +98,7 @@ _test = fn(subject, pattern, syntax, path, ty, tests, bound) {
       if (args.len() != fieldCount(ty, tag)) { throw "wrong payload count for enum variant pattern " + name; }
 
       if (variantCount(ty) > 1) {
-        let read = match (subject) { Subject(_, _, _, tagBinding) => (path.len() == 1) && (tagBinding >= 0) ? _local(tagBinding, TYPE_I32) : node(Op.EnumTag, TYPE_I32, 0, 0, [_read(subject, path)]) };
+        let read = match (subject) { Subject(_, _, _, tagBinding) => (path.len() == 1) && (tagBinding >= 0) ? local(tagBinding, TYPE_I32) : node(Op.EnumTag, TYPE_I32, 0, 0, [_read(subject, path)]) };
         tests.push(node(Op.Eq, TYPE_BOOL, 0, 0, [read, node(Op.I32, TYPE_I32, tag, 0, [])]));
       }
       let f = 0;
@@ -414,7 +408,7 @@ let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>)
     while (i < items.len()) {
       let value = checkOperand(items[i], i, -1);
       let binding = newBinding();
-      children.push(_const(binding, "match", value));
+      children.push(declareBinding(Op.Const, binding, "match", value));
       roots.push(binding);
       types.push(typeOf(value));
       i++;
@@ -425,14 +419,14 @@ let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>)
   let value = checkPresent(subject, 0);
   let ty = typeOf(value);
   let binding = newBinding();
-  children.push(_const(binding, "match", value));
+  children.push(declareBinding(Op.Const, binding, "match", value));
   roots.push(binding);
   types.push(ty);
   let tag = -1;
 
   if (isKind(ty, Kind.Enum) && (variantCount(ty) > 1) && (arms.len() > 1)) {
     tag = newBinding();
-    children.push(_const(tag, "match.tag", node(Op.EnumTag, TYPE_I32, 0, 0, [_local(binding, ty)])));
+    children.push(declareBinding(Op.Const, tag, "match.tag", node(Op.EnumTag, TYPE_I32, 0, 0, [local(binding, ty)])));
   }
   Subject.Subject(roots, types, -1, tag)
 };
@@ -444,12 +438,15 @@ let _declareMatches = fn(subject: Subject, first: I32, children: Array<I32>) {
     let r = first;
 
     while (r < roots.len()) {
-      children.push(node(Op.Declare, 0, 0, 0, [node(Op.Let, types[r], roots[r], bytesId("match.bound"), [node(Op.Null, types[r], 0, 0, [])])]));
+      let empty = node(isKind(types[r], Kind.List) ? Op.ListNil : Op.Null, types[r], 0, 0, []);
+      children.push(declareBinding(Op.Let, roots[r], "match.bound", empty));
       r++;
     }
   } };
   null
 };
+
+let _rootType = fn(ty: I32): I32 { isKind(ty, Kind.List) ? ty : nullType(ty) };
 
 let _alternativeRoots = fn(subject: Subject, values: Array<I32>): Array<I32> {
   let out = Array.new<I32>(0);
@@ -460,7 +457,7 @@ let _alternativeRoots = fn(subject: Subject, values: Array<I32>): Array<I32> {
     while (i < values.len()) {
       out.push(roots.len() as I32);
       roots.push(newBinding());
-      types.push(nullType(typeOf(values[i])));
+      types.push(_rootType(typeOf(values[i])));
       i++;
     }
   } };
@@ -560,7 +557,7 @@ let _armPattern = fn(subject: Subject, pattern: Pattern, syntax: Syntax, path: A
 
 let _armBody = fn(names: Array<Bytes>, values: Array<I32>, body: AstBlock, index: I32, expected: I32, resultType: I32, statement: Bool): I32 {
   match (body) { Block(statements, tail) => {
-    let context = (expected < 0) && (resultType >= 0) && !statement ? nullType(resultType) : expected;
+    let context = (expected < 0) && (resultType >= 0) && !statement && !isKind(resultType, Kind.List) ? nullType(resultType) : expected;
     let block = checkArm(names, values, statements, tail, index, context, statement);
     if (context != expected) { block = _unlift(block); }
     if (!statement && (auxOf(block) == 0)) { throw "match arm requires a trailing expression"; }

@@ -15,7 +15,7 @@ let checked = fn(source: Bytes): Hir { typeCheckProgram(parseProgram(lex(source)
 let opName = fn(op: Op): Bytes {
   match (op) {
     I32 => "I32", Local => "Local", Add => "Add", Call => "Call", If => "If", Let => "Let", Return => "Return",
-    Global => "Global", InitGlobal => "InitGlobal", Parameter => "Parameter", _ => "",
+    Global => "Global", InitGlobal => "InitGlobal", Parameter => "Parameter", Capture => "Capture", _ => "",
   }
 };
 
@@ -163,6 +163,14 @@ test("verifier checks globals", fn(t) {
   t.is(rejection(mutate(hir, find(hir, "Global", 0), 1, 99)), "invalid HIR: unknown global");
   t.is(rejection(mutate(hir, find(hir, "InitGlobal", 1), 1, 0)), "invalid HIR: globals must be initialized once, in order");
   t.is(rejection(mutate(hir, find(hir, "InitGlobal", 1), 1, 2)), "invalid HIR: globals must be initialized once, in order");
+});
+
+test("verifier checks closures against their function's captures", fn(t) {
+  let hir = checked("let adder = fn(n: I32): () -> I32 { fn() { n } };\nadder(1i32)()");
+  t.is(rejection(hir), "accepted");
+  t.is(rejection(mutate(hir, find(hir, "Capture", 0), 0, H.TYPE_BOOL)), "invalid HIR: closure capture type mismatch");
+  t.is(rejection(mutateOp(hir, find(hir, "Capture", 0), Op.Parameter)), "invalid HIR: parameter type mismatch");
+  t.is(rejection(mutate(hir, find(hir, "Call", 0), 1, 2)), "invalid HIR: direct call of a function that captures");
 });
 
 test("verifier requires a tree", fn(t) {

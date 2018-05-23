@@ -28,7 +28,7 @@ test("verifies a typed branching function", fn(t) {
   ];
   let function = Function.Function(
     0,
-    [0, 1],
+    [0, 1], 0,
     [ValueType.I32, ValueType.I32, ValueType.Bool],
     ReturnType.Value(ValueType.I32),
     blocks,
@@ -42,7 +42,7 @@ test("verifies a typed branching function", fn(t) {
 test("rejects invalid register types and block targets", fn(t) {
   let wrongType = Function.Function(
     0,
-    [],
+    [], 0,
     [ValueType.Bool],
     ReturnType.Value(ValueType.Bool),
     [BasicBlock.Block(
@@ -55,7 +55,7 @@ test("rejects invalid register types and block targets", fn(t) {
   );
   let badTarget = Function.Function(
     1,
-    [],
+    [], 0,
     [],
     ReturnType.Void,
     [BasicBlock.Block(0, [], Terminator.Jump(9), null)],
@@ -63,7 +63,7 @@ test("rejects invalid register types and block targets", fn(t) {
   );
   let duplicateBlock = Function.Function(
     2,
-    [],
+    [], 0,
     [],
     ReturnType.Void,
     [BasicBlock.Block(0, [], Terminator.Jump(1), null), BasicBlock.Block(1, [], Terminator.ReturnVoid, null), BasicBlock.Block(1, [], Terminator.ReturnVoid, null)],
@@ -78,7 +78,7 @@ test("rejects invalid register types and block targets", fn(t) {
 test("rejects return and handler mismatches", fn(t) {
   let wrongReturn = Function.Function(
     0,
-    [],
+    [], 0,
     [],
     ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, [], Terminator.ReturnVoid, null)],
@@ -86,7 +86,7 @@ test("rejects return and handler mismatches", fn(t) {
   );
   let badHandler = Function.Function(
     1,
-    [],
+    [], 0,
     [],
     ReturnType.Void,
     [BasicBlock.Block(0, [], Terminator.ReturnVoid, ThrowHandler.Catch(4, 0))],
@@ -100,7 +100,7 @@ test("rejects return and handler mismatches", fn(t) {
 test("requires definitions on every path to a use", fn(t) {
   let missingDefinition = Function.Function(
     0,
-    [0],
+    [0], 0,
     [ValueType.Bool, ValueType.I32],
     ReturnType.Value(ValueType.I32),
     [
@@ -113,7 +113,7 @@ test("requires definitions on every path to a use", fn(t) {
   );
   let definedOnBothPaths = Function.Function(
     1,
-    [0],
+    [0], 0,
     [ValueType.Bool, ValueType.I32],
     ReturnType.Value(ValueType.I32),
     [
@@ -133,7 +133,7 @@ test("requires a spill slot written on every path to a pop", fn(t) {
   let spilled = fn(id: I32, otherPath: Array<Instruction>, slotType: ValueType): Function {
     Function.Function(
       id,
-      [0],
+      [0], 0,
       [ValueType.Bool, ValueType.I32, slotType],
       ReturnType.Value(ValueType.I32),
       [
@@ -155,7 +155,7 @@ test("types sparse spill slots independently", fn(t) {
   let sparse = fn(id: I32, popped: ValueType, instructions: Array<Instruction>): Function {
     Function.Function(
       id,
-      [0],
+      [0], 0,
       [ValueType.Bool, ValueType.I32, popped],
       ReturnType.Value(ValueType.I32),
       [BasicBlock.Block(0, instructions, Terminator.ReturnValue(1), null)],
@@ -169,7 +169,7 @@ test("types sparse spill slots independently", fn(t) {
 test("defines a dynamic catch payload on throw edges", fn(t) {
   let function = Function.Function(
     0,
-    [],
+    [], 0,
     [ValueType.Dynamic, ValueType.Bytes],
     ReturnType.Value(ValueType.Dynamic),
     [
@@ -190,12 +190,12 @@ test("defines a dynamic catch payload on throw edges", fn(t) {
 
 test("does not define post-call values on exceptional edges", fn(t) {
   let callee = Function.Function(
-    1, [], [ValueType.I32], ReturnType.Value(ValueType.I32),
+    1, [], 0, [ValueType.I32], ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, [insn(Op.ConstI32, 0, none(), 1)], Terminator.ReturnValue(0), null)], 0
   );
   let caller = Function.Function(
     0,
-    [],
+    [], 0,
     [ValueType.I32, ValueType.I32, ValueType.Dynamic],
     ReturnType.Value(ValueType.I32),
     [
@@ -215,7 +215,7 @@ test("does not define post-call values on exceptional edges", fn(t) {
 
 let regions = fn(entry: Terminator, first: ?ThrowHandler, second: ?ThrowHandler): Function {
   let empty = Array.new<Instruction>(0);
-  Function.Function(0, none(), [ValueType.Dynamic, ValueType.Bool], ReturnType.Value(ValueType.Dynamic), [
+  Function.Function(0, none(), 0, [ValueType.Dynamic, ValueType.Bool], ReturnType.Value(ValueType.Dynamic), [
     BasicBlock.Block(0, [insn(Op.ConstNull, 0, none(), 0), insn(Op.ConstBool, 1, none(), 1)], entry, null),
     BasicBlock.Block(1, empty, Terminator.ReturnValue(0), first),
     BasicBlock.Block(2, empty, Terminator.ReturnValue(0), second)
@@ -225,7 +225,7 @@ let regions = fn(entry: Terminator, first: ?ThrowHandler, second: ?ThrowHandler)
 test("checks that try regions nest", fn(t) {
   t.is(verifyFunction(regions(Terminator.Jump(1), ThrowHandler.Catch(2, 0), null)), true);
   t.throws(fn(_t) {
-    verifyFunction(Function.Function(0, none(), [ValueType.Dynamic], ReturnType.Value(ValueType.Dynamic), [
+    verifyFunction(Function.Function(0, none(), 0, [ValueType.Dynamic], ReturnType.Value(ValueType.Dynamic), [
       BasicBlock.Block(0, Array.new<Instruction>(0), Terminator.ReturnValue(0), ThrowHandler.Catch(1, 0)),
       BasicBlock.Block(1, Array.new<Instruction>(0), Terminator.ReturnValue(0), null)
     ], 0));
@@ -237,7 +237,7 @@ test("checks that try regions nest", fn(t) {
 test("converges on loop backedges", fn(t) {
   let function = Function.Function(
     0,
-    [0, 1],
+    [0, 1], 0,
     [ValueType.Bool, ValueType.I32],
     ReturnType.Value(ValueType.I32),
     [
@@ -253,12 +253,12 @@ test("converges on loop backedges", fn(t) {
 
 test("checks calls, function constants and the bytes pool against the program", fn(t) {
   let callee = Function.Function(
-    1, [0], [ValueType.I32], ReturnType.Value(ValueType.I32),
+    1, [0], 0, [ValueType.I32], ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
   );
 
   let caller = fn(instructions: Array<Instruction>, registers: Array<ValueType>): Function {
-    Function.Function(0, [], registers, ReturnType.Value(ValueType.I32),
+    Function.Function(0, [], 0, registers, ReturnType.Value(ValueType.I32),
       [BasicBlock.Block(0, instructions, Terminator.ReturnValue(0), null)], 0)
   };
   let good = caller([insn(Op.ConstI32, 1, none(), 7), insn(Op.Call, 0, [1], 1)], [ValueType.I32, ValueType.I32]);
@@ -267,14 +267,37 @@ test("checks calls, function constants and the bytes pool against the program", 
   t.throws(fn(_t) { verifyProgram(program([callee, wrongArgument], Array.new<Bytes>(0))); });
   let unknownCallee = caller([insn(Op.ConstI32, 1, none(), 7), insn(Op.Call, 0, [1], 9)], [ValueType.I32, ValueType.I32]);
   t.throws(fn(_t) { verifyProgram(program([callee, unknownCallee], Array.new<Bytes>(0))); });
-  let wrongSignature = Function.Function(0, [], [ValueType.Function([ValueType.Bool], ReturnType.Value(ValueType.I32)), ValueType.I32],
+  let wrongSignature = Function.Function(0, [], 0, [ValueType.Function([ValueType.Bool], ReturnType.Value(ValueType.I32)), ValueType.I32],
     ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, [insn(Op.ConstFunction, 0, none(), 1), insn(Op.ConstI32, 1, none(), 0)], Terminator.ReturnValue(1), null)], 0);
   t.throws(fn(_t) { verifyProgram(program([callee, wrongSignature], Array.new<Bytes>(0))); });
-  let bytes = Function.Function(0, [], [ValueType.Bytes], ReturnType.Value(ValueType.Bytes),
+  let bytes = Function.Function(0, [], 0, [ValueType.Bytes], ReturnType.Value(ValueType.Bytes),
     [BasicBlock.Block(0, [insn(Op.ConstBytes, 0, none(), 0)], Terminator.ReturnValue(0), null)], 0);
   t.is(verifyProgram(program([bytes], ["A"])), true);
   t.throws(fn(_t) { verifyProgram(program([bytes], Array.new<Bytes>(0))); });
+});
+
+test("checks closures against the captures of their function", fn(t) {
+  let closure = Function.Function(
+    1, [0, 1], 1, [ValueType.I32, ValueType.Dynamic], ReturnType.Value(ValueType.I32),
+    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
+  );
+
+  let maker = fn(make: Instruction): Function {
+    let registers = [ValueType.Function([ValueType.I32], ReturnType.Value(ValueType.I32)), ValueType.I32, ValueType.Dynamic];
+    Function.Function(0, [], 0, registers, ReturnType.Value(ValueType.I32),
+      [BasicBlock.Block(0, [insn(Op.ConstI32, 1, none(), 5), insn(Op.Box, 2, [1], 0), make], Terminator.ReturnValue(1), null)], 0)
+  };
+  let verified = fn(make: Instruction): Bool { verifyProgram(program([closure, maker(make)], Array.new<Bytes>(0))) };
+  t.is(verified(insn(Op.ConstFunction, 0, [2], 1)), true);
+  t.throws(fn(_t) { verified(insn(Op.ConstFunction, 0, none(), 1)); });
+  t.throws(fn(_t) { verified(insn(Op.ConstFunction, 0, [1], 1)); });
+  t.throws(fn(_t) { verified(insn(Op.Call, 1, [1], 1)); });
+  let unboxed = Function.Function(
+    1, [0, 1], 1, [ValueType.I32, ValueType.I32], ReturnType.Value(ValueType.I32),
+    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
+  );
+  t.throws(fn(_t) { verifyFunction(unboxed); });
 });
 
 run()

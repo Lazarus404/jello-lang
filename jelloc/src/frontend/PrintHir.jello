@@ -3,7 +3,7 @@ package frontend;
 import type { Hir } from frontend.Hir;
 import {
   auxOf, bytesOf, childCount, childOf, globalNameOf, innerOf, lastChild, nativeLibraryOf, nativeNameOf, opOf, rootNode, spanEndOf, spanOf,
-  spanPathOf, spanStartOf, typeName, typeOf, useHir, valueOf, variantName, wideValueOf,
+  spanPathOf, spanStartOf, typeArgCount, typeName, typeOf, useHir, valueOf, variantName, wideValueOf,
 } from frontend.Hir;
 import { bytesLiteral } from frontend.Tokens;
 
@@ -59,7 +59,7 @@ _expr = fn(id, indent) {
     Local => indent + "local %" + _id(id) + _typed(id),
     Global => indent + "global g" + _id(id) + _typed(id),
     SetGlobal => _operation("global.set g" + _id(id), id, indent),
-    FunctionRef => indent + "function @" + _id(id) + _typed(id),
+    FunctionRef => _operation("function @" + _id(id), id, indent),
     Assign => _operation("assign %" + _id(id), id, indent),
     TupleField => _operation("tuple.get " + _id(id), id, indent),
     EnumNew => _operation("enum.new " + variantName(typeOf(id), valueOf(id)), id, indent),
@@ -102,6 +102,13 @@ _expr = fn(id, indent) {
     ArrayPush => _operation("array.push", id, indent),
     ArrayPop => _operation("array.pop", id, indent),
     ArrayResize => _operation("array.resize", id, indent),
+    ListNil => _operation("list.nil", id, indent),
+    ListCons => _operation("list.cons", id, indent),
+    ListHead => _operation("list.head", id, indent),
+    ListTail => _operation("list.tail", id, indent),
+    ListIsNil => _operation("list.is_nil", id, indent),
+    BytesNew => _operation("bytes.new", id, indent),
+    BytesSet => _operation("bytes.set_u8", id, indent),
     BytesLen => _operation("bytes.len", id, indent),
     BytesGet => _operation("bytes.get_u8", id, indent),
     BytesSlice => _operation("bytes.slice", id, indent),
@@ -168,11 +175,12 @@ _statements = fn(id, indent) {
 
 let _function = fn(id: I32, functionId: I32): Bytes {
   let output = "  fn @" + Std.string(functionId) + " " + bytesOf(valueOf(id)) + "(";
+  let params = typeArgCount(typeOf(id));
   let i = 0;
 
   while (i < childCount(id) - 1) {
     let param = childOf(id, i);
-    if (i > 0) { output += ", "; }
+    if (i == params) { output += ") captures("; } else if (i > 0) { output += ", "; }
     output += "%" + _id(param) + " " + bytesOf(auxOf(param)) + ": " + typeName(typeOf(param)) + _at(param);
     i++;
   }

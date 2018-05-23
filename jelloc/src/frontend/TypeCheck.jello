@@ -16,13 +16,18 @@ import { SourceSpan, Syntax } from frontend.Source;
 
 let _names = Array.new<Bytes>(0);
 let _ids = Array.new<I32>(0);
-let _types = Array.new<I32>(0);
-let _mutable = Array.new<Bool>(0);
 let _nextBinding = 0;
+let _bindingTypes = Array.new<I32>(0);
+let _mutable = Array.new<Bool>(0);
+let _assigned = Array.new<Bool>(0);
+let _captured = Array.new<Bool>(0);
 let _scopeStart = 0;
 let _loops = 0;
 let _tries = 0;
-let _enclosing = Array.new<Bytes>(0);
+enum Frame { Frame(names: Array<Bytes>, ids: Array<I32>); }
+let _frames = Array.new<Frame>(0);
+let _captures = [Array.new<I32>(0)];
+let _sources = [Array.new<I32>(0)];
 let _functionNames = Array.new<Bytes>(0);
 let _functionTypes = Array.new<I32>(0);
 let _functionParams = Array.new<Array<Bytes>>(0);
@@ -44,23 +49,33 @@ export let syntaxChild: (I32) -> Syntax = fn(index) { _childOf(_syntax, index) }
 export let syntaxPattern: (I32) -> Syntax = fn(index) { match (_syntax) { Node(_, _, _, _, patterns) => patterns[index] } };
 export let subPattern: (Syntax, I32) -> Syntax = fn(syntax, index) { _childOf(syntax, index) };
 
-let _find = fn(name: Bytes, start: I32): I32 {
-  let i = _names.len() - 1;
+let _findIn = fn(names: Array<Bytes>, name: Bytes, start: I32): I32 {
+  let i = names.len() - 1;
 
   while (i >= start) {
-    if (_names[i] == name) { return i; }
+    if (names[i] == name) { return i; }
     i--;
   }
   -1
 };
+let _find = fn(name: Bytes, start: I32): I32 { _findIn(_names, name, start) };
 
-let _declare = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
+export let newBinding: () -> I32 = fn() {
   let id = _nextBinding;
   _nextBinding++;
+  _bindingTypes.push(-1);
+  _mutable.push(false);
+  _assigned.push(false);
+  _captured.push(false);
+  id
+};
+
+let _declare = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
+  let id = newBinding();
+  _bindingTypes[id] = ty;
+  _mutable[id] = mutable;
   _names.push(name);
   _ids.push(id);
-  _types.push(ty);
-  _mutable.push(mutable);
   id
 };
 
@@ -68,8 +83,6 @@ let _popTo = fn(start: I32) {
   while (_names.len() > start) {
     _names.pop();
     _ids.pop();
-    _types.pop();
-    _mutable.pop();
   }
   null
 };
@@ -105,6 +118,7 @@ checkType = fn(ty) { match (ty) {
   },
   Generic(name, args) => match (name) {
     "Array" when (args.len() == 1) => H.arrayType(checkType(args[0])),
+    "List" when (args.len() == 1) => H.listType(checkType(args[0])),
     "Tuple" when (args.len() >= 2) => H.tupleType(_checkTypes(args)),
     "Null" when (args.len() == 1) => H.nullType(checkType(args[0])),
     _ => {
@@ -161,6 +175,10 @@ let _known = fn(id: I32): Bool { match (H.opOf(id)) { Local => isNarrowed(H.valu
 let _unwrap = fn(id: I32): I32 { H.node(Op.Unwrap, H.innerOf(H.typeOf(id)), _known(id) ? 0 : 1, 0, [id]) };
 export let presentKnown: (I32) -> I32 = fn(id) { (H.isKind(H.typeOf(id), Kind.Null) && _known(id)) ? _unwrap(id) : id };
 
+export let bufferHint: (I32) -> Bytes = fn(ty) {
+  ty == H.TYPE_BYTE_BUFFER ? "; copy a buffer's bytes out with Bytes.slice(buffer, 0, buffer.len())" : ""
+};
+
 let _coerce = fn(id: I32, expected: I32): I32 {
   let ty = H.typeOf(id);
   if ((expected < 0) || (ty == expected)) { return id; }
@@ -174,6 +192,7 @@ let _coerce = fn(id: I32, expected: I32): I32 {
     }
   }
   if (H.isKind(ty, Kind.Null) && (H.innerOf(ty) == expected)) { return _unwrap(id); }
+  if (ty == H.TYPE_BYTE_BUFFER) { throw "a buffer from Bytes.new is not " + H.typeName(expected) + bufferHint(ty); }
   if ((expected == H.TYPE_DYNAMIC) && (ty != H.TYPE_NULL)) { throw "a value becomes Dynamic only with `as Dynamic`"; }
   id
 };
@@ -222,7 +241,8 @@ let _narrowBy = fn(cond: AstExpr, present: Bool) {
       let tests = match (op) { NotEqual => present, Equal => !present, _ => false };
       let name = match (left) { Variable(found) when (_isNull(right)) => found, _ => match (right) { Variable(found) when (_isNull(left)) => found, _ => "" } };
       let found = (tests && (name != "")) ? _find(name, 0) : -1;
-      if ((found >= 0) && H.isKind(_types[found], Kind.Null)) { narrow(_ids[found], _mutable[found]); }
+      let id = found >= 0 ? _ids[found] : -1;
+      if ((id >= 0) && H.isKind(_bindingTypes[id], Kind.Null)) { narrow(id, _mutable[id]); }
       null
     },
     _ => null,
@@ -286,7 +306,7 @@ let _compare = fn(op: Op, left: I32, right: I32, negate: Bool): I32 {
   negate ? _unary(Op.Not, H.TYPE_BOOL, compared) : compared
 };
 
-let _isNullaryVariant = fn(id: I32): Bool { match (H.opOf(id)) { EnumNew => H.childCount(id) == 0, _ => false } };
+export let isNullaryVariant: (I32) -> Bool = fn(id) { match (H.opOf(id)) { EnumNew => H.childCount(id) == 0, _ => false } };
 
 let _enumEquality = fn(op: BinaryOp, left: I32, right: I32): I32 {
   let negate = match (op) {
@@ -295,9 +315,9 @@ let _enumEquality = fn(op: BinaryOp, left: I32, right: I32): I32 {
       false
     }
   };
-  let variant = _isNullaryVariant(right) ? right : left;
-  let value = _isNullaryVariant(right) ? left : right;
-  if (!_isNullaryVariant(variant)) { throw "enum values can be compared only with a variant without a payload, such as E.None; use match"; }
+  let variant = isNullaryVariant(right) ? right : left;
+  let value = isNullaryVariant(right) ? left : right;
+  if (!isNullaryVariant(variant)) { throw "enum values can be compared only with a variant without a payload, such as E.None; use match"; }
   _compare(Op.Eq, _unary(Op.EnumTag, H.TYPE_I32, value), _leaf(Op.I32, H.TYPE_I32, H.valueOf(variant)), negate)
 };
 
@@ -319,6 +339,10 @@ let _bitwiseHint = fn(op: BinaryOp, left: I32, right: I32): Bytes {
 };
 
 export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
+  if ((H.typeOf(left) == H.TYPE_BYTE_BUFFER) || (H.typeOf(right) == H.TYPE_BYTE_BUFFER)) {
+    throw "operator " + _operatorText(op) + " is not defined for a buffer from Bytes.new" + bufferHint(H.TYPE_BYTE_BUFFER);
+  }
+
   if ((H.typeOf(left) == H.TYPE_DYNAMIC) || (H.typeOf(right) == H.TYPE_DYNAMIC)) {
     throw "a Dynamic value must be extracted with `as T` before use";
   }
@@ -404,14 +428,51 @@ let _functionType = fn(index: I32): I32 {
   ty
 };
 
-let _enclosingHas = fn(name: Bytes): Bool {
-  let i = 0;
+let _enclosingFind = fn(name: Bytes): Tuple<I32, I32> {
+  let depth = _frames.len() - 1;
 
-  while (i < _enclosing.len()) {
-    if (_enclosing[i] == name) { return true; }
-    i++;
+  while (depth >= 0) {
+    let id = match (_frames[depth]) {
+      Frame(names, ids) => {
+        let found = _findIn(names, name, 0);
+        found >= 0 ? ids[found] : -1
+      }
+    };
+    if (id >= 0) { return (depth as I32, id); }
+    depth--;
   }
-  false
+  (-1, -1)
+};
+
+let _enclosingHas = fn(name: Bytes): Bool {
+  let (depth, _) = _enclosingFind(name);
+  depth >= 0
+};
+
+let _capturedTarget = fn(name: Bytes): Bytes { "cannot assign to " + name + ": a closure captures it" };
+
+let _capture = fn(name: Bytes): I32 {
+  let (depth, id) = _enclosingFind(name);
+  if (depth < 0) { return -1; }
+  let ty = _bindingTypes[id];
+  if (_assigned[id]) { throw "a closure cannot capture " + name + ": it is assigned after its declaration"; }
+  _captured[id] = true;
+  depth++;
+
+  while (depth < _captures.len()) {
+    let captures = _captures[depth];
+    let sources = _sources[depth];
+    let i = 0;
+    while ((i < sources.len()) && (H.valueOf(sources[i]) != id)) { i++; }
+
+    if (i == sources.len()) {
+      sources.push(_leaf(Op.Local, ty, id));
+      captures.push(H.node(Op.Capture, ty, newBinding(), H.bytesId(name), []));
+    }
+    id = H.valueOf(captures[i]);
+    depth++;
+  }
+  _leaf(Op.Local, ty, id)
 };
 
 let _moduleBinding = fn(name: Bytes): Binding { ((_find(name, 0) >= 0) || _enclosingHas(name)) ? Binding.Unbound : scoped(name) };
@@ -451,8 +512,9 @@ let _bindingValue = fn(binding: Binding, name: Bytes): I32 {
 
 let _checkVariable = fn(name: Bytes): I32 {
   let found = _find(name, 0);
-  if (found >= 0) { return _leaf(Op.Local, _types[found], _ids[found]); }
-  if (_enclosingHas(name)) { throw "closures that capture variables are not supported yet: " + name; }
+  if (found >= 0) { return _leaf(Op.Local, _bindingTypes[_ids[found]], _ids[found]); }
+  let captured = _capture(name);
+  if (captured >= 0) { return captured; }
   _bindingValue(scoped(name), name)
 };
 
@@ -529,10 +591,13 @@ let _importedTarget = fn(name: Bytes): Bytes { "cannot assign to imported bindin
 
 let _assignable = fn(name: Bytes): Tuple<Bool, I32, I32> {
   let found = _find(name, 0);
+  let (_, outer) = found >= 0 ? (0, _ids[found]) : _enclosingFind(name);
 
-  if (found >= 0) {
-    if (!_mutable[found]) { throw "cannot assign to immutable local: " + name; }
-    return (false, _ids[found], _types[found]);
+  if (outer >= 0) {
+    if (!_mutable[outer]) { throw "cannot assign to immutable local: " + name; }
+    if ((found < 0) || _captured[outer]) { throw _capturedTarget(name); }
+    _assigned[outer] = true;
+    return (false, outer, _bindingTypes[outer]);
   }
 
   let id = match (scoped(name)) {
@@ -592,16 +657,11 @@ let _rejectNamespaceTarget = fn(target: AstExpr): Bool {
 };
 
 let _checkAssignment = fn(expr: AstExpr, op: AssignOp, target: AstExpr, value: AstExpr): I32 {
-  let isAssign = match (op) { Assign => true, _ => false };
   _rejectNamespaceTarget(target);
 
   match (target) {
     Variable(name) => _checkVariableAssignment(op, name, value),
-    Index(_, _) when (isAssign) => _checkAggregate(expr, -1),
-    Index(_, _) => {
-      throw "compound assignment to an element is not supported yet";
-      -1
-    },
+    Index(_, _) => _checkAggregate(expr, -1),
     Member(_, _) => {
       throw "assigning to a field is not supported yet";
       -1
@@ -613,14 +673,15 @@ let _checkAssignment = fn(expr: AstExpr, op: AssignOp, target: AstExpr, value: A
   }
 };
 
-let _one = fn(ty: I32): I32 { ty == H.TYPE_I64 ? H.wideLiteral(1) : _leaf(Op.I32, H.TYPE_I32, 1) };
+export let one: (I32) -> I32 = fn(ty) { ty == H.TYPE_I64 ? H.wideLiteral(1) : _leaf(Op.I32, H.TYPE_I32, 1) };
 
 let _checkIncDec = fn(op: IncDecOp, prefix: Bool, target: AstExpr, discarded: Bool): I32 {
   _rejectNamespaceTarget(target);
+  if (match (target) { Index(_, _) => true, _ => false }) { return _checkAggregate(AstExpr.IncDec(op, prefix || discarded, target), -1); }
 
   let name = match (target) {
     Variable(found) => found, _ => {
-      throw "increment and decrement support only variables yet";
+      throw "only a variable or an element can be incremented or decremented";
       ""
     }
   };
@@ -630,9 +691,9 @@ let _checkIncDec = fn(op: IncDecOp, prefix: Bool, target: AstExpr, discarded: Bo
   let current = _leaf(global ? Op.Global : Op.Local, ty, id);
   enterSyntax(outer);
   let increment = match (op) { Increment => true, _ => false };
-  let updated = H.node(global ? Op.SetGlobal : Op.Assign, ty, id, 0, [_binary(increment ? Op.Add : Op.Sub, ty, current, _one(ty))]);
+  let updated = H.node(global ? Op.SetGlobal : Op.Assign, ty, id, 0, [_binary(increment ? Op.Add : Op.Sub, ty, current, one(ty))]);
   if (prefix || discarded) { return updated; }
-  _binary(increment ? Op.Sub : Op.Add, ty, updated, _one(ty))
+  _binary(increment ? Op.Sub : Op.Add, ty, updated, one(ty))
 };
 
 let _unsupportedExpr = fn(expr: AstExpr): Bytes {
@@ -910,12 +971,6 @@ export let checkArm: (Array<Bytes>, Array<I32>, Array<Stmt>, ?AstExpr, I32, I32,
   block
 };
 
-export let newBinding: () -> I32 = fn() {
-  let id = _nextBinding;
-  _nextBinding++;
-  id
-};
-
 let _checkBranch = fn(branch: AstExpr, index: I32): I32 {
   let outer = enterSyntax(syntaxChild(index));
 
@@ -1061,7 +1116,20 @@ _checkStatement = fn(statement, syntax) {
       if (value == null) { throw "value function requires a return value"; }
       _unary(Op.Return, 0, _checkResult(value, 0, "return type mismatch"))
     },
-    Throw(value) => _unary(Op.Throw, 0, _value(value, 0)),
+    Throw(value) => {
+      let thrown = _value(value, 0);
+
+      if (H.typeOf(thrown) == H.TYPE_BYTE_BUFFER) {
+        enterSyntax(syntaxChild(0));
+        throw "a buffer from Bytes.new cannot be thrown" + bufferHint(H.typeOf(thrown));
+      }
+
+      if (H.isKind(H.typeOf(thrown), Kind.List)) {
+        enterSyntax(syntaxChild(0));
+        throw "a list cannot be thrown: its nil would read as null (decision 42)";
+      }
+      _unary(Op.Throw, 0, thrown)
+    },
     Break => {
       if (_loops == 0) { throw "break outside loop"; }
       _leaf(Op.Break, 0, 0)
@@ -1080,28 +1148,20 @@ _checkStatement = fn(statement, syntax) {
   id
 };
 
-export let checkFunctionBody: (I32, AstBlock, Syntax) -> Bool = fn(index, body, syntax) {
+let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> {
   let outer = enterSyntax(syntax);
   let outerNames = _names;
   let outerIds = _ids;
-  let outerTypes = _types;
-  let outerMutable = _mutable;
   let outerLoops = _loops;
   let outerTries = _tries;
   let outerStart = _scopeStart;
   let outerKnown = narrowings();
   setNarrowings(Array.new<I32>(0));
-  let enclosing = _enclosing.len();
-  let k = 0;
-
-  while (k < outerNames.len()) {
-    _enclosing.push(outerNames[k]);
-    k++;
-  }
+  _frames.push(Frame.Frame(outerNames, outerIds));
+  _captures.push(Array.new<I32>(0));
+  _sources.push(Array.new<I32>(0));
   _names = Array.new<Bytes>(0);
   _ids = Array.new<I32>(0);
-  _types = Array.new<I32>(0);
-  _mutable = Array.new<Bool>(0);
   _loops = 0;
   _tries = 0;
   _scopeStart = 0;
@@ -1131,27 +1191,40 @@ export let checkFunctionBody: (I32, AstBlock, Syntax) -> Bool = fn(index, body, 
       ty = H.functionType(paramTypes, _result);
       _functionTypes[index] = ty;
     }
+    let captures = _captures[_frames.len()];
+    let c = 0;
+
+    while (c < captures.len()) {
+      children.push(captures[c]);
+      c++;
+    }
     children.push(checked);
     _functionNodes[index] = H.node(Op.Function, ty, H.bytesId(name), 0, children);
   } };
+  let sources = _sources[_frames.len()];
+  _frames.pop();
+  _captures.pop();
+  _sources.pop();
   _names = outerNames;
   _ids = outerIds;
-  _types = outerTypes;
-  _mutable = outerMutable;
   _result = outerResult;
   _loops = outerLoops;
   _tries = outerTries;
   _scopeStart = outerStart;
   setNarrowings(outerKnown);
-  while (_enclosing.len() > enclosing) { _enclosing.pop(); }
   enterSyntax(outer);
+  sources
+};
+
+export let checkFunctionBody: (I32, AstBlock, Syntax) -> Bool = fn(index, body, syntax) {
+  _checkFunction(index, body, syntax);
   true
 };
 
 _checkFunctionLiteral = fn(params, result, body, expected) {
   let index = _addFunction("fn", params, result, expected);
-  checkFunctionBody(index, body, _syntax);
-  _leaf(Op.FunctionRef, _functionType(index), index + 1)
+  let captured = _checkFunction(index, body, _syntax);
+  H.node(Op.FunctionRef, _functionType(index), index + 1, 0, captured)
 };
 
 _checkBlock = fn(statements, tail, expected) { _checkBlockBody([], statements, tail, 0, expected, _VALUE_TAIL) };
@@ -1190,11 +1263,15 @@ export let beginCheck: () -> Bool = fn() {
   resetNarrowing();
   _names = Array.new<Bytes>(0);
   _ids = Array.new<I32>(0);
-  _types = Array.new<I32>(0);
-  _mutable = Array.new<Bool>(0);
   _nextBinding = 0;
+  _bindingTypes = Array.new<I32>(0);
+  _mutable = Array.new<Bool>(0);
+  _assigned = Array.new<Bool>(0);
+  _captured = Array.new<Bool>(0);
   _syntax = _noSyntax();
-  _enclosing = Array.new<Bytes>(0);
+  _frames = Array.new<Frame>(0);
+  _captures = [Array.new<I32>(0)];
+  _sources = [Array.new<I32>(0)];
   _scopeStart = 0;
   _loops = 0;
   _tries = 0;

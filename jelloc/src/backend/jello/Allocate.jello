@@ -22,7 +22,7 @@ let _key = fn(ty: ValueType): I32 {
   (_keyTypes.len() - 1) as I32
 };
 
-let _windowStart = fn(op: Op): I32 { match (op) { Call, CallNative, EnumNew => 0, CallIndirect, BytesSlice => 1, _ => -1 } };
+let _windowStart = fn(op: Op): I32 { match (op) { Call, CallNative, EnumNew, ConstFunction => 0, CallIndirect, BytesSlice => 1, _ => -1 } };
 
 let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   let indexes = Array.new<I32>(0);
@@ -474,7 +474,7 @@ let _withWindows = fn(blocks: Array<BasicBlock>): Array<BasicBlock> {
         let start = _windowStart(opOf(insn));
         let args = argsOf(insn);
 
-        if (start < 0) { out.push(insn); } else {
+        if ((start < 0) || (start >= args.len())) { out.push(insn); } else {
           let offset = _scratchOffset(_scratch, args, start);
           let moved = Array.new<I32>(0);
           let a = 0;
@@ -626,7 +626,7 @@ let _tooMany = fn(id: I32) {
 };
 
 let _allocate = fn(function: Function): Function {
-  match (function) { Function(id, params, registers, result, blocks, entry) => {
+  match (function) { Function(id, params, captures, registers, result, blocks, entry) => {
     _keyTypes = Array.new<ValueType>(0);
     _keys = Array.new<I32>(0);
     _registers = Array.new<ValueType>(0);
@@ -784,7 +784,7 @@ let _allocate = fn(function: Function): Function {
       physicalParams.push(i);
       i++;
     }
-    Function.Function(id, physicalParams, physical, result, allocated, entry)
+    Function.Function(id, physicalParams, captures, physical, result, allocated, entry)
   } }
 };
 
@@ -800,7 +800,7 @@ export let allocateProgram: (Program) -> Program = fn(program) {
 
     while (i < functions.len()) {
       try { out.push(_allocate(functions[i])); } catch (e) {
-        _failed = match (functions[i]) { Function(id, _, _, _, _, _) => id };
+        _failed = match (functions[i]) { Function(id, _, _, _, _, _, _) => id };
         throw Std.string(e);
       }
       i++;

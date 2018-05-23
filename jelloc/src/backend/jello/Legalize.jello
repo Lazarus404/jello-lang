@@ -235,7 +235,7 @@ let _select = fn(params: Array<I32>, blocks: Array<BasicBlock>): Array<BasicBloc
 };
 
 let _function = fn(function: Function): Function {
-  match (function) { Function(id, params, registers, result, blocks, entry) => {
+  match (function) { Function(id, params, captures, registers, result, blocks, entry) => {
     _registers = Array.new<ValueType>(0);
     let r = 0;
 
@@ -250,7 +250,7 @@ let _function = fn(function: Function): Function {
       selected.push(_block(blocks[i]));
       i++;
     }
-    Function.Function(id, params, _registers, result, _select(params, selected), entry)
+    Function.Function(id, params, captures, _registers, result, _select(params, selected), entry)
   } }
 };
 

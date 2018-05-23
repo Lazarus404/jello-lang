@@ -2,7 +2,7 @@ package ir;
 
 import { bytesLiteral } from frontend.Tokens;
 import type { BasicBlock, Function, Instruction, Native, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { ReturnType, ValueType, argsOf, dstOf, immOf, opOf } from ir.Model;
+import { ReturnType, ValueType, argumentCount, argsOf, dstOf, immOf, opOf } from ir.Model;
 
 let _type: (ValueType) -> Bytes = fn(_ty) { "" };
 
@@ -26,6 +26,7 @@ _type = fn(ty) {
     Bytes => "bytes",
     Dynamic => "dynamic",
     ArrayOf(element) => "array<" + _type(element) + ">",
+    ListOf(element) => "list<" + _type(element) + ">",
     TupleOf(elements) => "(" + _types(elements) + ")",
     Nominal(id) => "type@" + Std.string(id),
     Function(args, result) => "fn(" + _types(args) + ") -> " + _returnType(result),
@@ -60,7 +61,7 @@ let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, poo
     ConstI64 => "i64 #" + imm,
     ConstBytes => "bytes " + bytesLiteral(pool[immOf(instruction)]),
     ConstNull => "null",
-    ConstFunction => "function @" + imm,
+    ConstFunction => "function @" + imm + (args.len() > 0 ? "(" + operands + ")" : ""),
     Move => "move " + operands,
     Add => "add.wrap." + _width(registers, args[0]) + " " + operands,
     Sub => "sub.wrap." + _width(registers, args[0]) + " " + operands,
@@ -89,6 +90,14 @@ let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, poo
     ArrayGet => "array.get " + operands,
     ArraySet => "array.set " + operands,
     ArrayResize => "array.resize " + operands,
+    ListNil => "list.nil",
+    ListCons => "list.cons " + operands,
+    ListHead => "list.head " + operands,
+    ListTail => "list.tail " + operands,
+    ListIsNil => "list.is_nil " + operands,
+    BytesNew => "bytes.new " + operands,
+    BytesSet => "bytes.set_u8 " + operands,
+    BytesBlit => "bytes.blit " + operands,
     BytesLen => "bytes.len " + operands,
     BytesGet => "bytes.get_u8 " + operands,
     BytesSlice => "bytes.slice " + operands,
@@ -150,12 +159,12 @@ let _block = fn(block: BasicBlock, registers: Array<ValueType>, pool: Array<Byte
 };
 
 export let printFunction: (Function, Array<Bytes>) -> Bytes = fn(function, pool) {
-  match (function) { Function(id, params, registers, result, blocks, entry) => {
+  match (function) { Function(id, params, captures, registers, result, blocks, entry) => {
     let out = "fn @" + Std.string(id) + "(";
     let i = 0;
 
     while (i < params.len()) {
-      if (i > 0) { out += ", "; }
+      if (i == argumentCount(function)) { out += ") captures("; } else if (i > 0) { out += ", "; }
       out += _register(params[i]) + ": " + _type(registers[params[i]]);
       i++;
     }

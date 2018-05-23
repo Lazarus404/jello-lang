@@ -35,10 +35,10 @@ let none = fn(): Array<I32> { Array.new<I32>(0) };
 let program = fn(functions: Array<Function>): Program { Program.Program(functions, Array.new<Bytes>(0), Array.new<I64>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0)) };
 let printJlo = fn(legalized: Program): Bytes { printIr(allocateProgram(legalized)) };
 let allocated = fn(legalized: Program): Function { match (allocateProgram(legalized)) { Program(functions, _, _, _, _, _) => functions[0] } };
-let registerCount = fn(function: Function): I32 { match (function) { Function(_, _, registers, _, _, _) => registers.len() as I32 } };
+let registerCount = fn(function: Function): I32 { match (function) { Function(_, _, _, registers, _, _, _) => registers.len() as I32 } };
 
 let spillCount = fn(function: Function, push: Bool): I32 {
-  match (function) { Function(_, _, _, _, blocks, _) => {
+  match (function) { Function(_, _, _, _, _, blocks, _) => {
     let count = 0;
     let b = 0;
 
@@ -118,7 +118,7 @@ test("centralizes instruction effects and CFG successors", fn(t) {
 test("prints deterministic human-readable IR", fn(t) {
   let printed = program([Function.Function(
     7,
-    [0, 1],
+    [0, 1], 0,
     [ValueType.I32, ValueType.I32, ValueType.Bool],
     ReturnType.Value(ValueType.I32),
     [
@@ -760,7 +760,7 @@ test("carries a deduplicated bytes pool through selected JLO", fn(t) {
 test("reuses one call scratch window", fn(t) {
   let caller = Function.Function(
     0,
-    [],
+    [], 0,
     [ValueType.I32, ValueType.I32, ValueType.I32],
     ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, [
@@ -772,7 +772,7 @@ test("reuses one call scratch window", fn(t) {
   );
   let callee = Function.Function(
     1,
-    [0],
+    [0], 0,
     [ValueType.I32],
     ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)],
@@ -783,7 +783,7 @@ test("reuses one call scratch window", fn(t) {
 
 test("allocates compatible scratch windows for mixed call signatures", fn(t) {
   let caller = Function.Function(
-    0, [], [ValueType.Bool, ValueType.Bool, ValueType.I32, ValueType.I32], ReturnType.Value(ValueType.I32),
+    0, [], 0, [ValueType.Bool, ValueType.Bool, ValueType.I32, ValueType.I32], ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, [
       insn(Op.ConstBool, 0, none(), 1),
       insn(Op.Call, 1, [0], 1),
@@ -792,11 +792,11 @@ test("allocates compatible scratch windows for mixed call signatures", fn(t) {
     ], Terminator.ReturnValue(3), null)], 0
   );
   let boolCallee = Function.Function(
-    1, [0], [ValueType.Bool], ReturnType.Value(ValueType.Bool),
+    1, [0], 0, [ValueType.Bool], ReturnType.Value(ValueType.Bool),
     [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
   );
   let i32Callee = Function.Function(
-    2, [0], [ValueType.I32], ReturnType.Value(ValueType.I32),
+    2, [0], 0, [ValueType.I32], ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
   );
   t.is(printJlo(program([caller, boolCallee, i32Callee])).indexOf("call @2(%") >= 0, true);
@@ -813,7 +813,7 @@ test("allocates more than 256 short-lived virtual registers", fn(t) {
     i++;
   }
   t.is(registerCount(allocated(program([Function.Function(
-    0, [], registers, ReturnType.Value(ValueType.I32),
+    0, [], 0, registers, ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, instructions, Terminator.ReturnValue(299), null)], 0
   )]))), 1);
 });
@@ -839,7 +839,7 @@ test("spills truly simultaneous register pressure", fn(t) {
     i++;
   }
   let function = allocated(program([Function.Function(
-    0, [], registers, ReturnType.Value(ValueType.I32),
+    0, [], 0, registers, ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, instructions, Terminator.ReturnValue(result), null)], 0
   )]));
   t.is(spillCount(function, true) > 0, true);
@@ -880,18 +880,18 @@ test("allocates thousands of instructions across joins", fn(t) {
     i++;
   }
   blocks.push(BasicBlock.Block(block, current, Terminator.ReturnValue(sum), null));
-  let function = allocated(program([Function.Function(0, [], registers, ReturnType.Value(ValueType.I32), blocks, 0)]));
+  let function = allocated(program([Function.Function(0, [], 0, registers, ReturnType.Value(ValueType.I32), blocks, 0)]));
   t.is(registerCount(function) < 100, true);
   t.is(spillCount(function, true), 0);
 });
 
 test("verifies allocated code against the program", fn(t) {
   let caller = Function.Function(
-    0, [], [ValueType.Bool, ValueType.I32], ReturnType.Value(ValueType.I32),
+    0, [], 0, [ValueType.Bool, ValueType.I32], ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, [insn(Op.ConstBool, 0, none(), 1), insn(Op.Call, 1, [0], 1)], Terminator.ReturnValue(1), null)], 0
   );
   let callee = Function.Function(
-    1, [0], [ValueType.I32], ReturnType.Value(ValueType.I32),
+    1, [0], 0, [ValueType.I32], ReturnType.Value(ValueType.I32),
     [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
   );
   t.throws(fn(_t) { allocateProgram(program([caller, callee])); });

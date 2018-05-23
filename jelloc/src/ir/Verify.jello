@@ -1,7 +1,7 @@
 package ir;
 
 import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { ReturnType, ValueType, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, instructionMayThrow, opOf, returnTypeEqual, valueTypeEqual } from ir.Model;
+import { ReturnType, ValueType, argumentCount, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, instructionMayThrow, opOf, returnTypeEqual, valueTypeEqual } from ir.Model;
 import { normalSuccessors } from ir.Cfg;
 import { bitsAdd, bitsCopy, bitsEqual, bitsFull, bitsHas, bitsIntersect, bitsNew, bitsUnion } from ir.Bits;
 
@@ -11,8 +11,9 @@ let _fail = fn(message: Bytes): Bool {
 };
 
 let _inProgram = false;
-let _functionIds = Array.new<I32>(0);
+let _functionIndexes = Array.new<I32>(0);
 let _signatures = Array.new<ValueType>(0);
+let _captureCounts = Array.new<I32>(0);
 let _poolSize = 0;
 let _wideCount = 0;
 let _enums = Array.new<EnumSchema>(0);
@@ -33,15 +34,9 @@ let _expect = fn(register: I32, expected: ValueType) {
 
 let _isNumeric = fn(ty: ValueType): Bool { match (ty) { I32, I64 => true, _ => false } };
 
-let _signature = fn(function: I32): ValueType {
-  let i = 0;
-
-  while (i < _functionIds.len()) {
-    if (_functionIds[i] == function) { return _signatures[i]; }
-    i++;
-  }
-  _fail("unknown function @" + Std.string(function));
-  ValueType.Bool
+let _index = fn(function: I32): I32 {
+  if ((function < 0) || (function >= _functionIndexes.len()) || (_functionIndexes[function] < 0)) { _fail("unknown function @" + Std.string(function)); }
+  _functionIndexes[function]
 };
 
 let _call = fn(params: Array<ValueType>, result: ReturnType, dst: I32, args: Array<I32>, start: I32) {
@@ -95,7 +90,7 @@ let _instruction = fn(instruction: Instruction) {
   }
 
   match (opOf(instruction)) {
-    ArraySet, ArrayResize, StructSet, SpillPush, GlobalSet, NullCheck => { if (dst >= 0) { _fail("store defines a register"); } null },
+    ArraySet, ArrayResize, BytesSet, BytesBlit, StructSet, SpillPush, GlobalSet, NullCheck => { if (dst >= 0) { _fail("store defines a register"); } null },
     Call => null,
     _ => {
       _type(dst);
@@ -125,18 +120,27 @@ let _instruction = fn(instruction: Instruction) {
     },
     ConstNull => {
       _arity(args, 0);
-      if (!canBeNull(_type(dst))) { _fail("null constant of a scalar type"); } null
+      if (!canBeNull(_type(dst))) { _fail("null constant of a type without null"); } null
     },
     ConstFunction => {
-      _arity(args, 0);
-
       match (_type(dst)) {
         Function(_, _) => null, _ => {
           _fail("function constant destination is not function typed");
           null
         }
       };
-      if (_inProgram && !valueTypeEqual(_type(dst), _signature(imm))) { _fail("function constant signature mismatch"); }
+      i = 0;
+
+      while (i < args.len()) {
+        _expect(args[i], ValueType.Dynamic);
+        i++;
+      }
+
+      if (_inProgram) {
+        let callee = _index(imm);
+        if (!valueTypeEqual(_type(dst), _signatures[callee])) { _fail("function constant signature mismatch"); }
+        if (args.len() != _captureCounts[callee]) { _fail("closure capture count mismatch"); }
+      }
       null
     },
     Move => {
@@ -215,11 +219,11 @@ let _instruction = fn(instruction: Instruction) {
     IsNull => {
       _arity(args, 1);
       _expect(dst, ValueType.Bool);
-      if (!canBeNull(_type(args[0]))) { _fail("null test of a scalar"); } null
+      if (!canBeNull(_type(args[0]))) { _fail("null test of a type without null"); } null
     },
     NullCheck => {
       _arity(args, 1);
-      if (!canBeNull(_type(args[0]))) { _fail("null check of a scalar"); } null
+      if (!canBeNull(_type(args[0]))) { _fail("null check of a type without null"); } null
     },
     ArrayNew => {
       _arity(args, 1);
@@ -268,6 +272,57 @@ let _instruction = fn(instruction: Instruction) {
         }
       };
       _expect(args[1], ValueType.I32)
+    },
+    ListNil => {
+      _arity(args, 0);
+
+      match (_type(dst)) {
+        ListOf(_) => null, _ => {
+          _fail("list.nil defines a non-list");
+          null
+        }
+      }
+    },
+    ListCons => {
+      _arity(args, 2);
+
+      match (_type(dst)) {
+        ListOf(element) => {
+          _expect(args[0], element);
+          _expect(args[1], _type(dst))
+        }, _ => {
+          _fail("list.cons defines a non-list");
+          null
+        }
+      }
+    },
+    ListHead, ListTail, ListIsNil => {
+      _arity(args, 1);
+
+      match (_type(args[0])) {
+        ListOf(element) => match (opOf(instruction)) { ListHead => _expect(dst, element), ListTail => _expect(dst, _type(args[0])), _ => _expect(dst, ValueType.Bool) },
+        _ => {
+          _fail("list access of a non-list");
+          null
+        },
+      }
+    },
+    BytesNew => {
+      _arity(args, 1);
+      _expect(dst, ValueType.Bytes);
+      _expect(args[0], ValueType.I32)
+    },
+    BytesSet => {
+      _arity(args, 3);
+      _expect(args[0], ValueType.Bytes);
+      _expect(args[1], ValueType.I32);
+      _expect(args[2], ValueType.I32)
+    },
+    BytesBlit => {
+      _arity(args, 3);
+      _expect(args[0], ValueType.Bytes);
+      _expect(args[1], ValueType.Bytes);
+      _expect(args[2], ValueType.I32)
     },
     BytesGet => {
       _arity(args, 2);
@@ -381,7 +436,14 @@ let _instruction = fn(instruction: Instruction) {
         },
       }
     },
-    Call => { if (_inProgram) { match (_signature(imm)) { Function(params, result) => _call(params, result, dst, args, 0), _ => null }; } null },
+    Call => {
+      if (_inProgram) {
+        let callee = _index(imm);
+        if (_captureCounts[callee] != 0) { _fail("direct call of a function that captures"); }
+        match (_signatures[callee]) { Function(params, result) => _call(params, result, dst, args, 0), _ => null };
+      }
+      null
+    },
     CallNative => {
       if (_inProgram) {
         if ((imm < 0) || (imm >= _natives.len())) { _fail("native out of range"); }
@@ -651,15 +713,16 @@ let _definitions = fn(params: Array<I32>, blocks: Array<BasicBlock>, indexes: Ar
 };
 
 let _function = fn(function: Function) {
-  match (function) { Function(_, params, registers, result, blocks, entry) => {
+  match (function) { Function(_, params, captures, registers, result, blocks, entry) => {
     _registers = registers;
     if (blocks.len() == 0) { _fail("function has no blocks"); }
+    if ((captures < 0) || (captures > params.len())) { _fail("capture count out of range"); }
     let indexes = _blockIndexes(blocks);
     _target(indexes, entry);
     let i = 0;
 
     while (i < params.len()) {
-      _type(params[i]);
+      if (i >= argumentCount(function)) { _expect(params[i], ValueType.Dynamic); } else { _type(params[i]); }
       let j = 0;
 
       while (j < i) {
@@ -717,11 +780,11 @@ export let verifyFunction: (Function) -> Bool = fn(function) {
 };
 
 let _signatureOf = fn(function: Function): ValueType {
-  match (function) { Function(_, params, registers, result, _, _) => {
+  match (function) { Function(_, params, captures, registers, result, _, _) => {
     let types = Array.new<ValueType>(0);
     let i = 0;
 
-    while (i < params.len()) {
+    while (i < argumentCount(function)) {
       types.push(registers[params[i]]);
       i++;
     }
@@ -731,26 +794,25 @@ let _signatureOf = fn(function: Function): ValueType {
 
 export let verifyProgram: (Program) -> Bool = fn(program) {
   match (program) { Program(functions, pool, wides, enums, globals, natives) => {
-    _functionIds = Array.new<I32>(0);
+    _functionIndexes = Array.new<I32>(0);
     _signatures = Array.new<ValueType>(0);
+    _captureCounts = Array.new<I32>(0);
     let i = 0;
 
     while (i < functions.len()) {
-      match (functions[i]) { Function(id, params, registers, _, _, _) => {
+      match (functions[i]) { Function(id, params, captures, registers, _, _, _) => {
+        if (id < 0) { _fail("negative function id"); }
+        while (_functionIndexes.len() <= id) { _functionIndexes.push(-1); }
+        if (_functionIndexes[id] >= 0) { _fail("duplicate function id"); }
+        _functionIndexes[id] = i as I32;
         let j = 0;
-
-        while (j < _functionIds.len()) {
-          if (_functionIds[j] == id) { _fail("duplicate function id"); }
-          j++;
-        }
-        j = 0;
 
         while (j < params.len()) {
           if ((params[j] < 0) || (params[j] >= registers.len())) { _fail("parameter register out of range"); }
           j++;
         }
-        _functionIds.push(id);
         _signatures.push(_signatureOf(functions[i]));
+        _captureCounts.push(captures);
       } };
       i++;
     }
@@ -776,7 +838,7 @@ export let verifyAllocatedProgram: (Program) -> Bool = fn(program) {
     let i = 0;
 
     while (i < functions.len()) {
-      match (functions[i]) { Function(id, _, registers, _, _, _) => {
+      match (functions[i]) { Function(id, _, _, registers, _, _, _) => {
         if (registers.len() > 256) { _fail("function @" + Std.string(id) + " uses " + Std.string(registers.len()) + " registers; JLO allows 256"); }
       } };
       i++;

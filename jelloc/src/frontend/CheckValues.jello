@@ -4,15 +4,14 @@ import type { BinaryOp, Expr as AstExpr, Type as AstType } from frontend.Ast;
 import { BinaryOp } from frontend.Ast;
 import frontend.Hir as H;
 import { Kind, Op } from frontend.Hir;
-import { binaryValues, checkOperand, checkType, enterSyntax, isInferredInteger, newBinding, presentAt, presentKnown, syntaxChild } from frontend.TypeCheck;
+import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, isInferredInteger, isNullaryVariant, newBinding, presentAt, presentKnown, syntaxChild } from frontend.TypeCheck;
 
-let _local = fn(binding: I32, ty: I32): I32 { H.node(Op.Local, ty, binding, 0, []) };
 let _bool = fn(op: Op, children: Array<I32>): I32 { H.node(op, H.TYPE_BOOL, 0, 0, children) };
 
 let _lifted = fn(id: I32): I32 { match (H.opOf(id)) { Present => H.childOf(id, 0), _ => id } };
 
 let _present = fn(binding: I32, ty: I32): I32 {
-  H.isKind(ty, Kind.Null) ? H.node(Op.Unwrap, H.innerOf(ty), 0, 0, [_local(binding, ty)]) : _local(binding, ty)
+  H.isKind(ty, Kind.Null) ? H.node(Op.Unwrap, H.innerOf(ty), 0, 0, [H.local(binding, ty)]) : H.local(binding, ty)
 };
 
 let _equality = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 {
@@ -37,17 +36,21 @@ let _equality = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 {
   let rightNull = H.isKind(rightType, Kind.Null);
   if (!leftNull && !rightNull) { return binaryValues(op, left, right); }
   if ((rightNull ? H.innerOf(rightType) : rightType) != inner) { throw "cannot compare " + H.typeName(leftType) + " with " + H.typeName(rightType); }
-  let a = newBinding();
-  let b = newBinding();
-  let equal = binaryValues(BinaryOp.Equal, _present(a, leftType), _present(b, rightType));
+  let leftConstant = isNullaryVariant(left);
+  let rightConstant = isNullaryVariant(right);
+  let a = leftConstant ? -1 : newBinding();
+  let b = rightConstant ? -1 : newBinding();
+  let equal = binaryValues(BinaryOp.Equal, leftConstant ? left : _present(a, leftType), rightConstant ? right : _present(b, rightType));
   let result = (leftNull && rightNull)
     ? H.node(Op.If, H.TYPE_BOOL, 0, 0, [
-      _bool(Op.IsNull, [_local(a, leftType)]), _bool(Op.IsNull, [_local(b, rightType)]),
-      _bool(Op.And, [_bool(Op.IsPresent, [_local(b, rightType)]), equal])])
-    : _bool(Op.And, [_bool(Op.IsPresent, [leftNull ? _local(a, leftType) : _local(b, rightType)]), equal]);
-  let declareA = H.node(Op.Declare, 0, 0, 0, [H.node(Op.Const, leftType, a, H.bytesId("left"), [left])]);
-  let declareB = H.node(Op.Declare, 0, 0, 0, [H.node(Op.Const, rightType, b, H.bytesId("right"), [right])]);
-  let block = H.node(Op.Block, H.TYPE_BOOL, 0, 1, [declareA, declareB, result]);
+      _bool(Op.IsNull, [H.local(a, leftType)]), _bool(Op.IsNull, [H.local(b, rightType)]),
+      _bool(Op.And, [_bool(Op.IsPresent, [H.local(b, rightType)]), equal])])
+    : _bool(Op.And, [_bool(Op.IsPresent, [leftNull ? H.local(a, leftType) : H.local(b, rightType)]), equal]);
+  let statements = Array.new<I32>(0);
+  if (!leftConstant) { statements.push(H.declareBinding(Op.Const, a, "left", left)); }
+  if (!rightConstant) { statements.push(H.declareBinding(Op.Const, b, "right", right)); }
+  statements.push(result);
+  let block = H.node(Op.Block, H.TYPE_BOOL, 0, 1, statements);
   match (op) { NotEqual => _bool(Op.Not, [block]), _ => block }
 };
 
@@ -56,7 +59,12 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   let operand = checkOperand(value, 0, -1);
   let ty = H.typeOf(operand);
   if (ty == target) { return operand; }
-  if (target == H.TYPE_DYNAMIC) { return H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [operand]); }
+  if (ty == H.TYPE_BYTE_BUFFER) { throw "`as` cannot convert a buffer from Bytes.new" + bufferHint(ty); }
+
+  if (target == H.TYPE_DYNAMIC) {
+    if (H.isKind(ty, Kind.List)) { throw "a list cannot become Dynamic: its nil would read as null (decision 42)"; }
+    return H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [operand]);
+  }
 
   if (ty == H.TYPE_DYNAMIC) {
     if (!match (H.kindOf(target)) { Bool, I32, I64, Bytes, Enum => true, _ => false }) {

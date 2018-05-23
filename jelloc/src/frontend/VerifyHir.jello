@@ -2,13 +2,14 @@ package frontend;
 
 import type { Hir } from frontend.Hir;
 import {
-  Kind, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
+  Kind, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
   fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, isKind, kindOf, nativeCount, nativeTypeOf, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
   spanStartOf, typeArg, typeArgCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 
 let _used = Array.new<Bool>(0);
 let _functionTypes = Array.new<I32>(0);
+let _captureTypes = Array.new<Array<I32>>(0);
 let _visibleIds = Array.new<I32>(0);
 let _visibleTypes = Array.new<I32>(0);
 let _visibleMutable = Array.new<Bool>(0);
@@ -133,6 +134,15 @@ let _arguments = fn(id: I32, functionType: I32, first: I32, message: Bytes): I32
   innerOf(functionType)
 };
 
+let _readable = fn(id: I32): I32 {
+  (childCount(id) > 0) && (typeOf(childOf(id, 0)) == TYPE_BYTE_BUFFER) ? TYPE_BYTE_BUFFER : TYPE_BYTES
+};
+
+let _boxable = fn(ty: I32, what: Bytes): Bool {
+  if ((ty == TYPE_BYTE_BUFFER) || isKind(ty, Kind.List)) { _fail(what); }
+  true
+};
+
 let _width = fn(ty: I32): I32 { ty == TYPE_I64 ? TYPE_I64 : TYPE_I32 };
 
 let _typed = fn(id: I32, operands: Array<I32>, result: I32, message: Bytes): I32 {
@@ -205,8 +215,8 @@ _expr = fn(id) {
       _typed(id, [global], global, "global assignment type mismatch")
     },
     FunctionRef => {
-      _arity(id, 0);
-      _functionType(valueOf(id))
+      let function = _functionType(valueOf(id));
+      _typed(id, _captureTypes[valueOf(id) - 1], function, "closure capture type mismatch")
     },
     Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor => {
       let width = _width(ty);
@@ -236,7 +246,7 @@ _expr = fn(id) {
     },
     ToDynamic => {
       _arity(id, 1);
-      _operand(id, 0);
+      _boxable(_operand(id, 0), "a ByteBuffer or list boxed");
       TYPE_DYNAMIC
     },
     FromDynamic => {
@@ -285,8 +295,20 @@ _expr = fn(id) {
       if (!isKind(array, Kind.Array) || (_operand(id, 1) != TYPE_I32)) { _fail("array resize operand type"); }
       array
     },
-    BytesLen => _typed(id, [TYPE_BYTES], TYPE_I32, "bytes len operand type"),
-    BytesSlice => _typed(id, [TYPE_BYTES, TYPE_I32, TYPE_I32], TYPE_BYTES, "bytes slice operand type"),
+    ListNil, ListCons => {
+      if (!isKind(ty, Kind.List)) { _fail("list type"); }
+      _typed(id, match (opOf(id)) { ListNil => Array.new<I32>(0), _ => [innerOf(ty), ty] }, ty, "list operand type")
+    },
+    ListHead, ListTail, ListIsNil => {
+      _arity(id, 1);
+      let list = _operand(id, 0);
+      if (!isKind(list, Kind.List)) { _fail("list operand type"); }
+      match (opOf(id)) { ListHead => innerOf(list), ListTail => list, _ => TYPE_BOOL }
+    },
+    BytesNew => _typed(id, [TYPE_I32], TYPE_BYTE_BUFFER, "bytes new length type"),
+    BytesSet => _typed(id, [TYPE_BYTE_BUFFER, TYPE_I32, TYPE_I32], TYPE_I32, "bytes set operand type"),
+    BytesLen => _typed(id, [_readable(id)], TYPE_I32, "bytes len operand type"),
+    BytesSlice => _typed(id, [_readable(id), TYPE_I32, TYPE_I32], TYPE_BYTES, "bytes slice operand type"),
     BytesConcat => _typed(id, [TYPE_BYTES, TYPE_BYTES], TYPE_BYTES, "bytes concat operand type"),
     BytesEq => _typed(id, [TYPE_BYTES, TYPE_BYTES], TYPE_BOOL, "bytes eq operand type"),
     ArrayLen => {
@@ -296,7 +318,7 @@ _expr = fn(id) {
     },
     ArrayGet => _array(id, 2),
     ArraySet => _array(id, 3),
-    BytesGet => _typed(id, [TYPE_BYTES, TYPE_I32], TYPE_I32, "bytes get operand type"),
+    BytesGet => _typed(id, [_readable(id), TYPE_I32], TYPE_I32, "bytes get operand type"),
     Tuple => {
       if (!isKind(ty, Kind.Tuple) || (typeArgCount(ty) != childCount(id))) { _fail("tuple shape"); }
       let i = 0;
@@ -338,7 +360,11 @@ _expr = fn(id) {
       if (!inRange) { _fail("enum field access"); }
       fieldType(source, tag, field)
     },
-    Call => _arguments(id, _functionType(valueOf(id)), 0, "direct call signature mismatch"),
+    Call => {
+      let function = _functionType(valueOf(id));
+      if (_captureTypes[valueOf(id) - 1].len() != 0) { _fail("direct call of a function that captures"); }
+      _arguments(id, function, 0, "direct call signature mismatch")
+    },
     CallIndirect => _arguments(id, _operand(id, 0), 1, "indirect call signature mismatch"),
     CallNative => {
       if ((valueOf(id) < 0) || (valueOf(id) >= nativeCount())) { _fail("native call target"); }
@@ -391,7 +417,7 @@ _statement = fn(id, programBody) {
     },
     Throw => {
       _arity(id, 1);
-      _operand(id, 0);
+      _boxable(_operand(id, 0), "a ByteBuffer or list thrown");
       null
     },
     Break => {
@@ -473,21 +499,23 @@ _block = fn(id, programBody) {
 let _function = fn(id: I32, functionId: I32) {
   let ty = typeOf(id);
   if (ty != _functionTypes[functionId - 1]) { _fail("function type mismatch"); }
-  if (childCount(id) != typeArgCount(ty) + 1) { _fail("parameter count mismatch"); }
+  let params = typeArgCount(ty);
+  let captures = _captureTypes[functionId - 1];
+  if (childCount(id) != params + (captures.len() as I32) + 1) { _fail("parameter count mismatch"); }
   _popTo(0);
   let i = 0;
 
-  while (i < typeArgCount(ty)) {
+  while (i < params + captures.len()) {
     let param = _child(id, i);
-    let isParameter = match (opOf(param)) { Parameter => true, _ => false };
-    if (!isParameter || (typeOf(param) != typeArg(ty, i))) { _fail("parameter type mismatch"); }
+    let expected = match (opOf(param)) { Parameter when (i < params) => typeArg(ty, i), Capture when (i >= params) => captures[i - params], _ => -1 };
+    if (typeOf(param) != expected) { _fail("parameter type mismatch"); }
     _arity(param, 0);
     _declare(valueOf(param), typeOf(param), false);
     i++;
   }
   _result = innerOf(ty);
   _loops = 0;
-  let body = _child(id, typeArgCount(ty));
+  let body = _child(id, childCount(id) - 1);
   let tail = _block(body, false);
 
   if (!endsPath(body)) {
@@ -511,13 +539,23 @@ export let verifyHir: (Hir) -> Bool = fn(program) {
     i++;
   }
   _functionTypes = Array.new<I32>(0);
+  _captureTypes = Array.new<Array<I32>>(0);
   i = 0;
 
   while (i < childCount(root) - 1) {
     let function = childOf(root, i);
     let isFunction = (function >= 0) && (function < root) && (match (opOf(function)) { Function => true, _ => false });
-    if (!isFunction || !isKind(typeOf(function), Kind.Function)) { _fail("expected function"); }
+    if (!isFunction || !isKind(typeOf(function), Kind.Function) || !childrenInBounds(function)) { _fail("expected function"); }
     _functionTypes.push(typeOf(function));
+    let captures = Array.new<I32>(0);
+    let c = typeArgCount(typeOf(function));
+
+    while (c < childCount(function) - 1) {
+      let capture = childOf(function, c);
+      captures.push((capture >= 0) && (capture < function) ? typeOf(capture) : -1);
+      c++;
+    }
+    _captureTypes.push(captures);
     i++;
   }
   _visibleIds = Array.new<I32>(0);
