@@ -6,6 +6,7 @@ import {
   spanPathOf, spanStartOf, typeArgCount, typeName, typeOf, useHir, valueOf, variantName, wideValueOf,
 } from frontend.Hir;
 import { bytesLiteral } from frontend.Tokens;
+import { concatAll, decimal } from frontend.Text;
 
 let _withSpans = false;
 
@@ -22,14 +23,14 @@ let _expr: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
 let _statements: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
 
 let _children = fn(parent: I32, start: I32, end: I32, indent: Bytes): Bytes {
-  let output = "";
+  let output = Array.new<Bytes>(0);
   let i = start;
 
   while (i < end) {
-    output += _expr(childOf(parent, i), indent + "  ");
+    output.push(_expr(childOf(parent, i), indent + "  "));
     i++;
   }
-  output
+  concatAll(output)
 };
 
 let _binding = fn(id: I32, indent: Bytes): Bytes {
@@ -53,7 +54,7 @@ _expr = fn(id, indent) {
   match (opOf(id)) {
     Bool => indent + "bool " + (valueOf(id) == 1 ? "true" : "false") + _typed(id),
     I32 => indent + "i32 " + _id(id) + _typed(id),
-    I64 => indent + "i64 " + Std.string(wideValueOf(id)) + _typed(id),
+    I64 => indent + "i64 " + decimal(wideValueOf(id)) + _typed(id),
     Bytes => indent + "bytes " + bytesLiteral(bytesOf(valueOf(id))) + _typed(id),
     Null => indent + "null" + _typed(id),
     Local => indent + "local %" + _id(id) + _typed(id),
@@ -129,14 +130,14 @@ let _statement: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
 _statement = fn(id, indent) {
   match (opOf(id)) {
     Declare => {
-      let output = "";
+      let output = Array.new<Bytes>(0);
       let i = 0;
 
       while (i < childCount(id)) {
-        output += _binding(childOf(id, i), indent);
+        output.push(_binding(childOf(id, i), indent));
         i++;
       }
-      output
+      concatAll(output)
     },
     Expression => indent + "expression" + _at(id) + "\n" + _expr(childOf(id, 0), indent + "  "),
     Block => indent + "block" + _at(id) + "\n" + _statements(id, indent + "  "),
@@ -163,14 +164,14 @@ _statement = fn(id, indent) {
 };
 
 _statements = fn(id, indent) {
-  let output = "";
+  let output = Array.new<Bytes>(0);
   let i = 0;
 
   while (i < childCount(id) - auxOf(id)) {
-    output += _statement(childOf(id, i), indent);
+    output.push(_statement(childOf(id, i), indent));
     i++;
   }
-  output
+  concatAll(output)
 };
 
 let _function = fn(id: I32, functionId: I32): Bytes {
@@ -193,15 +194,18 @@ let _function = fn(id: I32, functionId: I32): Bytes {
 let _print = fn(program: Hir): Bytes {
   useHir(program);
   let root = rootNode();
-  let output = "program\n";
+  let output = Array.new<Bytes>(0);
+  output.push("program\n");
   let i = 0;
 
   while (i < childCount(root) - 1) {
-    output += _function(childOf(root, i), i + 1);
+    output.push(_function(childOf(root, i), i + 1));
     i++;
   }
   let body = lastChild(root);
-  output + _statements(body, "  ") + _expr(lastChild(body), "  ")
+  output.push(_statements(body, "  "));
+  output.push(_expr(lastChild(body), "  "));
+  concatAll(output)
 };
 
 export let printHir: (Hir) -> Bytes = fn(program) {

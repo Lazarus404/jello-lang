@@ -10,6 +10,7 @@ import type {
   ImportKind,
   IntSize,
   ListLiteral,
+  MatchAlternative,
   MatchArm,
   ObjectEntry,
   Package,
@@ -110,24 +111,28 @@ test("parses match regexp, fallthrough, and enum payload patterns", fn(t) {
 
   match (program) {
     Program(_, _, tail) => t.deepEqual(tail, Expr.Match(Expr.Variable("x"), [
-      MatchArm.Alternative(Pattern.Enum("A", []), null),
-      MatchArm.Arm(Pattern.Enum("B", [Pattern.BindPattern("v")]), null, Block.Block([], Expr.Variable("v"))),
-      MatchArm.Arm(Pattern.RegExp("a+", "", "m"), null, Block.Block([], Expr.Variable("m"))),
-      MatchArm.Arm(Pattern.Wildcard, null, Block.Block([], Expr.Integer("0", IntSize.Infer)))
+      MatchArm.Arm([
+        MatchAlternative.Alternative(Pattern.Enum("A", []), null),
+        MatchAlternative.Alternative(Pattern.Enum("B", [Pattern.BindPattern("v")]), null)
+      ], null, Block.Block([], Expr.Variable("v"))),
+      MatchArm.Arm([MatchAlternative.Alternative(Pattern.RegExp("a+", "", "m"), null)], null, Block.Block([], Expr.Variable("m"))),
+      MatchArm.Arm([MatchAlternative.Alternative(Pattern.Wildcard, null)], null, Block.Block([], Expr.Integer("0", IntSize.Infer)))
     ]))
   };
 });
 
-test("preserves guards on bodyless match arms", fn(t) {
+test("keeps each alternative's guard apart from the arm's", fn(t) {
   let program = parseProgram(lex(
-    "match (x) { A when (a), B when (b), C => value }"
+    "match (x) { A when (a), B, C when (c) => value }"
   ));
 
   match (program) {
     Program(_, _, tail) => t.deepEqual(tail, Expr.Match(Expr.Variable("x"), [
-      MatchArm.Alternative(Pattern.Enum("A", []), Expr.Variable("a")),
-      MatchArm.Alternative(Pattern.Enum("B", []), Expr.Variable("b")),
-      MatchArm.Arm(Pattern.Enum("C", []), null, Block.Block([], Expr.Variable("value")))
+      MatchArm.Arm([
+        MatchAlternative.Alternative(Pattern.Enum("A", []), Expr.Variable("a")),
+        MatchAlternative.Alternative(Pattern.Enum("B", []), null),
+        MatchAlternative.Alternative(Pattern.Enum("C", []), null)
+      ], Expr.Variable("c"), Block.Block([], Expr.Variable("value")))
     ]))
   };
 });
@@ -190,11 +195,11 @@ test("builds exact pattern and control-statement ASTs", fn(t) {
         _ => t.fail("expected function declaration"),
       };
       t.deepEqual(tail, Expr.Match(Expr.Variable("x"), [
-        MatchArm.Arm(Pattern.IsType(Type.Named("__fn__"), "f"), null,
+        MatchArm.Arm([MatchAlternative.Alternative(Pattern.IsType(Type.Named("__fn__"), "f"), null)], null,
           Block.Block([], Expr.Variable("f"))),
-        MatchArm.Arm(Pattern.Integer("35", IntSize.Infer), null,
+        MatchArm.Arm([MatchAlternative.Alternative(Pattern.Integer("35", IntSize.Infer), null)], null,
           Block.Block([], Expr.Integer("1", IntSize.Infer))),
-        MatchArm.Arm(Pattern.Integer("-2", IntSize.Infer), null,
+        MatchArm.Arm([MatchAlternative.Alternative(Pattern.Integer("-2", IntSize.Infer), null)], null,
           Block.Block([], Expr.Integer("2", IntSize.Infer)))
       ]));
     }

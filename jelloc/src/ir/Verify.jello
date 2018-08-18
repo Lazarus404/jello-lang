@@ -1,9 +1,8 @@
 package ir;
 
 import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { ReturnType, ValueType, argumentCount, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, instructionMayThrow, opOf, returnTypeEqual, valueTypeEqual } from ir.Model;
-import { normalSuccessors } from ir.Cfg;
-import { bitsAdd, bitsCopy, bitsEqual, bitsFull, bitsHas, bitsIntersect, bitsNew, bitsUnion } from ir.Bits;
+import { ReturnType, ValueType, argumentCount, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, opOf, returnTypeEqual, valueTypeEqual } from ir.Model;
+import { liveness } from ir.Liveness;
 
 let _fail = fn(message: Bytes): Bool {
   throw "invalid IR: " + message;
@@ -566,149 +565,21 @@ let _terminator = fn(result: ReturnType, indexes: Array<I32>, terminator: Termin
 
 let _slot = fn(instruction: Instruction): I32 { match (opOf(instruction)) { SpillPush, SpillPop => immOf(instruction), _ => -1 } };
 
-let _writes = fn(instruction: Instruction): Array<I32> {
-  match (opOf(instruction)) { SpillPush => [(_registers.len() as I32) + immOf(instruction)], _ => dstOf(instruction) >= 0 ? [dstOf(instruction)] : Array.new<I32>(0) }
-};
-
-let _reads = fn(instruction: Instruction): Array<I32> {
-  match (opOf(instruction)) { SpillPop => [(_registers.len() as I32) + immOf(instruction)], _ => argsOf(instruction) }
-};
-
-let _uses = fn(defined: Array<I32>, facts: Array<I32>) {
-  let i = 0;
-
-  while (i < facts.len()) {
-    if (!bitsHas(defined, facts[i])) {
-      if (facts[i] >= _registers.len()) { _fail("spill slot read before written: " + Std.string(facts[i] - (_registers.len() as I32))); }
-      _fail("register used before definition: " + Std.string(facts[i]));
-    }
-    i++;
-  }
-  null
-};
-
-let _addAll = fn(set: Array<I32>, facts: Array<I32>) {
-  let i = 0;
-
-  while (i < facts.len()) {
-    bitsAdd(set, facts[i]);
-    i++;
-  } null
-};
-
-let _terminatorUses = fn(terminator: Terminator): Array<I32> {
-  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => [value], _ => Array.new<I32>(0) }
-};
-
 let _definitions = fn(params: Array<I32>, blocks: Array<BasicBlock>, indexes: Array<I32>, entry: I32, slots: I32) {
-  let count = (_registers.len() as I32) + slots;
-  let normal = Array.new<Array<I32>>(0);
-  let exceptional = Array.new<Array<I32>>(0);
-  let handlers = Array.new<I32>(0);
+  let registers = _registers.len() as I32;
+  let (liveIn, _) = liveness(blocks, registers, slots, false);
+  let live = liveIn[_target(indexes, entry)];
+  let first = -1;
   let i = 0;
 
-  while (i < blocks.len()) {
-    match (blocks[i]) { Block(_, instructions, terminator, handler) => {
-      let all = bitsNew(count);
-      let beforeThrow = bitsNew(count);
-      let throwing = false;
-      let j = 0;
-
-      while (j < instructions.len()) {
-        if (instructionMayThrow(instructions[j])) { throwing = true; }
-        _addAll(all, _writes(instructions[j]));
-        if (!throwing) { _addAll(beforeThrow, _writes(instructions[j])); }
-        j++;
-      }
-      let throws = throwing || match (terminator) { Throw(_, _) => true, _ => false };
-      let target = -1;
-
-      if ((handler != null) && throws) {
-        bitsAdd(beforeThrow, handlerPayload(handler));
-        target = _target(indexes, handlerTarget(handler));
-      }
-      normal.push(all);
-      exceptional.push(beforeThrow);
-      handlers.push(target);
-    } };
+  while (i < live.len()) {
+    let p = 0;
+    while ((p < params.len()) && (params[p] != live[i])) { p++; }
+    if ((p == params.len()) && ((first < 0) || (live[i] < first))) { first = live[i]; }
     i++;
   }
-  let entryIndex = _target(indexes, entry);
-  let inputs = Array.new<Array<I32>>(0);
-  let reached = Array.new<Bool>(0);
-  i = 0;
-
-  while (i < blocks.len()) {
-    inputs.push(bitsFull(count));
-    reached.push(false);
-    i++;
-  }
-  inputs[entryIndex] = bitsNew(count);
-  reached[entryIndex] = true;
-  i = 0;
-
-  while (i < params.len()) {
-    bitsAdd(inputs[entryIndex], params[i]);
-    i++;
-  }
-  let changed = true;
-
-  while (changed) {
-    changed = false;
-    i = 0;
-
-    while (i < blocks.len()) {
-      if (reached[i]) {
-        match (blocks[i]) { Block(_, _, terminator, _) => {
-          let out = bitsCopy(inputs[i]);
-          bitsUnion(out, normal[i]);
-          let successors = normalSuccessors(terminator);
-          let s = 0;
-
-          while (s <= successors.len()) {
-            let target = s < successors.len() ? _target(indexes, successors[s]) : handlers[i];
-            let edge = s < successors.len() ? out : bitsCopy(inputs[i]);
-            if (s == successors.len()) { bitsUnion(edge, exceptional[i]); }
-
-            if ((target >= 0) && (target != entryIndex)) {
-              let next = bitsCopy(inputs[target]);
-
-              if (!reached[target]) {
-                next = bitsCopy(edge);
-                reached[target] = true;
-                changed = true;
-              } else { bitsIntersect(next, edge); }
-
-              if (!bitsEqual(next, inputs[target])) {
-                inputs[target] = next;
-                changed = true;
-              }
-            }
-            s++;
-          }
-        } };
-      }
-      i++;
-    }
-  }
-  i = 0;
-
-  while (i < blocks.len()) {
-    if (reached[i]) {
-      match (blocks[i]) { Block(_, instructions, terminator, _) => {
-        let defined = bitsCopy(inputs[i]);
-        let j = 0;
-
-        while (j < instructions.len()) {
-          _uses(defined, _reads(instructions[j]));
-          _addAll(defined, _writes(instructions[j]));
-          j++;
-        }
-        _uses(defined, _terminatorUses(terminator));
-      } };
-    }
-    i++;
-  }
+  if (first >= registers) { _fail("spill slot read before written: " + Std.string(first - registers)); }
+  if (first >= 0) { _fail("register used before definition: " + Std.string(first)); }
   null
 };
 

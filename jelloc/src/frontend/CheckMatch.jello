@@ -393,9 +393,15 @@ let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>)
   let a = 0;
 
   while ((items.len() > 0) && (a < arms.len())) {
-    let pattern = match (arms[a]) { Arm(pattern, _, _) => pattern, Alternative(pattern, _) => pattern };
-    let fits = match (pattern) { Tuple(patterns) => patterns.len() == items.len(), Wildcard => true, _ => false };
-    if (!fits) { items = Array.new<AstExpr>(0); }
+    let alternatives = match (arms[a]) { Arm(alternatives, _, _) => alternatives };
+    let j = 0;
+
+    while ((items.len() > 0) && (j < alternatives.len())) {
+      let pattern = match (alternatives[j]) { Alternative(pattern, _) => pattern };
+      let fits = match (pattern) { Tuple(patterns) => patterns.len() == items.len(), Wildcard => true, _ => false };
+      if (!fits) { items = Array.new<AstExpr>(0); }
+      j++;
+    }
     a++;
   }
   let roots = Array.new<I32>(0);
@@ -565,6 +571,20 @@ let _armBody = fn(names: Array<Bytes>, values: Array<I32>, body: AstBlock, index
   } }
 };
 
+let _armReads = fn(subject: Subject, shared: Bool, group: Group, bound: Bound): Array<I32> {
+  shared ? _stored(subject, group) : _boundReads(subject, bound)
+};
+
+let _guard = fn(names: Array<Bytes>, values: Array<I32>, guard: ?AstExpr, index: I32): I32 {
+  let block = checkArm(names, values, [], guard, index, TYPE_BOOL, false);
+
+  if (typeOf(block) != TYPE_BOOL) {
+    enterSyntax(syntaxChild(index));
+    throw "match guard must be a Bool";
+  }
+  block
+};
+
 export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject, arms, expected, statement) {
   if (arms.len() == 0) { throw "match requires at least one arm"; }
   let children = Array.new<I32>(0);
@@ -576,69 +596,71 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
   let conditions = Array.new<I32>(0);
   let bodies = Array.new<I32>(0);
   let tails = Array.new<I32>(0);
-  let pending = Array.new<I32>(0);
-  let guarded = false;
-  let group = _noGroup();
+  let effects = false;
   let resultType = -1;
   let index = 1;
+  let patternIndex = 0;
   let a = 0;
 
-  while (a < arms.len()) {
-    let pattern = match (arms[a]) { Arm(pattern, _, _) => pattern, Alternative(pattern, _) => pattern };
-    let guard = match (arms[a]) { Arm(_, guard, _) => guard, Alternative(_, guard) => guard };
-    let place = syntaxPattern(a);
-    let outer = enterSyntax(place);
-    let tests = Array.new<I32>(0);
+  while (a < arms.len()) { match (arms[a]) { Arm(alternatives, guard, body) => {
+    let shared = alternatives.len() > 1;
+    let group = _noGroup();
     let bound = _noBound();
-    _armPattern(checked, pattern, place, top, ty, rows, tests, bound);
-    let alternative = match (arms[a]) { Alternative(_, _) => true, _ => false };
-    let grouped = alternative || (pending.len() > 0);
-    if (grouped) { group = _bindAlternative(checked, group, pending.len() == 0, bound, tests); }
-    enterSyntax(outer);
-    let names = _names(bound);
+    let firstRow = rows.len();
+    let tested = Array.new<I32>(0);
+    let last = Array.new<I32>(0);
+    let ownGuard = false;
+    let j = 0;
 
-    if (guard == null) { rows.push([pattern]); } else {
-      guarded = true;
-      let block = checkArm(names, _boundReads(checked, bound), [], guard, index, TYPE_BOOL, false);
+    while (j < alternatives.len()) { match (alternatives[j]) { Alternative(pattern, own) => {
+      let place = syntaxPattern(patternIndex);
+      let outer = enterSyntax(place);
+      patternIndex++;
+      let tests = Array.new<I32>(0);
+      bound = _noBound();
+      _armPattern(checked, pattern, place, top, ty, rows, tests, bound);
+      if (shared) { group = _bindAlternative(checked, group, j == 0, bound, tests); }
+      enterSyntax(outer);
 
-      if (typeOf(block) != TYPE_BOOL) {
-        enterSyntax(syntaxChild(index));
-        throw "match guard must be a Bool";
+      if (own == null) { rows.push([pattern]); } else {
+        ownGuard = true;
+        tests.push(_guard(_names(bound), _boundReads(checked, bound), own, index));
+        index++;
       }
-      tests.push(block);
-      index++;
+      if (shared) { tested.push(_fold(Op.And, tests, true)); }
+      last = tests;
+    } };
+      j++;
+    }
+    let names = _names(bound);
+    let tests = last;
+
+    if (shared) {
+      names = match (group) { Group(groupNames, _, _) => groupNames };
+      tests = [_fold(Op.Or, tested, false)];
     }
 
-    match (arms[a]) {
-      Alternative(_, _) => {
-        pending.push(_fold(Op.And, tests, true));
-        null
-      },
-      Arm(_, _, body) => {
-        pending.push(_fold(Op.And, tests, true));
-        conditions.push(_fold(Op.Or, pending, false));
-        pending = Array.new<I32>(0);
-        if (grouped) { names = match (group) { Group(groupNames, _, _) => groupNames }; }
-        let block = _armBody(names, grouped ? _stored(checked, group) : _boundReads(checked, bound), body, index, expected, resultType, statement);
+    if (guard != null) {
+      Array.resize(rows, firstRow);
+      tests.push(_guard(names, _armReads(checked, shared, group, bound), guard, index));
+      index++;
+    }
+    conditions.push(_fold(Op.And, tests, true));
+    let block = _armBody(names, _armReads(checked, shared, group, bound), body, index, expected, resultType, statement);
 
-        match (body) { Block(statements, tail) => {
-          if (!statement) {
-            resultType = resultType < 0 ? typeOf(block) : joinTypes(resultType, typeOf(block));
-            if (resultType < 0) { throw "match arms must have the same type"; }
-          }
-          tails.push(index + (statements.len() as I32));
-          index += (statements.len() as I32) + (tail == null ? 0 : 1);
-          bodies.push(block);
-        } };
-        if (grouped && (names.len() > 0)) { guarded = true; }
-        group = _noGroup();
-        if (a < arms.len() - 1) { guarded = false; }
-        null
-      },
-    };
+    match (body) { Block(statements, tail) => {
+      if (!statement) {
+        resultType = resultType < 0 ? typeOf(block) : joinTypes(resultType, typeOf(block));
+        if (resultType < 0) { throw "match arms must have the same type"; }
+      }
+      tails.push(index + (statements.len() as I32));
+      index += (statements.len() as I32) + (tail == null ? 0 : 1);
+      bodies.push(block);
+    } };
+    effects = ownGuard || (guard != null) || (shared && (names.len() > 0));
+  } };
     a++;
   }
-  if (pending.len() > 0) { throw "match alternative needs a body"; }
   _declareMatches(checked, subjectRoots, children);
   if (_useful(rows, [Pattern.Wildcard], [ty])) { _notExhaustive(rows, ty); }
 
@@ -653,7 +675,7 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
   let last = bodies.len() - 1;
   let result = bodies[last];
 
-  if (guarded) {
+  if (effects) {
     let discard = node(Op.Expression, 0, 0, 0, [conditions[last]]);
     result = statement ? node(Op.Block, 0, 0, 0, [discard, result]) : node(Op.Block, resultType, 0, 1, [discard, result]);
   }

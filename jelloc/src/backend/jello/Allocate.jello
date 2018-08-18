@@ -2,8 +2,8 @@ package backend.jello;
 
 import type { BasicBlock, Function, Instruction, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
 import { BasicBlock, Function, Op, Program, Terminator, ThrowHandler, argsOf, dstOf, handlerPayload, handlerTarget, immOf, instructionAt, nodeOf, opOf, valueTypeEqual } from ir.Model;
-import { blockMayThrow, normalSuccessors } from ir.Cfg;
-import { bitsAdd, bitsCopy, bitsHas, bitsNew, bitsRemove, bitsUnion } from ir.Bits;
+import { blockCatch, blockIndexes } from ir.Cfg;
+import { liveness, terminatorReads } from ir.Liveness;
 import { verifyAllocatedProgram } from ir.Verify;
 
 let _REGISTER_LIMIT = 256;
@@ -24,136 +24,36 @@ let _key = fn(ty: ValueType): I32 {
 
 let _windowStart = fn(op: Op): I32 { match (op) { Call, CallNative, EnumNew, ConstFunction => 0, CallIndirect, BytesSlice => 1, _ => -1 } };
 
-let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
-  let indexes = Array.new<I32>(0);
-  let i = 0;
+let _live = Array.new<I32>(0);
+let _places = Array.new<I32>(0);
 
-  while (i < blocks.len()) {
-    match (blocks[i]) {
-      Block(id, _, _, _) => {
-        while (indexes.len() <= id) { indexes.push(-1); }
-        indexes[id] = i;
-        null
-      }
-    };
-    i++;
+let _enliven = fn(register: I32) {
+  if (_places[register] < 0) {
+    _places[register] = _live.len() as I32;
+    _live.push(register);
   }
-  indexes
+  null
 };
 
-let _terminatorUses = fn(terminator: Terminator): Array<I32> {
-  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => [value], _ => Array.new<I32>(0) }
-};
+let _kill = fn(register: I32) {
+  let place = _places[register];
 
-let _catch = fn(block: BasicBlock, indexes: Array<I32>): Tuple<I32, I32> {
-  match (block) { Block(_, instructions, terminator, handler) => {
-    if ((handler == null) || !blockMayThrow(instructions, terminator)) { return (-1, -1); }
-    (indexes[handlerTarget(handler)], handlerPayload(handler))
-  } }
-};
+  if (place >= 0) {
+    let last = _live[_live.len() - 1];
+    _live.pop();
 
-let _caught = fn(liveIn: Array<Array<I32>>, c: Tuple<I32, I32>): Array<I32> {
-  let (target, payload) = c;
-  let caught = bitsCopy(liveIn[target]);
-  bitsRemove(caught, payload);
-  caught
-};
-
-let _liveness = fn(blocks: Array<BasicBlock>, count: I32): Tuple<Array<Array<I32>>, Array<Array<I32>>> {
-  let indexes = _blockIndexes(blocks);
-  let uses = Array.new<Array<I32>>(0);
-  let defs = Array.new<Array<I32>>(0);
-  let liveIn = Array.new<Array<I32>>(0);
-  let liveOut = Array.new<Array<I32>>(0);
-  let successors = Array.new<Array<I32>>(0);
-  let i = 0;
-
-  while (i < blocks.len()) {
-    let used = bitsNew(count);
-    let defined = bitsNew(count);
-
-    match (blocks[i]) { Block(_, instructions, terminator, _) => {
-      let j = 0;
-
-      while (j < instructions.len()) {
-        let args = argsOf(instructions[j]);
-        let a = 0;
-
-        while (a < args.len()) {
-          if (!bitsHas(defined, args[a])) { bitsAdd(used, args[a]); }
-          a++;
-        }
-        if (dstOf(instructions[j]) >= 0) { bitsAdd(defined, dstOf(instructions[j])); }
-        j++;
-      }
-      let last = _terminatorUses(terminator);
-      let a = 0;
-
-      while (a < last.len()) {
-        if (!bitsHas(defined, last[a])) { bitsAdd(used, last[a]); }
-        a++;
-      }
-      let targets = normalSuccessors(terminator);
-      let indexed = Array.new<I32>(0);
-      a = 0;
-
-      while (a < targets.len()) {
-        indexed.push(indexes[targets[a]]);
-        a++;
-      }
-      successors.push(indexed);
-    } };
-    uses.push(used);
-    defs.push(defined);
-    liveIn.push(bitsNew(count));
-    liveOut.push(bitsNew(count));
-    i++;
-  }
-  let none = bitsNew(count);
-  let changed = true;
-
-  while (changed) {
-    changed = false;
-    i = blocks.len() - 1;
-
-    while (i >= 0) {
-      let out = liveOut[i];
-      let s = 0;
-
-      while (s < successors[i].len()) {
-        let into = liveIn[successors[i][s]];
-        let w = 0;
-
-        while (w < out.len()) {
-          out[w] = out[w] | into[w];
-          w++;
-        }
-        s++;
-      }
-      let c = _catch(blocks[i], indexes);
-      let (target, _) = c;
-      let caught = target >= 0 ? _caught(liveIn, c) : none;
-      bitsUnion(out, caught);
-      let w = 0;
-
-      while (w < out.len()) {
-        let next = uses[i][w] | (out[w] & (defs[i][w] ^ -1)) | caught[w];
-
-        if (next != liveIn[i][w]) {
-          liveIn[i][w] = next;
-          changed = true;
-        }
-        w++;
-      }
-      i--;
+    if (last != register) {
+      _live[place] = last;
+      _places[last] = place;
     }
+    _places[register] = -1;
   }
-  (liveIn, liveOut)
+  null
 };
 
 let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>> {
-  let indexes = _blockIndexes(blocks);
-  let (liveIn, liveOut) = _liveness(blocks, count);
+  let indexes = blockIndexes(blocks);
+  let (liveIn, liveOut) = liveness(blocks, count, 0, true);
   let neighbors = Array.new<Array<I32>>(0);
   let i = 0;
 
@@ -168,33 +68,48 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
     payloadsDone[i] = false;
     i++;
   }
+  let caughtMarks = Array.new<I32>(count);
+  _places = Array.new<I32>(count);
+  i = 0;
+
+  while (i < count) {
+    caughtMarks[i] = -1;
+    _places[i] = -1;
+    i++;
+  }
   i = 0;
 
   while (i < blocks.len()) {
-    let c = _catch(blocks[i], indexes);
-    let (target, payload) = c;
-    let caught = target >= 0 ? _caught(liveIn, c) : bitsNew(count);
+    let (target, payload) = blockCatch(blocks[i], indexes);
+    let caught = target >= 0 ? liveIn[target] : Array.new<I32>(0);
+    let first = (target >= 0) && !payloadsDone[target];
+    let m = 0;
+    if (first) { payloadsDone[target] = true; }
 
-    if ((target >= 0) && !payloadsDone[target]) {
-      payloadsDone[target] = true;
-      let other = 0;
+    while (m < caught.len()) {
+      if (caught[m] != payload) {
+        caughtMarks[caught[m]] = i;
 
-      while (other < count) {
-        if (bitsHas(caught, other)) {
-          neighbors[payload].push(other);
-          neighbors[other].push(payload);
+        if (first) {
+          neighbors[payload].push(caught[m]);
+          neighbors[caught[m]].push(payload);
         }
-        other++;
       }
+      m++;
     }
 
     match (blocks[i]) { Block(_, instructions, terminator, _) => {
-      let live = bitsCopy(liveOut[i]);
-      let last = _terminatorUses(terminator);
+      m = 0;
+
+      while (m < liveOut[i].len()) {
+        _enliven(liveOut[i][m]);
+        m++;
+      }
+      let last = terminatorReads(terminator);
       let a = 0;
 
       while (a < last.len()) {
-        bitsAdd(live, last[a]);
+        _enliven(last[a]);
         a++;
       }
       let j = instructions.len() - 1;
@@ -204,39 +119,30 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
         let source = match (opOf(instructions[j])) { Move => argsOf(instructions[j])[0], _ => -1 };
 
         if (dst >= 0) {
-          let w = 0;
+          m = 0;
 
-          while (w < live.len()) {
-            let word = live[w];
+          while (m < _live.len()) {
+            let other = _live[m];
 
-            if (word != 0) {
-              let bit = 0;
-
-              while (bit < 32) {
-                let other = (w << 5) + bit;
-
-                if ((((word >> bit) & 1) == 1) && (other != dst) && (other != source)) {
-                  neighbors[dst].push(other);
-                  neighbors[other].push(dst);
-                }
-                bit++;
-              }
+            if ((other != dst) && (other != source)) {
+              neighbors[dst].push(other);
+              neighbors[other].push(dst);
             }
-            w++;
+            m++;
           }
-          bitsRemove(live, dst);
+          if (caughtMarks[dst] != i) { _kill(dst); }
         }
         let args = argsOf(instructions[j]);
         a = 0;
 
         while (a < args.len()) {
-          bitsAdd(live, args[a]);
+          _enliven(args[a]);
           a++;
         }
-        bitsUnion(live, caught);
         j--;
       }
     } };
+    while (_live.len() > 0) { _kill(_live[_live.len() - 1]); }
     i++;
   }
   neighbors
@@ -268,19 +174,27 @@ let _moves = fn(blocks: Array<BasicBlock>): Array<Tuple<I32, I32>> {
 let _groups = Array.new<I32>(0);
 let _members = Array.new<Array<I32>>(0);
 let _groupColors = Array.new<I32>(0);
+let _degrees = Array.new<I32>(0);
 
 let _group = fn(register: I32): I32 {
   let r = register;
   while (_groups[r] != r) { r = _groups[r]; }
-  _groups[register] = r;
+  let on = register;
+
+  while (on != r) {
+    let next = _groups[on];
+    _groups[on] = r;
+    on = next;
+  }
   r
 };
 
 let _conflict = fn(a: I32, b: I32, color: I32, neighbors: Array<Array<I32>>): Bool {
   let groups = [a, b];
   let g = 0;
+  if (color < 0) { groups = _degrees[a] <= _degrees[b] ? [a] : [b]; }
 
-  while (g < 2) {
+  while (g < groups.len()) {
     let members = _members[groups[g]];
     let m = 0;
 
@@ -305,12 +219,14 @@ let _coalesce = fn(moves: Array<Tuple<I32, I32>>, fixed: Array<I32>, neighbors: 
   _groups = Array.new<I32>(count);
   _members = Array.new<Array<I32>>(count);
   _groupColors = Array.new<I32>(count);
+  _degrees = Array.new<I32>(count);
   let i = 0;
 
   while (i < count) {
     _groups[i] = i;
     _members[i] = [i];
     _groupColors[i] = fixed[i];
+    _degrees[i] = neighbors[i].len() as I32;
     i++;
   }
   i = 0;
@@ -326,12 +242,21 @@ let _coalesce = fn(moves: Array<Tuple<I32, I32>>, fixed: Array<I32>, neighbors: 
     if ((a != b) && (_keys[a] == _keys[b]) && ((colorA < 0) || (colorB < 0) || (colorA == colorB)) && !_conflict(a, b, color, neighbors)) {
       _groups[b] = a;
       _groupColors[a] = color;
+      _degrees[a] = _degrees[a] + _degrees[b];
+      let into = _members[a];
+      let rest = _members[b];
+
+      if (rest.len() > into.len()) {
+        into = _members[b];
+        rest = _members[a];
+      }
       let m = 0;
 
-      while (m < _members[b].len()) {
-        _members[a].push(_members[b][m]);
+      while (m < rest.len()) {
+        into.push(rest[m]);
         m++;
       }
+      _members[a] = into;
       _members[b] = Array.new<I32>(0);
     }
     i++;

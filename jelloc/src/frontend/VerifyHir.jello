@@ -14,6 +14,7 @@ let _visibleIds = Array.new<I32>(0);
 let _visibleTypes = Array.new<I32>(0);
 let _visibleMutable = Array.new<Bool>(0);
 let _declared = Array.new<Bool>(0);
+let _places = Array.new<I32>(0);
 let _nextGlobal = 0;
 let _result = 0;
 let _loops = 0;
@@ -58,21 +59,20 @@ let _spans = fn() {
 };
 
 let _visible = fn(id: I32): I32 {
-  let i = _visibleIds.len() - 1;
-
-  while (i >= 0) {
-    if (_visibleIds[i] == id) { return i; }
-    i--;
-  }
-  _fail("unknown local binding");
-  -1
+  if ((id < 0) || (id >= _places.len()) || (_places[id] < 0)) { _fail("unknown local binding"); }
+  _places[id]
 };
 
 let _declare = fn(id: I32, ty: I32, mutable: Bool) {
   if (id < 0) { _fail("negative binding ID"); }
-  while (_declared.len() <= id) { _declared.push(false); }
+
+  while (_declared.len() <= id) {
+    _declared.push(false);
+    _places.push(-1);
+  }
   if (_declared[id]) { _fail("binding declared twice"); }
   _declared[id] = true;
+  _places[id] = _visibleIds.len() as I32;
   _visibleIds.push(id);
   _visibleTypes.push(ty);
   _visibleMutable.push(mutable);
@@ -81,6 +81,7 @@ let _declare = fn(id: I32, ty: I32, mutable: Bool) {
 
 let _popTo = fn(start: I32) {
   while (_visibleIds.len() > start) {
+    _places[_visibleIds[_visibleIds.len() - 1]] = -1;
     _visibleIds.pop();
     _visibleTypes.pop();
     _visibleMutable.pop();
@@ -562,6 +563,7 @@ export let verifyHir: (Hir) -> Bool = fn(program) {
   _visibleTypes = Array.new<I32>(0);
   _visibleMutable = Array.new<Bool>(0);
   _declared = Array.new<Bool>(0);
+  _places = Array.new<I32>(0);
   _nextGlobal = 0;
   i = 0;
 

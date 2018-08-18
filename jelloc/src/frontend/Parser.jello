@@ -19,6 +19,7 @@ import type {
   IntSize,
   ListGenerator,
   ListLiteral,
+  MatchAlternative,
   MatchArm,
   MatchArms,
   ObjectEntry,
@@ -127,6 +128,13 @@ let _seen = 0;
 
 let _failure: ?SourceSpan = null;
 export let parseFailureSpan: () -> ?SourceSpan = fn() { _failure };
+
+let _packageEnd = -1;
+
+export let packageSpan: () -> ?SourceSpan = fn() {
+  if (_packageEnd < 0) { return null; }
+  SourceSpan.Span(sourcePath, _offset(0, false), _offset(_packageEnd, true))
+};
 
 let _error = fn(msg: Bytes): I32 {
   _failure = SourceSpan.Span(sourcePath, _offset(_seen, false), _offset(_seen, true));
@@ -885,18 +893,20 @@ let _matchArms = fn(): Array<MatchArm> {
   let arms = Array.new<MatchArm>(0);
 
   while (!_at(Token.RBrace)) {
+    let alternatives = Array.new<MatchAlternative>(0);
     let pattern = _matchPattern();
     let guard = _optionalGuard();
 
     while (!_at(Token.FatArrow)) {
       expect(Token.Comma);
-      arms.push(MatchArm.Alternative(pattern, guard));
+      alternatives.push(MatchAlternative.Alternative(pattern, guard));
       pattern = _matchPattern();
       guard = _optionalGuard();
     }
+    alternatives.push(MatchAlternative.Alternative(pattern, null));
     expect(Token.FatArrow);
     let body = _at(Token.LBrace) ? _parseBlock() : Block.Block([], _parseExpr(0));
-    arms.push(MatchArm.Arm(pattern, guard, body));
+    arms.push(MatchArm.Arm(alternatives, guard, body));
 
     if (_at(Token.Comma)) {
       next();
@@ -2002,6 +2012,7 @@ _parseProgram = fn(input, path, tokenStartOffsets, tokenEndOffsets) {
   pos = 0;
   _seen = 0;
   _failure = null;
+  _packageEnd = -1;
   pendingGreater = 0;
   pipelineDepth = 0;
   let pkg = Package.None;
@@ -2010,6 +2021,7 @@ _parseProgram = fn(input, path, tokenStartOffsets, tokenEndOffsets) {
     next();
     pkg = Package.Path(_path());
     expect(Token.Semicolon);
+    _packageEnd = pos - 1;
   }
   let statements = Array.new<Stmt>(0);
   let hasTail = false;

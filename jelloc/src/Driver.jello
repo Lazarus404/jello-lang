@@ -12,16 +12,17 @@ import { functionNode, lowerProgram } from ir.Lower;
 import { printIr } from ir.Print;
 import { legalizeJlo } from backend.jello.Legalize;
 import { allocateProgram, allocationFailure } from backend.jello.Allocate;
-import { emitJlo } from backend.jello.Emit;
+import { emitAllocated } from backend.jello.Emit;
 import { exists, readText, writeText } from std.io.File;
 
 import type { Program as AstProgram } from frontend.Ast;
+import type { Program } from ir.Model;
 import type { Hir } from frontend.Hir;
 import { spanOf, spanPathOf } from frontend.Hir;
 
 enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; Help; }
 
-let _USAGE = "usage: jelloc <input.jello> [--out path] [--std dir] [--lex|--parse|--hir [--spans]|--ir|--jlo]\n\n  --out path   write the compiled module to path\n  --std dir    resolve std.* imports under dir\n  --lex        print the tokens\n  --parse      check the syntax only\n  --hir        print the typed HIR\n  --spans      with --hir, end each node's line with its source byte range\n  --ir         print the CFG IR\n  --jlo        print the allocated JLO instructions\n  --help       print this help\n\nExit status: 0 on success, 1 when the program does not compile (the\ndiagnostic is on standard error), 2 for a bad command line.\n";
+let _USAGE = "usage: jelloc <input.jello> [--out path] [--std dir] [--lex|--parse|--hir [--spans]|--ir|--jlo]\n\n  --out path   write the compiled module to path\n  --std dir    resolve std.* imports under dir\n  --lex        print the tokens\n  --parse      check the syntax only\n  --hir        print the typed HIR\n  --spans      with --hir, end each node's line with its source byte range\n  --ir         print the CFG IR\n  --jlo        print the allocated JLO instructions (with --out, also\n               write the compiled module)\n  --help       print this help\n\nExit status: 0 on success, 1 when the program does not compile (the\ndiagnostic is on standard error), 2 for a bad command line.\n";
 
 let _exit = fn(code: I32, message: Bytes) {
   writeText("/dev/stderr", message);
@@ -81,10 +82,12 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
   if (input == "") { throw "no input file"; }
   if (_spans && (mode != Mode.Typed)) { throw "--spans requires --hir"; }
   if ((mode == null) && (output == "")) { throw "output path required; pass --out <path>"; }
+  if ((mode != null) && (mode != Mode.Legalized) && (output != "")) { throw "--out cannot be combined with --lex, --parse, --hir or --ir"; }
   (input, mode == null ? Mode.Emit : mode, output)
 };
 
 let _checked = fn(input: Bytes): Hir { typeCheckModules(loadModules(input, _std)) };
+let _allocated = fn(input: Bytes): Program { allocateProgram(legalizeJlo(lowerProgram(_checked(input)))) };
 
 let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
   match (span) { Span(path, start, _) => sourceDiagnostic(path, readText(path), start, message) }
@@ -128,6 +131,11 @@ let _location = fn(node: I32): Tuple<Bytes, I32, I32> {
   (path, line, column)
 };
 
+let _write = fn(output: Bytes, program: Program) {
+  if (!writeText(output, emitAllocated(program, _location))) { throw "could not write " + output; }
+  null
+};
+
 let _report: (Bytes, () -> Bytes) -> Bytes = fn(label, stage) {
   try { stage() } catch (e) {
     let message = _located(Std.string(e));
@@ -165,9 +173,14 @@ export let run: (List<Bytes>) -> Bytes = fn(argv) {
     Parse => _parse(input),
     Typed => _report("", fn() { _spans ? printHirWithSpans(_checked(input)) : printHir(_checked(input)) }),
     Lowered => _report("", fn() { printIr(lowerProgram(_checked(input))) }),
-    Legalized => _report("", fn() { printIr(allocateProgram(legalizeJlo(lowerProgram(_checked(input))))) }),
+    Legalized => _report("", fn() {
+      let program = _allocated(input);
+      let listing = printIr(program);
+      if (output != "") { _write(output, program); }
+      listing
+    }),
     Emit => _report("", fn() {
-      if (!writeText(output, emitJlo(legalizeJlo(lowerProgram(_checked(input))), _location))) { throw "could not write " + output; }
+      _write(output, _allocated(input));
       ""
     }),
   }

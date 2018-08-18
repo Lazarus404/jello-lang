@@ -1,6 +1,7 @@
 package ir;
 
 import { bytesLiteral } from frontend.Tokens;
+import { concatAll, decimal } from frontend.Text;
 import type { BasicBlock, Function, Instruction, Native, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
 import { ReturnType, ValueType, argumentCount, argsOf, dstOf, immOf, opOf } from ir.Model;
 
@@ -143,94 +144,83 @@ let _handler = fn(handler: ThrowHandler): Bytes {
   match (handler) { Catch(target, payload) => " catch block " + Std.string(target) + " as " + _register(payload) }
 };
 
-let _block = fn(block: BasicBlock, registers: Array<ValueType>, pool: Array<Bytes>): Bytes {
+let _block = fn(block: BasicBlock, registers: Array<ValueType>, pool: Array<Bytes>, out: Array<Bytes>) {
   match (block) { Block(id, instructions, terminator, handler) => {
-    let out = "  block " + Std.string(id);
-    if (handler != null) { out += _handler(handler); }
-    out += ":\n";
+    let label = "  block " + Std.string(id);
+    if (handler != null) { label += _handler(handler); }
+    out.push(label + ":\n");
     let i = 0;
 
     while (i < instructions.len()) {
-      out += "    " + _instruction(instructions[i], registers, pool) + "\n";
+      out.push("    " + _instruction(instructions[i], registers, pool) + "\n");
       i++;
     }
-    out + "    " + _terminator(terminator) + "\n"
-  } }
+    out.push("    " + _terminator(terminator) + "\n");
+  } };
+  null
 };
 
-export let printFunction: (Function, Array<Bytes>) -> Bytes = fn(function, pool) {
+let _function = fn(function: Function, pool: Array<Bytes>, out: Array<Bytes>) {
   match (function) { Function(id, params, captures, registers, result, blocks, entry) => {
-    let out = "fn @" + Std.string(id) + "(";
+    let header = "fn @" + Std.string(id) + "(";
     let i = 0;
 
     while (i < params.len()) {
-      if (i == argumentCount(function)) { out += ") captures("; } else if (i > 0) { out += ", "; }
-      out += _register(params[i]) + ": " + _type(registers[params[i]]);
+      if (i == argumentCount(function)) { header += ") captures("; } else if (i > 0) { header += ", "; }
+      header += _register(params[i]) + ": " + _type(registers[params[i]]);
       i++;
     }
-    out += ") -> " + _returnType(result) + " entry " + Std.string(entry) + " {\n";
+    out.push(header + ") -> " + _returnType(result) + " entry " + Std.string(entry) + " {\n");
     i = 0;
 
     while (i < registers.len()) {
-      out += "  register " + _register(i) + ": " + _type(registers[i]) + "\n";
+      out.push("  register " + _register(i) + ": " + _type(registers[i]) + "\n");
       i++;
     }
     i = 0;
 
     while (i < blocks.len()) {
-      out += _block(blocks[i], registers, pool);
+      _block(blocks[i], registers, pool, out);
       i++;
     }
-    out + "}\n"
-  } }
-};
-
-let _wide = fn(value: I64): Bytes {
-  let rest = value > 0 ? -value : value;
-  let digits = "";
-
-  while (true) {
-    let digit = -(rest % 10) as I32;
-    digits = Bytes.slice("0123456789", digit, 1) + digits;
-    rest = rest / 10;
-    if (rest == 0) { break; }
-  }
-  value < 0 ? "-" + digits : digits
+    out.push("}\n");
+  } };
+  null
 };
 
 export let printIr: (Program) -> Bytes = fn(program) {
   match (program) { Program(functions, pool, wides, _, globals, natives) => {
-    let out = "";
+    let out = Array.new<Bytes>(0);
     let i = 0;
 
     while (i < globals.len()) {
-      out += "global g" + Std.string(i) + ": " + _type(globals[i]) + "\n";
+      out.push("global g" + Std.string(i) + ": " + _type(globals[i]) + "\n");
       i++;
     }
-    if (globals.len() > 0) { out += "\n"; }
+    if (globals.len() > 0) { out.push("\n"); }
     i = 0;
 
     while (i < natives.len()) {
       match (natives[i]) { Native(library, name, params, result) => {
-        out += "native n" + Std.string(i) + ": " + library + "." + name + " " + _type(ValueType.Function(params, ReturnType.Value(result))) + "\n";
+        out.push("native n" + Std.string(i) + ": " + library + "." + name + " " + _type(ValueType.Function(params, ReturnType.Value(result))) + "\n");
       } };
       i++;
     }
-    if (natives.len() > 0) { out += "\n"; }
+    if (natives.len() > 0) { out.push("\n"); }
     i = 0;
 
     while (i < wides.len()) {
-      out += "i64 #" + Std.string(i) + " = " + _wide(wides[i]) + "\n";
+      out.push("i64 #" + Std.string(i) + " = " + decimal(wides[i]) + "\n");
       i++;
     }
-    if (wides.len() > 0) { out += "\n"; }
+    if (wides.len() > 0) { out.push("\n"); }
     i = 0;
 
     while (i < functions.len()) {
-      if (i > 0) { out += "\n"; }
-      out += printFunction(functions[i], pool);
+      if (i > 0) { out.push("\n"); }
+      _function(functions[i], pool, out);
       i++;
     }
-    out
+    concatAll(out)
   } }
 };

@@ -14,8 +14,10 @@ import {
 import type { SourceSpan, Syntax } from frontend.Source;
 import { SourceSpan, Syntax } from frontend.Source;
 
-let _names = Array.new<Bytes>(0);
+let _nameIds = Array.new<I32>(0);
 let _ids = Array.new<I32>(0);
+let _hidden = Array.new<I32>(0);
+let _latest = Array.new<I32>(0);
 let _nextBinding = 0;
 let _bindingTypes = Array.new<I32>(0);
 let _mutable = Array.new<Bool>(0);
@@ -24,7 +26,7 @@ let _captured = Array.new<Bool>(0);
 let _scopeStart = 0;
 let _loops = 0;
 let _tries = 0;
-enum Frame { Frame(names: Array<Bytes>, ids: Array<I32>); }
+enum Frame { Frame(nameIds: Array<I32>, ids: Array<I32>); }
 let _frames = Array.new<Frame>(0);
 let _captures = [Array.new<I32>(0)];
 let _sources = [Array.new<I32>(0)];
@@ -49,16 +51,12 @@ export let syntaxChild: (I32) -> Syntax = fn(index) { _childOf(_syntax, index) }
 export let syntaxPattern: (I32) -> Syntax = fn(index) { match (_syntax) { Node(_, _, _, _, patterns) => patterns[index] } };
 export let subPattern: (Syntax, I32) -> Syntax = fn(syntax, index) { _childOf(syntax, index) };
 
-let _findIn = fn(names: Array<Bytes>, name: Bytes, start: I32): I32 {
-  let i = names.len() - 1;
-
-  while (i >= start) {
-    if (names[i] == name) { return i; }
-    i--;
-  }
-  -1
+let _find = fn(name: Bytes, start: I32): I32 {
+  let nameId = H.findBytesId(name);
+  if ((nameId < 0) || (nameId >= _latest.len())) { return -1; }
+  let found = _latest[nameId];
+  ((found >= start) && (found < _nameIds.len()) && (_nameIds[found] == nameId)) ? found : -1
 };
-let _find = fn(name: Bytes, start: I32): I32 { _findIn(_names, name, start) };
 
 export let newBinding: () -> I32 = fn() {
   let id = _nextBinding;
@@ -74,15 +72,22 @@ let _declare = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
   let id = newBinding();
   _bindingTypes[id] = ty;
   _mutable[id] = mutable;
-  _names.push(name);
+  let nameId = H.bytesId(name);
+  while (_latest.len() <= nameId) { _latest.push(-1); }
+  _hidden.push(_latest[nameId]);
+  _latest[nameId] = _nameIds.len() as I32;
+  _nameIds.push(nameId);
   _ids.push(id);
   id
 };
 
 let _popTo = fn(start: I32) {
-  while (_names.len() > start) {
-    _names.pop();
+  while (_nameIds.len() > start) {
+    let last = _nameIds.len() - 1;
+    _latest[_nameIds[last]] = _hidden[last];
+    _nameIds.pop();
     _ids.pop();
+    _hidden.pop();
   }
   null
 };
@@ -429,15 +434,15 @@ let _functionType = fn(index: I32): I32 {
 };
 
 let _enclosingFind = fn(name: Bytes): Tuple<I32, I32> {
+  let nameId = H.findBytesId(name);
   let depth = _frames.len() - 1;
 
-  while (depth >= 0) {
-    let id = match (_frames[depth]) {
-      Frame(names, ids) => {
-        let found = _findIn(names, name, 0);
-        found >= 0 ? ids[found] : -1
-      }
-    };
+  while ((nameId >= 0) && (depth >= 0)) {
+    let id = match (_frames[depth]) { Frame(nameIds, ids) => {
+      let i = nameIds.len() - 1;
+      while ((i >= 0) && (nameIds[i] != nameId)) { i--; }
+      i >= 0 ? ids[i] : -1
+    } };
     if (id >= 0) { return (depth as I32, id); }
     depth--;
   }
@@ -921,7 +926,7 @@ let _RESULT_TAIL = 2;
 
 let _checkBlockBody = fn(prefix: Array<I32>, statements: Array<Stmt>, tail: ?AstExpr, first: I32, expected: I32, tailKind: I32): I32 {
   let outerStart = _scopeStart;
-  _scopeStart = tailKind == _RESULT_TAIL ? 0 : _names.len();
+  _scopeStart = tailKind == _RESULT_TAIL ? 0 : _nameIds.len();
   let before = narrowings();
   let children = prefix;
   let ends = false;
@@ -957,7 +962,7 @@ let _checkBlockBody = fn(prefix: Array<I32>, statements: Array<Stmt>, tail: ?Ast
 };
 
 export let checkArm: (Array<Bytes>, Array<I32>, Array<Stmt>, ?AstExpr, I32, I32, Bool) -> I32 = fn(names, values, statements, tail, first, expected, statement) {
-  let mark = _names.len();
+  let mark = _nameIds.len();
   let prefix = Array.new<I32>(0);
   let i = 0;
 
@@ -1027,7 +1032,7 @@ _checkTry = fn(body, catchName, handler, expected, statement) {
   _tries--;
   let afterBody = narrowings();
   leaveLoop(before, mark);
-  let scope = _names.len();
+  let scope = _nameIds.len();
   let binding = catchName == null ? -1 : _declare(catchName, H.TYPE_DYNAMIC, false);
   let first = match (body) { Block(statements, tail) => (statements.len() as I32) + (tail == null ? 0 : 1) };
 
@@ -1150,18 +1155,20 @@ _checkStatement = fn(statement, syntax) {
 
 let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> {
   let outer = enterSyntax(syntax);
-  let outerNames = _names;
+  let outerNameIds = _nameIds;
   let outerIds = _ids;
+  let outerHidden = _hidden;
   let outerLoops = _loops;
   let outerTries = _tries;
   let outerStart = _scopeStart;
   let outerKnown = narrowings();
   setNarrowings(Array.new<I32>(0));
-  _frames.push(Frame.Frame(outerNames, outerIds));
+  _frames.push(Frame.Frame(outerNameIds, outerIds));
   _captures.push(Array.new<I32>(0));
   _sources.push(Array.new<I32>(0));
-  _names = Array.new<Bytes>(0);
+  _nameIds = Array.new<I32>(0);
   _ids = Array.new<I32>(0);
+  _hidden = Array.new<I32>(0);
   _loops = 0;
   _tries = 0;
   _scopeStart = 0;
@@ -1205,8 +1212,9 @@ let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> 
   _frames.pop();
   _captures.pop();
   _sources.pop();
-  _names = outerNames;
+  _nameIds = outerNameIds;
   _ids = outerIds;
+  _hidden = outerHidden;
   _result = outerResult;
   _loops = outerLoops;
   _tries = outerTries;
@@ -1261,8 +1269,10 @@ export let takeRegexpInits: () -> Array<I32> = fn() {
 export let beginCheck: () -> Bool = fn() {
   H.beginHir();
   resetNarrowing();
-  _names = Array.new<Bytes>(0);
+  _nameIds = Array.new<I32>(0);
   _ids = Array.new<I32>(0);
+  _hidden = Array.new<I32>(0);
+  _latest = Array.new<I32>(0);
   _nextBinding = 0;
   _bindingTypes = Array.new<I32>(0);
   _mutable = Array.new<Bool>(0);

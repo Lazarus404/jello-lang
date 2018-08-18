@@ -2,7 +2,6 @@ package backend.jello;
 
 import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, Terminator, ValueType } from ir.Model;
 import { ValueType, argumentCount, argsOf, dstOf, handlerPayload, handlerTarget, immOf, nodeOf, opOf, valueTypeEqual } from ir.Model;
-import { allocateProgram } from backend.jello.Allocate;
 
 let _buffer = Bytes.new(0);
 let _size = 0;
@@ -872,7 +871,7 @@ let _module = fn(program: Program): Bytes {
   } }
 };
 
-export let emitJlo: (Program, (I32) -> Tuple<Bytes, I32, I32>) -> Bytes = fn(program, locate) {
+export let emitAllocated: (Program, (I32) -> Tuple<Bytes, I32, I32>) -> Bytes = fn(program, locate) {
   _locate = locate;
-  _module(allocateProgram(program))
+  _module(program)
 };

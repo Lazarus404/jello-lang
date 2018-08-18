@@ -12,47 +12,10 @@ export let bitsNew: (I32) -> Array<I32> = fn(size) {
   set
 };
 
-export let bitsFull: (I32) -> Array<I32> = fn(size) {
-  let set = bitsNew(size);
-  let i = 0;
-
-  while (i < set.len()) {
-    set[i] = -1;
-    i++;
-  }
-  set
-};
-
 export let bitsHas: (Array<I32>, I32) -> Bool = fn(set, value) { ((set[value >> 5] >> (value & 31)) & 1) == 1 };
 
 export let bitsAdd: (Array<I32>, I32) -> Bool = fn(set, value) {
   set[value >> 5] = set[value >> 5] | (1 << (value & 31));
-  true
-};
-
-export let bitsRemove: (Array<I32>, I32) -> Bool = fn(set, value) {
-  set[value >> 5] = set[value >> 5] & ((1 << (value & 31)) ^ -1);
-  true
-};
-
-export let bitsCopy: (Array<I32>) -> Array<I32> = fn(set) {
-  let copy = Array.new<I32>(set.len());
-  let i = 0;
-
-  while (i < set.len()) {
-    copy[i] = set[i];
-    i++;
-  }
-  copy
-};
-
-export let bitsEqual: (Array<I32>, Array<I32>) -> Bool = fn(left, right) {
-  let i = 0;
-
-  while (i < left.len()) {
-    if (left[i] != right[i]) { return false; }
-    i++;
-  }
   true
 };
 
@@ -70,16 +33,6 @@ export let bitsUnion: (Array<I32>, Array<I32>) -> Bool = fn(dst, src) {
     i++;
   }
   changed
-};
-
-export let bitsIntersect: (Array<I32>, Array<I32>) -> Bool = fn(dst, src) {
-  let i = 0;
-
-  while (i < dst.len()) {
-    dst[i] = dst[i] & src[i];
-    i++;
-  }
-  true
 };
 
 export let bitsMembers: (Array<I32>) -> Array<I32> = fn(set) {

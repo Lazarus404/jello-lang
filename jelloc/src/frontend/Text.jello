@@ -1,0 +1,27 @@
+package frontend;
+
+let _concat: (Array<Bytes>, I32, I32) -> Bytes = fn(parts, lo, hi) {
+  if (hi - lo == 1) {
+    parts[lo]
+  } else if (hi <= lo) {
+    ""
+  } else {
+    let mid = lo + (hi - lo) / 2;
+    _concat(parts, lo, mid) + _concat(parts, mid, hi)
+  }
+};
+
+export let concatAll: (Array<Bytes>) -> Bytes = fn(parts) { _concat(parts, 0, parts.len()) };
+
+export let decimal: (I64) -> Bytes = fn(value) {
+  let rest = value > 0 ? -value : value;
+  let digits = "";
+
+  while (true) {
+    let digit = -(rest % 10) as I32;
+    digits = Bytes.slice("0123456789", digit, 1) + digits;
+    rest = rest / 10;
+    if (rest == 0) { break; }
+  }
+  value < 0 ? "-" + digits : digits
+};

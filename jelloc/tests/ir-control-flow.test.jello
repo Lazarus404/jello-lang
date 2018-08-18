@@ -7,7 +7,8 @@ import { lowerProgram } from ir.Lower;
 import { printIr } from ir.Print;
 import { verifyProgram } from ir.Verify;
 import { legalizeJlo } from backend.jello.Legalize;
-import { emitJlo, noSource } from backend.jello.Emit;
+import { allocateProgram } from backend.jello.Allocate;
+import { emitAllocated, noSource } from backend.jello.Emit;
 
 test("lowers return and while in typed function bodies", fn(t) {
   let source = "let choose = fn(flag: Bool, value: I32): I32 { while (flag) { return value; } value + 1i32 }; choose(false, 2i32)";
@@ -289,7 +290,7 @@ test("keeps ?I32 distinct and executes null and present checks", fn(t) {
   t.is(printedIr.indexOf("is_null") >= 0, true);
   let jlo = legalizeJlo(ir);
   t.is(printIr(jlo).indexOf("is_null") >= 0, true);
-  t.is(emitJlo(jlo, noSource).len() > 0, true);
+  t.is(emitAllocated(allocateProgram(jlo), noSource).len() > 0, true);
 });
 
 run()

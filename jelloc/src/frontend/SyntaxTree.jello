@@ -136,17 +136,21 @@ let _arms = fn(arms: Array<MatchArm>, out: Array<Syntax>, patterns: Array<Syntax
   let i = 0;
 
   while (i < arms.len()) {
-    match (arms[i]) {
-      Arm(pattern, guard, body) => {
-        _addPattern(patterns, pattern);
-        _optional(guard, out);
-        _block(body, out)
-      },
-      Alternative(pattern, guard) => {
-        _addPattern(patterns, pattern);
-        _optional(guard, out)
-      },
-    };
+    match (arms[i]) { Arm(alternatives, guard, body) => {
+      let j = 0;
+
+      while (j < alternatives.len()) {
+        match (alternatives[j]) {
+          Alternative(pattern, own) => {
+            _addPattern(patterns, pattern);
+            _optional(own, out)
+          }
+        };
+        j++;
+      }
+      _optional(guard, out);
+      _block(body, out)
+    } };
     i++;
   }
   null

@@ -216,19 +216,25 @@ let _growBytes = fn() {
   null
 };
 
-export let bytesId: (Bytes) -> I32 = fn(value) {
-  if ((_bytes.len() + 1) * 2 > _bytesSlots.len()) { _growBytes(); }
+let _bytesSlot = fn(value: Bytes): I32 {
   let capacity = _bytesSlots.len();
   let slot = _slot(_bytesHash(value), capacity);
-
-  while (_bytesSlots[slot] >= 0) {
-    if (_bytes[_bytesSlots[slot]] == value) { return _bytesSlots[slot]; }
-    slot = (slot + 1) % capacity;
-  }
-  _bytesSlots[slot] = _bytes.len() as I32;
-  _bytes.push(value);
-  (_bytes.len() - 1) as I32
+  while ((_bytesSlots[slot] >= 0) && (_bytes[_bytesSlots[slot]] != value)) { slot = (slot + 1) % capacity; }
+  slot
 };
+
+export let bytesId: (Bytes) -> I32 = fn(value) {
+  if ((_bytes.len() + 1) * 2 > _bytesSlots.len()) { _growBytes(); }
+  let slot = _bytesSlot(value);
+
+  if (_bytesSlots[slot] < 0) {
+    _bytesSlots[slot] = _bytes.len() as I32;
+    _bytes.push(value);
+  }
+  _bytesSlots[slot]
+};
+
+export let findBytesId: (Bytes) -> I32 = fn(value) { _bytesSlots[_bytesSlot(value)] };
 
 export let declareGlobal: (Bytes, I32, Bool) -> I32 = fn(name, ty, mutable) {
   let id = globalCount();

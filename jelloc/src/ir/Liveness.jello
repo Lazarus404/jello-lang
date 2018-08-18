@@ -1,0 +1,182 @@
+package ir;
+
+import type { BasicBlock, Instruction, Terminator } from ir.Model;
+import { argsOf, dstOf, immOf, instructionMayThrow, opOf } from ir.Model;
+import { blockCatch, blockIndexes, normalSuccessors } from ir.Cfg;
+
+let _registers = 0;
+
+let _reads = fn(insn: Instruction): Array<I32> {
+  match (opOf(insn)) { SpillPop => [_registers + immOf(insn)], _ => argsOf(insn) }
+};
+
+let _writes = fn(insn: Instruction): Array<I32> {
+  match (opOf(insn)) { SpillPush => [_registers + immOf(insn)], _ => dstOf(insn) >= 0 ? [dstOf(insn)] : Array.new<I32>(0) }
+};
+
+export let terminatorReads: (Terminator) -> Array<I32> = fn(terminator) {
+  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => [value], _ => Array.new<I32>(0) }
+};
+
+let _add = fn(set: Array<I32>, marks: Array<I32>, stamp: I32, value: I32) {
+  if (marks[value] != stamp) {
+    marks[value] = stamp;
+    set.push(value);
+  }
+  null
+};
+
+let _mark = fn(values: Array<I32>, marks: Array<I32>, stamp: I32) {
+  let i = 0;
+
+  while (i < values.len()) {
+    marks[values[i]] = stamp;
+    i++;
+  }
+  null
+};
+
+export let liveness: (Array<BasicBlock>, I32, I32, Bool) -> Tuple<Array<Array<I32>>, Array<Array<I32>>> = fn(blocks, registers, slots, fromStart) {
+  _registers = registers;
+  let count = registers + slots;
+  let indexes = blockIndexes(blocks);
+  let marks = Array.new<I32>(count);
+  let written = Array.new<I32>(count);
+  let early = Array.new<I32>(count);
+  let i = 0;
+
+  while (i < count) {
+    marks[i] = -1;
+    written[i] = -1;
+    early[i] = -1;
+    i++;
+  }
+  let stamp = 0;
+  let uses = Array.new<Array<I32>>(0);
+  let defs = Array.new<Array<I32>>(0);
+  let kills = Array.new<Array<I32>>(0);
+  let successors = Array.new<Array<I32>>(0);
+  let catches = Array.new<I32>(0);
+  let payloads = Array.new<I32>(0);
+  let liveIn = Array.new<Array<I32>>(0);
+  let liveOut = Array.new<Array<I32>>(0);
+  i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) { Block(_, instructions, terminator, _) => {
+      stamp++;
+      let used = Array.new<I32>(0);
+      let defined = Array.new<I32>(0);
+      let killed = Array.new<I32>(0);
+      let throwing = false;
+      let j = 0;
+
+      while (j < instructions.len()) {
+        if (!fromStart && instructionMayThrow(instructions[j])) { throwing = true; }
+        let reads = _reads(instructions[j]);
+        let a = 0;
+
+        while (a < reads.len()) {
+          if (written[reads[a]] != stamp) { _add(used, marks, stamp, reads[a]); }
+          a++;
+        }
+        let writes = _writes(instructions[j]);
+        a = 0;
+
+        while (a < writes.len()) {
+          _add(defined, written, stamp, writes[a]);
+          if (!fromStart && !throwing) { killed.push(writes[a]); }
+          a++;
+        }
+        j++;
+      }
+      let last = terminatorReads(terminator);
+      let a = 0;
+
+      while (a < last.len()) {
+        if (written[last[a]] != stamp) { _add(used, marks, stamp, last[a]); }
+        a++;
+      }
+      let targets = normalSuccessors(terminator);
+      let next = Array.new<I32>(0);
+      a = 0;
+
+      while (a < targets.len()) {
+        next.push(indexes[targets[a]]);
+        a++;
+      }
+      let (catchBlock, payload) = blockCatch(blocks[i], indexes);
+      uses.push(used);
+      defs.push(defined);
+      kills.push(killed);
+      successors.push(next);
+      catches.push(catchBlock);
+      payloads.push(payload);
+      liveIn.push(Array.new<I32>(0));
+      liveOut.push(Array.new<I32>(0));
+    } };
+    i++;
+  }
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    i = blocks.len() - 1;
+
+    while (i >= 0) {
+      stamp++;
+      let out = Array.new<I32>(0);
+      let catchBlock = catches[i];
+      let s = 0;
+      let m = 0;
+
+      while (s < successors[i].len()) {
+        let into = liveIn[successors[i][s]];
+        m = 0;
+
+        while (m < into.len()) {
+          _add(out, marks, stamp, into[m]);
+          m++;
+        }
+        s++;
+      }
+      let caught = catchBlock >= 0 ? liveIn[catchBlock] : Array.new<I32>(0);
+      m = 0;
+
+      while (m < caught.len()) {
+        if (caught[m] != payloads[i]) { _add(out, marks, stamp, caught[m]); }
+        m++;
+      }
+      liveOut[i] = out;
+      stamp++;
+      let live = Array.new<I32>(0);
+      m = 0;
+      _mark(defs[i], written, stamp);
+      _mark(kills[i], early, stamp);
+
+      while (m < uses[i].len()) {
+        _add(live, marks, stamp, uses[i][m]);
+        m++;
+      }
+      m = 0;
+
+      while (m < out.len()) {
+        if (written[out[m]] != stamp) { _add(live, marks, stamp, out[m]); }
+        m++;
+      }
+      m = 0;
+
+      while (m < caught.len()) {
+        if ((caught[m] != payloads[i]) && (early[caught[m]] != stamp)) { _add(live, marks, stamp, caught[m]); }
+        m++;
+      }
+
+      if (live.len() > liveIn[i].len()) {
+        liveIn[i] = live;
+        changed = true;
+      }
+      i--;
+    }
+  }
+  (liveIn, liveOut)
+};

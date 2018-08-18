@@ -1,6 +1,6 @@
 package ir;
 
-import { handlerTarget, instructionMayThrow } from ir.Model;
+import { handlerPayload, handlerTarget, instructionMayThrow } from ir.Model;
 import type { BasicBlock, Instruction, Terminator, ThrowHandler } from ir.Model;
 
 export let terminatorThrows: (Terminator) -> Bool = fn(terminator) {
@@ -24,6 +24,30 @@ export let blockMayThrow: (Array<Instruction>, Terminator) -> Bool = fn(instruct
     i++;
   }
   false
+};
+
+export let blockIndexes: (Array<BasicBlock>) -> Array<I32> = fn(blocks) {
+  let indexes = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) {
+      Block(id, _, _, _) => {
+        while (indexes.len() <= id) { indexes.push(-1); }
+        indexes[id] = i;
+        null
+      }
+    };
+    i++;
+  }
+  indexes
+};
+
+export let blockCatch: (BasicBlock, Array<I32>) -> Tuple<I32, I32> = fn(block, indexes) {
+  match (block) { Block(_, instructions, terminator, handler) => {
+    if ((handler == null) || !blockMayThrow(instructions, terminator)) { return (-1, -1); }
+    (indexes[handlerTarget(handler)], handlerPayload(handler))
+  } }
 };
 
 export let blockSuccessors: (BasicBlock) -> Array<I32> = fn(block) {

@@ -6,6 +6,7 @@ import type {
   Block,
   Expr,
   IntSize,
+  MatchAlternative,
   MatchArm,
   Package,
   Pattern,
@@ -26,7 +27,7 @@ test("represents recursive Jello syntax", fn(t) {
   let noType: ?Type = null;
   let noStatements: Array<Stmt> = [];
   let arms: Array<MatchArm> = [MatchArm.Arm(
-    Pattern.BindPattern("n"),
+    [MatchAlternative.Alternative(Pattern.BindPattern("n"), noGuard)],
     noGuard,
     Block.Block(noStatements, Expr.Variable("n"))
   )];

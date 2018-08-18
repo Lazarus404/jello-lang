@@ -2,7 +2,7 @@ package frontend;
 
 import type { Expr, Package, Stmt } from frontend.Ast;
 import { lexFileSource } from frontend.Lexer;
-import { parseSource, programSyntax } from frontend.Parser;
+import { packageSpan, parseSource, programSyntax } from frontend.Parser;
 import type { SourceSpan, Syntax } from frontend.Source;
 import { SourceSpan } from frontend.Source;
 import { exists, readText } from std.io.File;
@@ -140,13 +140,18 @@ _load = fn(path, parts) {
     if (parts.len() == 0) {
       match (packageName) {
         None => null, _ => {
+          _failure = packageSpan();
           throw "entry module must be package-less";
           null
         }
       };
     } else {
       if (!_packageMatches(packageName, parts)) { throw "module package does not match import path: " + path; }
-      if (tail != null) { throw "dependency module cannot have a tail expression: " + path; }
+
+      if (tail != null) {
+        _failure = _statementSpan(syntax, statements.len() as I32);
+        throw "dependency module cannot have a tail expression";
+      }
     }
     let imports = Array.new<Import>(0);
     let i = 0;

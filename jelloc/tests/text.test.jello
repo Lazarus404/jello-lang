@@ -1,0 +1,30 @@
+import { test, run } from jellotest.Runner;
+
+import { concatAll, decimal } from frontend.Text;
+
+test("concatenates parts in order", fn(t) {
+  t.is(concatAll(Array.new<Bytes>(0)), "");
+  t.is(concatAll(["one"]), "one");
+  t.is(concatAll(["a", "", "bc", "d", "efg"]), "abcdefg");
+  let parts = Array.new<Bytes>(0);
+  let expected = "";
+  let i = 0;
+
+  while (i < 37) {
+    parts.push(Std.string(i) + ",");
+    expected = expected + Std.string(i) + ",";
+    i++;
+  }
+  t.is(concatAll(parts), expected);
+});
+
+test("prints an I64 in decimal, at both extremes", fn(t) {
+  t.is(decimal(0 as I64), "0");
+  t.is(decimal(-42 as I64), "-42");
+  t.is(decimal((1 as I64) << 32), "4294967296");
+  let min = (1 as I64) << 63;
+  t.is(decimal(min), "-9223372036854775808");
+  t.is(decimal(min - 1), "9223372036854775807");
+});
+
+run()
