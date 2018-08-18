@@ -27,6 +27,12 @@ let _directory = fn(path: Bytes): Bytes {
   if (slash < 0) { "." } else { Bytes.slice(path, 0, slash) }
 };
 
+let _trimmed = fn(directory: Bytes): Bytes {
+  let end = directory.len();
+  while ((end > 1) && (Bytes.get_u8(directory, end - 1) == "/".code)) { end--; }
+  Bytes.slice(directory, 0, end)
+};
+
 let _dotted = fn(parts: Array<Bytes>): Bytes {
   let out = parts[0];
   let i = 1;
@@ -36,23 +42,6 @@ let _dotted = fn(parts: Array<Bytes>): Bytes {
     i++;
   }
   out
-};
-
-let _modulePath = fn(root: Bytes, std: Bytes, parts: Array<Bytes>): Bytes {
-  let path = root;
-  let i = 0;
-
-  if (parts[0] == "std") {
-    if (std == "") { throw "module " + _dotted(parts) + " is in the standard library; pass its directory with --std <dir>"; }
-    path = std;
-    i = 1;
-  }
-
-  while (i < parts.len()) {
-    path += "/" + parts[i];
-    i++;
-  }
-  path + ".jello"
 };
 
 let _packageMatches = fn(packageName: Package, parts: Array<Bytes>): Bool {
@@ -103,7 +92,7 @@ let _indexOf = fn(values: Array<Bytes>, value: Bytes): I32 {
 let _modules = Array.new<Module>(0);
 let _paths = Array.new<Bytes>(0);
 let _visiting = Array.new<Bytes>(0);
-let _root = ".";
+let _roots = Array.new<Bytes>(0);
 let _stdRoot = "";
 
 let _failure: ?SourceSpan = null;
@@ -116,11 +105,38 @@ let _statementSpan = fn(syntax: Syntax, index: I32): SourceSpan {
 
 let _load: (Bytes, Array<Bytes>) -> I32 = fn(_path, _parts) { -1 };
 
+let _modulePath = fn(parts: Array<Bytes>): Bytes {
+  let roots = _roots;
+  let relative = "";
+  let i = 0;
+
+  if (parts[0] == "std") {
+    if (_stdRoot == "") { throw "module " + _dotted(parts) + " is in the standard library; pass its directory with --std <dir>"; }
+    roots = [_stdRoot];
+    i = 1;
+  }
+
+  while (i < parts.len()) {
+    relative += "/" + parts[i];
+    i++;
+  }
+  relative += ".jello";
+  let tried = "";
+  i = 0;
+
+  while (i < roots.len()) {
+    let path = roots[i] + relative;
+    if ((_indexOf(_paths, path) >= 0) || exists(path)) { return path; }
+    tried += (i == 0 ? "" : ", ") + path;
+    i++;
+  }
+  throw "module " + _dotted(parts) + " not found: " + tried;
+  ""
+};
+
 let _import = fn(parts: Array<Bytes>): I32 {
   let at = _failure;
-  let path = _modulePath(_root, _stdRoot, parts);
-  if ((_indexOf(_paths, path) < 0) && !exists(path)) { throw "module " + _dotted(parts) + " not found: " + path; }
-  let dependency = _load(path, parts);
+  let dependency = _load(_modulePath(parts), parts);
   _failure = at;
   dependency
 };
@@ -217,13 +233,19 @@ _load = fn(path, parts) {
   (_modules.len() - 1) as I32
 };
 
-export let loadModules: (Bytes, Bytes) -> Array<Module> = fn(entryPath, std) {
+export let loadModules: (Bytes, Bytes, Array<Bytes>) -> Array<Module> = fn(entryPath, std, paths) {
   _modules = Array.new<Module>(0);
   _paths = Array.new<Bytes>(0);
   _visiting = Array.new<Bytes>(0);
   _failure = null;
-  _root = _directory(entryPath);
-  _stdRoot = std;
+  _roots = [_directory(entryPath)];
+  _stdRoot = _trimmed(std);
+  let i = 0;
+
+  while (i < paths.len()) {
+    _roots.push(_trimmed(paths[i]));
+    i++;
+  }
   _load(entryPath, Array.new<Bytes>(0));
   _modules
 };

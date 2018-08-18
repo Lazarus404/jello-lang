@@ -57,10 +57,10 @@ let spillCount = fn(function: Function, push: Bool): I32 {
   } }
 };
 
-let checkFile = fn(path: Bytes): Hir { typeCheckModules(loadModules(path, "")) };
+let checkFile = fn(path: Bytes): Hir { typeCheckModules(loadModules(path, "", Array.new<Bytes>(0))) };
 
 let initializationOrder = fn(path: Bytes): Array<Bytes> {
-  let modules = loadModules(path, "");
+  let modules = loadModules(path, "", Array.new<Bytes>(0));
   let paths = Array.new<Bytes>(0);
   let i = 0;
 
@@ -226,7 +226,7 @@ test("keeps source spans with explicit frontend results", fn(t) {
 
   t.throws(fn(_t) { parseSource(tokens, path, Array.new<I32>(0), Array.new<I32>(0)); });
 
-  let loaded = loadModules("itests/emit/modules/main.jello", "");
+  let loaded = loadModules("itests/emit/modules/main.jello", "", Array.new<Bytes>(0));
   parseProgram(lex("false"));
   t.is(spansBothModules(spansOf(typeCheckModules(loaded))), true);
 });
@@ -964,7 +964,7 @@ test("loads transitive direct functions dependency-first and rejects cycles", fn
   let ir = printIr(lowerProgram(hir));
   t.is(ir.indexOf("fn @1") >= 0, true);
   t.is(ir.indexOf("fn @2") > ir.indexOf("fn @1"), true);
-  t.throws(fn(_t) { loadModules("itests/emit/cycle/main.jello", ""); });
+  t.throws(fn(_t) { loadModules("itests/emit/cycle/main.jello", "", Array.new<Bytes>(0)); });
 });
 
 test("canonicalizes aliases across a diamond import graph", fn(t) {

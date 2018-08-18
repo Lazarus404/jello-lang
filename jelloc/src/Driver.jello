@@ -22,7 +22,7 @@ import { spanOf, spanPathOf } from frontend.Hir;
 
 enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; Help; }
 
-let _USAGE = "usage: jelloc <input.jello> [--out path] [--std dir] [--lex|--parse|--hir [--spans]|--ir|--jlo]\n\n  --out path   write the compiled module to path\n  --std dir    resolve std.* imports under dir\n  --lex        print the tokens\n  --parse      check the syntax only\n  --hir        print the typed HIR\n  --spans      with --hir, end each node's line with its source byte range\n  --ir         print the CFG IR\n  --jlo        print the allocated JLO instructions (with --out, also\n               write the compiled module)\n  --help       print this help\n\nExit status: 0 on success, 1 when the program does not compile (the\ndiagnostic is on standard error), 2 for a bad command line.\n";
+let _USAGE = "usage: jelloc <input.jello> [--out path] [--std dir] [--path dir]... [--lex|--parse|--hir [--spans]|--ir|--jlo]\n\n  --out path   write the compiled module to path\n  --std dir    resolve std.* imports under dir\n  --path dir   resolve other imports under dir too, after the input's\n               directory; repeatable, searched in order\n  --lex        print the tokens\n  --parse      check the syntax only\n  --hir        print the typed HIR\n  --spans      with --hir, end each node's line with its source byte range\n  --ir         print the CFG IR\n  --jlo        print the allocated JLO instructions (with --out, also\n               write the compiled module)\n  --help       print this help\n\nExit status: 0 on success, 1 when the program does not compile (the\ndiagnostic is on standard error), 2 for a bad command line.\n";
 
 let _exit = fn(code: I32, message: Bytes) {
   writeText("/dev/stderr", message);
@@ -31,7 +31,13 @@ let _exit = fn(code: I32, message: Bytes) {
 };
 
 let _std = "";
+let _roots = Array.new<Bytes>(0);
 let _spans = false;
+
+let _value = fn(rest: List<Bytes>, flag: Bytes, what: Bytes): Bytes {
+  if (List.is_nil(rest) || (List.head(rest) == "")) { throw flag + " requires " + what; }
+  List.head(rest)
+};
 
 let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
   let input = "";
@@ -57,14 +63,17 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
       match (arg) {
         "--out" => {
           cur = List.tail(cur);
-          if (List.is_nil(cur)) { throw "--out requires a path"; }
-          output = List.head(cur);
+          output = _value(cur, arg, "a path");
           null
         },
         "--std" => {
           cur = List.tail(cur);
-          if (List.is_nil(cur)) { throw "--std requires a directory"; }
-          _std = List.head(cur);
+          _std = _value(cur, arg, "a directory");
+          null
+        },
+        "--path" => {
+          cur = List.tail(cur);
+          _roots.push(_value(cur, arg, "a directory"));
           null
         },
         _ when (input == "") => {
@@ -86,7 +95,7 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Bytes, Mode, Bytes> {
   (input, mode == null ? Mode.Emit : mode, output)
 };
 
-let _checked = fn(input: Bytes): Hir { typeCheckModules(loadModules(input, _std)) };
+let _checked = fn(input: Bytes): Hir { typeCheckModules(loadModules(input, _std, _roots)) };
 let _allocated = fn(input: Bytes): Program { allocateProgram(legalizeJlo(lowerProgram(_checked(input)))) };
 
 let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
