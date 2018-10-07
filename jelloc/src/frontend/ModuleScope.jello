@@ -5,7 +5,7 @@ import { Module, modulePath } from frontend.Modules;
 
 export enum Binding {
   Global(id: I32); Function(index: I32); Loaded(library: Bytes, name: Bytes); Native(id: I32);
-  Namespace(module: I32, path: Bytes); Unbound;
+  Namespace(module: I32, path: Bytes); Intrinsic(module: I32, name: Bytes); Unbound;
 }
 
 let _names = Array.new<Bytes>(0);
@@ -13,12 +13,15 @@ let _bindings = Array.new<Binding>(0);
 let _imported = Array.new<Bool>(0);
 let _typeNames = Array.new<Bytes>(0);
 let _types = Array.new<I32>(0);
+let _opened = Array.new<Bool>(0);
 let _exportModules = Array.new<I32>(0);
 let _exportNames = Array.new<Bytes>(0);
 let _exportBindings = Array.new<Binding>(0);
+let _exportPublic = Array.new<Bool>(0);
 let _exportTypeModules = Array.new<I32>(0);
 let _exportTypeNames = Array.new<Bytes>(0);
 let _exportTypes = Array.new<I32>(0);
+let _exportTypePublic = Array.new<Bool>(0);
 
 let _indexIn = fn(names: Array<Bytes>, name: Bytes): I32 {
   let i = 0;
@@ -51,11 +54,13 @@ let _addType = fn(name: Bytes, ty: I32) {
   null
 };
 
-let _export = fn(modules: Array<I32>, names: Array<Bytes>, module: I32, name: Bytes): I32 {
+let _export = fn(modules: Array<I32>, names: Array<Bytes>, exported: Array<Bool>, module: I32, name: Bytes): I32 {
   let e = names.len() as I32 - 1;
   while ((e >= 0) && ((modules[e] != module) || (names[e] != name))) { e--; }
-  e
+  if ((e >= 0) && !exported[e] && !_opened[module]) { -1 } else { e }
 };
+let _value = fn(module: I32, name: Bytes): I32 { _export(_exportModules, _exportNames, _exportPublic, module, name) };
+let _type = fn(module: I32, name: Bytes): I32 { _export(_exportTypeModules, _exportTypeNames, _exportTypePublic, module, name) };
 
 let _unknownExport = fn(name: Bytes, path: Bytes): Bytes { "unknown export " + name + " in " + path };
 
@@ -63,9 +68,11 @@ export let resetExports: () -> Bool = fn() {
   _exportModules = Array.new<I32>(0);
   _exportNames = Array.new<Bytes>(0);
   _exportBindings = Array.new<Binding>(0);
+  _exportPublic = Array.new<Bool>(0);
   _exportTypeModules = Array.new<I32>(0);
   _exportTypeNames = Array.new<Bytes>(0);
   _exportTypes = Array.new<I32>(0);
+  _exportTypePublic = Array.new<Bool>(0);
   true
 };
 
@@ -75,16 +82,29 @@ export let enterModule: (Array<Import>, Array<Module>, Bool) -> Bool = fn(import
   _imported = Array.new<Bool>(0);
   _typeNames = Array.new<Bytes>(0);
   _types = Array.new<I32>(0);
+  _opened = Array.new<Bool>(0);
   let i = 0;
+
+  while (i < modules.len()) {
+    _opened.push(false);
+    i++;
+  }
+  i = 0;
+
+  while (i < imports.len()) {
+    match (imports[i]) { Import(_, module, _, _, true), Namespace(_, module, true) => { _opened[module] = true; }, _ => null };
+    i++;
+  }
+  i = 0;
 
   while (i < imports.len()) {
     match (imports[i]) {
-      Import(local, module, name, typeOnly) => {
-        let value = typeOnly ? -1 : _export(_exportModules, _exportNames, module, name);
-        let ty = _export(_exportTypeModules, _exportTypeNames, module, name);
+      Import(local, module, name, typeOnly, _) => {
+        let value = typeOnly ? -1 : _value(module, name);
+        let ty = _type(module, name);
         if (value >= 0) { _add(local, _exportBindings[value], true); } else if (ty >= 0) { if (_indexIn(_typeNames, local) < 0) { _addType(local, _exportTypes[ty]); } } else if (!typesOnly) { throw _unknownExport(name, modulePath(modules[module])); }
       },
-      Namespace(local, module) => _add(local, Binding.Namespace(module, modulePath(modules[module])), true),
+      Namespace(local, module, _) => _add(local, Binding.Namespace(module, modulePath(modules[module])), true),
     };
     i++;
   }
@@ -102,11 +122,16 @@ export let scoped: (Bytes) -> Binding = fn(name) {
 };
 
 export let namespaceMember: (I32, Bytes, Bytes) -> Binding = fn(module, path, name) {
-  let found = _export(_exportModules, _exportNames, module, name);
+  let found = _value(module, name);
   if (found >= 0) { return _exportBindings[found]; }
-  if (_export(_exportTypeModules, _exportTypeNames, module, name) >= 0) { throw name + " is a type; name it with import type { " + name + " } from the module"; }
+  if (_type(module, name) >= 0) { throw name + " is a type; name it with import type { " + name + " } from the module"; }
   throw _unknownExport(name, path);
   Binding.Unbound
+};
+
+export let exportedType: (I32, Bytes) -> I32 = fn(module, name) {
+  let found = _type(module, name);
+  found < 0 ? -1 : _exportTypes[found]
 };
 
 export let declareScopedType: (Bytes, I32) -> Bool = fn(name, ty) {
@@ -119,10 +144,11 @@ export let scopedType: (Bytes) -> I32 = fn(name) {
   found < 0 ? -1 : _types[found]
 };
 
-export let exportScopedType: (I32, Bytes) -> Bool = fn(module, name) {
+export let exportScopedType: (I32, Bytes, Bool) -> Bool = fn(module, name, exported) {
   _exportTypeModules.push(module);
   _exportTypeNames.push(name);
   _exportTypes.push(scopedType(name));
+  _exportTypePublic.push(exported);
   true
 };
 
@@ -131,9 +157,10 @@ export let isImported: (Bytes) -> Bool = fn(name) {
   (found >= 0) && _imported[found]
 };
 
-export let exportScoped: (I32, Bytes) -> Bool = fn(module, name) {
+export let exportScoped: (I32, Bytes, Bool) -> Bool = fn(module, name, exported) {
   _exportModules.push(module);
   _exportNames.push(name);
   _exportBindings.push(_bindings[_index(name)]);
+  _exportPublic.push(exported);
   true
 };

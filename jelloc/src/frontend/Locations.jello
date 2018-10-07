@@ -1,0 +1,21 @@
+package frontend;
+
+import { lineColumn, lineStarts } from frontend.Source;
+import { readText } from std.io.File;
+
+let _locatedPaths = Array.new<Bytes>(0);
+let _locatedTexts = Array.new<Bytes>(0);
+let _locatedStarts = Array.new<Array<I32>>(0);
+
+export let locate: (Bytes, I32) -> Tuple<I32, I32> = fn(path, offset) {
+  let i = 0;
+  while ((i < _locatedPaths.len()) && (_locatedPaths[i] != path)) { i++; }
+
+  if (i == _locatedPaths.len()) {
+    let text = readText(path);
+    _locatedPaths.push(path);
+    _locatedTexts.push(text);
+    _locatedStarts.push(lineStarts(text));
+  }
+  lineColumn(_locatedTexts[i], _locatedStarts[i], offset)
+};

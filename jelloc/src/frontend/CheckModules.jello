@@ -1,26 +1,29 @@
 package frontend;
 
-import type { Expr as AstExpr, Program as AstProgram, Type as AstType } from frontend.Ast;
+import type { Expr as AstExpr, Program as AstProgram, Stmt, Type as AstType } from frontend.Ast;
 import { bindPatternName, isBindPattern } from frontend.Ast;
 import { checkAggregateExpr } from frontend.CheckAggregates;
 import { checkEnumExpr, declareEnums } from frontend.CheckEnums;
+import { resetDerived, structuralEquality } from frontend.CheckDerived;
+import { checkAssertion, declareAssertions } from frontend.CheckTesting;
 import { checkValueExpr } from frontend.CheckValues;
 import type { Hir } from frontend.Hir;
-import { Kind, Op, TYPE_NULL, declareGlobal, declareNative, globalNameOf, innerOf, isKind, kindOf, node, spanOf, typeArg, typeArgCount, typeName, typeOf } from frontend.Hir;
+import { Kind, Op, TYPE_NULL, declareGlobal, declareNative, functionType, globalNameOf, innerOf, isKind, kindOf, node, spanOf, typeArg, typeArgCount, typeName, typeOf } from frontend.Hir;
 import { firstUninitializedRead } from frontend.InitOrder;
-import { Binding, declareScoped, enterModule, exportScoped, resetExports, scoped } from frontend.ModuleScope;
+import { Binding, declareScoped, enterModule, exportScoped, exportedType, resetExports, scoped } from frontend.ModuleScope;
 import type { Import, Module } from frontend.Modules;
-import { Import, Module } from frontend.Modules;
+import { Import, Module, isHookName, isTestModule, isTestName, moduleName } from frontend.Modules;
 import { programSyntax } from frontend.Parser;
 import type { Syntax } from frontend.Source;
 import { Syntax } from frontend.Source;
 import {
-  beginCheck, checkEffect, checkFunctionBody, checkOperand, checkType, declareFunctions, enterSyntax, finishProgram,
-  checkWhile, isDirectFunction, syntaxChild, takeRegexpInits, unsupportedStatement, useAggregateChecks, useEnumChecks, useValueChecks,
+  beginCheck, bindingType, checkEffect, checkFunctionBody, checkOperand, checkType, declareFunctions, enterSyntax, finishProgram,
+  checkWhile, isDirectFunction, syntaxChild, takeRegexpInits, unsupportedStatement, useAggregateChecks, useAssertionChecks, useEnumChecks, useStructuralEquality, useValueChecks,
 } from frontend.TypeCheck;
 import { verifyHir } from frontend.VerifyHir;
 
 let _initializers = Array.new<I32>(0);
+let _testing = -1;
 
 let _isLoaded = fn(value: AstExpr): Bool {
   match (value) { Variable(name) => match (scoped(name)) { Loaded(_, _) => true, _ => false }, _ => false }
@@ -72,16 +75,41 @@ let _initializeFirst = fn(first: I32, inits: Array<I32>) {
   null
 };
 
-let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
-  match (modules[index]) { Module(_, statements, syntax, tail, imports) => {
+let _publish = fn(index: I32, name: Bytes, exported: Bool, opened: Bool) {
+  if (exported || opened) { exportScoped(index, name, exported); }
+  null
+};
+
+let _checkSignature = fn(statement: Stmt, test: I32) {
+  match (statement) {
+    LetStmt(_, _, pattern, _, _, _) when (isBindPattern(pattern)) => {
+      let name = bindPatternName(pattern);
+
+      if (isTestName(name) || isHookName(name)) {
+        let params = isTestName(name) ? [test] : Array.new<I32>(0);
+
+        if (bindingType(scoped(name)) != functionType(params, TYPE_NULL)) {
+          throw "wrong signature for " + name + ", must be: let " + name + " = fn(" + (params.len() == 0 ? "" : "t: Test") + ") { ... }";
+        }
+      }
+      null
+    },
+    _ => null,
+  }
+};
+
+let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bool): I32 {
+  match (modules[index]) { Module(_, dotted, statements, syntax, tail, imports) => {
     let outer = enterSyntax(syntax);
     enterModule(imports, modules, !runs);
-    declareEnums(statements, index);
+    declareEnums(statements, index, opened);
 
     if (!runs) {
       enterSyntax(outer);
       return -1;
     }
+    if (index == _testing) { declareAssertions(index); }
+    let test = isTestModule(dotted) && (_testing >= 0) ? exportedType(_testing, "Test") : -1;
     let first = _initializers.len() as I32;
     let functionIndex = declareFunctions(statements);
     let i = 0;
@@ -111,13 +139,13 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
             Loaded(library, native) => declareScoped(name, Binding.Native(declareNative(library, native, _marshalled(ty, native)))),
             _ => false,
           }, _ => false };
-          if (exported) { exportScoped(index, name); }
+          _publish(index, name, exported, opened);
           null
         },
         LetStmt(_, exported, pattern, _, _, value) when (isDirectFunction(statements[i])) => {
           match (value) { Function(_, _, body, _) => checkFunctionBody(functionIndex, body, syntaxChild(0)), _ => true };
           functionIndex++;
-          if (exported) { exportScoped(index, bindPatternName(pattern)); }
+          _publish(index, bindPatternName(pattern), exported, opened);
           null
         },
         LetStmt(isConst, exported, pattern, typeParams, annotation, value) when (isBindPattern(pattern)) => {
@@ -135,7 +163,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
             declareScoped(name, Binding.Global(global));
           }
           _initializers.push(node(Op.Declare, 0, 0, 0, [node(Op.InitGlobal, ty, global, 0, [checked])]));
-          if (exported) { exportScoped(index, name); }
+          _publish(index, name, exported, opened);
           null
         },
         LetStmt(_, _, _, _, _, _) => {
@@ -156,6 +184,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool): I32 {
           null
         },
       };
+      if (test >= 0) { _checkSignature(statements[i], test); }
       enterSyntax(parent);
       i++;
     }
@@ -182,25 +211,46 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
   useEnumChecks(checkEnumExpr);
   useAggregateChecks(checkAggregateExpr);
   useValueChecks(checkValueExpr);
+  useAssertionChecks(checkAssertion);
+  useStructuralEquality(structuralEquality);
+  resetDerived();
   _initializers = Array.new<I32>(0);
   let entry = (modules.len() - 1) as I32;
   let i = 0;
   let tail = -1;
+  _testing = -1;
+
+  while (i <= entry) {
+    if (moduleName(modules[i]) == "std.testing") { _testing = i; }
+    i++;
+  }
+  i = 0;
   let runs = Array.new<Bool>(0);
+  let opened = Array.new<Bool>(0);
 
   while (i <= entry) {
     runs.push(i == entry);
+    opened.push(false);
     i++;
   }
   i = entry;
 
   while (i >= 0) {
     if (runs[i]) {
-      match (modules[i]) { Module(_, _, _, _, imports) => {
+      match (modules[i]) { Module(_, _, _, _, _, imports) => {
         let j = 0;
 
         while (j < imports.len()) {
-          match (imports[j]) { Import(_, module, _, false), Namespace(_, module) => { runs[module] = true; }, _ => null };
+          match (imports[j]) {
+            Import(_, module, _, typeOnly, privately) => {
+              if (!typeOnly) { runs[module] = true; }
+              if (privately) { opened[module] = true; }
+            },
+            Namespace(_, module, privately) => {
+              runs[module] = true;
+              if (privately) { opened[module] = true; }
+            },
+          };
           j++;
         }
       } };
@@ -210,11 +260,11 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
   i = 0;
 
   while (i <= entry) {
-    tail = _checkModule(modules, i, runs[i]);
+    tail = _checkModule(modules, i, runs[i], opened[i]);
     i++;
   }
 
-  match (modules[entry]) { Module(_, _, syntax, _, _) => {
+  match (modules[entry]) { Module(_, _, _, syntax, _, _) => {
     enterSyntax(syntax);
     if (tail < 0) { throw "program requires a trailing expression"; }
   } };
@@ -234,7 +284,7 @@ export let typeCheckProgramWithSyntax: (AstProgram, Syntax) -> Hir = fn(program,
       }
     };
     let path = match (syntax) { Node(path, _, _, _, _) => path };
-    typeCheckModules([Module.Module(path, statements, syntax, tail, Array.new<Import>(0))])
+    typeCheckModules([Module.Module(path, "", statements, syntax, tail, Array.new<Import>(0))])
   } }
 };
 

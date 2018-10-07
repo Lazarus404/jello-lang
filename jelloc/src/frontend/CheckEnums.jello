@@ -6,7 +6,7 @@ import { checkMatch } from frontend.CheckMatch;
 import { declareScopedType, exportScopedType, scopedType } from frontend.ModuleScope;
 import { checkOperand, checkType, enterSyntax, syntaxChild } from frontend.TypeCheck;
 
-export let declareEnums: (Array<Stmt>, I32) -> Bool = fn(statements, module) {
+export let declareEnums: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, module, opened) {
   let i = 0;
 
   while (i < statements.len()) {
@@ -15,7 +15,7 @@ export let declareEnums: (Array<Stmt>, I32) -> Bool = fn(statements, module) {
         let parent = enterSyntax(syntaxChild(i));
         if (typeParams.len() != 0) { throw "enum type parameters are not supported yet: " + name; }
         declareScopedType(name, declareEnum(name));
-        if (exported) { exportScopedType(module, name); }
+        if (exported || opened) { exportScopedType(module, name, exported); }
         enterSyntax(parent);
         null
       },

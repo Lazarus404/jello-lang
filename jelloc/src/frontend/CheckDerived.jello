@@ -1,0 +1,339 @@
+package frontend;
+
+import type { BinaryOp } from frontend.Ast;
+import { BinaryOp } from frontend.Ast;
+import frontend.Hir as H;
+import { Kind, Op } from frontend.Hir;
+import { equalValues } from frontend.CheckValues;
+import { Binding } from frontend.ModuleScope;
+import { callFunction, defineFunction, generateFunction, isNullaryVariant, newBinding } from frontend.TypeCheck;
+
+let _indexOf = fn(values: Array<I32>, value: I32): I32 {
+  let i = 0;
+
+  while (i < values.len()) {
+    if (values[i] == value) { return i; }
+    i++;
+  }
+  -1
+};
+
+let _deciding = Array.new<I32>(0);
+let _unsupported: (I32, Bool) -> I32 = fn(_ty, _printing) { -1 };
+
+let _variantUnsupported = fn(ty: I32, tag: I32, printing: Bool): I32 {
+  let field = 0;
+  let found = -1;
+
+  while ((found < 0) && (field < H.fieldCount(ty, tag))) {
+    found = _unsupported(H.fieldType(ty, tag, field), printing);
+    field++;
+  }
+  found
+};
+
+let _fieldsUnsupported = fn(ty: I32, printing: Bool): I32 {
+  _deciding.push(ty);
+  let tag = 0;
+  let found = -1;
+
+  while ((found < 0) && (tag < H.variantCount(ty))) {
+    found = _variantUnsupported(ty, tag, printing);
+    tag++;
+  }
+  _deciding.pop();
+  found
+};
+_unsupported = fn(ty, printing) {
+  match (H.kindOf(ty)) {
+    Function, ByteBuffer => ty,
+    Dynamic => printing ? -1 : ty,
+    Null => H.innerOf(ty) < 0 ? -1 : _unsupported(H.innerOf(ty), printing),
+    Array, List => _unsupported(H.innerOf(ty), printing),
+    Tuple => {
+      let i = 0;
+      let found = -1;
+
+      while ((found < 0) && (i < H.typeArgCount(ty))) {
+        found = _unsupported(H.typeArg(ty, i), printing);
+        i++;
+      }
+      found
+    },
+    Enum => _indexOf(_deciding, ty) < 0 ? _fieldsUnsupported(ty, printing) : -1,
+    _ => -1,
+  }
+};
+
+let _tagOnly = fn(ty: I32): Bool {
+  let tag = 0;
+
+  while (tag < H.variantCount(ty)) {
+    if (H.fieldCount(ty, tag) > 0) { return false; }
+    tag++;
+  }
+  true
+};
+
+let _bool = fn(value: Bool): I32 { H.node(Op.Bool, H.TYPE_BOOL, value ? 1 : 0, 0, []) };
+let _i32 = fn(value: I32): I32 { H.node(Op.I32, H.TYPE_I32, value, 0, []) };
+let _and = fn(left: I32, right: I32): I32 { H.node(Op.And, H.TYPE_BOOL, 0, 0, [left, right]) };
+let _not = fn(value: I32): I32 { H.node(Op.Not, H.TYPE_BOOL, 0, 0, [value]) };
+let _tag = fn(value: I32): I32 { H.node(Op.EnumTag, H.TYPE_I32, 0, 0, [value]) };
+
+let _unlessEqual = fn(equal: I32): I32 {
+  H.node(Op.IfStatement, 0, 0, 0, [_not(equal), H.node(Op.Block, 0, 0, 0, [H.node(Op.Return, 0, 0, 0, [_bool(false)])])])
+};
+let _expression = fn(value: I32): I32 { H.node(Op.Expression, 0, 0, 0, [value]) };
+
+let _tuples = fn(left: I32, right: I32, ty: I32): Array<I32> {
+  let equal = -1;
+  let i = H.typeArgCount(ty) - 1;
+
+  while (i >= 0) {
+    let field = H.typeArg(ty, i);
+    let same = equalValues(BinaryOp.Equal, H.node(Op.TupleField, field, i, 0, [H.local(left, ty)]), H.node(Op.TupleField, field, i, 0, [H.local(right, ty)]));
+    equal = equal < 0 ? same : _and(same, equal);
+    i--;
+  }
+  [equal < 0 ? _bool(true) : equal]
+};
+
+let _field = fn(binding: I32, ty: I32, tag: I32, field: I32): I32 {
+  H.node(Op.EnumField, H.fieldType(ty, tag, field), field, tag, [H.local(binding, ty)])
+};
+
+let _enums = fn(left: I32, right: I32, ty: I32): Array<I32> {
+  let fields = _bool(true);
+  let tag = H.variantCount(ty) - 1;
+
+  while (tag >= 0) {
+    let count = H.fieldCount(ty, tag);
+
+    if (count > 0) {
+      let equal = -1;
+      let field = count - 1;
+
+      while (field >= 0) {
+        let same = equalValues(BinaryOp.Equal, _field(left, ty, tag, field), _field(right, ty, tag, field));
+        equal = equal < 0 ? same : _and(same, equal);
+        field--;
+      }
+      fields = H.node(Op.If, H.TYPE_BOOL, 0, 0, [H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(H.local(left, ty)), _i32(tag)]), equal, fields]);
+    }
+    tag--;
+  }
+  [_and(H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(H.local(left, ty)), _tag(H.local(right, ty))]), fields)]
+};
+
+let _arrays = fn(left: I32, right: I32, ty: I32): Array<I32> {
+  let length = newBinding();
+  let index = newBinding();
+  let element = H.innerOf(ty);
+  let lengthOf = fn(binding: I32): I32 { H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [H.local(binding, ty)]) };
+  let at = fn(binding: I32): I32 { H.node(Op.ArrayGet, element, 0, 0, [H.local(binding, ty), H.local(index, H.TYPE_I32)]) };
+  let next = H.node(Op.Assign, H.TYPE_I32, index, 0, [H.node(Op.Add, H.TYPE_I32, 0, 0, [H.local(index, H.TYPE_I32), _i32(1)])]);
+  let more = H.node(Op.Lt, H.TYPE_BOOL, 0, 0, [H.local(index, H.TYPE_I32), H.local(length, H.TYPE_I32)]);
+  [
+    H.declareBinding(Op.Const, length, "length", lengthOf(left)),
+    _unlessEqual(H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [H.local(length, H.TYPE_I32), lengthOf(right)])),
+    H.declareBinding(Op.Let, index, "index", _i32(0)),
+    H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, [_unlessEqual(equalValues(BinaryOp.Equal, at(left), at(right))), _expression(next)])]),
+    _bool(true)
+  ]
+};
+
+let _lists = fn(left: I32, right: I32, ty: I32): Array<I32> {
+  let a = newBinding();
+  let b = newBinding();
+  let element = H.innerOf(ty);
+  let isNil = fn(binding: I32): I32 { H.node(Op.ListIsNil, H.TYPE_BOOL, 0, 0, [H.local(binding, ty)]) };
+  let head = fn(binding: I32): I32 { H.node(Op.ListHead, element, 0, 0, [H.local(binding, ty)]) };
+  let advance = fn(binding: I32): I32 { _expression(H.node(Op.Assign, ty, binding, 0, [H.node(Op.ListTail, ty, 0, 0, [H.local(binding, ty)])])) };
+  let same = H.node(Op.And, H.TYPE_BOOL, 0, 0, [_not(isNil(b)), equalValues(BinaryOp.Equal, head(a), head(b))]);
+  [
+    H.declareBinding(Op.Let, a, "left", H.local(left, ty)),
+    H.declareBinding(Op.Let, b, "right", H.local(right, ty)),
+    H.node(Op.While, 0, 0, 0, [_not(isNil(a)), H.node(Op.Block, 0, 0, 0, [_unlessEqual(same), advance(a), advance(b)])]),
+    isNil(b)
+  ]
+};
+
+let _equalTypes = Array.new<I32>(0);
+let _equalFunctions = Array.new<I32>(0);
+let _stringTypes = Array.new<I32>(0);
+let _stringFunctions = Array.new<I32>(0);
+
+export let resetDerived: () -> Bool = fn() {
+  _equalTypes = Array.new<I32>(0);
+  _equalFunctions = Array.new<I32>(0);
+  _stringTypes = Array.new<I32>(0);
+  _stringFunctions = Array.new<I32>(0);
+  true
+};
+
+let _derived = fn(types: Array<I32>, functions: Array<I32>, name: Bytes, params: Array<Bytes>, ty: I32, result: I32, body: (Array<I32>, I32) -> Array<I32>): I32 {
+  let found = _indexOf(types, ty);
+  if (found >= 0) { return functions[found]; }
+  let paramTypes = Array.new<I32>(0);
+  let bindings = Array.new<I32>(0);
+  let children = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < params.len()) {
+    let binding = newBinding();
+    paramTypes.push(ty);
+    bindings.push(binding);
+    children.push(H.node(Op.Parameter, ty, binding, H.bytesId(params[i]), []));
+    i++;
+  }
+  let fnType = H.functionType(paramTypes, result);
+  let index = generateFunction(name, params, fnType);
+  types.push(ty);
+  functions.push(index);
+  children.push(H.node(Op.Block, result, 0, 1, body(bindings, ty)));
+  defineFunction(index, H.node(Op.Function, fnType, H.bytesId(name), 0, children));
+  index
+};
+
+let _equalBody = fn(params: Array<I32>, ty: I32): Array<I32> {
+  match (H.kindOf(ty)) {
+    Tuple => _tuples(params[0], params[1], ty),
+    Enum => _enums(params[0], params[1], ty),
+    Array => _arrays(params[0], params[1], ty),
+    _ => _lists(params[0], params[1], ty),
+  }
+};
+
+export let structuralEquality: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
+  let ty = H.typeOf(left);
+  let bad = _unsupported(ty, false);
+  if (bad >= 0) { throw "operator == is not defined for " + H.typeName(ty) + ", which holds " + H.typeName(bad); }
+  let equal = H.isKind(ty, Kind.Enum) && _tagOnly(ty)
+    ? H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(left), _tag(right)])
+    : callFunction(Binding.Function(_derived(_equalTypes, _equalFunctions, "equal", ["left", "right"], ty, H.TYPE_BOOL, _equalBody)), "equal", [left, right]);
+  match (op) { NotEqual => _not(equal), _ => equal }
+};
+
+export let bytesOf: (Bytes) -> I32 = fn(value) { H.node(Op.Bytes, H.TYPE_BYTES, H.bytesId(value), 0, []) };
+let _concat = fn(left: I32, right: I32): I32 { H.node(Op.BytesConcat, H.TYPE_BYTES, 0, 0, [left, right]) };
+let _callStd = fn(name: Bytes, param: I32, arg: I32): I32 { H.node(Op.CallNative, H.TYPE_BYTES, H.stdNative(name, [param], H.TYPE_BYTES), 0, [arg]) };
+
+let _shown: (I32, Bool) -> I32 = fn(_value, _quoted) { -1 };
+
+let _listed = fn(open: Bytes, texts: Array<I32>, close: Bytes): I32 {
+  let joined = bytesOf(open);
+  let i = 0;
+
+  while (i < texts.len()) {
+    joined = _concat(i == 0 ? joined : _concat(joined, bytesOf(", ")), texts[i]);
+    i++;
+  }
+  _concat(joined, bytesOf(close))
+};
+
+let _tupleText = fn(value: I32, ty: I32): Array<I32> {
+  let texts = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < H.typeArgCount(ty)) {
+    texts.push(_shown(H.node(Op.TupleField, H.typeArg(ty, i), i, 0, [H.local(value, ty)]), true));
+    i++;
+  }
+  [_listed("(", texts, ")")]
+};
+
+let _variantName = fn(ty: I32, tag: I32): Bytes { H.typeName(ty) + "." + H.variantName(ty, tag) };
+
+let _variantText = fn(value: I32, ty: I32, tag: I32): I32 {
+  let name = _variantName(ty, tag);
+  if (H.fieldCount(ty, tag) == 0) { return bytesOf(name); }
+  let texts = Array.new<I32>(0);
+  let field = 0;
+
+  while (field < H.fieldCount(ty, tag)) {
+    texts.push(_shown(_field(value, ty, tag, field), true));
+    field++;
+  }
+  _listed(name + "(", texts, ")")
+};
+
+let _enumText = fn(value: I32, ty: I32): Array<I32> {
+  let tag = H.variantCount(ty) - 1;
+  let text = _variantText(value, ty, tag);
+
+  while (tag > 0) {
+    tag--;
+    let same = H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(H.local(value, ty)), _i32(tag)]);
+    text = H.node(Op.If, H.TYPE_BYTES, 0, 0, [same, _variantText(value, ty, tag), text]);
+  }
+  [text]
+};
+
+let _bracketed = fn(setup: I32, more: I32, element: I32, next: I32): Array<I32> {
+  let text = newBinding();
+  let separator = newBinding();
+  let appended = _concat(_concat(H.local(text, H.TYPE_BYTES), H.local(separator, H.TYPE_BYTES)), _shown(element, true));
+  let body = [
+    _expression(H.node(Op.Assign, H.TYPE_BYTES, text, 0, [appended])),
+    _expression(H.node(Op.Assign, H.TYPE_BYTES, separator, 0, [bytesOf(", ")])),
+    _expression(next)
+  ];
+  [
+    setup,
+    H.declareBinding(Op.Let, text, "text", bytesOf("[")),
+    H.declareBinding(Op.Let, separator, "separator", bytesOf("")),
+    H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, body)]),
+    _concat(H.local(text, H.TYPE_BYTES), bytesOf("]"))
+  ]
+};
+
+let _arrayText = fn(value: I32, ty: I32): Array<I32> {
+  let index = newBinding();
+  let more = H.node(Op.Lt, H.TYPE_BOOL, 0, 0, [H.local(index, H.TYPE_I32), H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [H.local(value, ty)])]);
+  let element = H.node(Op.ArrayGet, H.innerOf(ty), 0, 0, [H.local(value, ty), H.local(index, H.TYPE_I32)]);
+  let next = H.node(Op.Assign, H.TYPE_I32, index, 0, [H.node(Op.Add, H.TYPE_I32, 0, 0, [H.local(index, H.TYPE_I32), _i32(1)])]);
+  _bracketed(H.declareBinding(Op.Let, index, "index", _i32(0)), more, element, next)
+};
+
+let _listText = fn(value: I32, ty: I32): Array<I32> {
+  let rest = newBinding();
+  let more = _not(H.node(Op.ListIsNil, H.TYPE_BOOL, 0, 0, [H.local(rest, ty)]));
+  let head = H.node(Op.ListHead, H.innerOf(ty), 0, 0, [H.local(rest, ty)]);
+  let next = H.node(Op.Assign, ty, rest, 0, [H.node(Op.ListTail, ty, 0, 0, [H.local(rest, ty)])]);
+  _bracketed(H.declareBinding(Op.Let, rest, "rest", H.local(value, ty)), more, head, next)
+};
+
+let _nullableText = fn(value: I32, ty: I32): Array<I32> {
+  let present = _shown(H.node(Op.Unwrap, H.innerOf(ty), 0, 0, [H.local(value, ty)]), true);
+  [H.node(Op.If, H.TYPE_BYTES, 0, 0, [H.node(Op.IsNull, H.TYPE_BOOL, 0, 0, [H.local(value, ty)]), bytesOf("null"), present])]
+};
+
+let _stringBody = fn(params: Array<I32>, ty: I32): Array<I32> {
+  match (H.kindOf(ty)) {
+    Tuple => _tupleText(params[0], ty),
+    Enum => _enumText(params[0], ty),
+    Array => _arrayText(params[0], ty),
+    List => _listText(params[0], ty),
+    _ => _nullableText(params[0], ty),
+  }
+};
+
+_shown = fn(value, quoted) {
+  let ty = H.typeOf(value);
+  if (isNullaryVariant(value)) { return bytesOf(_variantName(ty, H.valueOf(value))); }
+
+  match (H.kindOf(ty)) {
+    Bytes => quoted ? _callStd("quote", H.TYPE_BYTES, value) : value,
+    Bool, I32, I64 => _callStd("to_string", H.TYPE_DYNAMIC, H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [value])),
+    Dynamic => _callStd("to_string", H.TYPE_DYNAMIC, value),
+    Null when (H.innerOf(ty) < 0) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [_expression(value), bytesOf("null")]),
+    _ => callFunction(Binding.Function(_derived(_stringTypes, _stringFunctions, "string", ["value"], ty, H.TYPE_BYTES, _stringBody)), "string", [value]),
+  }
+};
+
+export let unprintable: (I32) -> I32 = fn(value) { _unsupported(H.typeOf(value), true) };
+
+export let stringOf: (I32) -> I32 = fn(value) { _shown(value, false) };
+
+export let literalOf: (I32) -> I32 = fn(value) { _shown(value, true) };

@@ -425,6 +425,18 @@ export let finishHir: (I32) -> Hir = fn(root) {
 };
 
 let _typeName: (I32) -> Bytes = fn(_ty) { "" };
+
+let _typeArgNames = fn(ty: I32): Bytes {
+  let output = "";
+  let i = 0;
+
+  while (i < typeArgCount(ty)) {
+    if (i > 0) { output += ", "; }
+    output += _typeName(typeArg(ty, i));
+    i++;
+  }
+  output
+};
 _typeName = fn(ty) {
   match (kindOf(ty)) {
     Bool => "bool",
@@ -434,18 +446,8 @@ _typeName = fn(ty) {
     Array => "array<" + _typeName(innerOf(ty)) + ">",
     List => "list<" + _typeName(innerOf(ty)) + ">",
     Null => innerOf(ty) < 0 ? "null" : "?" + _typeName(innerOf(ty)),
-    Tuple => {
-      let output = "tuple<";
-      let i = 0;
-
-      while (i < typeArgCount(ty)) {
-        if (i > 0) { output += ", "; }
-        output += _typeName(typeArg(ty, i));
-        i++;
-      }
-      output + ">"
-    },
-    Function => "function",
+    Tuple => "tuple<" + _typeArgNames(ty) + ">",
+    Function => "(" + _typeArgNames(ty) + ") -> " + _typeName(innerOf(ty)),
     Enum => _bytes[innerOf(ty)],
     Dynamic => "dynamic",
     ByteBuffer => "bytebuffer",

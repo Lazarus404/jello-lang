@@ -4,6 +4,7 @@ import type { AssignOp, Expr as AstExpr, IncDecOp, Type as AstType } from fronte
 import { AssignOp } from frontend.Ast;
 import frontend.Hir as H;
 import { Kind, Op } from frontend.Hir;
+import { stringOf, unprintable } from frontend.CheckDerived;
 import { bufferHint, checkOperand, checkPresent, checkType, enterSyntax, isBound, newBinding, one, syntaxChild } from frontend.TypeCheck;
 
 let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
@@ -236,23 +237,22 @@ let _stepIndex = fn(base: AstExpr, index: AstExpr, op: IncDecOp, prefix: Bool): 
   _updateIndex(array, checkedIndex, increment ? AssignOp.Add : AssignOp.Subtract, one(_elementOf(array)), true, !prefix)
 };
 
-let _arity = fn(args: Array<AstExpr>, count: I32, name: Bytes) {
+export let checkArity: (Array<AstExpr>, I32, Bytes) -> Bool = fn(args, count, name) {
   if (args.len() != count) { throw name + " takes " + Std.string(count) + (count == 1 ? " argument" : " arguments"); }
-  null
+  true
 };
 
 let _string = fn(args: Array<AstExpr>): I32 {
-  _arity(args, 1, "Std.string");
+  checkArity(args, 1, "Std.string");
   let value = checkOperand(args[0], 1, -1);
   let ty = H.typeOf(value);
-  if (ty == H.TYPE_BYTES) { return value; }
+  let bad = unprintable(value);
 
-  if ((ty != H.TYPE_BOOL) && (ty != H.TYPE_I32) && (ty != H.TYPE_I64) && (ty != H.TYPE_DYNAMIC)) {
+  if (bad >= 0) {
     enterSyntax(syntaxChild(1));
-    throw "Std.string supports Bool, I32, I64, Bytes and Dynamic, not " + H.typeName(ty) + bufferHint(ty);
+    throw "Std.string cannot print " + H.typeName(ty) + (bad == ty ? "" : ", which holds " + H.typeName(bad)) + bufferHint(bad);
   }
-  let boxed = ty == H.TYPE_DYNAMIC ? value : H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [value]);
-  _callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [boxed])
+  stringOf(value)
 };
 
 let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<AstExpr>): I32 {
@@ -263,55 +263,55 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
 
   match (qualified) {
     "Array.new" => {
-      _arity(args, 1, qualified);
+      checkArity(args, 1, qualified);
       H.node(Op.ArrayNew, H.arrayType(checkType(types[0])), 0, 0, [_i32(args[0], 1, "array length")])
     },
     "Array.len" => {
-      _arity(args, 1, qualified);
+      checkArity(args, 1, qualified);
       H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [_of(args[0], 1, Kind.Array, "Array.len requires an array")])
     },
     "Array.resize" => {
-      _arity(args, 2, qualified);
+      checkArity(args, 2, qualified);
       let array = _of(args[0], 1, Kind.Array, "Array.resize requires an array");
       H.node(Op.ArrayResize, H.typeOf(array), 0, 0, [array, _i32(args[1], 2, "array length")])
     },
     "Bytes.len" => {
-      _arity(args, 1, qualified);
+      checkArity(args, 1, qualified);
       H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [_readable(args[0], 1, "Bytes.len requires Bytes")])
     },
     "Bytes.get_u8" => {
-      _arity(args, 2, qualified);
+      checkArity(args, 2, qualified);
       let bytes = _readable(args[0], 1, "Bytes.get_u8 requires Bytes");
       H.node(Op.BytesGet, H.TYPE_I32, 0, 0, [bytes, _i32(args[1], 2, "byte index")])
     },
     "Bytes.new" => {
-      _arity(args, 1, qualified);
+      checkArity(args, 1, qualified);
       H.node(Op.BytesNew, H.TYPE_BYTE_BUFFER, 0, 0, [_i32(args[0], 1, "bytes length")])
     },
     "Bytes.set_u8" => {
-      _arity(args, 3, qualified);
+      checkArity(args, 3, qualified);
       let buffer = _of(args[0], 1, Kind.ByteBuffer, "Bytes.set_u8 requires a buffer from Bytes.new; Bytes values are immutable");
       let index = _i32(args[1], 2, "byte index");
       H.node(Op.BytesSet, H.TYPE_I32, 0, 0, [buffer, index, _i32(args[2], 3, "byte")])
     },
     "Bytes.slice" => {
-      _arity(args, 3, qualified);
+      checkArity(args, 3, qualified);
       let bytes = _readable(args[0], 1, "Bytes.slice requires Bytes");
       let start = _i32(args[1], 2, "slice start");
       H.node(Op.BytesSlice, H.TYPE_BYTES, 0, 0, [bytes, start, _i32(args[2], 3, "slice length")])
     },
     "List.nil" => {
-      _arity(args, 0, qualified);
+      checkArity(args, 0, qualified);
       H.node(Op.ListNil, H.listType(checkType(types[0])), 0, 0, [])
     },
     "List.cons" => {
-      _arity(args, 2, qualified);
+      checkArity(args, 2, qualified);
       let tail = _of(args[1], 2, Kind.List, "List.cons requires a list");
       let ty = H.typeOf(tail);
       H.node(Op.ListCons, ty, 0, 0, [_element(args[0], 1, H.innerOf(ty), "list"), tail])
     },
     "List.head", "List.tail", "List.is_nil" => {
-      _arity(args, 1, qualified);
+      checkArity(args, 1, qualified);
       let list = _of(args[0], 1, Kind.List, qualified + " requires a list");
       let ty = H.typeOf(list);
 
@@ -323,7 +323,7 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
     },
     "Std.string" => _string(args),
     "System.exit" => {
-      _arity(args, 1, qualified);
+      checkArity(args, 1, qualified);
       _callStd("process_exit", [H.TYPE_I32], H.TYPE_I32, [_i32(args[0], 1, "exit status")])
     },
     _ => {
@@ -341,20 +341,20 @@ let _method = fn(base: AstExpr, name: Bytes, args: Array<AstExpr>): I32 {
 
   match (H.kindOf(ty)) {
     Bytes, ByteBuffer when (name == "len") => {
-      _arity(args, 0, "len");
+      checkArity(args, 0, "len");
       H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [receiver])
     },
     Array => match (name) {
       "len" => {
-        _arity(args, 0, name);
+        checkArity(args, 0, name);
         H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [receiver])
       },
       "push" => {
-        _arity(args, 1, name);
+        checkArity(args, 1, name);
         H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [receiver, _element(args[0], 1, H.innerOf(ty), "array")])
       },
       "pop" => {
-        _arity(args, 0, name);
+        checkArity(args, 0, name);
         H.node(Op.ArrayPop, H.innerOf(ty), 0, 0, [receiver])
       },
       _ => {
