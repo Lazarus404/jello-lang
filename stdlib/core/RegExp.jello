@@ -1,0 +1,35 @@
+package std.core;
+
+load {
+  regexp_compile,
+  regexp_source,
+  regexp_flags,
+  regexp_match_prefix,
+  regexp_match,
+  regexp_full_match,
+  regexp_match_len,
+  regexp_capture_count,
+  regexp_capture_bytes,
+  regexp_capture_start,
+  regexp_text,
+  regexp_match_at,
+} from std;
+
+export let compile: (Bytes, Bytes) -> Dynamic = regexp_compile;
+export let source: (Dynamic) -> Bytes = regexp_source;
+export let flags: (Dynamic) -> Bytes = regexp_flags;
+export let matchPrefix: (Bytes, Dynamic) -> Dynamic = regexp_match_prefix;
+export let find: (Bytes, Dynamic) -> Dynamic = regexp_match;
+export let fullMatch: (Bytes, Dynamic) -> Bool = regexp_full_match;
+export let len: (Dynamic) -> I32 = regexp_match_len;
+export let captureCount: (Dynamic) -> I32 = regexp_capture_count;
+export let group: (Dynamic, I32) -> Bytes = regexp_capture_bytes;
+export let start: (Dynamic, I32) -> I32 = regexp_capture_start;
+
+export let text: (Bytes) -> Dynamic = regexp_text;
+export let matchAt: (Dynamic, Dynamic, I32) -> Dynamic = regexp_match_at;
+
+export let advance: (Bytes, Dynamic) -> Bytes = fn(s: Bytes, m: Dynamic): Bytes {
+  let n = len(m);
+  Bytes.slice(s, n, Bytes.len(s) - n)
+};

@@ -106,8 +106,41 @@ export let tokenName: (Token) -> Bytes = fn(token) {
     PipePipe => "PipePipe",
     PipeGreater => "PipeGreater",
     Caret => "Caret",
-    Wildcard => "Wildcard",
     Eof => "Eof",
+  }
+};
+
+export let tokenText: (Token) -> Bytes = fn(token) {
+  match (token) {
+    Ident(name) => name,
+    IntegerConstant(digits, _) => digits,
+    FloatConstant(literal, _) => literal,
+    BytesLiteral(value) => bytesLiteral(value),
+    RegExpLiteral(pattern, flags) => "~r/" + pattern + "/" + flags,
+    As => "as", Await => "await", Bits => "bits", Break => "break", Catch => "catch", Const => "const",
+    Continue => "continue", Do => "do", Else => "else", EnumDecl => "enum", Export => "export",
+    False => "false", Fn => "fn", For => "for", From => "from", If => "if", Import => "import",
+    Is => "is", Let => "let", ListLiteral => "list", Load => "load", Macro => "macro", Match => "match",
+    New => "new", Null => "null", Package => "package", Prototype => "prototype", Return => "return",
+    Super => "super", This => "this", Throw => "throw", True => "true", Try => "try", Type => "type",
+    Typedef => "typedef", When => "when", While => "while", With => "with",
+    LParen => "(", RParen => ")", LBrace => "{", RBrace => "}", LBracket => "[", RBracket => "]",
+    Semicolon => ";", Colon => ":", Comma => ",", Question => "?", Dot => ".", DotDotDot => "...",
+    Equal => "=", EqualEqual => "==", FatArrow => "=>", Not => "!", NotEqual => "!=",
+    Less => "<", LessEqual => "<=", LessMinus => "<-", Greater => ">", GreaterEqual => ">=",
+    Plus => "+", PlusPlus => "++", PlusEqual => "+=", Minus => "-", MinusMinus => "--", MinusEqual => "-=",
+    Arrow => "->", Star => "*", StarEqual => "*=", Slash => "/", SlashEqual => "/=", Percent => "%",
+    LessLess => "<<", GreaterGreater => ">>", Ampersand => "&", And => "&&", Pipe => "|",
+    PipePipe => "||", PipeGreater => "|>", Caret => "^", Eof => "",
+  }
+};
+
+export let isKeyword: (Token) -> Bool = fn(token) {
+  match (token) {
+    As, Await, Bits, Break, Catch, Const, Continue, Do, Else, EnumDecl, Export, False, Fn, For,
+    From, If, Import, Is, Let, ListLiteral, Load, Macro, Match, New, Null, Package, Prototype,
+    Return, Super, This, Throw, True, Try, Type, Typedef, When, While, With => true,
+    _ => false,
   }
 };
 

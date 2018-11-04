@@ -1,0 +1,14 @@
+// expect: 114311
+// std.core.Bytes and std.core.RegExp, through imports (--std).
+import { startsWith, indexOf, u8, utf8Length, utf8FromCodepoint } from std.core.Bytes;
+import { compile, matchPrefix, group, advance } from std.core.RegExp;
+
+let re = compile("[a-z]+", "");
+let m = matchPrefix("abc12", re);
+let a = startsWith("hello", "he") ? 1 : 0;
+let b = startsWith("he", "hello") ? 0 : 10;
+let c = indexOf("abcabd", "abd") * 100;
+let d = Bytes.len(u8(255) + utf8FromCodepoint(0x20AC)) * 1000;
+let e = (group(m, 0) == "abc" && advance("abc12", m) == "12") ? 10000 : 0;
+let f = (indexOf("abc", "") == 0 && indexOf("ab", "abc") == -1 && utf8Length("é") == 1) ? 100000 : 0;
+a + b + c + d + e + f

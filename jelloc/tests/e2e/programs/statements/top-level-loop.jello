@@ -1,0 +1,11 @@
+// expect: 2010
+// A program's top level may loop, as a function body does.
+let total = 0; let i = 0;
+while (i < 10) {
+  i++;
+  let odd = i % 2 == 1;
+  if (odd) { continue }
+  if (i > 8) { break }
+  total += i;
+}
+total * 100 + i

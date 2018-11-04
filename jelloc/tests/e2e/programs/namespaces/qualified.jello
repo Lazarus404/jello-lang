@@ -1,0 +1,15 @@
+// expect: 149
+// flags: --path $DIR/auxiliary
+// Namespace imports: M.x is what `import { x }` gives, so this and
+// named.jello compile to the same program.
+import ops.Ops as O;
+import std.core.Bytes as B;
+
+let before = O.count;
+O.bump();
+O.bump();
+
+let second = fn(O: Tuple<I32, I32>): I32 { O.1 };
+let doubled: (I32) -> I32 = O.twice;
+
+O.twice(20) + O.scale(1) + O.count - before + B.utf8Length("日本") + second((0, 3)) + doubled(1)

@@ -1,0 +1,18 @@
+// expect: 62693568
+// A closure copies what it captures: every kind of value, boxed into the
+// closure and unboxed where the closure runs.
+enum Shape { Dot; Line(length: I32); }
+let size = fn(shape: Shape): I32 { match (shape) { Dot => 1, Line(length) => length } };
+
+let describe = fn(
+  on: Bool, wide: I64, name: Bytes, missing: ?I32, count: ?I32, absent: ?Bytes, any: Dynamic, pair: Tuple<I32, I32>, shape: Shape,
+  items: Array<I32>, twice: (I32) -> I32
+): () -> I32 {
+  fn() {
+    let flags = (on ? 1 : 0) + (missing == null ? 2 : 0) + (count != null ? 4 : 0) + (any is Bytes ? 8 : 0) + (absent == null ? 16 : 0);
+    flags * 1000000 + (wide as I32) * 100000 + name.len() * 10000 + pair.1 * 1000 + size(shape) * 100 + items[2] * 10 + twice(count)
+  }
+};
+
+let report = describe(true, 3 as I64, "four", null, 2, null, "any" as Dynamic, (5, 6), Shape.Line(7), [1, 2, 8], fn(x: I32): I32 { x * 2 });
+report() + report()

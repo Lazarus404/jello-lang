@@ -1,0 +1,198 @@
+package compiler.pipeline;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { contains, startsWith } from std.core.Bytes;
+import type { Hir } from frontend.Hir;
+import frontend.Hir as H;
+import { printHir } from frontend.PrintHir;
+import type { BasicBlock, Function, Instruction, Program } from ir.Model;
+import { Op, immOf, opOf } from ir.Model;
+import { allocatedFile, checkedFile, checkedTests, jloOf } from compiler.Pipeline;
+import { PROGRAMS } from compiler.Corpus;
+
+const _NONE = Array.new<Bytes>(0);
+
+let _blocks = fn(program: Program): Array<BasicBlock> {
+  let all = Array.new<BasicBlock>(0);
+
+  match (program) { Program(functions, _, _, _, _, _) => {
+    let f = 0;
+
+    while (f < functions.len()) {
+      match (functions[f]) {
+        Function(_, _, _, _, _, blocks, _) => {
+          let b = 0;
+
+          while (b < blocks.len()) {
+            all.push(blocks[b]);
+            b++;
+          }
+        }
+      };
+      f++;
+    }
+  } };
+  all
+};
+
+let _instructions = fn(program: Program): Array<Instruction> {
+  let blocks = _blocks(program);
+  let all = Array.new<Instruction>(0);
+  let b = 0;
+
+  while (b < blocks.len()) {
+    match (blocks[b]) {
+      Block(_, instructions, _, _) => {
+        let i = 0;
+
+        while (i < instructions.len()) {
+          all.push(instructions[i]);
+          i++;
+        }
+      }
+    };
+    b++;
+  }
+  all
+};
+
+let _regionsAndBoxes = fn(program: Program): Tuple<I32, I32> {
+  let blocks = _blocks(program);
+  let caught = 0;
+  let b = 0;
+
+  while (b < blocks.len()) {
+    match (blocks[b]) { Block(_, _, _, handler) => { if (handler != null) { caught++; } } };
+    b++;
+  }
+  let instructions = _instructions(program);
+  let boxes = 0;
+  let i = 0;
+
+  while (i < instructions.len()) {
+    match (opOf(instructions[i])) { Box => { boxes++; }, _ => null };
+    i++;
+  }
+  (caught, boxes)
+};
+
+let testCatchRegions = fn(t: Test) {
+  let (caught, _) = _regionsAndBoxes(allocatedFile(PROGRAMS + "/catch/no-region.jello", _NONE));
+  T.equal(t, caught, 0);
+  let (regions, boxes) = _regionsAndBoxes(allocatedFile(PROGRAMS + "/catch/uncaught.jello", _NONE));
+  T.equal(t, (regions > 0, boxes), (true, 1));
+};
+
+let _reached = fn(hir: Hir): Array<Tuple<I32, I32, Bool>> {
+  H.useHir(hir);
+  let root = H.rootNode();
+  let pending = Array.new<Tuple<I32, I32, Bool>>(0);
+  let reached = Array.new<Tuple<I32, I32, Bool>>(0);
+  let i = 0;
+
+  while (i < H.childCount(root)) {
+    pending.push((H.childOf(root, i), i < H.childCount(root) - 1 ? i : -1, false));
+    i++;
+  }
+
+  while (pending.len() > 0) {
+    let (id, function, otherwise) = pending.pop();
+    reached.push((id, function, otherwise));
+    let branches = match (H.opOf(id)) { If, IfStatement => true, _ => false };
+    let c = 0;
+
+    while (c < H.childCount(id)) {
+      pending.push((H.childOf(id, c), function, otherwise || (branches && (c == 2))));
+      c++;
+    }
+  }
+  reached
+};
+
+let _unwraps = fn(hir: Hir): Tuple<I32, I32> {
+  let reached = _reached(hir);
+  let known = 0;
+  let checked = 0;
+  let i = 0;
+
+  while (i < reached.len()) {
+    let (id, _, _) = reached[i];
+    match (H.opOf(id)) { Unwrap => { if (H.valueOf(id) == 1) { checked++; } else { known++; } }, _ => null };
+    i++;
+  }
+  (known, checked)
+};
+
+let testNarrowedUnwraps = fn(t: Test) {
+  T.equal(t, _unwraps(checkedFile(PROGRAMS + "/catch/narrowing/safe.jello", _NONE)), (2, 0));
+  T.equal(t, _unwraps(checkedFile(PROGRAMS + "/nullable/narrowing/safe.jello", _NONE)), (3, 0));
+};
+
+let testNamespaceTwins = fn(t: Test) {
+  let roots = [PROGRAMS + "/namespaces/auxiliary"];
+  T.equal(t, jloOf(PROGRAMS + "/namespaces/qualified.jello", roots), jloOf(PROGRAMS + "/namespaces/named.jello", roots));
+};
+
+let _isTest = fn(name: Bytes): Bool {
+  startsWith(name, "test") && (Bytes.len(name) > 4) && (Bytes.get_u8(name, 4) >= 65) && (Bytes.get_u8(name, 4) <= 90)
+};
+
+let _stringsBuilt = fn(hir: Hir): Tuple<I32, I32> {
+  let reached = _reached(hir);
+  let root = H.rootNode();
+  let strings = 0;
+  let passing = 0;
+  let i = 0;
+
+  while (i < reached.len()) {
+    let (id, function, otherwise) = reached[i];
+
+    let shown = match (H.opOf(id)) {
+      CallNative => (H.nativeLibraryOf(H.valueOf(id)) == "std") && ((H.nativeNameOf(H.valueOf(id)) == "to_string") || (H.nativeNameOf(H.valueOf(id)) == "quote")),
+
+      Call => H.bytesOf(H.valueOf(H.childOf(root, H.valueOf(id) - 1))) == "string",
+      _ => false,
+    };
+
+    if (shown && (function >= 0) && _isTest(H.bytesOf(H.valueOf(H.childOf(root, function))))) {
+      strings++;
+      if (!otherwise) { passing++; }
+    }
+    i++;
+  }
+  (strings, passing)
+};
+
+let testAssertionsBuildNoStrings = fn(t: Test) {
+  let passing = PROGRAMS + "/testing/assert/Passing.test.jello";
+  let hir = checkedTests([passing], [PROGRAMS + "/testing/assert"]);
+  let (strings, outside) = _stringsBuilt(hir);
+  T.equal(t, (strings > 0, outside), (true, 0));
+  T.isTrue(t, contains(printHir(hir), "bytes \"" + passing + ":18:3\": bytes"));
+};
+
+let testSpillSlotsAreDense = fn(t: Test) {
+  let instructions = _instructions(allocatedFile(PROGRAMS + "/registers/spill-pressure.jello", _NONE));
+  let used = Array.new<Bool>(0);
+  let i = 0;
+
+  while (i < instructions.len()) {
+    match (opOf(instructions[i])) {
+      SpillPush, SpillPop => {
+        while (used.len() <= immOf(instructions[i])) { used.push(false); }
+        used[immOf(instructions[i])] = true;
+      },
+      _ => null,
+    };
+    i++;
+  }
+  let gaps = 0;
+  i = 0;
+
+  while (i < used.len()) {
+    if (!used[i]) { gaps++; }
+    i++;
+  }
+  T.equal(t, (used.len() > 0, gaps), (true, 0));
+};

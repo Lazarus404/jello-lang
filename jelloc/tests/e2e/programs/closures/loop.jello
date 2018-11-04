@@ -1,0 +1,14 @@
+// expect: 9410
+// Each pass of a loop declares its own binding, so each closure keeps its own value.
+let makers = fn(n: I32): Array<() -> I32> {
+  let made = Array.new<() -> I32>(0); let i = 0;
+  while (i < n) {
+    let square = i * i;
+    made.push(fn() { square });
+    i++;
+  }
+  made
+};
+
+let all = makers(4);
+all[0]() + all[1]() * 10 + all[2]() * 100 + all[3]() * 1000

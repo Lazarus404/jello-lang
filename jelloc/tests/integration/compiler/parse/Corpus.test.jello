@@ -1,0 +1,44 @@
+package compiler.parse;
+
+import type { Test } from std.testing;
+import degust.Golden as G;
+import { readText } from std.io.File;
+import { startsWith } from std.core.Bytes;
+import { CORPUS, sources } from compiler.Corpus;
+import { corpusDigests } from CorpusDigests;
+import type { Token } from frontend.Lexer;
+import { lexFile } from frontend.Lexer;
+import { parseProgram, programSyntax } from frontend.Parser;
+
+let _phase = fn(source: Bytes): Bytes {
+  let lexed: ?Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>> = try { lexFile(readText(source), source) } catch (e) { null };
+  if (lexed == null) { return "lexer"; }
+
+  try {
+    let program = parseProgram(lexed);
+
+    try {
+      programSyntax(program);
+      "accepted"
+    } catch (e) { "SYNTAX " + Std.string(e) }
+  } catch (e) { "parser" }
+};
+
+let testClassifiesTheCorpus = fn(t: Test) {
+  let all = sources();
+  let report = "";
+  let language = 0;
+  let i = 0;
+
+  while (i < all.len()) {
+    let phase = _phase(all[i]);
+    if (phase != "accepted") { report = report + all[i] + "\t" + phase + "\n"; }
+    if (startsWith(all[i], CORPUS + "/")) { language++; }
+    i++;
+  }
+  G.equal(t, "tests/integration/compiler/parse/corpus.txt", report + "language corpus: " + Std.string(language) + "\n");
+};
+
+let testDigestsTheCorpus = fn(t: Test) {
+  G.equal(t, "tests/integration/compiler/parse/digests.txt", corpusDigests(CORPUS) + "\n");
+};

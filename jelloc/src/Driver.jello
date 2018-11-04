@@ -1,13 +1,14 @@
 import { lexFile } from frontend.Lexer;
-import type { Token } from frontend.Lexer;
 import { parseFailureSpan, parseProgram, programSyntax } from frontend.Parser;
 import { locate } from frontend.Locations;
 import { sourceDiagnostic } from frontend.Source;
 import type { SourceSpan } from frontend.Source;
 import { printTokens } from frontend.Tokens;
 import { typeCheckModules } from frontend.CheckModules;
-import { checkFailureSpan } from frontend.TypeCheck;
+import { currentSpan } from frontend.TypeCheck;
 import { loadFailureSpan, loadModules, loadTests } from frontend.Modules;
+import { takeInternalError } from frontend.Internal;
+import { verifyFailureSpan } from frontend.VerifyHir;
 import { printHir, printHirWithSpans } from frontend.PrintHir;
 import { functionNode, lowerProgram } from ir.Lower;
 import { printIr } from ir.Print;
@@ -15,15 +16,16 @@ import { legalizeJlo } from backend.jello.Legalize;
 import { allocateProgram, allocationFailure } from backend.jello.Allocate;
 import { emitAllocated } from backend.jello.Emit;
 import { exists, readText, writeText } from std.io.File;
+import { getEnv } from std.io.Env;
+import { startsWith } from std.core.Bytes;
 
-import type { Program as AstProgram } from frontend.Ast;
 import type { Program } from ir.Model;
 import type { Hir } from frontend.Hir;
 import { spanOf, spanPathOf } from frontend.Hir;
 
 enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; Help; }
 
-let _USAGE = "usage: jelloc <input.jello> [--out path] [--std dir] [--path dir]... [--lex|--parse|--hir [--spans]|--ir|--jlo]\n       jelloc --test <file.test.jello>... --path dir... [--out path] [--std dir] [--hir [--spans]|--ir|--jlo]\n\n  --test       compile a test binary instead: every test in the files, each\n               under a --path root, run by std.testing\n  --out path   write the compiled module to path\n  --std dir    resolve std.* imports under dir\n  --path dir   resolve other imports under dir too, after the input's\n               directory (with --test, under these alone); repeatable,\n               searched in order\n  --lex        print the tokens\n  --parse      check the syntax only\n  --hir        print the typed HIR\n  --spans      with --hir, end each node's line with its source byte range\n  --ir         print the CFG IR\n  --jlo        print the allocated JLO instructions (with --out, also\n               write the compiled module)\n  --help       print this help\n\nExit status: 0 on success, 1 when the program does not compile (the\ndiagnostic is on standard error), 2 for a bad command line.\n";
+let _USAGE = "usage: jelloc <input.jello> (--out path | --lex | --parse | --hir [--spans] | --ir | --jlo [--out path]) [--std dir] [--path dir]...\n       jelloc --test <file.test.jello>... --path dir... (--out path | --hir [--spans] | --ir | --jlo [--out path]) [--std dir]\n\n  --test       compile a test binary instead: every test in the files, each\n               under a --path root, run by std.testing\n  --out path   write the compiled module to path\n  --std dir    resolve std.* imports under dir (by default\n               $JELLO_STD_PATH)\n  --path dir   resolve other imports under dir too, after the input's\n               directory (with --test, under these alone); repeatable,\n               searched in order\n  --lex        print the tokens\n  --parse      check the syntax only\n  --hir        print the typed HIR\n  --spans      with --hir, end each node's line with its source byte range\n  --ir         print the CFG IR\n  --jlo        print the allocated JLO instructions (with --out, also\n               write the compiled module)\n  --help       print this help\n\nExit status: 0 on success, 1 when the program does not compile (the\ndiagnostic is on standard error), 2 for a bad command line, 3 for an\ninternal error (a compiler bug).\n";
 
 let _exit = fn(code: I32, message: Bytes) {
   writeText("/dev/stderr", message);
@@ -31,7 +33,7 @@ let _exit = fn(code: I32, message: Bytes) {
   null
 };
 
-let _std = "";
+let _std = getEnv("JELLO_STD_PATH");
 let _roots = Array.new<Bytes>(0);
 let _spans = false;
 let _testing = false;
@@ -85,6 +87,7 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Array<Bytes>, Mode, Bytes> {
           null
         },
         _ => {
+          if (startsWith(arg, "-")) { throw "unknown option: " + arg; }
           inputs.push(arg);
           null
         },
@@ -121,9 +124,10 @@ let _allocationSpan = fn(): ?SourceSpan {
 };
 
 let _located = fn(message: Bytes): Bytes {
-  let span = checkFailureSpan();
+  let span = currentSpan();
   if (span == null) { span = loadFailureSpan(); }
   if (span == null) { span = parseFailureSpan(); }
+  if (span == null) { span = verifyFailureSpan(); }
   if (span == null) { span = _allocationSpan(); }
   if (span == null) { message } else { _diagnostic(span, message) }
 };
@@ -140,28 +144,37 @@ let _write = fn(output: Bytes, program: Program) {
   null
 };
 
-let _report: (Bytes, () -> Bytes) -> Bytes = fn(label, stage) {
-  try { stage() } catch (e) {
-    let message = _located(Std.string(e));
-    _exit(1, (label == "" ? "" : label + "\t") + message + "\n");
-    ""
-  }
+export let failure = fn(label: Bytes, error: Dynamic): Tuple<I32, Bytes> {
+  let message = Std.string(error);
+  if (takeInternalError()) { return (3, _located("internal error: " + message + " (please report this compiler bug)")); }
+  let located = _located(message);
+  (1, (label == "" ? "" : label + "\t") + located)
 };
 
-let _checkSyntax = fn(program: AstProgram): Bytes {
-  try {
-    programSyntax(program);
-    ""
-  } catch (e) {
-    _exit(1, "SYNTAX\t" + Std.string(e) + "\n");
+let _fail = fn(label: Bytes, error: Dynamic) {
+  let (status, report) = failure(label, error);
+  _exit(status, report + "\n")
+};
+
+let _report: (() -> Bytes, Bytes) -> Bytes = fn(stage, label) {
+  try { stage() } catch (e) {
+    _fail(label, e);
     ""
   }
 };
 
 let _parse = fn(input: Bytes): Bytes {
-  let (tokens, lexError) = try { (lexFile(readText(input), input), "") } catch (e) { (Array.new<Token>(0), Std.string(e)) };
-  if (lexError != "") { _exit(1, "LEXER\t" + lexError + "\n"); }
-  _report("PARSER", fn() { _checkSyntax(parseProgram(tokens)) })
+  let phase = "LEXER";
+
+  try {
+    let lexed = lexFile(readText(input), input);
+    phase = "PARSER";
+    programSyntax(parseProgram(lexed));
+    ""
+  } catch (e) {
+    _fail(phase, e);
+    ""
+  }
 };
 
 export let run: (List<Bytes>) -> Bytes = fn(argv) {
@@ -181,19 +194,19 @@ export let run: (List<Bytes>) -> Bytes = fn(argv) {
 
   match (mode) {
     Help => _USAGE,
-    Lex => _report("", fn() { printTokens(lexFile(readText(inputs[0]), inputs[0])) }),
+    Lex => _report(fn() { printTokens(lexFile(readText(inputs[0]), inputs[0]).0) }, ""),
     Parse => _parse(inputs[0]),
-    Typed => _report("", fn() { _spans ? printHirWithSpans(_checked(inputs)) : printHir(_checked(inputs)) }),
-    Lowered => _report("", fn() { printIr(lowerProgram(_checked(inputs))) }),
-    Legalized => _report("", fn() {
+    Typed => _report(fn() { _spans ? printHirWithSpans(_checked(inputs)) : printHir(_checked(inputs)) }, ""),
+    Lowered => _report(fn() { printIr(lowerProgram(_checked(inputs))) }, ""),
+    Legalized => _report(fn() {
       let program = _allocated(inputs);
       let listing = printIr(program);
       if (output != "") { _write(output, program); }
       listing
-    }),
-    Emit => _report("", fn() {
+    }, ""),
+    Emit => _report(fn() {
       _write(output, _allocated(inputs));
       ""
-    }),
+    }, ""),
   }
 };

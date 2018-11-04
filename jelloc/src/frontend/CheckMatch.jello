@@ -234,7 +234,7 @@ let _wilds = fn(count: I32): Array<Pattern> {
   out
 };
 
-let _join = fn(front: Array<Pattern>, row: Array<Pattern>, start: I32): Array<Pattern> {
+let _join = fn(front: Array<Pattern>, row: Array<Pattern>): Array<Pattern> {
   let out = Array.new<Pattern>(0);
   let i = 0;
 
@@ -242,7 +242,7 @@ let _join = fn(front: Array<Pattern>, row: Array<Pattern>, start: I32): Array<Pa
     out.push(front[i]);
     i++;
   }
-  i = start;
+  i = 1;
 
   while (i < row.len()) {
     out.push(row[i]);
@@ -275,7 +275,7 @@ let _specialize = fn(rows: Array<Array<Pattern>>, head: Pattern): Array<Array<Pa
 
   while (i < rows.len()) {
     let first = rows[i][0];
-    if (_wild(first)) { out.push(_join(_wilds(count), rows[i], 1)); } else if (_same(first, head)) { out.push(_join(_args(first), rows[i], 1)); }
+    if (_wild(first)) { out.push(_join(_wilds(count), rows[i])); } else if (_same(first, head)) { out.push(_join(_args(first), rows[i])); }
     i++;
   }
   out
@@ -312,12 +312,12 @@ let _useful: (Array<Array<Pattern>>, Array<Pattern>, Array<I32>) -> Bool = fn(_r
 _useful = fn(rows, q, types) {
   if (q.len() == 0) { return rows.len() == 0; }
   let ty = types[0];
-  if (!_wild(q[0])) { return _useful(_specialize(rows, q[0]), _join(_args(q[0]), q, 1), _joinTypes(_argTypes(q[0], ty), types)); }
+  if (!_wild(q[0])) { return _useful(_specialize(rows, q[0]), _join(_args(q[0]), q), _joinTypes(_argTypes(q[0], ty), types)); }
   let heads = _signature(rows, ty);
   let i = 0;
 
   while (i < heads.len()) {
-    if (_useful(_specialize(rows, heads[i]), _join(_args(heads[i]), q, 1), _joinTypes(_argTypes(heads[i], ty), types))) { return true; }
+    if (_useful(_specialize(rows, heads[i]), _join(_args(heads[i]), q), _joinTypes(_argTypes(heads[i], ty), types))) { return true; }
     i++;
   }
   if (heads.len() > 0) { return false; }
@@ -325,10 +325,10 @@ _useful = fn(rows, q, types) {
   i = 0;
 
   while (i < rows.len()) {
-    if (_wild(rows[i][0])) { rest.push(_join(Array.new<Pattern>(0), rows[i], 1)); }
+    if (_wild(rows[i][0])) { rest.push(_join(Array.new<Pattern>(0), rows[i])); }
     i++;
   }
-  _useful(rest, _join(Array.new<Pattern>(0), q, 1), _joinTypes(Array.new<I32>(0), types))
+  _useful(rest, _join(Array.new<Pattern>(0), q), _joinTypes(Array.new<I32>(0), types))
 };
 
 let _notExhaustive = fn(rows: Array<Array<Pattern>>, ty: I32): Bool {

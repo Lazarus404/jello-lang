@@ -1,0 +1,17 @@
+// expect: 1309241727
+// Dynamic: explicit boxing, checked extraction and kind tests.
+enum Shape { Dot; Line(length: I32); }
+let bit = fn(on: Bool, weight: I32): I32 { on ? weight : 0 };
+let size = fn(shape: Shape): I32 { match (shape) { Dot => 1, Line(length) => length } };
+
+let run = fn(): I32 {
+  let d = 41 as Dynamic; let t = "hi" as Dynamic; let big = (7 as I64) as Dynamic; let z: Dynamic = null;
+  let maybe: ?I32 = 3; let boxed = maybe as Dynamic; let shape = Shape.Line(9) as Dynamic;
+  let flags = bit(d is I32, 1) + bit(d is I64, 2) + bit(t is Bytes, 4) + bit(t is I32, 8) + bit(big is I64, 16)
+    + bit(big is I32, 32) + bit(z == null, 64) + bit(d != null, 128) + bit(z is I32, 256) + bit(boxed is I32, 512);
+  let none: ?Bytes = null; let gone: ?Shape = null; let lost = none as Dynamic;
+  let nulls = bit(lost == null, 1) + bit(lost is Bytes, 2) + bit((gone as Dynamic) == null, 4) + bit(((d as I64) as I32) == 41, 8);
+  nulls * 100000000 + flags + (d as I32) * 1000 + (t as Bytes).len() * 100000 + size(shape as Shape) * 1000000
+};
+
+run()

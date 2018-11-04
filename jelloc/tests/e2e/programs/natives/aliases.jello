@@ -1,0 +1,9 @@
+// expect: 1533
+load { unicode_length, unicode_get as charAt, unicode_validate } from std;
+
+let length: (Bytes) -> I32 = unicode_length;
+let codepoint: (Bytes, I32) -> I32 = charAt;
+let valid: (Bytes) -> Bool = unicode_validate;
+
+let text = "héllo";
+(valid(text) ? 1000 : 0) + length(text) * 100 + (codepoint(text, 1) - 200)

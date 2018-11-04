@@ -1,0 +1,42 @@
+// expect: === RUN   Passing/testEqualValues
+// expect: === RUN   Passing/testEvaluatesOnce
+// expect: ok
+// flags: --test --path $DIR
+// Assertions: the compiler expands each call, so it takes any type ==
+// compares, evaluates each argument once and names where it is.
+import type { Test } from std.testing;
+import std.testing as T;
+import { equal } from std.testing;
+
+enum Shape { Dot; Circle(radius: I32); }
+
+let calls = 0;
+let next = fn(): I32 { calls++; calls };
+
+
+let testEqualValues = fn(t: Test) {
+  T.equal(t, 1 + 1, 2);
+  T.equal(t, 1i64 << 40, 1099511627776i64);
+  T.equal(t, 3 > 2, true);
+  T.equal(t, "a" + "b", "ab");
+  let missing: ?I32 = null;
+  T.equal(t, missing, null);
+  T.equal(t, Shape.Dot, Shape.Dot);
+  T.equal(t, Shape.Circle(2), Shape.Circle(2));
+  T.equal(t, (1, "one"), (1, "one"));
+  T.equal(t, [Shape.Circle(1), Shape.Dot], [Shape.Circle(1), Shape.Dot]);
+  T.notEqual(t, missing, 0);
+  T.notEqual(t, Shape.Circle(2), Shape.Circle(3));
+  T.isTrue(t, "ab" == "a" + "b");
+  T.isNull(t, missing);
+  T.throws(t, fn() { throw "expected"; null });
+  null
+};
+
+
+let testEvaluatesOnce = fn(t: Test) {
+  T.equal(t, next(), 1);
+  T.notEqual(t, next(), next());
+  equal(t, calls, 3);
+  null
+};

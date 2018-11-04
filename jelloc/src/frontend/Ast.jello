@@ -1,5 +1,7 @@
 package frontend;
 
+import { internalError } from frontend.Internal;
+
 export enum IntSize {
   Infer;
   I8;
@@ -295,7 +297,7 @@ export let isBindPattern: (Pattern) -> Bool = fn(pattern) { match (pattern) { Bi
 export let bindPatternName: (Pattern) -> Bytes = fn(pattern) {
   match (pattern) {
     BindPattern(name) => name, _ => {
-      throw "pattern is not a binding";
+      internalError("pattern is not a binding");
       ""
     }
   }

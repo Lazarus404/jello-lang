@@ -1,0 +1,69 @@
+package std.core;
+
+load {
+  unicode_validate,
+  unicode_length,
+  unicode_get,
+  unicode_from_codepoint,
+  bytes_u8,
+} from std;
+
+export let utf8Validate: (Bytes) -> Bool = unicode_validate;
+export let utf8Length: (Bytes) -> I32 = unicode_length;
+export let utf8CharAt: (Bytes, I32) -> I32 = unicode_get;
+export let utf8FromCodepoint: (I32) -> Bytes = unicode_from_codepoint;
+export let u8: (I32) -> Bytes = bytes_u8;
+
+export let startsWith: (Bytes, Bytes) -> Bool = fn(haystack: Bytes, prefix: Bytes): Bool {
+  let n = Bytes.len(prefix);
+  n <= Bytes.len(haystack) && Bytes.slice(haystack, 0, n) == prefix
+};
+
+export let endsWith: (Bytes, Bytes) -> Bool = fn(haystack: Bytes, suffix: Bytes): Bool {
+  let n = Bytes.len(suffix);
+  let at = Bytes.len(haystack) - n;
+  at >= 0 && Bytes.slice(haystack, at, n) == suffix
+};
+
+export let indexOf: (Bytes, Bytes) -> I32 = fn(haystack: Bytes, needle: Bytes): I32 {
+  let n = Bytes.len(needle);
+  let last = Bytes.len(haystack) - n;
+  let i = 0;
+
+  while (i <= last) {
+    if (Bytes.slice(haystack, i, n) == needle) { return i; }
+    i++;
+  }
+  -1
+};
+
+export let contains: (Bytes, Bytes) -> Bool = fn(haystack: Bytes, needle: Bytes): Bool { indexOf(haystack, needle) >= 0 };
+
+export let split: (Bytes, Bytes) -> Array<Bytes> = fn(text: Bytes, separator: Bytes): Array<Bytes> {
+  let parts = Array.new<Bytes>(0);
+  let n = Bytes.len(separator);
+  let start = 0;
+  let i = 0;
+
+  while (i + n <= Bytes.len(text)) {
+    if ((Bytes.get_u8(text, i) == Bytes.get_u8(separator, 0)) && (Bytes.slice(text, i, n) == separator)) {
+      parts.push(Bytes.slice(text, start, i - start));
+      i = i + n;
+      start = i;
+    } else { i++; }
+  }
+  parts.push(Bytes.slice(text, start, Bytes.len(text) - start));
+  parts
+};
+
+export let join: (Array<Bytes>, Bytes) -> Bytes = fn(parts: Array<Bytes>, separator: Bytes): Bytes {
+  if (parts.len() == 0) { return ""; }
+  let text = parts[0];
+  let i = 1;
+
+  while (i < parts.len()) {
+    text = text + separator + parts[i];
+    i++;
+  }
+  text
+};

@@ -1,0 +1,10 @@
+// expect: 42
+// The Parser's shape: a typed slot holds a stub until the real function is
+// assigned, so functions declared earlier can call ones defined later.
+let parseSum: (I32) -> I32 = fn(_n) {
+  throw "internal: sum parser not initialized";
+  0
+};
+let parseTerm = fn(n: I32): I32 { if (n == 0) { 0 } else { n + parseSum(n - 1) } };
+parseSum = fn(n) { parseTerm(n) };
+parseSum(8) + 6

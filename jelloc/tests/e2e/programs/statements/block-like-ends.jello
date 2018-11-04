@@ -1,0 +1,15 @@
+// expect: 86
+// A statement that starts with `if` or `match` ends at its closing brace, so
+// a next line starting with `-` or `(` begins a new statement.
+let clamp = fn(n: I32): I32 {
+  if (n > 9) { return 9; }
+  -1 + n
+};
+let sign = fn(n: I32): I32 {
+  let s = 0;
+  match (n > 0) { true => { s = 1; }, false => null };
+  -s
+};
+let total = 0;
+if (total == 0) { total = 100; }
+-(clamp(5) + clamp(20)) + sign(3) + total

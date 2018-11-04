@@ -1,0 +1,14 @@
+// expect: 10905
+// `d is E` holds exactly when `d as E` succeeds: an enum of that very type.
+enum Shape { Dot; Line(length: I32); }
+enum Color { Red; Blue; }
+let bit = fn(on: Bool, weight: I32): I32 { on ? weight : 0 };
+let measure = fn(value: Dynamic): I32 { if (value is Shape) { match (value as Shape) { Dot => 1, Line(length) => length } } else { 0 } };
+
+let run = fn(): I32 {
+  let line = Shape.Line(9) as Dynamic; let red = Color.Red as Dynamic; let none: ?Shape = null; let text = "dot" as Dynamic;
+  bit(line is Shape, 1) + bit(line is Color, 2) + bit(red is Color, 4) + bit(red is Shape, 8) + bit((none as Dynamic) is Shape, 16)
+    + bit(text is Shape, 32) + bit((4 as Dynamic) is Shape, 64) + measure(line) * 100 + measure(red) * 1000 + measure(Shape.Dot as Dynamic) * 10000
+};
+
+run()

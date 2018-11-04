@@ -1,0 +1,10 @@
+// trap: BOUNDS 5:3
+// The trap's line comes before its arguments' lines, so the line table
+// steps back to it.
+let cut = fn(text: Bytes, length: I32): Bytes {
+  Bytes.slice(
+    text,
+    2,
+    length)
+};
+cut("abcd", 3).len()

@@ -1,0 +1,24 @@
+// expect: 123456
+// The primitive operators at their boundaries: wrapping multiply and negation,
+// Bool negation and equality, the derived comparisons, and I32/I64 conversions.
+let min = -2147483648;
+let max = 2147483647;
+let half = 65536;
+let wide: I64 = 4294967297;
+
+let trace = 0;
+let t = fn(v: I32): I32 { trace = trace * 10 + v; v };
+let tb = fn(v: I32, b: Bool): Bool { trace = trace * 10 + v; b };
+let e1 = tb(1, true) == tb(2, true);
+let e2 = t(3) > t(4);
+let e3 = t(5) <= t(6);
+let e4 = t(7) >= t(8);
+let e5 = tb(9, false) != tb(1, false);
+let digits = 0;
+digits = digits * 10 + (half * half == 0 && max * 2 == -2 && min * -1 == min ? 1 : 0);
+digits = digits * 10 + (-min == min && -max == min + 1 && 0 - min == min ? 2 : 0);
+digits = digits * 10 + (!(min < 0) == false && !false && !(!true) && (max < min) != (min < max) && (true == true) && (false != true) ? 3 : 0);
+digits = digits * 10 + (min <= min && max >= max && min != max && !(max <= min) && !(min >= max) ? 4 : 0);
+digits = digits * 10 + ((-1 as I64) == -1 && (wide as I32) == 1 && ((min as I64) as I32) == min && (max as I64) + 1 == 2147483648 ? 5 : 0);
+digits = digits * 10 + (trace == 1234567891 && e1 && !e2 && e3 && !e4 && !e5 ? 6 : 0);
+digits

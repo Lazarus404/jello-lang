@@ -1,0 +1,114 @@
+// The workload, tests/workload: the compiler's own frontend compiled by the
+// compiler under test, which bench_jello.sh also times. Each program compiles
+// cleanly, passes the decode check, and prints in every mode its golden
+// (tests/workload/*.out, each value and a newline), corpus what the
+// integration tier pins in process; reparse survives collections; and the
+// lexer and parser look hand-written (support.Shape) under today's move
+// counts: lower them when the allocator improves.
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { contains, join } from std.core.Bytes;
+import { readText, writeText } from std.io.File;
+import degust.Golden as G;
+import { NONE, finish, fresh, modes, startCheck, startJelloc, startJloTool, startVm, withStd } from support.Run;
+import { shapeProblems } from support.Shape;
+
+const _DIR = "tests/workload";
+
+const _PROGRAMS = [
+  ("ast", -1, "tests/workload/ast.out"), ("source", -1, "tests/workload/source.out"), ("lexer", 180, "tests/workload/lexer.out"),
+  ("parser", 349, "tests/workload/parser.out"), ("reparse", -1, "tests/workload/reparse.out"), ("corpus", -1, "tests/integration/compiler/parse/digests.txt")
+];
+
+let _start = fn(name: Bytes, ceiling: I32, module: Bytes, dump: Bytes): Tuple<Dynamic, Array<Dynamic>, ?Dynamic, ?Dynamic> {
+  let path = fresh("workload-" + name + ".ir");
+  writeText(path, dump);
+  let runs = Array.new<Dynamic>(0);
+  let m = 0;
+
+  while (m < modes().len()) {
+    runs.push(startVm(modes()[m], [module]));
+    m++;
+  }
+  let listing = ceiling < 0 ? null : startJloTool(["disasm", module]);
+  let gc = name == "reparse" ? startJloTool(["run", module, "--gc-stats"]) : null;
+  (startCheck(path, module), runs, listing, gc)
+};
+
+let _check = fn(t: Test, name: Bytes, ceiling: I32, golden: Bytes, started: Tuple<Dynamic, Array<Dynamic>, ?Dynamic, ?Dynamic>): Null {
+  let (check, runs, listing, gc) = started;
+  let (checked, said, why) = finish(check);
+  if (checked != 0) { T.fail(t, "the decode check failed: " + said + why); }
+  let m = 0;
+
+  while (m < runs.len()) {
+    let (status, out, err) = finish(runs[m]);
+    T.run(t, modes()[m], fn(t: Test) {
+      T.equal(t, (status, err), (0, ""));
+      G.equal(t, golden, out + "\n");
+      null
+    });
+    m++;
+  }
+
+  if (listing != null) {
+    let (disassembled, text, failed) = finish(listing);
+
+    if (disassembled != 0) { T.fail(t, "jlo_tool cannot disassemble it: " + failed); } else {
+      let problems = shapeProblems(text, ceiling);
+      if (problems.len() > 0) { T.fail(t, "its bytecode is not hand-written:\n" + join(problems, "\n")); }
+    }
+  }
+
+  if (gc != null) {
+    let (_, stats, _) = finish(gc);
+
+    if (!contains(stats, "value=" + readText(golden)) || !contains(stats, "GC_COLLECTIONS ") || contains(stats, "GC_COLLECTIONS 0\n")) {
+      T.fail(t, "no garbage collection ran, or it returned another value: " + stats);
+    }
+  }
+  null
+};
+
+let testWorkload = fn(t: Test) {
+  let modules = Array.new<Bytes>(0);
+  let compiles = Array.new<Dynamic>(0);
+  let i = 0;
+
+  while (i < _PROGRAMS.len()) {
+    let (name, _, _) = _PROGRAMS[i];
+    modules.push(fresh("workload-" + name + ".jlo"));
+    compiles.push(startJelloc(withStd([_DIR + "/" + name + ".jello", "--jlo", "--out", modules[i]]), NONE));
+    i++;
+  }
+
+  let compiled = Array.new<Tuple<I32, Bytes, Bytes>>(0);
+  i = 0;
+
+  while (i < compiles.len()) {
+    compiled.push(finish(compiles[i]));
+    i++;
+  }
+  let started = Array.new<?Tuple<Dynamic, Array<Dynamic>, ?Dynamic, ?Dynamic>>(0);
+  i = 0;
+
+  while (i < _PROGRAMS.len()) {
+    let (name, ceiling, _) = _PROGRAMS[i];
+    let (status, dump, err) = compiled[i];
+    started.push((status == 0) && (err == "") ? _start(name, ceiling, modules[i], dump) : null);
+    i++;
+  }
+  i = 0;
+
+  while (i < _PROGRAMS.len()) {
+    let (name, ceiling, golden) = _PROGRAMS[i];
+    let (status, _, err) = compiled[i];
+    let runs = started[i];
+    T.run(t, name, fn(t: Test) {
+      if (runs == null) { T.fatal(t, "does not compile cleanly: status " + Std.string(status) + " " + err); } else { _check(t, name, ceiling, golden, runs); }
+      null
+    });
+    i++;
+  }
+};

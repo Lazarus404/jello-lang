@@ -1,0 +1,47 @@
+package compiler.lex;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import degust.Golden as G;
+import { exists, readText } from std.io.File;
+import { lexFile } from frontend.Lexer;
+import { printTokens } from frontend.Tokens;
+import { filesUnder } from std.io.Path;
+import { CORPUS } from compiler.Corpus;
+
+let _GOLDEN = "tests/integration/compiler/lex/tokens";
+
+let _relative = fn(path: Bytes, root: Bytes, suffix: Bytes): Bytes {
+  let start = Bytes.len(root) + 1;
+  Bytes.slice(path, start, Bytes.len(path) - start - Bytes.len(suffix))
+};
+
+let _tokens = fn(source: Bytes): Bytes {
+  try { printTokens(lexFile(readText(source), source).0) } catch (e) { Std.string(e) + "\n" }
+};
+
+let testLexesTheCorpus = fn(t: Test) {
+  let sources = filesUnder(CORPUS, ".jello");
+  let i = 0;
+
+  while (i < sources.len()) {
+    let source = sources[i];
+    let name = _relative(source, CORPUS, ".jello");
+    T.run(t, name, fn(t: Test) {
+      G.equal(t, _GOLDEN + "/" + name + ".tok", _tokens(source));
+      null
+    });
+    i++;
+  }
+};
+
+let testHasNoTokensWithoutASource = fn(t: Test) {
+  let goldens = filesUnder(_GOLDEN, ".tok");
+  let i = 0;
+
+  while (i < goldens.len()) {
+    let source = CORPUS + "/" + _relative(goldens[i], _GOLDEN, ".tok") + ".jello";
+    if (!exists(source)) { T.fail(t, goldens[i] + " has no corpus source " + source); }
+    i++;
+  }
+};

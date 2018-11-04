@@ -1,0 +1,9 @@
+// expect: [a|b||c] [] [x] 3 1
+// std.core.Bytes split and join: one more part than separators, and join
+// undoes split.
+import { join, split } from std.core.Bytes;
+
+let parts = split("a, b, , c", ", ");
+let undone = join(split("a::b", ":"), ":") == "a::b" ? 1 : 0;
+"[" + join(parts, "|") + "] [" + join(split("", ","), "+") + "] [" + join(["x"], "-") + "] "
+  + Std.string(split("a::b", ":").len()) + " " + Std.string(undone)

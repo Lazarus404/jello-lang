@@ -1,0 +1,8 @@
+// trap: NULL_DEREF
+// It would return 7 if a possibly-null read in or after a try were trusted
+// unchecked.
+// After the try, x is present only if both blocks leave it present.
+let keep = fn(_text: Bytes): I32 { 7 };
+let fail = fn(): I32 { throw "stop"; 0 };
+let run = fn(): I32 { let x: ?Bytes = null; x = "a"; try { fail(); } catch { x = null; } keep(x) };
+run()

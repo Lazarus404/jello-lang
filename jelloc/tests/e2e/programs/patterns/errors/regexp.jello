@@ -1,0 +1,4 @@
+// error: 3:29: match is not exhaustive: add a `_` arm
+// A regexp may fail for any subject, so it covers none.
+let f = fn(s: Bytes): I32 { match (s) { when ~r/a/ => 1, when ~r/a/ => 2 } };
+f("a")

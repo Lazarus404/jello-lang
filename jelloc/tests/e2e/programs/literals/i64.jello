@@ -1,0 +1,16 @@
+// expect: 3112884901888
+// I64 literals take their type from context, and I64 values support the same
+// arithmetic and comparisons as I32, wrapping the same way.
+let limit: I64 = 9223372036854775807;
+let scale = fn(value: I64, by: I64): I64 { value * by };
+let bit = fn(on: Bool, weight: I64): I64 { on ? weight : 0 };
+
+let run = fn(): I64 {
+  let big: I64 = 4294967296; let low: I64 = -2147483649;
+  let wrapped = limit + 1;
+  let flags = bit(wrapped == -9223372036854775808, 1) + bit(low < 0, 2) + bit(big > 4294967295, 4)
+    + bit(-low == 2147483649, 8) + bit(0x7FFF_FFFF_FFFF_FFFF == limit, 16) + bit(big - 1 != 0xFFFF_FFFF, 32);
+  scale(big, 3) + flags * 100000000000
+};
+
+run()

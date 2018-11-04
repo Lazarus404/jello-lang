@@ -1,0 +1,18 @@
+// expect: 0 15 1 1020 true 2 a true false 1 15 15 15
+// Operands are evaluated left to right, and a read of a local is its value
+// then, whatever a later operand assigns to it.
+let pair = fn(a: I32, b: I32): I32 { a * 10 + b };
+let sum = fn(): I32 { let i = 0; i + i++ };
+let call = fn(): I32 { let x = 1; pair(x, x = 5) };
+let snapshot = fn(): I32 { let x = 1; const y = x; x = 2; y };
+let element = fn(): I32 { let a = [10, 20, 30]; let i = 0; a[i] += i++; a[0] * 100 + a[1] };
+let compare = fn(): Bool { let i = 0; i == i++ };
+let assigned = fn(): I32 { let x = 0; (x = 1) + x };
+let unwrapped = fn(): Bytes { let s: ?Bytes = "a"; const t: Bytes = s; s = null; t };
+let present = fn(): Bool { let s = "b"; const t: ?Bytes = s; s = "c"; t == "b" };
+let equal = fn(): Bool { let s: ?Bytes = "a"; s == (s = "b") };
+let inBlock = fn(): I32 { let x = 1; pair(x, { x = 5; x }) };
+let inIf = fn(c: Bool): I32 { let x = 1; pair(x, if (c) { x = 5; x } else { 0 }) };
+let inAnd = fn(): I32 { let x = 1; let b = true; pair(x, b && ((x = 5) > 0) ? x : 0) };
+let chained = fn(): I32 { let x = 1; let z = 0; const y = (z = x); x = 2; y };
+Std.string(sum()) + " " + Std.string(call()) + " " + Std.string(snapshot()) + " " + Std.string(element()) + " " + Std.string(compare()) + " " + Std.string(assigned()) + " " + unwrapped() + " " + Std.string(present()) + " " + Std.string(equal()) + " " + Std.string(chained()) + " " + Std.string(inBlock()) + " " + Std.string(inIf(true)) + " " + Std.string(inAnd())

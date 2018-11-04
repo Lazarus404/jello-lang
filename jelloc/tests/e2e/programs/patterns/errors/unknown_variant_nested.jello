@@ -1,0 +1,4 @@
+// error: 3:44: unknown variant Branch of Pair
+enum Pair { Two(left: Pair, right: Pair); Leaf; }
+let f = fn(p: Pair): I32 { match (p) { Two(Branch, _) => 1, _ => 0 } };
+f(Pair.Leaf)

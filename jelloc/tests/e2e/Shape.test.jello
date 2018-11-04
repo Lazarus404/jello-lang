@@ -1,0 +1,54 @@
+// The bytecode looks hand-written, by support.Shape's rules: no jump to the
+// next instruction or to a JMP, no self-move, and the moves left are the ones
+// a value still live after a call needs. The compiler keeps under today's
+// move count, as the workload does (Workload.test); lower the ceilings when
+// the allocator improves.
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { join } from std.core.Bytes;
+import { NONE, finish, fresh, selfModule, startJelloc, startJloTool, withStd } from support.Run;
+import { shapeProblems } from support.Shape;
+
+let _listing = fn(instructions: Array<Bytes>): Bytes {
+  let lines = [".jlo module version=1", "func[0] nregs=2 nargs=0 reg_types=[I32, I32]"];
+  let i = 0;
+
+  while (i < instructions.len()) {
+    lines.push("  " + Std.string(i) + ": " + instructions[i]);
+    i++;
+  }
+  join(lines, "\n")
+};
+
+let testRules = fn(t: Test) {
+  let ret = "RET a=r0 b=r0 c=r0 imm=0";
+  T.equal(t, shapeProblems(_listing(["MOV a=r1 b=r0 c=r0 imm=0", "JMP_IF a=r1 b=r0 c=r0 imm=1", "JMP a=r0 b=r0 c=r0 imm=-3", ret]), 1), NONE);
+  T.equal(t, shapeProblems(_listing(["JMP a=r0 b=r0 c=r0 imm=0", ret]), 0), ["func[0] 0: JMP to the next instruction"]);
+  T.equal(t, shapeProblems(_listing(["JMP_IF a=r1 b=r0 c=r0 imm=0", ret]), 0), ["func[0] 0: JMP_IF to the next instruction"]);
+  T.equal(t, shapeProblems(_listing(["JMP_IF a=r1 b=r0 c=r0 imm=1", ret, "JMP a=r0 b=r0 c=r0 imm=-2"]), 0),
+    ["func[0] 0: JMP_IF to the JMP at 2"]);
+  T.equal(t, shapeProblems(_listing(["MOV a=r1 b=r1 c=r0 imm=0", ret]), 1), ["func[0] 0: MOV r1 to itself"]);
+  T.equal(t, shapeProblems(_listing(["MOV a=r1 b=r0 c=r0 imm=0", "MOV a=r0 b=r1 c=r0 imm=0", "MOV a=r1 b=r1 c=r0 imm=0", ret]), 2),
+    ["3 moves, more than the 2 allowed", "func[0] 2: MOV r1 to itself"]);
+  T.equal(t, shapeProblems(_listing(["MOV a=r1 b=r0 imm=0"]), 1), ["unrecognized instruction: 0: MOV a=r1 b=r0 imm=0"]);
+  T.equal(t, shapeProblems("  0: RET a=r0 b=r0 c=r0 imm=0", 0), ["unrecognized instruction: 0: RET a=r0 b=r0 c=r0 imm=0"]);
+  T.equal(t, shapeProblems(_listing(["RET a=r0 b=r0 c=r0 imm=x"]), 0), ["unrecognized instruction: 0: RET a=r0 b=r0 c=r0 imm=x"]);
+  T.equal(t, shapeProblems(".jlo module version=1", 0), ["no functions"]);
+  T.equal(t, shapeProblems(_listing(["RET a=r0 b=r0 c=r0 imm=0"]) + "\n  constants", 0), ["unrecognized instruction: constants"]);
+  T.equal(t, shapeProblems(_listing([]), 0), ["func[0] has no instructions"]);
+  T.equal(t, shapeProblems(_listing(["RET a=r0 b=r0 c=r0 imm=0"]) + "\n  \n", 0), NONE);
+};
+
+let testCompiler = fn(t: Test) {
+  let module = selfModule();
+
+  if (module == "") {
+    module = fresh("compiler.jlo");
+    let (status, _, err) = finish(startJelloc(withStd(["src/Main.jello", "--out", module]), NONE));
+    if (status != 0) { T.fatal(t, "src/Main.jello does not compile: " + err); }
+  }
+  let (disassembled, listing, why) = finish(startJloTool(["disasm", module]));
+  if (disassembled != 0) { T.fatal(t, "jlo_tool cannot disassemble the compiler: " + why); }
+  T.equal(t, shapeProblems(listing, 2739), NONE);
+};

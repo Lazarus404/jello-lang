@@ -1,0 +1,42 @@
+// Parsing again in one process gives the same result, while the collector
+// runs. The inputs are parsed once in order, then four times in reverse, so
+// each is parsed again after a different kind of parse than the first time. In
+// particular `%` outside a pipeline is parsed first in a fresh process, and
+// again right after a parse that failed inside one.
+import { parseReport } from Digest;
+import { readText } from std.io.File;
+
+let _input = fn(path: Bytes): Tuple<Bytes, Bytes> { (readText(path), path) };
+
+let inputs = [
+  ("let y = %;", "topic.jello"),
+  ("let x = 1 |> (% + ;", "pipe.jello"),
+  _input("src/frontend/Parser.jello"),
+  _input("itests/prototype/missing_brace.jello"),
+  _input("src/frontend/Lexer.jello")
+];
+
+let _report = fn(i: I32): Bytes {
+  let (source, path) = inputs[i];
+  parseReport(source, path)
+};
+let first = Array.new<Bytes>(0);
+let i = 0;
+
+while (i < inputs.len()) {
+  first.push(_report(i));
+  i++;
+}
+let round = 0;
+let same = 0;
+
+while (round < 4) {
+  i = inputs.len() - 1;
+
+  while (i >= 0) {
+    if (_report(i) == first[i]) { same++; }
+    i--;
+  }
+  round++;
+}
+same

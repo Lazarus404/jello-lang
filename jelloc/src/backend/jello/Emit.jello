@@ -2,6 +2,8 @@ package backend.jello;
 
 import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, Terminator, ValueType } from ir.Model;
 import { ValueType, argumentCount, argsOf, dstOf, handlerPayload, handlerTarget, immOf, nodeOf, opOf, valueTypeEqual } from ir.Model;
+import { blockId } from ir.Cfg;
+import { internalError } from frontend.Internal;
 
 let _buffer = Bytes.new(0);
 let _size = 0;
@@ -92,7 +94,7 @@ _hash = fn(ty) {
     ArrayOf(element) => 6 * 31 + _hash(element),
     ListOf(element) => 11 * 31 + _hash(element),
     TupleOf(elements) => combine(7, elements),
-    Function(args, result) => combine(match (result) { Value(value) => 8 * 31 + _hash(value), Void => 9 }, args),
+    Function(args, result) => combine(8 * 31 + _hash(result), args),
     Nominal(id) => 10 * 31 + id,
   }
 };
@@ -149,21 +151,12 @@ _typeIndex = fn(ty) {
         _typeIndex(args[i]);
         i++;
       }
-
-      match (result) {
-        Value(value) => {
-          _typeIndex(value);
-          null
-        }, Void => {
-          throw "JLO emission does not support void function values";
-          null
-        }
-      };
+      _typeIndex(result);
       _signatures.push(ty);
       _add(ty, 16, (_signatures.len() - 1) as I32)
     },
     Nominal(id) => {
-      throw "unknown enum type@" + Std.string(id);
+      internalError("unknown enum type@" + Std.string(id));
       -1
     },
   }
@@ -172,12 +165,12 @@ _typeIndex = fn(ty) {
 let _functionIndexes = Array.new<I32>(0);
 
 let _functionIndex = fn(id: I32): I32 {
-  if ((id < 0) || (id >= _functionIndexes.len()) || (_functionIndexes[id] < 0)) { throw "JLO emission found unknown function"; }
+  if ((id < 0) || (id >= _functionIndexes.len()) || (_functionIndexes[id] < 0)) { internalError("JLO emission found unknown function"); }
   _functionIndexes[id]
 };
 
 let _operand = fn(value: I32, name: Bytes): I32 {
-  if ((value < 0) || (value > 255)) { throw "JLO emission: operand " + name + " is " + Std.string(value) + ", outside 0..255"; }
+  if ((value < 0) || (value > 255)) { internalError("JLO emission: operand " + name + " is " + Std.string(value) + ", outside 0..255"); }
   value
 };
 
@@ -197,7 +190,7 @@ let _window = fn(args: Array<I32>, start: I32): I32 {
   let i = start + 1;
 
   while (i < args.len()) {
-    if (args[i] != args[i - 1] + 1) { throw "JLO emission requires consecutive call arguments"; }
+    if (args[i] != args[i - 1] + 1) { internalError("JLO emission requires consecutive call arguments"); }
     i++;
   }
   args.len() > start ? args[start] : 0
@@ -276,14 +269,12 @@ let _instruction = fn(insn: Instruction) {
     SpillPop => _insn(108, dst, 0, 0, imm),
     GlobalGet => _insn(187, dst, 0, 0, imm),
     GlobalSet => _insn(188, a, 0, 0, imm),
-    _ => {
-      throw "JLO emission does not support this operation";
+    TupleNew => {
+      internalError("JLO emission found an unlegalized TupleNew");
       null
     },
   }
 };
-
-let _blockId = fn(block: BasicBlock): I32 { match (block) { Block(id, _, _, _) => id } };
 
 export let noSource: (I32) -> Tuple<Bytes, I32, I32> = fn(_node) { ("", 0, 0) };
 
@@ -385,10 +376,9 @@ let _threaded = fn(source: I32, terminator: Terminator): Terminator {
   match (terminator) {
     Jump(target) => {
       let to = _forward(target);
-      let (left, opened) = _transition(source, to);
 
       match (_block(to)) {
-        Block(_, instructions, ReturnValue(value), _) when ((instructions.len() == 0) && (left == 0) && (opened.len() == 0)) => Terminator.ReturnValue(value),
+        Block(_, instructions, ReturnValue(value), _) when (instructions.len() == 0) => Terminator.ReturnValue(value),
         _ => Terminator.Jump(to),
       }
     },
@@ -475,10 +465,6 @@ let _terminatorSize = fn(source: I32, terminator: Terminator, next: I32): I32 {
     },
     Branch(_, _, elseTarget) => elseTarget == next ? 1 : 2,
     ReturnValue(_), Throw(_, _) => 1,
-    _ => {
-      throw "JLO emission does not support terminator";
-      0
-    },
   }
 };
 
@@ -493,7 +479,7 @@ let _function = fn(function: Function) {
     let i = 0;
 
     while (i < blocks.len()) {
-      let id = _blockId(blocks[i]);
+      let id = blockId(blocks[i]);
 
       while (_indexes.len() <= id) {
         _indexes.push(-1);
@@ -522,7 +508,7 @@ let _function = fn(function: Function) {
     i = 0;
 
     while (i < order.len()) {
-      nexts[i] = i + 1 < order.len() ? _blockId(order[i + 1]) : -1;
+      nexts[i] = i + 1 < order.len() ? blockId(order[i + 1]) : -1;
       i++;
     }
     let pcs = Array.new<I32>(0);
@@ -607,12 +593,11 @@ let _function = fn(function: Function) {
             _insn(7, value, 0, 0, 0);
             pc++;
           },
-          _ => null,
         };
       } };
       i++;
     }
-    if (pc != count) { throw "JLO emission laid out " + Std.string(count) + " instructions but wrote " + Std.string(pc); }
+    if (pc != count) { internalError("JLO emission laid out " + Std.string(count) + " instructions but wrote " + Std.string(pc)); }
     _runs.push(_run);
   } };
   null
@@ -741,7 +726,7 @@ let _module = fn(program: Program): Bytes {
 
     while (i < _signatures.len()) {
       match (_signatures[i]) { Function(args, result) => {
-        match (result) { Value(value) => _u32(_find(value)), Void => null };
+        _u32(_find(result));
         _u16(args.len() as I32);
         let a = 0;
 
@@ -797,7 +782,6 @@ let _module = fn(program: Program): Bytes {
 
     while (i < natives.len()) {
       match (natives[i]) { Native(library, name, params, result) => {
-        if (params.len() > 8) { throw "native " + name + " takes " + Std.string(params.len()) + " arguments; at most 8 are supported"; }
         _u32(atom(library));
         _u32(atom(name));
         _byte(_typeKinds[_find(result)]);

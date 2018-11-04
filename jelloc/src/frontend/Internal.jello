@@ -1,0 +1,15 @@
+package frontend;
+
+let _raised = false;
+
+export let internalError = fn(message: Bytes): Null {
+  _raised = true;
+  throw message;
+  null
+};
+
+export let takeInternalError = fn(): Bool {
+  let raised = _raised;
+  _raised = false;
+  raised
+};

@@ -1,0 +1,19 @@
+package std.io;
+
+import { split } from std.core.Bytes;
+
+load { file_exists, file_read, file_write, file_remove, dir_list, dir_make } from std;
+
+export let exists: (Bytes) -> Bool = file_exists;
+export let readText: (Bytes) -> Bytes = file_read;
+export let writeText: (Bytes, Bytes) -> Bool = file_write;
+export let remove: (Bytes) -> Bool = file_remove;
+export let makeDirs: (Bytes) -> Bool = dir_make;
+
+let _entries: (Bytes) -> Bytes = dir_list;
+
+export let listDir = fn(dir: Bytes): Array<Bytes> {
+  let names = split(_entries(dir), "\0");
+  names.pop();
+  names
+};

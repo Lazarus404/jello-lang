@@ -1,0 +1,9 @@
+// expect: 5
+// Regexp literals after module globals, in a top-level loop and in an
+// annotated global's value: their hidden globals, declared after the ones
+// before them, are initialized with the module's regexps, first.
+let a = 1;
+let hits = 0; let i = 0;
+while (i < 4) { hits += match ("a" + Std.string(i)) { when ~r/[a-z][0-9]/ as m => 1, _ => 0 }; i++; }
+let b: I32 = match ("x") { when ~r/x/ as m => 0, _ => 9 };
+a + hits + b

@@ -1,0 +1,18 @@
+// expect: 11028041
+// Match arms join like if branches: T, null and Null<T> give Null<T>. A later
+// arm takes its context from the earlier ones without unwrapping a Null<T>.
+enum Pick { None; Some(value: I32); Twice(value: I32); }
+let choose = fn(pick: Pick): ?I32 { match (pick) { None => null, Some(value) => value, Twice(value) => value * 2 } };
+let first = fn(pick: Pick) { let found = match (pick) { None => null, Some(value) => value, _ => 0 }; found };
+let maybe = fn(on: Bool): ?I32 { on ? 4 : null };
+let items = fn(pick: Pick): I32 { let found = match (pick) { None => [1, 2], _ => [] }; found.len() };
+let late = fn(pick: Pick): I32 { let found = match (pick) { None => 3, _ => maybe(false) }; found == null ? 1 : 0 };
+
+let run = fn(): I32 {
+  let a = choose(Pick.None); let b = choose(Pick.Some(4)); let c = first(Pick.Twice(5)); let d = first(Pick.Some(8));
+  let xs: ?Array<I32> = [];
+  (a == null ? 1 : 0) + (b == null ? 0 : b) * 10 + (c == null ? 9 : c) * 100 + (d == null ? 9 : d) * 1000
+    + items(Pick.None) * 10000 + items(Pick.Some(1)) * 100000 + late(Pick.Some(1)) * 1000000 + (xs == null ? 0 : 1) * 10000000
+};
+
+run()

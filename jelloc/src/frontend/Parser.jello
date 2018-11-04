@@ -39,12 +39,12 @@ import type {
   WithClause,
 } from frontend.Ast;
 import type { FloatSize as LexerFloatSize, IntegerSize, Token } from frontend.Lexer;
-import { tokenEnds, tokenPath, tokenStarts } from frontend.Lexer;
 import type { SourceSpan, Syntax, SyntaxMark } from frontend.Source;
 import { SourceSpan, SyntaxKind, SyntaxMark } from frontend.Source;
 import { syntaxTree } from frontend.SyntaxTree;
 import { exprTag, patternTag, stmtTag } from frontend.Ast;
-import { tokenName } from frontend.Tokens;
+import { isKeyword, tokenText } from frontend.Tokens;
+import { internalError } from frontend.Internal;
 import { utf8Validate, utf8Length, utf8CharAt } from std.core.Bytes;
 
 let tokens = Array.new<Token>(0);
@@ -91,39 +91,6 @@ let _dropMark = fn() {
 
 export let programSyntax: (Program) -> Syntax = fn(program) { syntaxTree(program, sourcePath, marks) };
 
-let _parseProgram: (Array<Token>, Bytes, Array<I32>, Array<I32>) -> Program =
-  fn(_input, _path, _tokenStartOffsets, _tokenEndOffsets) { Program.Program(Package.None, [], null) };
-
-let _tokenTag = fn(token: Token): I32 {
-  match (token) {
-    BytesLiteral(_) => 1, FloatConstant(_, _) => 2, Ident(_) => 3,
-    IntegerConstant(_, _) => 4, RegExpLiteral(_, _) => 5,
-    As => 6, Await => 7, Bits => 8, Break => 9, Catch => 10,
-    Const => 11, Continue => 12, Do => 13, Else => 14, EnumDecl => 15,
-    Export => 16, False => 17, Fn => 18, For => 19, From => 20,
-    If => 21, Import => 22, Is => 23, Let => 24, ListLiteral => 25,
-    Load => 26, Macro => 27, Match => 28, New => 29, Null => 30,
-    Package => 31, Prototype => 32, Return => 34,
-    Super => 35, This => 36, Throw => 37, True => 38, Try => 39,
-    Type => 40, Typedef => 41, When => 42, While => 43, With => 44,
-    LBrace => 45, LBracket => 46, LParen => 47, RBrace => 48,
-    RBracket => 49, RParen => 50, Colon => 51, Comma => 52, Dot => 53,
-    DotDotDot => 54, Question => 55, Semicolon => 56, Ampersand => 57,
-    And => 58, Arrow => 59, Caret => 60, Equal => 61, EqualEqual => 62,
-    FatArrow => 63, Greater => 64, GreaterEqual => 65,
-    GreaterGreater => 66, Less => 67, LessEqual => 68, LessLess => 69,
-    LessMinus => 70, Minus => 71, MinusEqual => 72, MinusMinus => 73,
-    Not => 74, NotEqual => 75, Percent => 76, Pipe => 77,
-    PipeGreater => 78, PipePipe => 79, Plus => 80, PlusEqual => 81,
-    PlusPlus => 82, Slash => 83, SlashEqual => 84, Star => 85,
-    StarEqual => 86, Wildcard => 87, Eof => 88,
-  }
-};
-
-let _sameToken = fn(a: Token, b: Token): Bool {
-  _tokenTag(a) == _tokenTag(b)
-};
-
 let _seen = 0;
 
 let _failure: ?SourceSpan = null;
@@ -155,14 +122,6 @@ let peek = fn(): Token {
   }
 };
 
-let _at = fn(expected: Token): Bool {
-  _sameToken(peek(), expected)
-};
-
-let _atName = fn(name: Bytes): Bool {
-  match (peek()) { Ident(value) => value == name, _ => false }
-};
-
 let next = fn(): Token {
   let tok = peek();
 
@@ -174,12 +133,15 @@ let next = fn(): Token {
   tok
 };
 
+let _quoted = fn(token: Token): Bytes {
+  match (token) { Eof => "the end of the file", _ => "'" + tokenText(token) + "'" }
+};
+
+let _expected = fn(what: Bytes, actual: Token): I32 { _error("expected " + what + ", found " + _quoted(actual)) };
+
 let expect = fn(expected: Token) {
   let actual = next();
-
-  if (!_sameToken(actual, expected)) {
-    _error("expected " + tokenName(expected) + ", found " + tokenName(actual));
-  }
+  if (actual != expected) { _expected(_quoted(expected), actual); }
   null
 };
 
@@ -189,39 +151,29 @@ let _ident = fn(): Bytes {
   match (actual) {
     Ident(name) => name,
     _ => {
-      _error("expected identifier, found " + tokenName(actual));
+      _expected("identifier", actual);
       "?"
     },
   }
 };
 
 let _bindingIdent = fn(): Bytes {
-  match (next()) {
-    Ident(name) => name,
-    ListLiteral => "list",
-    _ => {
-      _error("expected identifier");
-      "?"
-    },
-  }
+  if (peek() == Token.ListLiteral) {
+    next();
+    "list"
+  } else { _ident() }
 };
 
 let _name = fn(): Bytes {
-  match (next()) {
+  let token = next();
+
+  match (token) {
     Ident(name) => name,
-    As => "as", Await => "await", Bits => "bits", Break => "break",
-    Catch => "catch", Const => "const", Continue => "continue", Do => "do",
-    Else => "else", EnumDecl => "enum", Export => "export", False => "false",
-    Fn => "fn", For => "for", From => "from", If => "if", Import => "import",
-    Is => "is", Let => "let", ListLiteral => "list", Load => "load",
-    Macro => "macro", Match => "match", New => "new", Null => "null",
-    Package => "package", Prototype => "prototype",
-    Return => "return", Super => "super", This => "this", Throw => "throw",
-    True => "true", Try => "try", Type => "type", Typedef => "typedef",
-    When => "when", While => "while", With => "with",
     _ => {
-      _error("expected name");
-      "?"
+      if (isKeyword(token)) { tokenText(token) } else {
+        _expected("name", token);
+        "?"
+      }
     },
   }
 };
@@ -302,14 +254,16 @@ let _bitsSegmentWidth = fn(digits: Bytes): I32 {
 };
 
 let _expectGenericClose = fn() {
-  match (next()) {
+  let actual = next();
+
+  match (actual) {
     Greater => null,
     GreaterGreater => {
       pendingGreater++;
       null
     },
     _ => {
-      _error("expected '>'");
+      _expected("'>'", actual);
       null
     },
   }
@@ -331,30 +285,32 @@ let _parseTypeArg: () -> Type = fn() {
 };
 
 let _typeName = fn(): Bytes {
-  match (next()) {
+  let actual = next();
+
+  match (actual) {
     Ident(name) => name,
     ListLiteral => "List",
     _ => {
-      _error("expected type name");
+      _expected("type name", actual);
       "?"
     },
   }
 };
 
 _parseTypeAtom = fn() {
-  if (_at(Token.Question)) {
+  if (peek() == Token.Question) {
     next();
     return Type.OptionalArg(_parseTypeAtom());
   }
 
-  if (_at(Token.LParen)) {
+  if (peek() == Token.LParen) {
     next();
     let items = Array.new<Type>(0);
 
-    if (!_at(Token.RParen)) {
+    if (peek() != Token.RParen) {
       items.push(_parseTypeArg());
 
-      while (_at(Token.Comma)) {
+      while (peek() == Token.Comma) {
         next();
 
         match (items[items.len() - 1]) {
@@ -364,7 +320,7 @@ _parseTypeAtom = fn() {
           },
           _ => null,
         };
-        if (_at(Token.RParen)) { _error("trailing comma is not supported in function types"); }
+        if (peek() == Token.RParen) { _error("trailing comma is not supported in function types"); }
         items.push(_parseTypeArg());
       }
     }
@@ -373,12 +329,12 @@ _parseTypeAtom = fn() {
   } else {
     let name = _typeName();
 
-    if (_at(Token.Less)) {
+    if (peek() == Token.Less) {
       next();
       let args = Array.new<Type>(0);
       args.push(_parseType());
 
-      while (_at(Token.Comma)) {
+      while (peek() == Token.Comma) {
         next();
         args.push(_parseType());
       }
@@ -393,7 +349,7 @@ _parseTypeAtom = fn() {
 _parseType = fn() {
   let left = _parseTypeAtom();
 
-  if (_at(Token.Arrow)) {
+  if (peek() == Token.Arrow) {
     next();
 
     let args = match (left) {
@@ -407,11 +363,11 @@ _parseType = fn() {
 };
 
 _parseTypeArg = fn() {
-  let prefixed = _at(Token.DotDotDot);
+  let prefixed = (peek() == Token.DotDotDot);
   if (prefixed) { next(); }
   let out = _parseType();
 
-  if (prefixed || _at(Token.DotDotDot)) {
+  if (prefixed || (peek() == Token.DotDotDot)) {
     if (!prefixed) { next(); }
     Type.VarargsArg(out)
   } else {
@@ -422,11 +378,11 @@ _parseTypeArg = fn() {
 let _typeParams = fn(): Array<Bytes> {
   let out = Array.new<Bytes>(0);
 
-  if (_at(Token.Less)) {
+  if (peek() == Token.Less) {
     next();
     out.push(_ident());
 
-    while (_at(Token.Comma)) {
+    while (peek() == Token.Comma) {
       next();
       out.push(_ident());
     }
@@ -441,7 +397,7 @@ let _parsePattern: () -> Pattern = fn() {
 };
 
 let _parseIsType = fn(): Type {
-  if (_at(Token.Fn)) {
+  if (peek() == Token.Fn) {
     next();
     Type.Named("__fn__")
   } else { _parseType() }
@@ -450,12 +406,12 @@ let _parseIsType = fn(): Type {
 let _parsePatternList = fn(end: Token): Array<Pattern> {
   let out = Array.new<Pattern>(0);
 
-  if (!_at(end)) {
+  if (peek() != end) {
     out.push(_parsePattern());
 
-    while (_at(Token.Comma)) {
+    while (peek() == Token.Comma) {
       next();
-      if (_at(end)) { break; }
+      if (peek() == end) { break; }
       out.push(_parsePattern());
     }
   }
@@ -470,7 +426,7 @@ let _declarationPattern = fn(): Pattern {
     Ident(name) => {
       next();
 
-      if (_at(Token.LParen)) {
+      if (peek() == Token.LParen) {
         next();
         _markPattern(Pattern.Enum(name, _parsePatternList(Token.RParen)), start)
       } else {
@@ -485,10 +441,10 @@ let _namedPattern = fn(name: Bytes): Pattern {
   if (name == "_") { return Pattern.Wildcard; }
   let first = Bytes.get_u8(name, 0);
 
-  if (_at(Token.LParen) || ((first >= "A".code) && (first <= "Z".code))) {
+  if ((peek() == Token.LParen) || ((first >= "A".code) && (first <= "Z".code))) {
     let args = Array.new<Pattern>(0);
 
-    if (_at(Token.LParen)) {
+    if (peek() == Token.LParen) {
       next();
       args = _parsePatternList(Token.RParen);
     }
@@ -498,55 +454,64 @@ let _namedPattern = fn(name: Bytes): Pattern {
   }
 };
 
+let _endian = fn(): Endian {
+  if (peek() != Token.Dot) { return Endian.Little; }
+  next();
+  let e = _ident();
+
+  if (e == "be") { Endian.Big } else {
+    if (e != "le") { _error("expected le or be"); }
+    Endian.Little
+  }
+};
+
+let _bitsSegment = fn(): Tuple<I32, Endian, Bool, BitValueKind> {
+  let width = 0;
+  let signed = false;
+  let kind = BitValueKind.Integer;
+
+  match (next()) {
+    Ident(name) when (name == "rest") => {
+      kind = BitValueKind.Rest;
+      null
+    },
+    Ident(name) => {
+      if ((name == "u8") || (name == "U8")) { width = 8; } else if ((name == "u16") || (name == "U16")) { width = 16; } else if ((name == "u32") || (name == "U32")) { width = 32; } else if ((name == "i32") || (name == "I32")) {
+        width = 32;
+        signed = true;
+      } else if ((name == "f32") || (name == "F32")) {
+        width = 32;
+        kind = BitValueKind.Float;
+      } else { _error("unknown bits segment"); }
+      null
+    },
+    IntegerConstant(digits, _) => {
+      width = _bitsSegmentWidth(digits);
+      null
+    },
+    _ => {
+      _error("expected bits segment");
+      null
+    },
+  };
+
+  if ((peek() == Token.Dot) && ((width == 8) || (kind == BitValueKind.Rest))) {
+    _error("endian suffix is not supported on u8 or rest segments");
+  }
+  (width, _endian(), signed, kind)
+};
+
 let _parseBitPattern = fn(): Pattern {
   expect(Token.LBracket);
   let segments = Array.new<BitPatternSegment>(0);
 
-  while (!_at(Token.RBracket)) {
-    let width = 0;
-    let signed = false;
-    let kind = BitValueKind.Integer;
-
-    match (next()) {
-      Ident(name) when (name == "rest") => {
-        width = 0;
-        kind = BitValueKind.Rest;
-        null
-      },
-      Ident(name) => {
-        if ((name == "u8") || (name == "U8")) { width = 8; } else if ((name == "u16") || (name == "U16")) { width = 16; } else if ((name == "u32") || (name == "U32")) { width = 32; } else if ((name == "i32") || (name == "I32")) {
-          width = 32;
-          signed = true;
-        } else if ((name == "f32") || (name == "F32")) {
-          width = 32;
-          kind = BitValueKind.Float;
-        } else { _error("unknown bits segment"); }
-        null
-      },
-      IntegerConstant(digits, _) => {
-        width = _bitsSegmentWidth(digits);
-        null
-      },
-      _ => {
-        _error("expected bits segment");
-        null
-      },
-    };
-    let endian = Endian.Little;
-
-    if (_at(Token.Dot)) {
-      if ((width == 8) || (kind == BitValueKind.Rest)) {
-        _error("endian suffix is not supported on u8 or rest segments");
-      }
-      next();
-      let e = _ident();
-      if (e == "be") { endian = Endian.Big; } else if (e != "le") { _error("expected le or be"); }
-    }
+  while (peek() != Token.RBracket) {
+    let (width, endian, signed, kind) = _bitsSegment();
     expect(Token.LParen);
     let value = _parsePattern();
     expect(Token.RParen);
     segments.push(BitPatternSegment.Segment(width, endian, signed, kind, value));
-    if (_at(Token.Comma)) { next(); } else { break; }
+    if (peek() == Token.Comma) { next(); } else { break; }
   }
   if (segments.len() == 0) { _error("bits layout must have at least one segment"); }
   expect(Token.RBracket);
@@ -560,10 +525,6 @@ _parsePattern = fn() {
 };
 _patternInner = fn() {
   match (peek()) {
-    Wildcard => {
-      next();
-      Pattern.Wildcard
-    },
     Caret => {
       next();
       Pattern.Pin(_ident())
@@ -571,7 +532,7 @@ _patternInner = fn() {
     Is => {
       next();
       let ty = _parseIsType();
-      let binding: ?Bytes = _at(Token.As) ? {
+      let binding: ?Bytes = (peek() == Token.As) ? {
         next();
         _ident()
       } : null;
@@ -604,7 +565,7 @@ _patternInner = fn() {
     BytesLiteral(value) => {
       next();
 
-      if (_at(Token.Dot)) {
+      if (peek() == Token.Dot) {
         next();
         if (_name() != "code") { _error("expected codepoint pattern"); }
 
@@ -626,11 +587,11 @@ _patternInner = fn() {
       next();
       let fields = Array.new<Tuple<Bytes, Pattern>>(0);
 
-      while (!_at(Token.RBrace)) {
+      while (peek() != Token.RBrace) {
         let name = _name();
         expect(Token.Colon);
         fields.push((name, _parsePattern()));
-        if (_at(Token.Comma)) { next(); } else { break; }
+        if (peek() == Token.Comma) { next(); } else { break; }
       }
       expect(Token.RBrace);
       Pattern.Object(fields)
@@ -638,16 +599,16 @@ _patternInner = fn() {
     LParen => {
       next();
 
-      if (_at(Token.RParen)) {
+      if (peek() == Token.RParen) {
         next();
         Pattern.Tuple([])
       } else {
         let items = [_parsePattern()];
-        if (!_at(Token.Comma)) { _error("tuple pattern requires a comma"); }
+        if (peek() != Token.Comma) { _error("tuple pattern requires a comma"); }
 
-        while (_at(Token.Comma)) {
+        while (peek() == Token.Comma) {
           next();
-          if (_at(Token.RParen)) { break; }
+          if (peek() == Token.RParen) { break; }
           items.push(_parsePattern());
         }
         expect(Token.RParen);
@@ -657,13 +618,13 @@ _patternInner = fn() {
     LBracket => {
       next();
 
-      if (_at(Token.RBracket)) {
+      if (peek() == Token.RBracket) {
         next();
         return Pattern.Array([]);
       }
       let first = _parsePattern();
 
-      if (_at(Token.Pipe)) {
+      if (peek() == Token.Pipe) {
         next();
         let rest = _ident();
         expect(Token.RBracket);
@@ -671,11 +632,11 @@ _patternInner = fn() {
       }
       let prefix = [first];
 
-      while (_at(Token.Comma)) {
+      while (peek() == Token.Comma) {
         next();
-        if (_at(Token.RBracket)) { break; }
+        if (peek() == Token.RBracket) { break; }
 
-        if (_at(Token.DotDotDot)) {
+        if (peek() == Token.DotDotDot) {
           next();
           let rest = _ident();
           expect(Token.RBracket);
@@ -684,7 +645,7 @@ _patternInner = fn() {
         prefix.push(_parsePattern());
       }
 
-      if (_at(Token.DotDotDot)) {
+      if (peek() == Token.DotDotDot) {
         next();
         let rest = _ident();
         expect(Token.RBracket);
@@ -709,14 +670,11 @@ _patternInner = fn() {
   }
 };
 
-let _parseExprInner: (I32) -> Expr = fn(_minPrec) {
+let _parseBinary: (I32, Bool) -> Expr = fn(_minPrec, _element) {
   throw "internal: expression parser not initialized";
   Expr.Null
 };
-
-let _parseExpr: (I32) -> Expr = fn(minPrec) {
-  _parseExprInner(minPrec)
-};
+let _parseExpr = fn(minPrec: I32): Expr { _parseBinary(minPrec, false) };
 
 let _parseStmtInner: () -> Stmt = fn() {
   throw "internal: statement parser not initialized";
@@ -750,18 +708,8 @@ let _parsePrimary: () -> Expr = fn() {
 };
 let _stmtStarts: (Token) -> Bool = fn(_tok) { false };
 
-let _blockTail = fn(statements: Array<Stmt>): Block {
-  let out = Block.Block(statements, _parseExpr(0));
-  expect(Token.RBrace);
-  out
-};
-
-let _programTail = fn(pkg: Package, statements: Array<Stmt>): Program {
-  Program.Program(pkg, statements, _parseExpr(0))
-};
-
 let _element = fn(): Expr {
-  if (!_at(Token.DotDotDot)) { return _parseExpr(0); }
+  if (peek() != Token.DotDotDot) { return _parseExpr(0); }
   let start = pos;
   next();
   _markExpr(Expr.Spread(_parseExpr(0)), start)
@@ -770,12 +718,12 @@ let _element = fn(): Expr {
 let _exprList = fn(end: Token): Array<Expr> {
   let out = Array.new<Expr>(0);
 
-  if (!_at(end)) {
+  if (peek() != end) {
     out.push(_element());
 
-    while (_at(Token.Comma)) {
+    while (peek() == Token.Comma) {
       next();
-      if (_at(end)) { _error("trailing comma is not supported in calls"); }
+      if (peek() == end) { _error("trailing comma is not supported in calls"); }
       out.push(_element());
     }
   }
@@ -787,29 +735,29 @@ let _parseParams = fn(): Array<Parameter> {
   expect(Token.LParen);
   let out = Array.new<Parameter>(0);
 
-  while (!_at(Token.RParen)) {
+  while (peek() != Token.RParen) {
     let start = pos;
-    let varargs = _at(Token.DotDotDot);
+    let varargs = (peek() == Token.DotDotDot);
     if (varargs) { next(); }
-    let optional = _at(Token.Question);
+    let optional = (peek() == Token.Question);
     if (optional) { next(); }
     if (varargs && optional) { _error("varargs parameter cannot use '?'"); }
     let name = _bindingIdent();
-    let annotation: ?Type = _at(Token.Colon) ? {
+    let annotation: ?Type = (peek() == Token.Colon) ? {
       next();
       _parseType()
     } : null;
 
     let kind = if (varargs) {
-      if (_at(Token.Equal)) { _error("varargs parameter cannot have a default value"); }
+      if (peek() == Token.Equal) { _error("varargs parameter cannot have a default value"); }
       ParameterKind.Varargs
     } else if (optional) {
-      let defaultValue: ?Expr = _at(Token.Equal) ? {
+      let defaultValue: ?Expr = (peek() == Token.Equal) ? {
         next();
         _parseExpr(0)
       } : null;
       ParameterKind.Optional(defaultValue)
-    } else if (_at(Token.Equal)) {
+    } else if (peek() == Token.Equal) {
       next();
       ParameterKind.Default(_parseExpr(0))
     } else {
@@ -818,10 +766,10 @@ let _parseParams = fn(): Array<Parameter> {
     out.push(Parameter.Parameter(name, annotation, kind));
     _mark(SyntaxKind.Parameter, 0, start);
 
-    if (_at(Token.Comma)) {
+    if (peek() == Token.Comma) {
       next();
       if (varargs) { _error("varargs parameter must be last"); }
-      if (_at(Token.RParen)) { _error("trailing comma is not supported in parameters"); }
+      if (peek() == Token.RParen) { _error("trailing comma is not supported in parameters"); }
     } else { break; }
   }
   expect(Token.RParen);
@@ -830,7 +778,7 @@ let _parseParams = fn(): Array<Parameter> {
 
 let _parseFunction = fn(isMethod: Bool): Expr {
   let params = _parseParams();
-  let result: ?Type = _at(Token.Colon) ? {
+  let result: ?Type = (peek() == Token.Colon) ? {
     next();
     _parseType()
   } : null;
@@ -840,7 +788,7 @@ let _parseFunction = fn(isMethod: Bool): Expr {
 let _optionalGuard = fn(): ?Expr {
   let out: ?Expr = null;
 
-  if (_at(Token.When)) {
+  if (peek() == Token.When) {
     next();
     expect(Token.LParen);
     out = _parseExpr(0);
@@ -850,25 +798,13 @@ let _optionalGuard = fn(): ?Expr {
 };
 
 let _matchPattern = fn(): Pattern {
+  if (peek() != Token.When) { return _parsePattern(); }
   let start = pos;
-
-  if (!_at(Token.When)) {
-    match (peek()) {
-      Ident(name) => {
-        next();
-        return _markPattern(_namedPattern(name), start)
-      },
-      _ => {
-        return _parsePattern();
-        null
-      },
-    }
-  }
   next();
 
   match (next()) {
     RegExpLiteral(value, flags) => {
-      let binding: ?Bytes = _at(Token.As) ? {
+      let binding: ?Bytes = (peek() == Token.As) ? {
         next();
         _ident()
       } : null;
@@ -882,22 +818,15 @@ let _matchPattern = fn(): Pattern {
 };
 
 let _matchArms = fn(): Array<MatchArm> {
-  let open = next();
-
-  match (open) {
-    LBrace => null, _ => {
-      _error("expected match body");
-      null
-    }
-  };
+  expect(Token.LBrace);
   let arms = Array.new<MatchArm>(0);
 
-  while (!_at(Token.RBrace)) {
+  while (peek() != Token.RBrace) {
     let alternatives = Array.new<MatchAlternative>(0);
     let pattern = _matchPattern();
     let guard = _optionalGuard();
 
-    while (!_at(Token.FatArrow)) {
+    while (peek() != Token.FatArrow) {
       expect(Token.Comma);
       alternatives.push(MatchAlternative.Alternative(pattern, guard));
       pattern = _matchPattern();
@@ -905,36 +834,27 @@ let _matchArms = fn(): Array<MatchArm> {
     }
     alternatives.push(MatchAlternative.Alternative(pattern, null));
     expect(Token.FatArrow);
-    let body = _at(Token.LBrace) ? _parseBlock() : Block.Block([], _parseExpr(0));
+    let body = (peek() == Token.LBrace) ? _parseBlock() : Block.Block([], _parseExpr(0));
     arms.push(MatchArm.Arm(alternatives, guard, body));
 
-    if (_at(Token.Comma)) {
+    if (peek() == Token.Comma) {
       next();
-      if (_at(Token.RBrace)) { break; }
+      if (peek() == Token.RBrace) { break; }
     }
   }
-  let close = next();
-
-  match (close) {
-    RBrace => null, _ => {
-      _error("expected end of match body");
-      null
-    }
-  };
+  expect(Token.RBrace);
   arms
 };
-
-let _BIT_XOR_PRECEDENCE = 35;
 
 let _parseList = fn(): Expr {
   expect(Token.LBracket);
 
-  if (_at(Token.RBracket)) {
+  if (peek() == Token.RBracket) {
     next();
     return Expr.List(ListLiteral.Empty);
   }
 
-  if (_at(Token.For)) {
+  if (peek() == Token.For) {
     next();
     let generators = Array.new<ListGenerator>(0);
     let more = true;
@@ -946,9 +866,9 @@ let _parseList = fn(): Expr {
       let source = _parseExpr(0);
       let guard = _optionalGuard();
       generators.push(ListGenerator.Generator(pattern, source, guard));
-      if (_at(Token.Comma)) { next(); } else { more = false; }
+      if (peek() == Token.Comma) { next(); } else { more = false; }
 
-      if (_at(Token.Do)) {
+      if (peek() == Token.Do) {
         next();
         sawDo = true;
         more = false;
@@ -963,44 +883,32 @@ let _parseList = fn(): Expr {
   let prefix = Array.new<Expr>(0);
 
   while (true) {
-    if (_at(Token.DotDotDot)) {
+    if (peek() == Token.DotDotDot) {
       next();
       let rest = _parseExpr(0);
       let suffix = Array.new<Expr>(0);
 
-      while (_at(Token.Comma)) {
+      while (peek() == Token.Comma) {
         next();
-        if (_at(Token.RBracket)) { break; }
+        if (peek() == Token.RBracket) { break; }
         suffix.push(_parseExpr(0));
       }
       expect(Token.RBracket);
       return Expr.List(ListLiteral.Spread(prefix, rest, suffix));
     }
-    prefix.push(_parseExpr(_BIT_XOR_PRECEDENCE));
+    prefix.push(_parseBinary(0, true));
+    if ((peek() != Token.Pipe) && (peek() != Token.RBracket)) { expect(Token.Comma); }
 
-    if (_at(Token.Pipe)) {
+    if (peek() == Token.Pipe) {
       next();
       let tail = _parseExpr(0);
       expect(Token.RBracket);
       return Expr.List(ListLiteral.Cons(prefix, tail));
     }
 
-    if (_at(Token.RBracket)) {
+    if (peek() == Token.RBracket) {
       next();
       return Expr.List(ListLiteral.Elements(prefix));
-    }
-    expect(Token.Comma);
-
-    if (_at(Token.RBracket)) {
-      next();
-      return Expr.List(ListLiteral.Elements(prefix));
-    }
-
-    if (_at(Token.Pipe)) {
-      next();
-      let tail = _parseExpr(0);
-      expect(Token.RBracket);
-      return Expr.List(ListLiteral.Cons(prefix, tail));
     }
   }
   Expr.List(ListLiteral.Empty)
@@ -1010,50 +918,13 @@ let _parseBitExpr = fn(): Expr {
   expect(Token.LBracket);
   let segments = Array.new<BitExprSegment>(0);
 
-  while (!_at(Token.RBracket)) {
-    let width = 0;
-    let signed = false;
-    let kind = BitValueKind.Integer;
-
-    match (next()) {
-      Ident(name) when (name == "rest") => {
-        kind = BitValueKind.Rest;
-        null
-      },
-      Ident(name) => {
-        if ((name == "u8") || (name == "U8")) { width = 8; } else if ((name == "u16") || (name == "U16")) { width = 16; } else if ((name == "u32") || (name == "U32")) { width = 32; } else if ((name == "i32") || (name == "I32")) {
-          width = 32;
-          signed = true;
-        } else if ((name == "f32") || (name == "F32")) {
-          width = 32;
-          kind = BitValueKind.Float;
-        } else { _error("unknown bits segment"); }
-        null
-      },
-      IntegerConstant(digits, _) => {
-        width = _bitsSegmentWidth(digits);
-        null
-      },
-      _ => {
-        _error("expected bits segment");
-        null
-      },
-    };
-    let endian = Endian.Little;
-
-    if (_at(Token.Dot)) {
-      if ((width == 8) || (kind == BitValueKind.Rest)) {
-        _error("endian suffix is not supported on u8 or rest segments");
-      }
-      next();
-      let e = _ident();
-      if (e == "be") { endian = Endian.Big; } else if (e != "le") { _error("expected le or be"); }
-    }
+  while (peek() != Token.RBracket) {
+    let (width, endian, signed, kind) = _bitsSegment();
     expect(Token.LParen);
     let value = _parseExpr(0);
     expect(Token.RParen);
     segments.push(BitExprSegment.Segment(width, endian, signed, kind, value));
-    if (_at(Token.Comma)) { next(); } else { break; }
+    if (peek() == Token.Comma) { next(); } else { break; }
   }
   if (segments.len() == 0) { _error("bits layout must have at least one segment"); }
   expect(Token.RBracket);
@@ -1064,11 +935,11 @@ let _parseObject = fn(): Expr {
   expect(Token.LBrace);
   let entries = Array.new<ObjectEntry>(0);
 
-  while (!_at(Token.RBrace)) {
-    if (_at(Token.DotDotDot)) {
+  while (peek() != Token.RBrace) {
+    if (peek() == Token.DotDotDot) {
       next();
       entries.push(ObjectEntry.Spread(_parseExpr(0)));
-    } else if (_at(Token.LBracket)) {
+    } else if (peek() == Token.LBracket) {
       next();
       let key = _parseExpr(0);
       expect(Token.RBracket);
@@ -1078,14 +949,14 @@ let _parseObject = fn(): Expr {
       let nameStart = pos;
       let name = _name();
 
-      if (_at(Token.Colon)) {
+      if (peek() == Token.Colon) {
         next();
         entries.push(ObjectEntry.Field(name, _parseExpr(0)));
       } else {
         entries.push(ObjectEntry.Field(name, _markExpr(Expr.Variable(name), nameStart)));
       }
     }
-    if (_at(Token.Comma)) { next(); } else { break; }
+    if (peek() == Token.Comma) { next(); } else { break; }
   }
   expect(Token.RBrace);
   Expr.Object(entries)
@@ -1099,20 +970,14 @@ let _braceIsObject = fn(): Bool {
     Ident(_) => {
       if ((pos + 2) >= tokens.len()) { false } else { match (tokens[pos + 2]) { Colon, Comma, RBrace => true, _ => false } }
     },
-    As, Await, Bits, Break, Catch, Const, Continue, Do, Else,
-    EnumDecl, Export, False, Fn, For, From, If, Import, Is, Let, ListLiteral,
-    Load, Macro, Match, New, Null, Package, Prototype, Return, Super,
-    This, Throw, True, Try, Type, Typedef, When, While, With => {
-      if ((pos + 2) >= tokens.len()) { false } else { _sameToken(tokens[pos + 2], Token.Colon) }
-    },
-    _ => false,
+    _ => ((pos + 2) < tokens.len()) && (tokens[pos + 2] == Token.Colon) && isKeyword(tokens[pos + 1]),
   }
 };
 
 let _parseQuote = fn(): Expr {
   let kind = QuoteKind.Auto;
 
-  if (_at(Token.Dot)) {
+  if (peek() == Token.Dot) {
     next();
     kind = match (_name()) {
       "expr", "expression" => QuoteKind.Expression,
@@ -1133,17 +998,17 @@ let _parseQuote = fn(): Expr {
     Pattern => QuoteBody.Pattern(_parsePattern()),
     Statement => QuoteBody.Statement(_parseStatement()),
     Statements => {
-      if (_at(Token.RBrace)) { _error("expected statements in quote block"); }
+      if (peek() == Token.RBrace) { _error("expected statements in quote block"); }
       let statements = Array.new<Stmt>(0);
-      while (!_at(Token.RBrace)) { statements.push(_parseStatement()); }
+      while (peek() != Token.RBrace) { statements.push(_parseStatement()); }
       QuoteBody.Statements(statements)
     },
     Auto => {
-      if (_at(Token.RBrace)) { _error("expected quote body"); }
+      if (peek() == Token.RBrace) { _error("expected quote body"); }
 
       if (_stmtStarts(peek())) {
         let statements = [_parseStatement()];
-        while (!_at(Token.RBrace)) { statements.push(_parseStatement()); }
+        while (peek() != Token.RBrace) { statements.push(_parseStatement()); }
         if (statements.len() == 1) { QuoteBody.Statement(statements[0]) } else { QuoteBody.Statements(statements) }
       } else {
         QuoteBody.Expression(_parseExpr(0))
@@ -1192,10 +1057,10 @@ let _primary = fn(start: I32): Expr {
       let thenBranch = Expr.BlockExpr(_parseBlock());
       _markExpr(thenBranch, branchStart);
 
-      let elseBranch = if (_at(Token.Else)) {
+      let elseBranch = if (peek() == Token.Else) {
         next();
 
-        if (_at(Token.If)) { _parsePrimary() } else {
+        if (peek() == Token.If) { _parsePrimary() } else {
           branchStart = pos;
           let branch = Expr.BlockExpr(_parseBlock());
           _markExpr(branch, branchStart)
@@ -1216,23 +1081,15 @@ let _primary = fn(start: I32): Expr {
       let more = true;
 
       while (more) {
-        let patternStart = pos;
-
-        let pattern = match (peek()) {
-          Ident(name) => {
-            next();
-            _markPattern(_namedPattern(name), patternStart)
-          },
-          _ => _parsePattern(),
-        };
+        let pattern = _parsePattern();
         let guard = _optionalGuard();
         expect(Token.LessMinus);
         clauses.push(WithClause.Clause(pattern, guard, _parseExpr(0)));
-        if (_at(Token.Comma)) { next(); } else { more = false; }
+        if (peek() == Token.Comma) { next(); } else { more = false; }
       }
       let body = _parseBlock();
 
-      let elseArms = if (_at(Token.Else)) {
+      let elseArms = if (peek() == Token.Else) {
         next();
         MatchArms.Some(_matchArms())
       } else {
@@ -1245,7 +1102,7 @@ let _primary = fn(start: I32): Expr {
       expect(Token.Catch);
       let catchName: ?Bytes = null;
 
-      if (_at(Token.LParen)) {
+      if (peek() == Token.LParen) {
         next();
         catchName = _ident();
         expect(Token.RParen);
@@ -1255,7 +1112,7 @@ let _primary = fn(start: I32): Expr {
     Let => {
       let pattern = _declarationPattern();
       let typeParams = _typeParams();
-      let annotation: ?Type = _at(Token.Colon) ? {
+      let annotation: ?Type = (peek() == Token.Colon) ? {
         next();
         _parseType()
       } : null;
@@ -1263,18 +1120,18 @@ let _primary = fn(start: I32): Expr {
       Expr.LetExpr(pattern, typeParams, annotation, _parseExpr(0))
     },
     LParen => {
-      if (_at(Token.RParen)) {
+      if (peek() == Token.RParen) {
         next();
         return Expr.Tuple([]);
       }
       let first = _element();
 
-      if (_at(Token.Comma)) {
+      if (peek() == Token.Comma) {
         let items = [first];
 
-        while (_at(Token.Comma)) {
+        while (peek() == Token.Comma) {
           next();
-          if (_at(Token.RParen)) { break; }
+          if (peek() == Token.RParen) { break; }
           items.push(_element());
         }
         expect(Token.RParen);
@@ -1294,7 +1151,7 @@ let _primary = fn(start: I32): Expr {
       _braceIsObject() ? _parseObject() : Expr.BlockExpr(_parseBlock())
     },
     ListLiteral => {
-      if (_at(Token.LBracket)) { _parseList() } else { Expr.Variable("list") }
+      if (peek() == Token.LBracket) { _parseList() } else { Expr.Variable("list") }
     },
     Bits => _parseBitExpr(),
     Percent => {
@@ -1317,28 +1174,28 @@ _parseArray = fn() {
   expect(Token.LBracket);
   let items = Array.new<Expr>(0);
 
-  if (!_at(Token.RBracket)) {
+  if (peek() != Token.RBracket) {
     while (true) {
       items.push(_element());
-      if (!_at(Token.Comma)) { break; }
+      if (peek() != Token.Comma) { break; }
       next();
-      if (_at(Token.RBracket)) { _error("trailing comma is not supported in arrays"); }
+      if (peek() == Token.RBracket) { _error("trailing comma is not supported in arrays"); }
     }
   }
   expect(Token.RBracket);
   Expr.Array(items)
 };
 
-let _tryTypeArgs = fn(): Tuple<Bool, Array<Type>> {
+let _typeArgs = fn(): Array<Type> {
   expect(Token.Less);
   let args = [_parseType()];
 
-  while (_at(Token.Comma)) {
+  while (peek() == Token.Comma) {
     next();
     args.push(_parseType());
   }
   _expectGenericClose();
-  (true, args)
+  args
 };
 
 let _looksLikeTypeArgs = fn(): Bool {
@@ -1351,20 +1208,8 @@ let _looksLikeTypeArgs = fn(): Bool {
         depth++;
         null
       },
-      Greater => {
-        depth--;
-
-        if (depth == 0) {
-          if ((i + 1) >= tokens.len()) { return false; }
-          return match (tokens[i + 1]) {
-            IntegerConstant(_, _), FloatConstant(_, _), Ident(_), BytesLiteral(_) => false,
-            _ => true,
-          };
-        }
-        null
-      },
-      GreaterGreater => {
-        depth -= 2;
+      Greater, GreaterGreater => {
+        depth -= match (tokens[i]) { Greater => 1, _ => 2 };
 
         if (depth <= 0) {
           if ((i + 1) >= tokens.len()) { return false; }
@@ -1405,37 +1250,30 @@ let _parsePostfix = fn(start: I32, base: Expr): Expr {
   let more = true;
 
   while (more) {
-    if (_at(Token.Dot)) {
+    if (peek() == Token.Dot) {
       next();
       out = Expr.Member(out, _memberName());
-    } else if (_at(Token.LBracket)) {
+    } else if (peek() == Token.LBracket) {
       next();
       let index = _parseExpr(0);
       expect(Token.RBracket);
       out = Expr.Index(out, index);
-    } else if (_at(Token.LParen)) {
+    } else if (peek() == Token.LParen) {
       next();
       out = Expr.Call(out, [], _exprList(Token.RParen));
-    } else if (_at(Token.Less) && _looksLikeTypeArgs()) {
-      let (ok, values) = _tryTypeArgs();
+    } else if ((peek() == Token.Less) && _looksLikeTypeArgs()) {
+      let values = _typeArgs();
 
-      if (!ok) {
-        more = false;
+      if (peek() == Token.LParen) {
+        next();
+        out = Expr.Call(out, values, _exprList(Token.RParen));
       } else {
-        if (_at(Token.LParen)) {
-          next();
-          out = Expr.Call(out, values, _exprList(Token.RParen));
-        } else {
-          out = Expr.TypeApply(out, values);
-        }
+        out = Expr.TypeApply(out, values);
       }
-    } else if (_at(Token.As)) {
-      next();
-      out = Expr.Cast(out, _parseType());
-    } else if (_at(Token.PlusPlus)) {
+    } else if (peek() == Token.PlusPlus) {
       next();
       out = _incDec(IncDecOp.Increment, false, out);
-    } else if (_at(Token.MinusMinus)) {
+    } else if (peek() == Token.MinusMinus) {
       next();
       out = _incDec(IncDecOp.Decrement, false, out);
     } else {
@@ -1447,11 +1285,6 @@ let _parsePostfix = fn(start: I32, base: Expr): Expr {
 };
 
 let _parseUnary: () -> Expr = fn() {
-  throw "internal: unary parser not initialized";
-  Expr.Null
-};
-
-_parseUnary = fn() {
   let start = pos;
 
   match (peek()) {
@@ -1474,23 +1307,31 @@ _parseUnary = fn() {
     New => {
       next();
       let protoStart = pos;
-      let proto = _parsePostfix(protoStart, _parsePrimary());
+      let proto = _parsePrimary();
 
-      let args = match (proto) {
-        Call(callee, typeArgs, values) => {
-          _dropMark();
-          proto = (typeArgs.len() == 0) ? callee : _markExpr(Expr.TypeApply(callee, typeArgs), protoStart);
-          values
-        },
-        _ => {
-          _error("new requires arguments");
-          Array.new<Expr>(0)
-        },
-      };
-      _markExpr(Expr.New(proto, args), start)
+      while (peek() == Token.Dot) {
+        next();
+        proto = _markExpr(Expr.Member(proto, _memberName()), protoStart);
+      }
+      if ((peek() == Token.Less) && _looksLikeTypeArgs()) { proto = _markExpr(Expr.TypeApply(proto, _typeArgs()), protoStart); }
+      if (peek() != Token.LParen) { _error("new requires arguments"); }
+      next();
+      let args = _exprList(Token.RParen);
+      _parsePostfix(start, _markExpr(Expr.New(proto, args), start))
     },
     _ => _parsePostfix(start, _parsePrimary()),
   }
+};
+
+let _parseCast = fn(): Expr {
+  let start = pos;
+  let out = _parseUnary();
+
+  while (peek() == Token.As) {
+    next();
+    out = _markExpr(Expr.Cast(out, _parseType()), start);
+  }
+  out
 };
 
 let _precedence = fn(tok: Token): I32 {
@@ -1501,7 +1342,7 @@ let _precedence = fn(tok: Token): I32 {
     Less, LessEqual, Greater, GreaterEqual, Is => 50,
     EqualEqual, NotEqual => 45,
     Ampersand => 40,
-    Caret => _BIT_XOR_PRECEDENCE,
+    Caret => 35,
     Pipe => 30,
     And => 25,
     PipePipe => 20,
@@ -1553,43 +1394,43 @@ let _assignOp = fn(tok: Token): AssignOp {
   }
 };
 
-_parseExprInner = fn(minPrec) {
+_parseBinary = fn(minPrec, element) {
   let start = pos;
-  let left = _parseUnary();
+  let left = _parseCast();
   let running = true;
 
   while (running) {
     let tok = peek();
     let prec = _precedence(tok);
+    if (element && (prec == 30)) { prec = -1; }
 
     if (prec < minPrec) {
       running = false;
-    } else if (_sameToken(tok, Token.Question)) {
+    } else if (tok == Token.Question) {
       next();
       let thenBranch = _parseExpr(0);
       left = Expr.Conditional(left, thenBranch,
-        if (_at(Token.Colon)) {
+        if (peek() == Token.Colon) {
           next();
-          _parseExpr(prec)
+          _parseBinary(prec, element)
         } else { _markExpr(Expr.Null, start) });
-    } else if (_sameToken(tok, Token.PipeGreater)) {
+    } else if (tok == Token.PipeGreater) {
       next();
       pipelineDepth++;
-      let body = _parseExpr(prec + 1);
+      let body = _parseBinary(prec + 1, element);
       pipelineDepth--;
       left = Expr.Pipe(left, body);
-    } else if (_sameToken(tok, Token.Equal) || _sameToken(tok, Token.PlusEqual) || _sameToken(tok, Token.MinusEqual)
-      || _sameToken(tok, Token.StarEqual) || _sameToken(tok, Token.SlashEqual)) {
+    } else if (prec == 5) {
       next();
       if (!_assignable(left)) { _error("invalid assignment target"); }
-      left = Expr.Assign(_assignOp(tok), left, _parseExpr(prec + 1));
-    } else if (_sameToken(tok, Token.Is)) {
+      left = Expr.Assign(_assignOp(tok), left, _parseBinary(prec + 1, element));
+    } else if (tok == Token.Is) {
       next();
       left = Expr.Is(left, _parseIsType());
-      if (_at(Token.Is)) { _error("chained 'is' expressions are not supported"); }
+      if (peek() == Token.Is) { _error("chained 'is' expressions are not supported"); }
     } else {
       next();
-      left = Expr.Binary(_binaryOp(tok), left, _parseExpr(prec + 1));
+      left = Expr.Binary(_binaryOp(tok), left, _parseBinary(prec + 1, element));
     }
     if (running) { _markExpr(left, start); }
   }
@@ -1623,11 +1464,19 @@ let _selfDelimiting = fn(start: Token, value: Expr): Bool {
 };
 
 let _statementExpr = fn(start: Token): Expr {
-  match (start) { If, Match, With, Try => _parsePrimary(), _ => _parseExpr(0) }
+  match (start) {
+    If, Match, With, Try => _parsePrimary(),
+    LBrace => _braceIsObject() ? _parseExpr(0) : _parsePrimary(),
+    _ => _parseExpr(0),
+  }
+};
+
+let _optionalSemicolon = fn() {
+  if (peek() == Token.Semicolon) { next(); };
 };
 
 let _endJump = fn() {
-  if (!_at(Token.RBrace)) { expect(Token.Semicolon); }
+  if (peek() != Token.RBrace) { expect(Token.Semicolon); }
   null
 };
 
@@ -1636,53 +1485,50 @@ _parseStatement = fn() {
     let statementStart = pos;
     let start = peek();
     let value = _statementExpr(start);
-    if (_at(Token.Semicolon)) { next(); } else if (!_selfDelimiting(start, value)) { _error("expected ';'"); }
+    if (peek() == Token.Semicolon) { next(); } else if (!_selfDelimiting(start, value)) { _error("expected ';'"); }
     let statement = _expressionStatement(value);
     _markStmt(statement, statementStart)
   }
 };
 
-_parseBlock = fn() {
-  expect(Token.LBrace);
+let _statements = fn(end: Token, expected: Bytes): Block {
   let statements = Array.new<Stmt>(0);
-  let hasTail = false;
+  let tail: ?Expr = null;
 
-  while (!_at(Token.RBrace) && !hasTail) {
-    if (_stmtStarts(peek()) && !_at(Token.Let)) {
+  while ((peek() != end) && (tail == null)) {
+    if (_stmtStarts(peek()) && (peek() != Token.Let)) {
       statements.push(_parseStmt());
     } else {
       let start = peek();
       let saved = pos;
-      let savedPending = pendingGreater;
-      let savedMarks = marks.len();
       let value = _statementExpr(start);
 
-      if (_at(Token.Semicolon)) {
+      if (peek() == Token.Semicolon) {
         next();
         statements.push(_markStmt(_expressionStatement(value), saved));
-      } else if (_at(Token.RBrace)) {
-        pos = saved;
-        pendingGreater = savedPending;
-        Array.resize(marks, savedMarks);
-        hasTail = true;
+      } else if (peek() == end) {
+        tail = value;
       } else if (_selfDelimiting(start, value)) {
         statements.push(_markStmt(_expressionStatement(value), saved));
       } else {
-        _error("expected ';' or '}'");
+        _error("expected ';' or " + expected);
       }
     }
   }
+  Block.Block(statements, tail)
+};
 
-  if (hasTail) { _blockTail(statements) } else {
-    expect(Token.RBrace);
-    Block.Block(statements, null)
-  }
+_parseBlock = fn() {
+  expect(Token.LBrace);
+  let block = _statements(Token.RBrace, "'}'");
+  expect(Token.RBrace);
+  block
 };
 
 let _path = fn(): Array<Bytes> {
   let parts = [_ident()];
 
-  while (_at(Token.Dot)) {
+  while (peek() == Token.Dot) {
     next();
     parts.push(_ident());
   }
@@ -1690,10 +1536,10 @@ let _path = fn(): Array<Bytes> {
 };
 
 let _importKind = fn(native: Bool): ImportKind {
-  if (native) { ImportKind.Native } else if (_at(Token.Type)) {
+  if (native) { ImportKind.Native } else if (peek() == Token.Type) {
     next();
     ImportKind.TypeOnly
-  } else if (_at(Token.Macro)) {
+  } else if (peek() == Token.Macro) {
     next();
     ImportKind.MacroOnly
   } else { ImportKind.Value }
@@ -1702,18 +1548,18 @@ let _importKind = fn(native: Bool): ImportKind {
 let _parseImport = fn(native: Bool): Stmt {
   let kind = _importKind(native);
 
-  if (_at(Token.LBrace)) {
+  if (peek() == Token.LBrace) {
     next();
     let items = Array.new<ImportItem>(0);
 
-    while (!_at(Token.RBrace)) {
+    while (peek() != Token.RBrace) {
       let name = _ident();
-      let alias: ?Bytes = _at(Token.As) ? {
+      let alias: ?Bytes = (peek() == Token.As) ? {
         next();
         _ident()
       } : null;
       items.push(ImportItem.Item(name, alias));
-      if (_at(Token.Comma)) { next(); } else { break; }
+      if (peek() == Token.Comma) { next(); } else { break; }
     }
     expect(Token.RBrace);
     expect(Token.From);
@@ -1733,7 +1579,7 @@ let _parseStructFields = fn(): Array<StructField> {
   expect(Token.LBrace);
   let fields = Array.new<StructField>(0);
 
-  while (!_at(Token.RBrace)) {
+  while (peek() != Token.RBrace) {
     expect(Token.Let);
     let name = _ident();
     expect(Token.Colon);
@@ -1745,12 +1591,9 @@ let _parseStructFields = fn(): Array<StructField> {
 };
 
 let _layoutType = fn(): BytesLayoutType {
-  if (_atName("rest")) {
-    next();
-    return BytesLayoutType.Rest;
-  }
+  if (_eatIdent("rest")) { return BytesLayoutType.Rest; }
 
-  if (_at(Token.Bits)) {
+  if (peek() == Token.Bits) {
     next();
     expect(Token.LParen);
 
@@ -1765,13 +1608,7 @@ let _layoutType = fn(): BytesLayoutType {
     return BytesLayoutType.Bits(width);
   }
   let name = _ident();
-  let endian = Endian.Little;
-
-  if (_at(Token.Dot)) {
-    next();
-    let e = _ident();
-    if (e == "be") { endian = Endian.Big; } else if (e != "le") { _error("expected le or be"); }
-  }
+  let endian = _endian();
 
   match (name) {
     "u8", "U8" => BytesLayoutType.U8,
@@ -1790,7 +1627,7 @@ let _parseLayoutFields = fn(): Array<BytesLayoutField> {
   expect(Token.LBrace);
   let fields = Array.new<BytesLayoutField>(0);
 
-  while (!_at(Token.RBrace)) {
+  while (peek() != Token.RBrace) {
     expect(Token.Let);
     let name = _ident();
     expect(Token.Colon);
@@ -1810,7 +1647,7 @@ let _loopTail = fn(tail: Expr): Stmt {
 _parseStmtInner = fn() {
   let exported = false;
 
-  if (_at(Token.Export)) {
+  if (peek() == Token.Export) {
     next();
     exported = true;
   }
@@ -1829,24 +1666,11 @@ _parseStmtInner = fn() {
   match (kind) {
     Import => _parseImport(false),
     Load => _parseImport(true),
-    Let => {
-      let isConst = false;
+    Let, Const => {
+      let isConst = (kind == Token.Const);
       let pattern = _declarationPattern();
       let typeParams = _typeParams();
-      let annotation: ?Type = _at(Token.Colon) ? {
-        next();
-        _parseType()
-      } : null;
-      expect(Token.Equal);
-      let value = _parseExpr(0);
-      expect(Token.Semicolon);
-      Stmt.LetStmt(isConst, exported, pattern, typeParams, annotation, value)
-    },
-    Const => {
-      let isConst = true;
-      let pattern = _declarationPattern();
-      let typeParams = _typeParams();
-      let annotation: ?Type = _at(Token.Colon) ? {
+      let annotation: ?Type = (peek() == Token.Colon) ? {
         next();
         _parseType()
       } : null;
@@ -1861,10 +1685,10 @@ _parseStmtInner = fn() {
       expect(Token.LBrace);
       let fields = Array.new<PrototypeField>(0);
 
-      while (!_at(Token.RBrace)) {
+      while (peek() != Token.RBrace) {
         let field = _ident();
 
-        let value = if (_at(Token.LParen)) {
+        let value = if (peek() == Token.LParen) {
           let methodStart = pos;
           _markExpr(_parseFunction(false), methodStart)
         } else {
@@ -1888,10 +1712,7 @@ _parseStmtInner = fn() {
         expect(Token.Minus);
         if (!_eatIdent("layout")) { _error("expected bytes-layout"); }
         TypedefBody.BytesLayout(_parseLayoutFields())
-      } else if (_isIdent("bytes-layout")) {
-        next();
-        TypedefBody.BytesLayout(_parseLayoutFields())
-      } else if (_at(Token.LBrace)) {
+      } else if (peek() == Token.LBrace) {
         TypedefBody.Struct(_parseStructFields())
       } else {
         TypedefBody.Alias(_parseType())
@@ -1905,18 +1726,18 @@ _parseStmtInner = fn() {
       expect(Token.LBrace);
       let constructors = Array.new<EnumConstructor>(0);
 
-      while (!_at(Token.RBrace)) {
+      while (peek() != Token.RBrace) {
         let ctor = _ident();
         let fields = Array.new<StructField>(0);
 
-        if (_at(Token.LParen)) {
+        if (peek() == Token.LParen) {
           next();
 
-          while (!_at(Token.RParen)) {
+          while (peek() != Token.RParen) {
             let field = _name();
             expect(Token.Colon);
             fields.push(StructField.Field(field, _parseType()));
-            if (_at(Token.Comma)) { next(); } else { break; }
+            if (peek() == Token.Comma) { next(); } else { break; }
           }
           expect(Token.RParen);
         }
@@ -1924,7 +1745,7 @@ _parseStmtInner = fn() {
         constructors.push(EnumConstructor.Constructor(ctor, fields));
       }
       expect(Token.RBrace);
-      if (_at(Token.Semicolon)) { next(); }
+      _optionalSemicolon();
       Stmt.Enum(exported, name, typeParams, constructors)
     },
     Macro => {
@@ -1932,10 +1753,10 @@ _parseStmtInner = fn() {
       expect(Token.LParen);
       let params = Array.new<Bytes>(0);
 
-      if (!_at(Token.RParen)) {
+      if (peek() != Token.RParen) {
         params.push(_ident());
 
-        while (_at(Token.Comma)) {
+        while (peek() == Token.Comma) {
           next();
           params.push(_ident());
         }
@@ -1943,8 +1764,9 @@ _parseStmtInner = fn() {
       expect(Token.RParen);
       expect(Token.LBrace);
       let body = Array.new<Stmt>(0);
-      while (!_at(Token.RBrace)) { body.push(_parseStatement()); }
+      while (peek() != Token.RBrace) { body.push(_parseStatement()); }
       expect(Token.RBrace);
+      _optionalSemicolon();
       Stmt.Macro(exported, name, params, body)
     },
     While => {
@@ -1952,6 +1774,7 @@ _parseStmtInner = fn() {
       let condition = _parseExpr(0);
       expect(Token.RParen);
       let block = _parseBlock();
+      _optionalSemicolon();
 
       match (block) { Block(statements, tail) => {
         if (tail != null) { statements.push(_loopTail(tail)); }
@@ -1984,8 +1807,10 @@ _parseStmtInner = fn() {
       Stmt.Throw(value)
     },
     Return => {
-      if (_at(Token.Semicolon)) {
-        next();
+      let bare = match (peek()) { Semicolon, RBrace => true, _ => false };
+
+      if (bare) {
+        _endJump();
         Stmt.Return(null)
       } else {
         let value: ?Expr = _parseExpr(0);
@@ -2000,9 +1825,11 @@ _parseStmtInner = fn() {
   }
 };
 
-_parseProgram = fn(input, path, tokenStartOffsets, tokenEndOffsets) {
+export let parseProgram: (Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>>) -> Program = fn(lexed) {
+  let (input, path, tokenStartOffsets, tokenEndOffsets) = lexed;
+
   if ((input.len() != tokenStartOffsets.len()) || (input.len() != tokenEndOffsets.len())) {
-    throw "token metadata length mismatch";
+    internalError("token metadata length mismatch");
   }
   tokens = input;
   sourcePath = path;
@@ -2017,47 +1844,11 @@ _parseProgram = fn(input, path, tokenStartOffsets, tokenEndOffsets) {
   pipelineDepth = 0;
   let pkg = Package.None;
 
-  if (_at(Token.Package)) {
+  if (peek() == Token.Package) {
     next();
     pkg = Package.Path(_path());
     expect(Token.Semicolon);
     _packageEnd = pos - 1;
   }
-  let statements = Array.new<Stmt>(0);
-  let hasTail = false;
-
-  while (!_at(Token.Eof) && !hasTail) {
-    if (_stmtStarts(peek()) && !_at(Token.Let)) {
-      statements.push(_parseStmt());
-    } else {
-      let start = peek();
-      let saved = pos;
-      let savedPending = pendingGreater;
-      let savedMarks = marks.len();
-      let value = _statementExpr(start);
-
-      if (_at(Token.Semicolon)) {
-        next();
-        statements.push(_markStmt(_expressionStatement(value), saved));
-      } else if (_at(Token.Eof)) {
-        pos = saved;
-        pendingGreater = savedPending;
-        Array.resize(marks, savedMarks);
-        hasTail = true;
-      } else if (_selfDelimiting(start, value)) {
-        statements.push(_markStmt(_expressionStatement(value), saved));
-      } else {
-        _error("expected ';' or end of input");
-      }
-    }
-  }
-  if (hasTail) { _programTail(pkg, statements) } else { Program.Program(pkg, statements, null) }
-};
-
-export let parseSource: (Array<Token>, Bytes, Array<I32>, Array<I32>) -> Program = fn(input, path, tokenStartOffsets, tokenEndOffsets) {
-  _parseProgram(input, path, tokenStartOffsets, tokenEndOffsets)
-};
-
-export let parseProgram: (Array<Token>) -> Program = fn(input) {
-  _parseProgram(input, tokenPath(), tokenStarts(), tokenEnds())
+  match (_statements(Token.Eof, "end of input")) { Block(statements, tail) => Program.Program(pkg, statements, tail) }
 };

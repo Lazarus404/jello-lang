@@ -1,0 +1,9 @@
+// expect: 5
+// A local named like an enum hides it in a function nested inside its scope too.
+enum Shade { Light; Dark; }
+let pick = fn(): I32 {
+  let Shade = (4, 5);
+  let inner = fn(): I32 { Shade.1 };
+  inner()
+};
+pick()

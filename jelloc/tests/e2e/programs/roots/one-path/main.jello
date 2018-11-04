@@ -1,0 +1,8 @@
+// error: 6:1: module package does not match import path: $DIR/geometry/Origin.jello
+// flags: --path $DIR/geometry
+// A module has one import path, its package's: through the root
+// $DIR/geometry, geometry.Origin is also Origin, which it does not declare.
+import { origin } from geometry.Origin;
+import { origin as again } from Origin;
+
+origin + again

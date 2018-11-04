@@ -2,85 +2,111 @@ package frontend;
 
 import type { Import, Module } from frontend.Modules;
 import { Module, modulePath } from frontend.Modules;
+import frontend.Hir as H;
 
 export enum Binding {
   Global(id: I32); Function(index: I32); Loaded(library: Bytes, name: Bytes); Native(id: I32);
   Namespace(module: I32, path: Bytes); Intrinsic(module: I32, name: Bytes); Unbound;
 }
 
-let _names = Array.new<Bytes>(0);
 let _bindings = Array.new<Binding>(0);
 let _imported = Array.new<Bool>(0);
-let _typeNames = Array.new<Bytes>(0);
 let _types = Array.new<I32>(0);
 let _opened = Array.new<Bool>(0);
 let _exportModules = Array.new<I32>(0);
-let _exportNames = Array.new<Bytes>(0);
+let _exportHeads = Array.new<I32>(0);
+let _exportLinks = Array.new<I32>(0);
 let _exportBindings = Array.new<Binding>(0);
 let _exportPublic = Array.new<Bool>(0);
 let _exportTypeModules = Array.new<I32>(0);
-let _exportTypeNames = Array.new<Bytes>(0);
+let _exportTypeHeads = Array.new<I32>(0);
+let _exportTypeLinks = Array.new<I32>(0);
 let _exportTypes = Array.new<I32>(0);
 let _exportTypePublic = Array.new<Bool>(0);
 
-let _indexIn = fn(names: Array<Bytes>, name: Bytes): I32 {
-  let i = 0;
+let _epoch = 0;
+let _epochs = Array.new<I32>(0);
+let _at = Array.new<I32>(0);
+let _isType = Array.new<Bool>(0);
 
-  while (i < names.len()) {
-    if (names[i] == name) { return i; }
-    i++;
-  }
-  -1
+let _named = fn(name: Bytes): I32 {
+  let id = H.findBytesId(name);
+  ((id >= 0) && (id < _epochs.len()) && (_epochs[id] == _epoch)) ? id : -1
 };
-let _index = fn(name: Bytes): I32 { _indexIn(_names, name) };
 
-let _unique = fn(name: Bytes) {
-  if ((_index(name) >= 0) || (_indexIn(_typeNames, name) >= 0)) { throw "duplicate top-level name: " + name; }
+let _lookup = fn(name: Bytes, types: Bool): I32 {
+  let id = _named(name);
+  ((id >= 0) && (_isType[id] == types)) ? _at[id] : -1
+};
+let _index = fn(name: Bytes): I32 { _lookup(name, false) };
+
+let _record = fn(name: Bytes, types: Bool, index: I32) {
+  let id = H.bytesId(name);
+
+  while (_epochs.len() <= id) {
+    _epochs.push(-1);
+    _at.push(-1);
+    _isType.push(false);
+  }
+  if (_epochs[id] == _epoch) { throw "duplicate top-level name: " + name; }
+  _epochs[id] = _epoch;
+  _at[id] = index;
+  _isType[id] = types;
   null
 };
 
 let _add = fn(name: Bytes, binding: Binding, imported: Bool) {
-  _unique(name);
-  _names.push(name);
+  if (name == "_") { return null; }
+  _record(name, false, _bindings.len() as I32);
   _bindings.push(binding);
   _imported.push(imported);
   null
 };
 
 let _addType = fn(name: Bytes, ty: I32) {
-  _unique(name);
-  _typeNames.push(name);
+  _record(name, true, _types.len() as I32);
   _types.push(ty);
   null
 };
 
-let _export = fn(modules: Array<I32>, names: Array<Bytes>, exported: Array<Bool>, module: I32, name: Bytes): I32 {
-  let e = names.len() as I32 - 1;
-  while ((e >= 0) && ((modules[e] != module) || (names[e] != name))) { e--; }
+let _export = fn(modules: Array<I32>, heads: Array<I32>, links: Array<I32>, exported: Array<Bool>, module: I32, name: Bytes): I32 {
+  let id = H.findBytesId(name);
+  let e = (id >= 0) && (id < heads.len()) ? heads[id] : -1;
+  while ((e >= 0) && (modules[e] != module)) { e = links[e]; }
   if ((e >= 0) && !exported[e] && !_opened[module]) { -1 } else { e }
 };
-let _value = fn(module: I32, name: Bytes): I32 { _export(_exportModules, _exportNames, _exportPublic, module, name) };
-let _type = fn(module: I32, name: Bytes): I32 { _export(_exportTypeModules, _exportTypeNames, _exportTypePublic, module, name) };
+let _value = fn(module: I32, name: Bytes): I32 { _export(_exportModules, _exportHeads, _exportLinks, _exportPublic, module, name) };
+let _type = fn(module: I32, name: Bytes): I32 { _export(_exportTypeModules, _exportTypeHeads, _exportTypeLinks, _exportTypePublic, module, name) };
 
-let _unknownExport = fn(name: Bytes, path: Bytes): Bytes { "unknown export " + name + " in " + path };
+let _chain = fn(heads: Array<I32>, links: Array<I32>, name: Bytes): Null {
+  let id = H.bytesId(name);
+  while (heads.len() <= id) { heads.push(-1); }
+  let row = links.len() as I32;
+  links.push(heads[id]);
+  heads[id] = row;
+  null
+};
+
+let _unknownExport = fn(kind: Bytes, name: Bytes, path: Bytes): Bytes { "unknown " + kind + " " + name + " in " + path };
 
 export let resetExports: () -> Bool = fn() {
   _exportModules = Array.new<I32>(0);
-  _exportNames = Array.new<Bytes>(0);
+  _exportHeads = Array.new<I32>(0);
+  _exportLinks = Array.new<I32>(0);
   _exportBindings = Array.new<Binding>(0);
   _exportPublic = Array.new<Bool>(0);
   _exportTypeModules = Array.new<I32>(0);
-  _exportTypeNames = Array.new<Bytes>(0);
+  _exportTypeHeads = Array.new<I32>(0);
+  _exportTypeLinks = Array.new<I32>(0);
   _exportTypes = Array.new<I32>(0);
   _exportTypePublic = Array.new<Bool>(0);
   true
 };
 
-export let enterModule: (Array<Import>, Array<Module>, Bool) -> Bool = fn(imports, modules, typesOnly) {
-  _names = Array.new<Bytes>(0);
+export let enterModule: (Array<Import>, Array<Module>) -> Bool = fn(imports, modules) {
+  _epoch++;
   _bindings = Array.new<Binding>(0);
   _imported = Array.new<Bool>(0);
-  _typeNames = Array.new<Bytes>(0);
   _types = Array.new<I32>(0);
   _opened = Array.new<Bool>(0);
   let i = 0;
@@ -92,22 +118,21 @@ export let enterModule: (Array<Import>, Array<Module>, Bool) -> Bool = fn(import
   i = 0;
 
   while (i < imports.len()) {
-    match (imports[i]) { Import(_, module, _, _, true), Namespace(_, module, true) => { _opened[module] = true; }, _ => null };
+    match (imports[i]) { Import(_, module, _, _, true, _), Namespace(_, module, true, _) => { _opened[module] = true; }, _ => null };
     i++;
   }
-  i = 0;
+  true
+};
 
-  while (i < imports.len()) {
-    match (imports[i]) {
-      Import(local, module, name, typeOnly, _) => {
-        let value = typeOnly ? -1 : _value(module, name);
-        let ty = _type(module, name);
-        if (value >= 0) { _add(local, _exportBindings[value], true); } else if (ty >= 0) { if (_indexIn(_typeNames, local) < 0) { _addType(local, _exportTypes[ty]); } } else if (!typesOnly) { throw _unknownExport(name, modulePath(modules[module])); }
-      },
-      Namespace(local, module, _) => _add(local, Binding.Namespace(module, modulePath(modules[module])), true),
-    };
-    i++;
-  }
+export let addImport: (Import, Array<Module>, Bool) -> Bool = fn(imported, modules, typesOnly) {
+  match (imported) {
+    Import(local, module, name, typeOnly, _, _) => {
+      let value = typeOnly ? -1 : _value(module, name);
+      let ty = _type(module, name);
+      if (value >= 0) { _add(local, _exportBindings[value], true); } else if (ty >= 0) { if (_lookup(local, true) < 0) { _addType(local, _exportTypes[ty]); } } else if (!typesOnly) { throw _unknownExport(typeOnly ? "type export" : "export", name, modulePath(modules[module])); }
+    },
+    Namespace(local, module, _, _) => _add(local, Binding.Namespace(module, modulePath(modules[module])), true),
+  };
   true
 };
 
@@ -125,7 +150,7 @@ export let namespaceMember: (I32, Bytes, Bytes) -> Binding = fn(module, path, na
   let found = _value(module, name);
   if (found >= 0) { return _exportBindings[found]; }
   if (_type(module, name) >= 0) { throw name + " is a type; name it with import type { " + name + " } from the module"; }
-  throw _unknownExport(name, path);
+  throw _unknownExport("export", name, path);
   Binding.Unbound
 };
 
@@ -140,13 +165,13 @@ export let declareScopedType: (Bytes, I32) -> Bool = fn(name, ty) {
 };
 
 export let scopedType: (Bytes) -> I32 = fn(name) {
-  let found = _indexIn(_typeNames, name);
+  let found = _lookup(name, true);
   found < 0 ? -1 : _types[found]
 };
 
 export let exportScopedType: (I32, Bytes, Bool) -> Bool = fn(module, name, exported) {
+  _chain(_exportTypeHeads, _exportTypeLinks, name);
   _exportTypeModules.push(module);
-  _exportTypeNames.push(name);
   _exportTypes.push(scopedType(name));
   _exportTypePublic.push(exported);
   true
@@ -158,8 +183,9 @@ export let isImported: (Bytes) -> Bool = fn(name) {
 };
 
 export let exportScoped: (I32, Bytes, Bool) -> Bool = fn(module, name, exported) {
+  if (name == "_") { return true; }
+  _chain(_exportHeads, _exportLinks, name);
   _exportModules.push(module);
-  _exportNames.push(name);
   _exportBindings.push(_bindings[_index(name)]);
   _exportPublic.push(exported);
   true

@@ -1,0 +1,8 @@
+// expect: 163
+// `import type { E }` beside `import { E }` names the type and its variants,
+// as the compiler's own modules do for enums.
+import type { Shape } from dep.Shape;
+import { Shape, area } from dep.Shape;
+
+let shapes: Array<Shape> = [Shape.Square(4), Shape.Circle];
+area(shapes[0]) * 10 + area(shapes[1])

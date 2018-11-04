@@ -7,6 +7,7 @@ import { Block as AstBlock, Expr as AstExpr, bindPatternName, integerValue, isBi
 import type { Hir } from frontend.Hir;
 import frontend.Hir as H;
 import { Kind, Op } from frontend.Hir;
+import { internalError } from frontend.Internal;
 import type { Binding } from frontend.ModuleScope;
 import { Binding, declareScoped, isImported, namespaceMember, scoped, scopedType } from frontend.ModuleScope;
 import {
@@ -73,6 +74,7 @@ let _declare = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
   let id = newBinding();
   _bindingTypes[id] = ty;
   _mutable[id] = mutable;
+  if (name == "_") { return id; }
   let nameId = H.bytesId(name);
   while (_latest.len() <= nameId) { _latest.push(-1); }
   _hidden.push(_latest[nameId]);
@@ -154,7 +156,10 @@ export let useEnumChecks: ((AstExpr, I32, Bool) -> I32) -> Bool = fn(check) {
   _checkEnum = check;
   true
 };
-let _isEnumName = fn(base: AstExpr): Bool { match (base) { Variable(name) => (_find(name, 0) < 0) && (scopedType(name) >= 0), _ => false } };
+
+let _isEnumName = fn(base: AstExpr): Bool {
+  match (base) { Variable(name) => (scopedType(name) >= 0) && !_isLocal(name), _ => false }
+};
 let _checkValue: (AstExpr, I32) -> I32 = fn(_expr, _expected) { -1 };
 
 export let useValueChecks: ((AstExpr, I32) -> I32) -> Bool = fn(check) {
@@ -295,7 +300,7 @@ let _checkUnary = fn(op: UnaryOp, value: AstExpr, expected: I32): I32 {
     },
     _ => {
       let operand = _value(value, 0);
-      if (H.typeOf(operand) != H.TYPE_BOOL) { throw "operator ! requires a bool operand, not " + H.typeName(H.typeOf(operand)); }
+      if (H.typeOf(operand) != H.TYPE_BOOL) { throw "operator ! requires a Bool operand, not " + H.typeName(H.typeOf(operand)); }
       _unary(Op.Not, H.TYPE_BOOL, operand)
     },
   }
@@ -353,7 +358,7 @@ let _bitwiseHint = fn(op: BinaryOp, left: I32, right: I32): Bytes {
   let rightBool = H.typeOf(right) == H.TYPE_BOOL;
   let logical = match (op) { BitAnd => "&&", BitOr => "||", BitXor => "!=", _ => "" };
   if ((logical == "") || (!leftBool && !rightBool)) { return ""; }
-  leftBool && rightBool ? "; use " + logical + " on bool operands" : "; comparisons bind tighter, so write (a " + _operatorText(op) + " b) == c"
+  leftBool && rightBool ? "; use " + logical + " on Bool operands" : "; comparisons bind tighter, so write (a " + _operatorText(op) + " b) == c"
 };
 
 export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
@@ -385,7 +390,7 @@ export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
 
   match (op) {
     And, Or => {
-      if (!bools) { throw "&& and || require bool operands"; }
+      if (!bools) { throw "&& and || require Bool operands"; }
       return _binary(match (op) { And => Op.And, _ => Op.Or }, H.TYPE_BOOL, left, right);
     },
     Equal, NotEqual when (bools) => { return _compare(Op.Eq, left, right, match (op) { NotEqual => true, _ => false }); },
@@ -434,7 +439,7 @@ let _checkBinary = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr, expec
     let right = _value(rightExpr, 1);
     return binaryValues(op, checkOperand(leftExpr, 0, H.typeOf(right) == H.TYPE_DYNAMIC ? -1 : H.typeOf(right)), right);
   }
-  let arithmetic = match (op) { Add, Subtract, Multiply, ShiftLeft, ShiftRight, BitAnd, BitOr, BitXor => true, _ => false };
+  let arithmetic = match (op) { Add, Subtract, Multiply, Divide, Remainder, ShiftLeft, ShiftRight, BitAnd, BitOr, BitXor => true, _ => false };
   let integer = (expected == H.TYPE_I32) || (expected == H.TYPE_I64);
   let left = _presentAt(_checkExpr(leftExpr, syntaxChild(0), arithmetic && integer ? expected : -1), 0);
   let before = narrowings();
@@ -465,11 +470,7 @@ let _enclosingFind = fn(name: Bytes): Tuple<I32, I32> {
   }
   (-1, -1)
 };
-
-let _enclosingHas = fn(name: Bytes): Bool {
-  let (depth, _) = _enclosingFind(name);
-  depth >= 0
-};
+let _isLocal = fn(name: Bytes): Bool { (_find(name, 0) >= 0) || (_enclosingFind(name).0 >= 0) };
 
 let _capturedTarget = fn(name: Bytes): Bytes { "cannot assign to " + name + ": a closure captures it" };
 
@@ -497,10 +498,10 @@ let _capture = fn(name: Bytes): I32 {
   _leaf(Op.Local, ty, id)
 };
 
-let _moduleBinding = fn(name: Bytes): Binding { ((_find(name, 0) >= 0) || _enclosingHas(name)) ? Binding.Unbound : scoped(name) };
+let _moduleBinding = fn(name: Bytes): Binding { _isLocal(name) ? Binding.Unbound : scoped(name) };
 
 export let isBound: (Bytes) -> Bool = fn(name) {
-  (_find(name, 0) >= 0) || _enclosingHas(name) || match (scoped(name)) { Unbound => false, _ => true }
+  _isLocal(name) || match (scoped(name)) { Unbound => false, _ => true }
 };
 
 let _isNamespace = fn(name: Bytes): Bool { match (_moduleBinding(name)) { Namespace(_, _) => true, _ => false } };
@@ -543,6 +544,8 @@ export let bindingType: (Binding) -> I32 = fn(binding) {
   match (binding) { Global(id) => H.globalTypeOf(id), Function(index) => _functionType(index), _ => -1 }
 };
 
+let _unknownName = fn(name: Bytes): Bytes { name == "_" ? "_ binds nothing, so it names no value" : "unknown name: " + name };
+
 let _bindingValue = fn(binding: Binding, name: Bytes): I32 {
   match (binding) {
     Global(id) => _leaf(Op.Global, H.globalTypeOf(id), id),
@@ -564,7 +567,7 @@ let _bindingValue = fn(binding: Binding, name: Bytes): I32 {
       -1
     },
     Unbound => {
-      throw "unknown local: " + name;
+      throw _unknownName(name);
       -1
     },
   }
@@ -635,14 +638,15 @@ let _checkCall = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstEx
 
 let _checkIf = fn(condition: AstExpr, thenBranch: AstExpr, elseBranch: AstExpr, expected: I32): I32 {
   let checkedCondition = _value(condition, 0);
-  if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "if condition must be bool"; }
+  if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "if condition must be Bool"; }
   let before = narrowings();
   _narrowBy(condition, true);
   let checkedThen = checkOperand(thenBranch, 1, expected);
-  keepNarrowings(before);
+  let afterThen = narrowings();
+  setNarrowings(before);
   _narrowBy(condition, false);
   let checkedElse = checkOperand(elseBranch, 2, expected);
-  keepNarrowings(before);
+  keepNarrowings(afterThen);
   let ty = joinTypes(H.typeOf(checkedThen), H.typeOf(checkedElse));
   if (ty < 0) { throw "if branches must have the same type"; }
   H.node(Op.If, ty, 0, 0, [checkedCondition, _coerceAt(checkedThen, ty, 1), _coerceAt(checkedElse, ty, 2)])
@@ -680,13 +684,17 @@ let _assignable = fn(name: Bytes): Tuple<Bool, I32, I32> {
       -1
     },
     Unbound => {
-      throw "unknown local: " + name;
+      throw _unknownName(name);
       -1
     },
   };
   if (isImported(name)) { throw _importedTarget(name); }
   if (!H.globalIsMutable(id)) { throw "cannot assign to immutable global: " + name; }
   (true, id, H.globalTypeOf(id))
+};
+
+export let compoundOperation: (AssignOp, Bool) -> Op = fn(op, bytes) {
+  bytes ? Op.BytesConcat : match (op) { Subtract => Op.Sub, Multiply => Op.Mul, Divide => Op.Div, _ => Op.Add }
 };
 
 let _checkVariableAssignment = fn(op: AssignOp, name: Bytes, value: AstExpr): I32 {
@@ -701,7 +709,7 @@ let _checkVariableAssignment = fn(op: AssignOp, name: Bytes, value: AstExpr): I3
     _ => {
       let bytes = (ty == H.TYPE_BYTES) && match (op) { Add => true, _ => false };
       if ((ty != H.TYPE_I32) && (ty != H.TYPE_I64) && !bytes) { throw "compound assignment requires an I32 or I64 variable: " + name; }
-      let operation = bytes ? Op.BytesConcat : match (op) { Add => Op.Add, Subtract => Op.Sub, Multiply => Op.Mul, _ => Op.Div };
+      let operation = compoundOperation(op, bytes);
       let outer = enterSyntax(syntaxChild(0));
       let target = _leaf(global ? Op.Global : Op.Local, ty, id);
       enterSyntax(outer);
@@ -880,7 +888,7 @@ let _addFunction = fn(name: Bytes, params: Array<Parameter>, result: ?AstType, e
       let j = 0;
 
       while (j < names.len()) {
-        if (names[j] == paramName) { throw "duplicate parameter: " + paramName; }
+        if ((names[j] == paramName) && (paramName != "_")) { throw "duplicate parameter: " + paramName; }
         j++;
       }
       let ty = paramType != null ? checkType(paramType) : fits ? H.typeArg(expected, i) : -1;
@@ -927,18 +935,30 @@ export let declareFunctions: (Array<Stmt>) -> I32 = fn(statements) {
   first
 };
 
+export let initializedType: (I32, I32, Bytes) -> I32 = fn(ty, checked, name) {
+  let valueType = H.typeOf(checked);
+  if ((ty >= 0) && (valueType == H.TYPE_NULL)) { throw "only Null<T> can hold null, not " + H.typeName(ty); }
+  if ((ty >= 0) && (ty != valueType)) { throw "binding annotation type mismatch: " + name; }
+  if (valueType == H.TYPE_NULL) { throw "null needs a type from its context: annotate " + name + " as Null<T>"; }
+  valueType
+};
+
 let _checkLocal = fn(pattern: Pattern, isConst: Bool, typeParams: Array<Bytes>, annotation: ?AstType, value: AstExpr): I32 {
   let name = bindPatternName(pattern);
   if (typeParams.len() != 0) { throw "local bindings do not support type parameters"; }
   if (_find(name, _scopeStart) >= 0) { throw "duplicate local: " + name; }
-  let ty = annotation == null ? -1 : checkType(annotation);
-  let checked = checkOperand(value, 0, ty);
-  if ((ty >= 0) && (H.typeOf(checked) == H.TYPE_NULL)) { throw "only Null<T> can hold null, not " + H.typeName(ty); }
-  if (ty < 0) { ty = H.typeOf(checked); } else if (ty != H.typeOf(checked)) { throw "binding annotation type mismatch: " + name; }
-  if (ty == H.TYPE_NULL) { throw "null needs a type from its context: annotate " + name + " as Null<T>"; }
+  let annotated = annotation == null ? -1 : checkType(annotation);
+  let checked = checkOperand(value, 0, annotated);
+  let ty = initializedType(annotated, checked, name);
   let binding = _declare(name, ty, !isConst);
   match (H.opOf(checked)) { Present => narrow(binding, !isConst), _ => false };
   H.node(isConst ? Op.Const : Op.Let, ty, binding, H.bytesId(name), [checked])
+};
+
+let _nullResult = fn(message: Bytes): I32 {
+  if ((_result >= 0) && (_result != H.TYPE_NULL)) { throw message + H.typeName(_result); }
+  _result = H.TYPE_NULL;
+  _leaf(Op.Null, H.TYPE_NULL, 0)
 };
 
 let _checkResult = fn(value: AstExpr, index: I32, message: Bytes): I32 {
@@ -949,6 +969,7 @@ let _checkResult = fn(value: AstExpr, index: I32, message: Bytes): I32 {
 
 let _checkStatement: (Stmt, Syntax) -> I32 = fn(_statement, _statementSyntax) { -1 };
 let _checkIfStatement: (AstExpr, AstExpr, AstExpr) -> I32 = fn(_condition, _thenBranch, _elseBranch) { -1 };
+let _checkBranch: (AstExpr, I32) -> I32 = fn(_branch, _index) { -1 };
 
 export let checkEffect: (AstExpr, I32) -> I32 = fn(value, index) {
   match (value) {
@@ -976,6 +997,7 @@ export let checkEffect: (AstExpr, I32) -> I32 = fn(value, index) {
       enterSyntax(outer);
       id
     },
+    BlockExpr(_) => _checkBranch(value, index),
     _ => _unary(Op.Expression, 0, checkOperand(value, index, -1)),
   }
 };
@@ -1004,17 +1026,29 @@ let _checkBlockBody = fn(prefix: Array<I32>, statements: Array<Stmt>, tail: ?Ast
   }
   let ty = 0;
   let hasTail = false;
+  let statementTail = (tailKind == _STATEMENT_TAIL)
+    || ((tailKind == _RESULT_TAIL) && (tail != null) && match (tail) { BlockExpr(Block(_, inner)) => inner == null, _ => false });
 
   if (tail != null) {
     let index = first + (statements.len() as I32);
 
-    if ((tailKind == _STATEMENT_TAIL) && !ends) { children.push(checkEffect(tail, index)); } else {
+    if (statementTail) {
+      let effect = checkEffect(tail, index);
+      if (!ends) { children.push(effect); }
+      ends = ends || H.endsPath(effect);
+    } else {
       let checked = tailKind == _RESULT_TAIL ? _checkResult(tail, index, "function result type mismatch") : checkOperand(tail, index, expected);
       ty = H.typeOf(checked);
       hasTail = true;
       children.push(checked);
     }
-  } else if ((tailKind == _RESULT_TAIL) && !ends) { throw "function can fall through without a value"; }
+  }
+
+  if ((tailKind == _RESULT_TAIL) && !hasTail && !ends) {
+    children.push(_nullResult("function can fall through without a value of type "));
+    ty = H.TYPE_NULL;
+    hasTail = true;
+  }
   _popTo(_scopeStart);
   _scopeStart = outerStart;
   keepNarrowings(before);
@@ -1036,13 +1070,13 @@ export let checkArm: (Array<Bytes>, Array<I32>, Array<Stmt>, ?AstExpr, I32, I32,
   block
 };
 
-let _checkBranch = fn(branch: AstExpr, index: I32): I32 {
+_checkBranch = fn(branch, index) {
   let outer = enterSyntax(syntaxChild(index));
 
   let block = match (branch) {
     BlockExpr(body) => match (body) { Block(statements, tail) => _checkBlockBody([], statements, tail, 0, -1, _STATEMENT_TAIL) },
     _ => {
-      throw "if branch must be a block";
+      internalError("statement block expected");
       -1
     },
   };
@@ -1052,11 +1086,12 @@ let _checkBranch = fn(branch: AstExpr, index: I32): I32 {
 
 _checkIfStatement = fn(condition, thenBranch, elseBranch) {
   let checkedCondition = _value(condition, 0);
-  if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "if condition must be bool"; }
+  if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "if condition must be Bool"; }
   let before = narrowings();
   _narrowBy(condition, true);
   let children = [checkedCondition, _checkBranch(thenBranch, 1)];
-  keepNarrowings(before);
+  let afterThen = narrowings();
+  setNarrowings(before);
   _narrowBy(condition, false);
 
   match (elseBranch) {
@@ -1070,11 +1105,9 @@ _checkIfStatement = fn(condition, thenBranch, elseBranch) {
       null
     },
   };
-  keepNarrowings(before);
   let thenEnds = H.endsPath(children[1]);
   let elseEnds = (children.len() == 3) && H.endsPath(children[2]);
-  if (thenEnds && !elseEnds) { _narrowBy(condition, false); }
-  if (elseEnds && !thenEnds) { _narrowBy(condition, true); }
+  if (thenEnds == elseEnds) { keepNarrowings(afterThen); } else if (elseEnds) { setNarrowings(afterThen); }
   H.node(Op.IfStatement, 0, 0, 0, children)
 };
 
@@ -1159,7 +1192,7 @@ export let checkWhile: (AstExpr, Array<Stmt>) -> I32 = fn(condition, body) {
   let mark = assignmentMark();
   enterLoop();
   let checkedCondition = _value(condition, 0);
-  if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "while condition must be bool"; }
+  if (H.typeOf(checkedCondition) != H.TYPE_BOOL) { throw "while condition must be Bool"; }
   _narrowBy(condition, true);
   _loops++;
   let checkedBody = _checkBlockBody([], body, null, 1, -1, _STATEMENT_TAIL);
@@ -1178,8 +1211,7 @@ _checkStatement = fn(statement, syntax) {
       _checkDestructure(pattern, isConst, typeParams, annotation, value),
     Expression(value) => checkEffect(value, 0),
     Return(value) => {
-      if (value == null) { throw "value function requires a return value"; }
-      _unary(Op.Return, 0, _checkResult(value, 0, "return type mismatch"))
+      _unary(Op.Return, 0, value == null ? _nullResult("return needs a value of type ") : _checkResult(value, 0, "return type mismatch"))
     },
     Throw(value) => {
       let thrown = _value(value, 0);
@@ -1191,7 +1223,7 @@ _checkStatement = fn(statement, syntax) {
 
       if (H.isKind(H.typeOf(thrown), Kind.List)) {
         enterSyntax(syntaxChild(0));
-        throw "a list cannot be thrown: its nil would read as null (decision 42)";
+        throw "a list cannot be thrown: its nil would read as null";
       }
       _unary(Op.Throw, 0, thrown)
     },
@@ -1252,7 +1284,7 @@ let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> 
 
   match (body) { Block(statements, tail) => {
     let checked = _checkBlockBody([], statements, tail, first, -1, _RESULT_TAIL);
-    if (_result < 0) { throw name + " never returns a value; annotate its result type"; }
+    if (_result < 0) { _result = H.TYPE_NULL; }
 
     if (ty < 0) {
       ty = H.functionType(paramTypes, _result);
@@ -1362,7 +1394,7 @@ export let finishProgram: (I32) -> Hir = fn(body) {
   hir
 };
 
-export let checkFailureSpan: () -> ?SourceSpan = fn() {
+export let currentSpan: () -> ?SourceSpan = fn() {
   let span: ?SourceSpan = null;
   match (_syntax) { Node(path, start, end, _, _) => { if (path != "") { span = SourceSpan.Span(path, start, end); } } };
   span

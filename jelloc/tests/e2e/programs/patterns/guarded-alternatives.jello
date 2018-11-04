@@ -1,0 +1,26 @@
+// expect: 123435 2221 2211 2211 2222
+// An arm's guard follows all of its alternatives, as in Rust and C#, and sees
+// the names of the one that matched; a guard written after an earlier
+// alternative guards that one alone.
+enum Token { Plus; Minus; Star; Int(n: I32); Neg(n: I32); Eof; }
+let kind = fn(t: Token, unary: Bool): I32 {
+  match (t) {
+    Plus, Minus when (unary) => 1,
+    Plus, Minus => 2,
+    Int(n), Neg(n) when (n > 9) => 3,
+    Int(_), Neg(_) => 4,
+    _ => 5,
+  }
+};
+let spaced = fn(t: Token, left: Bool, right: Bool): I32 {
+  match (t) {
+    Plus when (left), Minus, Star when (right) => 1,
+    _ => 2,
+  }
+};
+let row = fn(t: Token): Bytes {
+  Std.string(spaced(t, false, false)) + Std.string(spaced(t, true, false)) + Std.string(spaced(t, false, true)) + Std.string(spaced(t, true, true))
+};
+Std.string(kind(Token.Plus, true)) + Std.string(kind(Token.Minus, false)) + Std.string(kind(Token.Int(12), false))
+  + Std.string(kind(Token.Neg(3), false)) + Std.string(kind(Token.Neg(12), false)) + Std.string(kind(Token.Eof, true))
+  + " " + row(Token.Plus) + " " + row(Token.Minus) + " " + row(Token.Star) + " " + row(Token.Eof)

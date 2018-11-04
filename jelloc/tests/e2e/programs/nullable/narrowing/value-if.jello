@@ -1,0 +1,6 @@
+// trap: NULL_DEREF
+// It would return 7 if the read after the `if` trusted x: the then-branch,
+// which runs, assigns it null.
+let keep = fn(_text: Bytes): I32 { 7 };
+let run = fn(c: Bool): I32 { let x: ?Bytes = "a"; let n = if (c) { x = null; 0 } else { 1 }; keep(x) + n };
+run(true)

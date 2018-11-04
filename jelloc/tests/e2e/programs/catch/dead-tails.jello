@@ -1,0 +1,13 @@
+// expect: 361
+// A statement block's tail after a throw never runs, and the block stays a
+// statement: in a match arm, an if or else branch, a try and its handler.
+enum Shape { Square(side: I32); }
+let check = fn(shape: Shape, flag: I32): I32 {
+  match (shape) { Square(side) => { if (side < 0) { throw side; null } } };
+  if (flag == 1) { throw 10; null } else if (flag == 3) { throw 30; fn(x: I32): I32 { x } }
+  try { if (flag == 2) { throw 20; 0 } } catch (e) { throw (e as I32) + 1; null }
+  match (shape) { Square(side) => { throw side * 100; null } };
+  0
+};
+let run = fn(flag: I32): I32 { try { check(Shape.Square(3), flag) } catch (e) { e as I32 } };
+run(0) + run(1) + run(2) + run(3)

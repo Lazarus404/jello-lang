@@ -1,0 +1,10 @@
+// expect: 2
+// A closure copies the reference to an array, not the array: elements pushed
+// after the closure is made are what it sees.
+let names = fn(): I32 {
+  let seen = Array.new<Bytes>(0);
+  let count = fn(): I32 { seen.len() as I32 };
+  seen.push("a"); seen.push("b");
+  count()
+};
+names()

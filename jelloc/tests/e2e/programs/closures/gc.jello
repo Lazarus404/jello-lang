@@ -1,0 +1,22 @@
+// expect: 500500
+// gc: collects
+// A closure keeps the array it captured alive through the collections that
+// the closures made and dropped below force.
+let summer = fn(items: Array<I32>): () -> I32 {
+  fn() {
+    let total = 0; let i = 0;
+    while (i < items.len()) { total += items[i]; i++; }
+    total
+  }
+};
+
+let range = fn(n: I32): Array<I32> {
+  let items = Array.new<I32>(0); let i = 1;
+  while (i <= n) { items.push(i); i++; }
+  items
+};
+
+let kept = summer(range(1000));
+let round = 0;
+while (round < 50000) { summer([round, round]); round++; }
+kept()

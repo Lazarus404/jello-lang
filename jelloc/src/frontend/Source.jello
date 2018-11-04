@@ -29,7 +29,7 @@ let _byteAt = fn(src: Bytes, i: I32): I32 {
   ((i < 0) || (i >= src.len())) ? -1 : Bytes.get_u8(src, i)
 };
 
-export let utf8Length: (Bytes, I32) -> I32 = fn(src, i) {
+export let utf8CharLength: (Bytes, I32) -> I32 = fn(src, i) {
   let c = _byteAt(src, i);
   let n = (c < 0) ? 0 : (c < 128) ? 1 : (c < 194) ? 0 : (c < 224) ? 2 : (c < 240) ? 3 : (c < 245) ? 4 : 0;
   let lo = (c == 224) ? 160 : (c == 240) ? 144 : 128;
@@ -76,12 +76,12 @@ let _inRanges = fn(table: Bytes, cp: I32): Bool {
   (lo < table.len() / 12) && (_rangeBound(table, lo, 0) <= cp)
 };
 
-export let codepointWidth: (I32) -> I32 = fn(cp) {
+let _codepointWidth = fn(cp: I32): I32 {
   (cp < 128) ? 1 : _inRanges(zeroWidthRanges, cp) ? 0 : _inRanges(wideRanges, cp) ? 2 : 1
 };
 
 let _step = fn(source: Bytes, i: I32): I32 {
-  let n = utf8Length(source, i);
+  let n = utf8CharLength(source, i);
   (n == 0) ? 1 : n
 };
 
@@ -147,8 +147,8 @@ export let sourceDiagnostic: (Bytes, Bytes, I32, Bytes) -> Bytes = fn(path, sour
   let i = start;
 
   while (i < offset) {
-    let n = utf8Length(source, i);
-    let width = (n == 0) ? 1 : codepointWidth(_codepoint(source, i, n));
+    let n = utf8CharLength(source, i);
+    let width = (n == 0) ? 1 : _codepointWidth(_codepoint(source, i, n));
     caret += (Bytes.get_u8(source, i) == "\t".code) ? "\t" : (width == 2) ? "  " : (width == 1) ? " " : "";
     i += (n == 0) ? 1 : n;
   }

@@ -3,8 +3,14 @@ package ir;
 import { handlerPayload, handlerTarget, instructionMayThrow } from ir.Model;
 import type { BasicBlock, Instruction, Terminator, ThrowHandler } from ir.Model;
 
-export let terminatorThrows: (Terminator) -> Bool = fn(terminator) {
+let _terminatorThrows = fn(terminator: Terminator): Bool {
   match (terminator) { Throw(_, _) => true, _ => false }
+};
+
+export let blockId: (BasicBlock) -> I32 = fn(block) { match (block) { Block(id, _, _, _) => id } };
+
+export let terminatorRead: (Terminator) -> I32 = fn(terminator) {
+  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => value, _ => -1 }
 };
 
 export let normalSuccessors: (Terminator) -> Array<I32> = fn(terminator) {
@@ -16,7 +22,7 @@ export let normalSuccessors: (Terminator) -> Array<I32> = fn(terminator) {
 };
 
 export let blockMayThrow: (Array<Instruction>, Terminator) -> Bool = fn(instructions, terminator) {
-  if (terminatorThrows(terminator)) { return true; }
+  if (_terminatorThrows(terminator)) { return true; }
   let i = 0;
 
   while (i < instructions.len()) {
@@ -48,17 +54,4 @@ export let blockCatch: (BasicBlock, Array<I32>) -> Tuple<I32, I32> = fn(block, i
     if ((handler == null) || !blockMayThrow(instructions, terminator)) { return (-1, -1); }
     (indexes[handlerTarget(handler)], handlerPayload(handler))
   } }
-};
-
-export let blockSuccessors: (BasicBlock) -> Array<I32> = fn(block) {
-  match (block) {
-    Block(_, instructions, terminator, handler) => {
-      let successors = normalSuccessors(terminator);
-
-      if (blockMayThrow(instructions, terminator) && (handler != null)) {
-        successors.push(handlerTarget(handler));
-      }
-      successors
-    },
-  }
 };

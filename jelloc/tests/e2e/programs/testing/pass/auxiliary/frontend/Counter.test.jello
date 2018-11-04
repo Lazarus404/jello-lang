@@ -1,0 +1,34 @@
+package frontend;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { writeText } from std.io.File;
+import { _scaled, _step, count } from frontend.Counter;
+import type { Parity } from frontend.Counter;
+import frontend.Counter as C;
+import { triple } from support.Numbers;
+
+
+let ready = false;
+
+let beforeAll = fn() { ready = true; null };
+
+let afterAll = fn() { writeText("/dev/stdout", "frontend/Counter: afterAll\n"); null };
+
+let testCountsInSteps = fn(t: Test) {
+  if (!ready) { T.fail(t, "beforeAll has not run"); }
+  if (count(3) != 7) { T.fail(t, "count(3) is " + Std.string(count(3))); }
+  null
+};
+
+
+
+let testSeesPrivateNames = fn(t: Test) {
+  if (_scaled(triple(_step)) != 12) { T.fail(t, "_scaled(triple(_step)) is not 12"); }
+  let parity: Parity = C._parity(count(C._step));
+  match (parity) { Odd => null, Even => { T.fail(t, "count(2) is even"); null } };
+  null
+};
+
+
+let tester = fn(t: Test) { T.fail(t, "tester ran as a test"); null };

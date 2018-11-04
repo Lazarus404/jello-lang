@@ -1,0 +1,90 @@
+package support;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { contains } from std.core.Bytes;
+import { makeDirs, remove } from std.io.File;
+import { result, start } from std.io.Process;
+import { checkCommand, checkEnv, compiler, jloTool, modes as _modes, outDir, stdDir as _stdDir, vmCommand, vmEnv } from degust.Programs;
+
+T.declareOption("--self", "what the compiler under test builds from its own sources, when known (at the fixed point, the compiler itself)");
+
+export let selfModule = fn(): Bytes { T.option("--self", "") };
+
+export let stdDir: () -> Bytes = _stdDir;
+export let modes: () -> Array<Bytes> = _modes;
+
+let _chomp = fn(text: Bytes): Bytes {
+  let n = Bytes.len(text);
+  while ((n > 0) && (Bytes.get_u8(text, n - 1) == 10)) { n--; }
+  Bytes.slice(text, 0, n)
+};
+
+export let concat = fn(a: Array<Bytes>, b: Array<Bytes>): Array<Bytes> {
+  let all = Array.new<Bytes>(0);
+  let i = 0;
+
+  while (i < a.len()) {
+    all.push(a[i]);
+    i++;
+  }
+  i = 0;
+
+  while (i < b.len()) {
+    all.push(b[i]);
+    i++;
+  }
+  all
+};
+
+export const NONE = Array.new<Bytes>(0);
+
+export let fresh = fn(name: Bytes): Bytes {
+  let dir = outDir() + "/e2e";
+  makeDirs(dir);
+  remove(dir + "/" + name);
+  dir + "/" + name
+};
+
+export let withStd = fn(args: Array<Bytes>): Array<Bytes> { concat(args, ["--std", _stdDir()]) };
+
+export let startJelloc = fn(args: Array<Bytes>, env: Array<Bytes>): Dynamic {
+  let argv = compiler();
+  if (argv.len() == 0) { throw "the e2e tests need -- --compiler CMD"; }
+  start(concat(argv, args), env)
+};
+
+export let finish = fn(process: Dynamic): Tuple<I32, Bytes, Bytes> {
+  let (status, out, err) = result(process);
+  (status, _chomp(out), _chomp(err))
+};
+
+export let jelloc = fn(args: Array<Bytes>, env: Array<Bytes>): Tuple<I32, Bytes, Bytes> { finish(startJelloc(args, env)) };
+
+export let startVm = fn(mode: Bytes, args: Array<Bytes>): Dynamic { start(vmCommand(mode, args), vmEnv()) };
+
+export let startCheck = fn(dump: Bytes, module: Bytes): Dynamic { start(checkCommand(dump, module), checkEnv()) };
+
+export let startJloTool = fn(args: Array<Bytes>): Dynamic { start(concat([jloTool()], args), vmEnv()) };
+
+export let has = fn(t: Test, text: Bytes, part: Bytes): Null {
+  if (!contains(text, part)) { T.fail(t, "want " + Std.string(part) + " in " + Std.string(text)); }
+  null
+};
+
+export let badCommandLines = fn(t: Test, cases: Array<Tuple<Dynamic, Array<Bytes>>>): Null {
+  let i = 0;
+
+  while (i < cases.len()) {
+    let (process, parts) = cases[i];
+    let (status, out, err) = finish(process);
+    T.equal(t, (status, out), (2, ""));
+    let k = 0;
+
+    while (k < parts.len()) {
+      has(t, err, parts[k]);
+      k++;
+    }
+    i++;
+  }
+};

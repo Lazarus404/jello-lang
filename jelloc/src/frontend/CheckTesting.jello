@@ -10,7 +10,7 @@ import { bindOnce, equalBindings, equalityOperands } from frontend.CheckValues;
 import { Binding, declareScoped, exportScoped, exportedType, namespaceMember } from frontend.ModuleScope;
 import type { SourceSpan } from frontend.Source;
 import { locate } from frontend.Locations;
-import { callFunction, checkFailureSpan, checkOperand, enterSyntax, syntaxChild } from frontend.TypeCheck;
+import { callFunction, checkOperand, currentSpan, enterSyntax, syntaxChild } from frontend.TypeCheck;
 
 let _ASSERTIONS = ["equal", "notEqual", "isTrue", "isNull", "throws"];
 
@@ -33,7 +33,7 @@ let _located = fn(span: SourceSpan): Bytes {
 };
 
 let _location = fn(): Bytes {
-  let span = checkFailureSpan();
+  let span = currentSpan();
   span == null ? "" : _located(span)
 };
 

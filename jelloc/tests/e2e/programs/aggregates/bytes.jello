@@ -1,0 +1,36 @@
+// expect: 50
+// Bytes are immutable values: slicing shares storage, + builds a new value,
+// and == compares content.
+let digits = fn(text: Bytes): I32 {
+  let n = 0; let i = 0;
+  while (i < text.len()) {
+    let c = text[i];
+    if ((c >= "0".code) && (c <= "9".code)) { n = n * 10 + c - "0".code; }
+    i++;
+  }
+  n
+};
+
+let check = fn(): I32 {
+  let source = "let x = 42;";
+  let word = Bytes.slice(source, 0, 3);
+  let tail = Bytes.slice(source, 4, source.len() - 4);
+  let k = 2;
+  let same = Bytes.slice(source, k, k);
+  let empty = Bytes.slice(source, 11, 0);
+  let joined = word + "!";
+  joined += "?";
+  let score = 0;
+  if (word == "let") { score += 1; }
+  if (joined != "let!") { score += 1; }
+  if (joined == "let!?") { score += 1; }
+  if (same == "t ") { score += 1; }
+  if (empty.len() == 0) { score += 1; }
+  if (Bytes.get_u8(tail, 0) == "x".code) { score += 1; }
+  if ("é".code == 233) { score += 1; }
+  if ("€".code == 8364) { score += 1; }
+
+  score + digits(tail)
+};
+
+check()

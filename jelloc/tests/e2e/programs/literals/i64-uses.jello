@@ -1,0 +1,17 @@
+// expect: 3004729464027045
+// I64 values in the places developers put them: compound assignment and
+// increments on locals and globals, match arms, nullables, arrays, suffixes.
+enum Pick { Wide; Narrow; }
+let total: I64 = 4294967295;
+let big = fn(): I64 { 5i64 * 1000000000 };
+let pick = fn(p: Pick): I64 { match (p) { Wide => big(), Narrow => 0 } };
+
+let run = fn(): I64 {
+  let t: I64 = 0; t += 5; t -= 1; t++; t--; let before = t++;
+  total += 5; total++; --total;
+  let w: ?I64 = 7; let xs: Array<I64> = [1, 4294967296];
+  let flags: I64 = (w == 7 ? 1 : 0) + (w != null ? 2 : 0);
+  t + before * 10 + total * 100 + pick(Pick.Wide) + pick(Pick.Narrow) + (xs[0] + xs[1]) * 1000 + flags * 1000000000000000
+};
+
+run()

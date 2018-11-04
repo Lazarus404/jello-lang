@@ -1,0 +1,18 @@
+// expect: 27
+// A block is a statement, with no value and a scope of its own; like `if`, it
+// ends at its closing brace, so a next line starting with `-` begins a new
+// statement. A bare `return` may end at the `}` that closes its block, and a
+// function may end with a block, as it may with an `if`.
+let total = 1;
+{ let t = 3; total = total + t * 2; }
+{
+  let t = 4;
+  total += t;
+}
+-total;
+let stop = fn() { if (total > 0) { return } total = 0; };
+stop();
+let bump = fn() { { total += 1; } };
+bump();
+let first = fn(): I32 { { return 1; } };
+total * 2 + 4 + first() - 2

@@ -1,0 +1,28 @@
+package std.io;
+
+import { listDir } from std.io.File;
+import { endsWith } from std.core.Bytes;
+
+export let dirname = fn(path: Bytes): Bytes {
+  let i = Bytes.len(path) - 1;
+  while ((i >= 0) && (Bytes.slice(path, i, 1) != "/")) { i--; }
+  i < 0 ? "." : (i == 0 ? "/" : Bytes.slice(path, 0, i))
+};
+
+let _collect = fn(dir: Bytes, suffix: Bytes, files: Array<Bytes>): Null {
+  let entries = listDir(dir);
+  let i = 0;
+
+  while (i < entries.len()) {
+    let entry = entries[i];
+    if (endsWith(entry, "/")) { _collect(dir + "/" + Bytes.slice(entry, 0, Bytes.len(entry) - 1), suffix, files); } else if (endsWith(entry, suffix)) { files.push(dir + "/" + entry); }
+    i++;
+  }
+  null
+};
+
+export let filesUnder = fn(dir: Bytes, suffix: Bytes): Array<Bytes> {
+  let files = Array.new<Bytes>(0);
+  _collect(dir, suffix, files);
+  files
+};

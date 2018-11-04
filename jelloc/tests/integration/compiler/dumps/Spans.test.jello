@@ -1,0 +1,12 @@
+package compiler.dumps;
+
+import type { Test } from std.testing;
+import degust.Golden as G;
+import { printHirWithSpans } from frontend.PrintHir;
+import { checkedFile } from compiler.Pipeline;
+import { PROGRAMS } from compiler.Corpus;
+
+let testSpansEveryNode = fn(t: Test) {
+  let hir = checkedFile(PROGRAMS + "/spans/main.jello", Array.new<Bytes>(0));
+  G.equal(t, "tests/integration/compiler/dumps/spans.hir", printHirWithSpans(hir));
+};

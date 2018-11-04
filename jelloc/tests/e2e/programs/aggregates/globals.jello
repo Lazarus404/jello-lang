@@ -1,0 +1,14 @@
+// expect: 42
+// Increments and compound assignment on module globals.
+let count = 40;
+let log = "a";
+let bump = fn(): I32 {
+  count++;
+  let old = count--;
+  count += 2;
+  log += "bc";
+  old
+};
+let old = bump();
+
+count + old - 41 + log.len() - 3

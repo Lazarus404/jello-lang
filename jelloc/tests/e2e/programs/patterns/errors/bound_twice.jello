@@ -1,0 +1,4 @@
+// error: 3:37: n is bound more than once in this pattern
+enum E { Add(l: I32, r: I32); Z; }
+let f = fn(e: E): I32 { match (e) { Add(n, n) => n, Z => 0 } };
+f(E.Add(1, 2))

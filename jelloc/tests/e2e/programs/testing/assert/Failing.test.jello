@@ -1,0 +1,59 @@
+// expect: === RUN   Failing/testShowsValues
+// expect: --- FAIL: Failing/testShowsValues ($DIR/Failing.test.jello:31)
+// expect:     $DIR/Failing.test.jello:32:3: got 2, want 3
+// expect:     $DIR/Failing.test.jello:33:3: got 1099511627776, want 0
+// expect:     $DIR/Failing.test.jello:34:3: got false, want true
+// expect:     $DIR/Failing.test.jello:35:3: got "ab", want "ba"
+// expect:     $DIR/Failing.test.jello:38:3: got null, want 4
+// expect:     $DIR/Failing.test.jello:39:3: got 4, want null
+// expect:     $DIR/Failing.test.jello:40:3: got Shape.Dot, want Shape.Square
+// expect:     $DIR/Failing.test.jello:43:3: got Shape.Circle(1), want Shape.Dot
+// expect:     $DIR/Failing.test.jello:44:3: got Shape.Square, want Shape.Dot
+// expect:     $DIR/Failing.test.jello:45:3: got "same", want any other value
+// expect:     $DIR/Failing.test.jello:46:3: got (1, "one"), want (1, "uno")
+// expect:     $DIR/Failing.test.jello:47:3: got [Shape.Circle(2)], want [Shape.Circle(3)]
+// expect: === RUN   Failing/testChecks
+// expect: --- FAIL: Failing/testChecks ($DIR/Failing.test.jello:51)
+// expect:     $DIR/Failing.test.jello:53:3: got false, want true
+// expect:     $DIR/Failing.test.jello:54:3: got "here", want null
+// expect:     $DIR/Failing.test.jello:56:3: got Shape.Circle(5), want null
+// expect:     $DIR/Failing.test.jello:57:3: did not throw
+// expect: FAIL
+// status: 1
+// flags: --test --path $DIR
+// A failure shows the values, an enum's by variant, and the test goes on.
+import type { Test } from std.testing;
+import std.testing as T;
+
+enum Shape { Dot; Square; Circle(radius: I32); }
+
+
+let testShowsValues = fn(t: Test) {
+  T.equal(t, 1 + 1, 3);
+  T.equal(t, 1i64 << 40, 0i64);
+  T.equal(t, 2 > 3, true);
+  T.equal(t, "a" + "b", "ba");
+  let missing: ?I32 = null;
+  let present: ?I32 = 4;
+  T.equal(t, missing, 4);
+  T.equal(t, present, null);
+  T.equal(t, Shape.Dot, Shape.Square);
+  let shape = Shape.Circle(1);
+  let maybe: ?Shape = Shape.Square;
+  T.equal(t, shape, Shape.Dot);
+  T.equal(t, maybe, Shape.Dot);
+  T.notEqual(t, "same", "same");
+  T.equal(t, (1, "one"), (1, "uno"));
+  T.equal(t, [Shape.Circle(2)], [Shape.Circle(3)]);
+  null
+};
+
+let testChecks = fn(t: Test) {
+  let present: ?Bytes = "here";
+  T.isTrue(t, 1 > 2);
+  T.isNull(t, present);
+  let maybe: ?Shape = Shape.Circle(5);
+  T.isNull(t, maybe);
+  T.throws(t, fn() { null });
+  null
+};

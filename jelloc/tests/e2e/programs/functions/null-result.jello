@@ -1,0 +1,20 @@
+// expect: 1505
+// A function returning Null may end without a value, and `return;` returns
+// null from it, whether its type is written or inferred; one that only throws
+// returns Null too.
+let log = Array.new<I32>(0);
+let record = fn(n: I32) { log.push(n); };
+let recordPositive = fn(n: I32): Null {
+  if (n <= 0) { return; }
+  log.push(n);
+};
+let handler: (I32) -> Null = fn(n) { if (n > 5) { return; } record(n * 10); };
+let fail = fn(n: I32) { throw n; };
+let failing: (I32) -> Null = fail;
+record(1);
+recordPositive(-2);
+recordPositive(2);
+handler(3);
+handler(9);
+let thrown = try { failing(5); 0 } catch (e) { 5 };
+log[0] * 1000 + log[1] * 100 + log[2] * 10 + thrown

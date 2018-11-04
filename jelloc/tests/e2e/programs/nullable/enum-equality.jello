@@ -1,0 +1,18 @@
+// expect: 123100124
+// A Null<E> compared with a variant without a payload: null equals no
+// variant, either side may be the variant, and the nullable side is evaluated
+// once.
+enum Mode { Lex; Parse; Typed(depth: I32); }
+let modes = [Mode.Lex, Mode.Parse, Mode.Typed(1)];
+let pick = fn(index: I32): ?Mode { index == 0 ? null : modes[index - 1] };
+let calls = 0;
+let counted = fn(mode: ?Mode): ?Mode { calls++; mode };
+
+let out = 0; let i = 0;
+while (i < 4) {
+  let m = pick(i);
+  let flags = (m == Mode.Lex ? 1 : 0) + (Mode.Lex == m ? 2 : 0) + (m != Mode.Parse ? 4 : 0) + (Mode.Parse != m ? 8 : 0);
+  out = out * 100 + flags + (counted(m) == Mode.Lex ? 16 : 0);
+  i++;
+}
+out * 10 + calls

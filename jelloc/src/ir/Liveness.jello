@@ -1,8 +1,8 @@
 package ir;
 
-import type { BasicBlock, Instruction, Terminator } from ir.Model;
+import type { BasicBlock, Instruction } from ir.Model;
 import { argsOf, dstOf, immOf, instructionMayThrow, opOf } from ir.Model;
-import { blockCatch, blockIndexes, normalSuccessors } from ir.Cfg;
+import { blockCatch, blockIndexes, normalSuccessors, terminatorRead } from ir.Cfg;
 
 let _registers = 0;
 
@@ -12,10 +12,6 @@ let _reads = fn(insn: Instruction): Array<I32> {
 
 let _writes = fn(insn: Instruction): Array<I32> {
   match (opOf(insn)) { SpillPush => [_registers + immOf(insn)], _ => dstOf(insn) >= 0 ? [dstOf(insn)] : Array.new<I32>(0) }
-};
-
-export let terminatorReads: (Terminator) -> Array<I32> = fn(terminator) {
-  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => [value], _ => Array.new<I32>(0) }
 };
 
 let _add = fn(set: Array<I32>, marks: Array<I32>, stamp: I32, value: I32) {
@@ -90,16 +86,11 @@ export let liveness: (Array<BasicBlock>, I32, I32, Bool) -> Tuple<Array<Array<I3
         }
         j++;
       }
-      let last = terminatorReads(terminator);
-      let a = 0;
-
-      while (a < last.len()) {
-        if (written[last[a]] != stamp) { _add(used, marks, stamp, last[a]); }
-        a++;
-      }
+      let last = terminatorRead(terminator);
+      if ((last >= 0) && (written[last] != stamp)) { _add(used, marks, stamp, last); }
       let targets = normalSuccessors(terminator);
       let next = Array.new<I32>(0);
-      a = 0;
+      let a = 0;
 
       while (a < targets.len()) {
         next.push(indexes[targets[a]]);

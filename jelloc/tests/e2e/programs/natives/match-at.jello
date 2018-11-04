@@ -1,0 +1,28 @@
+// expect: 111408
+// Scanning a text by position with RegExp.matchAt.
+import { compile, text, matchAt, len, group, start } from std.core.RegExp;
+
+let source = "déjà vu, 42 fois";
+let t = text(source);
+let space = compile("\\s+", "");
+let word = compile("[\\p{L}\\p{N}]+", "");
+let other = compile(".", "");
+
+
+let scan = fn(): I32 {
+  let pos = 0; let words = 0; let placed = 0;
+  while (pos < source.len()) {
+    let m = matchAt(t, space, pos);
+    if (m == null) { m = matchAt(t, word, pos); if (m != null) { words++; } }
+    if (m == null) { m = matchAt(t, other, pos); }
+    if (start(m, 0) == pos) { placed++; }
+    pos = pos + len(m);
+  }
+  words * 100 + placed
+};
+
+
+let behind = matchAt(t, compile("(?<=é)jà", ""), 3) != null ? 1000 : 0;
+let first = group(matchAt(t, word, 0), 0) == "déjà" ? 10000 : 0;
+let anchored = matchAt(t, word, 6) == null ? 100000 : 0;
+scan() + behind + first + anchored

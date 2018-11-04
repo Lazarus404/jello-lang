@@ -1,0 +1,6 @@
+// expect: 11
+// A closure copies a list it captures; nil stays nil.
+let empty = List.nil<I32>();
+let one = List.cons(1, empty);
+let read = fn(): I32 { (List.is_nil(empty) ? 10 : 0) + List.head(one) };
+read()

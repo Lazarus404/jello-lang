@@ -1,0 +1,18 @@
+// expect: 110974
+// Null<T> equality: null equals only null, present values compare as T, and
+// each side is evaluated once, left to right.
+let pick = fn(on: Bool, value: I32): ?I32 { on ? value : null };
+let text = fn(on: Bool, value: Bytes): ?Bytes { on ? value : null };
+let bit = fn(on: Bool, weight: I32): I32 { on ? weight : 0 };
+let calls = 0;
+let counted = fn(value: ?I32): ?I32 { calls = calls * 10 + 1; value };
+
+let run = fn(): I32 {
+  let a = pick(false, 5); let b = pick(true, 5); let c = pick(true, 6); let n = pick(false, 0);
+  let flags = bit(a == 5, 1) + bit(b == 5, 2) + bit(5 == b, 4) + bit(a == n, 8) + bit(a == b, 16) + bit(b == c, 32)
+    + bit(b != c, 64) + bit(text(true, "xy") == "xy", 128) + bit(text(false, "xy") != "xy", 256) + bit(b == pick(true, 5), 512);
+  let once = bit(counted(b) == counted(null), 1024);
+  flags + once + calls * 10000
+};
+
+run()

@@ -1,0 +1,19 @@
+// expect: 111111142
+// Division truncates toward zero and wraps.
+let q = fn(a: I32, b: I32): I32 { a / b };
+let r = fn(a: I32, b: I32): I32 { a % b };
+let qw = fn(a: I64, b: I64): I64 { a / b };
+let rw = fn(a: I64, b: I64): I64 { a % b };
+let min = -2147483648;
+let wideMin: I64 = -9223372036854775808;
+let seven: I64 = 7; let two: I64 = 2; let minusOne: I64 = -1;
+let x = 100; x /= 7; x *= 3;
+let digits = 0;
+digits = digits * 10 + q(1, 1);
+digits = digits * 10 + (q(-7, 2) == -3 ? 1 : 0);
+digits = digits * 10 + (r(-7, 2) == -1 && q(7, -2) == -3 && r(7, -2) == 1 ? 1 : 0);
+digits = digits * 10 + (q(min, -1) == min && r(min, -1) == 0 ? 1 : 0);
+digits = digits * 10 + (min / -1 == min && min % -1 == 0 && min / 1 == min ? 1 : 0);
+digits = digits * 10 + (qw(-seven, two) == -3 && rw(seven, -two) == 1 ? 1 : 0);
+digits = digits * 10 + (qw(wideMin, minusOne) == wideMin && rw(wideMin, minusOne) == 0 && wideMin / -1 == wideMin ? 1 : 0);
+digits * 100 + x

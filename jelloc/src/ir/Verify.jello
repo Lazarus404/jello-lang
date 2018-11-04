@@ -1,15 +1,18 @@
 package ir;
 
-import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { ReturnType, ValueType, argumentCount, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, opOf, returnTypeEqual, valueTypeEqual } from ir.Model;
+import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
+import { ValueType, argumentCount, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, opOf, valueTypeEqual } from ir.Model;
+import { blockId } from ir.Cfg;
 import { liveness } from ir.Liveness;
+import { internalError } from frontend.Internal;
 
 let _fail = fn(message: Bytes): Bool {
-  throw "invalid IR: " + message;
+  internalError("invalid IR: " + message);
   false
 };
 
 let _inProgram = false;
+let _legalized = false;
 let _functionIndexes = Array.new<I32>(0);
 let _signatures = Array.new<ValueType>(0);
 let _captureCounts = Array.new<I32>(0);
@@ -38,7 +41,7 @@ let _index = fn(function: I32): I32 {
   _functionIndexes[function]
 };
 
-let _call = fn(params: Array<ValueType>, result: ReturnType, dst: I32, args: Array<I32>, start: I32) {
+let _call = fn(params: Array<ValueType>, result: ValueType, dst: I32, args: Array<I32>, start: I32) {
   if ((args.len() as I32) - start != (params.len() as I32)) { _fail("call argument count mismatch"); }
   let i = 0;
 
@@ -46,7 +49,7 @@ let _call = fn(params: Array<ValueType>, result: ReturnType, dst: I32, args: Arr
     _expect(args[start + i], params[i]);
     i++;
   }
-  match (result) { Value(ty) => _expect(dst, ty), Void => { if (dst >= 0) { _fail("void call defines a register"); } null } }
+  _expect(dst, result)
 };
 
 let _fields = fn(enumId: I32, tag: I32): Array<ValueType> {
@@ -59,6 +62,8 @@ let _fields = fn(enumId: I32, tag: I32): Array<ValueType> {
 };
 
 let _hasField = fn(enumId: I32, index: I32, ty: ValueType): Bool {
+  if ((enumId < 0) || (enumId >= _enums.len())) { _fail("unknown enum type@" + Std.string(enumId)); }
+
   match (_enums[enumId]) { Enum(variants) => {
     let i = 0;
 
@@ -90,7 +95,6 @@ let _instruction = fn(instruction: Instruction) {
 
   match (opOf(instruction)) {
     ArraySet, ArrayResize, BytesSet, BytesBlit, StructSet, SpillPush, GlobalSet, NullCheck => { if (dst >= 0) { _fail("store defines a register"); } null },
-    Call => null,
     _ => {
       _type(dst);
       null
@@ -353,7 +357,10 @@ let _instruction = fn(instruction: Instruction) {
       _expect(args[0], ValueType.Bytes);
       _expect(args[1], ValueType.Bytes)
     },
-    TupleNew => match (_type(dst)) {
+    TupleNew => if (_legalized) {
+      _fail("tuple construction after legalization");
+      null
+    } else { match (_type(dst)) {
       TupleOf(elements) => {
         _arity(args, elements.len() as I32);
         let j = 0;
@@ -367,7 +374,7 @@ let _instruction = fn(instruction: Instruction) {
         _fail("tuple defines a non-tuple");
         null
       },
-    },
+    } },
     StructNew => {
       _arity(args, 0);
 
@@ -424,8 +431,8 @@ let _instruction = fn(instruction: Instruction) {
       }
     },
     EnumGet => {
-      if ((args.len() != 1) && (args.len() != 2)) { _fail("wrong operand count"); }
-      if (args.len() == 2) { _expect(args[1], ValueType.I32); }
+      _arity(args, _legalized ? 2 : 1);
+      if (_legalized) { _expect(args[1], ValueType.I32); }
 
       match (_type(args[0])) {
         Nominal(id) => { if (_inProgram && !_hasField(id, imm, _type(dst))) { _fail("enum payload type mismatch"); } null },
@@ -446,7 +453,7 @@ let _instruction = fn(instruction: Instruction) {
     CallNative => {
       if (_inProgram) {
         if ((imm < 0) || (imm >= _natives.len())) { _fail("native out of range"); }
-        match (_natives[imm]) { Native(_, _, params, result) => _call(params, ReturnType.Value(result), dst, args, 0) };
+        match (_natives[imm]) { Native(_, _, params, result) => _call(params, result, dst, args, 0) };
       }
       null
     },
@@ -481,7 +488,6 @@ let _instruction = fn(instruction: Instruction) {
   null
 };
 
-let _blockId = fn(block: BasicBlock): I32 { match (block) { Block(id, _, _, _) => id } };
 let _blockHandler = fn(block: BasicBlock): ?ThrowHandler { match (block) { Block(_, _, _, handler) => handler } };
 
 let _sameHandler = fn(a: ?ThrowHandler, b: ?ThrowHandler): Bool {
@@ -521,7 +527,7 @@ let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   let i = 0;
 
   while (i < blocks.len()) {
-    let id = _blockId(blocks[i]);
+    let id = blockId(blocks[i]);
     if (id < 0) { _fail("negative block id"); }
     while (indexes.len() <= id) { indexes.push(-1); }
     if (indexes[id] >= 0) { _fail("duplicate block id"); }
@@ -536,7 +542,7 @@ let _target = fn(indexes: Array<I32>, id: I32): I32 {
   indexes[id]
 };
 
-let _terminator = fn(result: ReturnType, indexes: Array<I32>, terminator: Terminator) {
+let _terminator = fn(result: ValueType, indexes: Array<I32>, terminator: Terminator) {
   match (terminator) {
     Jump(target) => {
       _target(indexes, target);
@@ -548,18 +554,8 @@ let _terminator = fn(result: ReturnType, indexes: Array<I32>, terminator: Termin
       _target(indexes, elseTarget);
       null
     },
-    ReturnVoid => { if (!returnTypeEqual(result, ReturnType.Void)) { _fail("value function returns void"); } null },
-    ReturnValue(value) => match (result) {
-      Void => {
-        _fail("void function returns a value");
-        null
-      }, Value(expected) => _expect(value, expected)
-    },
-    Throw(value, _) => {
-      _type(value);
-      null
-    },
-    Unreachable => null,
+    ReturnValue(value) => _expect(value, result),
+    Throw(value, _) => { if (_legalized) { _expect(value, ValueType.Dynamic); } else { _type(value); } null },
   }
 };
 
@@ -647,6 +643,7 @@ let _function = fn(function: Function) {
 
 export let verifyFunction: (Function) -> Bool = fn(function) {
   _inProgram = false;
+  _legalized = false;
   _function(function)
 };
 
@@ -663,7 +660,9 @@ let _signatureOf = fn(function: Function): ValueType {
   } }
 };
 
-export let verifyProgram: (Program) -> Bool = fn(program) {
+let _program = fn(program: Program, legalized: Bool): Bool {
+  _legalized = legalized;
+
   match (program) { Program(functions, pool, wides, enums, globals, natives) => {
     _functionIndexes = Array.new<I32>(0);
     _signatures = Array.new<ValueType>(0);
@@ -704,8 +703,11 @@ export let verifyProgram: (Program) -> Bool = fn(program) {
   true
 };
 
+export let verifyProgram: (Program) -> Bool = fn(program) { _program(program, false) };
+export let verifyLegalizedProgram: (Program) -> Bool = fn(program) { _program(program, true) };
+
 export let verifyAllocatedProgram: (Program) -> Bool = fn(program) {
-  match (program) { Program(functions, _, _, _, _, _) => {
+  match (program) { Program(functions, _, _, _, _, natives) => {
     let i = 0;
 
     while (i < functions.len()) {
@@ -714,6 +716,12 @@ export let verifyAllocatedProgram: (Program) -> Bool = fn(program) {
       } };
       i++;
     }
+    i = 0;
+
+    while (i < natives.len()) {
+      match (natives[i]) { Native(_, name, params, _) => { if (params.len() > 8) { _fail("native " + name + " takes more than 8 arguments"); } null } };
+      i++;
+    }
   } };
-  verifyProgram(program)
+  verifyLegalizedProgram(program)
 };

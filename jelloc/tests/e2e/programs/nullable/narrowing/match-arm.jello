@@ -1,0 +1,6 @@
+// trap: NULL_DEREF
+// It would return 7 if a possibly-null read were trusted unchecked.
+let keep = fn(_text: Bytes): I32 { 7 };
+enum Pick { No; Yes; }
+let run = fn(): I32 { let x: ?Bytes = null; let n = match (Pick.No) { Yes => { x = "a"; 1 }, No => 2 }; keep(x) + n };
+run()

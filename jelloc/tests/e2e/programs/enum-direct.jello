@@ -1,0 +1,22 @@
+// expect: 42
+enum Chain {
+  End;
+  Link(next: Chain);
+  Value(value: I32);
+}
+
+
+let length = fn(chain: Chain): I32 {
+  match (chain) {
+    End => 0,
+    Link(next) => 1 + length(next),
+    Value(_) => 0,
+  }
+};
+
+let value = fn(chain: Chain): I32 {
+  match (chain) { Value(n) => n, _ => 0 }
+};
+
+let three = Chain.Link(Chain.Link(Chain.Link(Chain.End)));
+value(Chain.Value(39)) + length(three)

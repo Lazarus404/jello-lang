@@ -1,0 +1,4 @@
+// error: 4:1: operator == is not defined for Handler, which holds (I32) -> I32
+enum Handler { On(run: (I32) -> I32); Off; }
+let twice = fn(x: I32): I32 { x * 2 };
+Handler.On(twice) == Handler.On(twice) ? 1 : 0

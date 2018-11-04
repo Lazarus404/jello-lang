@@ -1,0 +1,205 @@
+program
+  fn @1 fn(%0 s: bytes @1578..1586 ../stdlib/core/RegExp.jello, %1 m: dynamic @1588..1598 ../stdlib/core/RegExp.jello) -> bytes @1575..1666 ../stdlib/core/RegExp.jello
+    let %2 n: i32 @1611..1626 ../stdlib/core/RegExp.jello
+      call.native std.regexp_match_len: i32 @1619..1625 ../stdlib/core/RegExp.jello
+        local %1: dynamic @1623..1624 ../stdlib/core/RegExp.jello
+    tail
+      bytes.slice: bytes @1629..1664 ../stdlib/core/RegExp.jello
+        local %0: bytes @1641..1642 ../stdlib/core/RegExp.jello
+        local %2: i32 @1644..1645 ../stdlib/core/RegExp.jello
+        sub.wrap: i32 @1647..1663 ../stdlib/core/RegExp.jello
+          bytes.len: i32 @1647..1659 ../stdlib/core/RegExp.jello
+            local %0: bytes @1657..1658 ../stdlib/core/RegExp.jello
+          local %2: i32 @1662..1663 ../stdlib/core/RegExp.jello
+  fn @2 width(%3 s: Shape @302..310) -> i32 @299..458
+    tail
+      block: i32 @321..456
+        const %4 match: Shape @321..456
+          local %3: Shape @328..329
+        const %5 match.tag: i32 @321..456
+          enum.tag: i32 @321..456
+            local %4: Shape @321..456
+        let %12 match.bound: ?i32 @321..456
+          null: ?i32 @321..456
+        if: i32 @321..456
+          condition
+            eq.i32: bool @337..340
+              local %5: i32 @337..340
+              i32 0: i32 @337..340
+          then
+            block: i32 @321..456
+              i32 0: i32 @344..345
+          else
+            if: i32 @321..456
+              condition
+                and: bool @321..456
+                  eq.i32: bool @351..361
+                    local %5: i32 @351..361
+                    i32 1: i32 @351..361
+                  block: bool @321..456
+                    const %6 a: i32 @321..456
+                      enum.field Line.0: i32 @356..357
+                        local %4: Shape @356..357
+                    const %7 b: i32 @321..456
+                      enum.field Line.1: i32 @359..360
+                        local %4: Shape @359..360
+                    not.bool: bool @368..374
+                      eq.i32: bool @368..374
+                        local %6: i32 @368..369
+                        local %7: i32 @373..374
+              then
+                block: i32 @321..456
+                  const %8 a: i32 @321..456
+                    enum.field Line.0: i32 @356..357
+                      local %4: Shape @356..357
+                  const %9 b: i32 @321..456
+                    enum.field Line.1: i32 @359..360
+                      local %4: Shape @359..360
+                  sub.wrap: i32 @379..384
+                    local %9: i32 @379..380
+                    local %8: i32 @383..384
+              else
+                if: i32 @321..456
+                  condition
+                    and: bool @321..456
+                      eq.i32: bool @390..409
+                        local %5: i32 @390..409
+                        i32 2: i32 @390..409
+                      eq.i32: bool @395..405
+                        enum.tag: i32 @395..405
+                          enum.field Pair.0: Shape @395..405
+                            local %4: Shape @395..405
+                        i32 1: i32 @395..405
+                  then
+                    block: i32 @321..456
+                      const %10 a: i32 @321..456
+                        enum.field Line.0: i32 @400..401
+                          enum.field Pair.0: Shape @400..401
+                            local %4: Shape @400..401
+                      const %11 t: i32 @321..456
+                        enum.field Pair.1: i32 @407..408
+                          local %4: Shape @407..408
+                      add.wrap: i32 @413..418
+                        local %10: i32 @413..414
+                        local %11: i32 @417..418
+                  else
+                    block: i32 @321..456
+                      expression @321..456
+                        or: bool @321..456
+                          and: bool @321..456
+                            eq.i32: bool @424..434
+                              local %5: i32 @424..434
+                              i32 1: i32 @424..434
+                            block: bool @424..434
+                              expression @424..434
+                                assign %12: ?i32 @424..434
+                                  present: ?i32 @424..434
+                                    enum.field Line.0: i32 @429..430
+                                      local %4: Shape @429..430
+                              bool true: bool @424..434
+                          and: bool @321..456
+                            eq.i32: bool @436..446
+                              local %5: i32 @436..446
+                              i32 2: i32 @436..446
+                            block: bool @436..446
+                              expression @436..446
+                                assign %12: ?i32 @436..446
+                                  present: ?i32 @436..446
+                                    enum.field Pair.1: i32 @444..445
+                                      local %4: Shape @444..445
+                              bool true: bool @436..446
+                      block: i32 @321..456
+                        const %13 a: i32 @321..456
+                          unwrap.known: i32 @321..456
+                            local %12: ?i32 @321..456
+                        local %13: i32 @450..451
+  fn @3 first(%14 text: bytes @475..486) -> i32 @472..572
+    tail
+      block: i32 @497..570
+        const %15 match: bytes @497..570
+          local %14: bytes @504..508
+        let %16 match.bound: dynamic @497..570
+          null: dynamic @497..570
+        if: i32 @497..570
+          condition
+            is_present: bool @512..534
+              assign %16: dynamic @512..534
+                call.native std.regexp_match_prefix: dynamic @512..534
+                  local %15: bytes @512..534
+                  global g2: dynamic @512..534
+          then
+            block: i32 @497..570
+              const %17 m: dynamic @497..570
+                local %16: dynamic @512..534
+              bytes.len: i32 @538..560
+                call.native std.regexp_capture_bytes: bytes @548..559
+                  local %17: dynamic @554..555
+                  i32 1: i32 @557..558
+          else
+            block: i32 @497..570
+              i32 0: i32 @567..568
+  fn @4 total(%18 n: ?i32 @589..596) -> i32 @586..680
+    const %19 tuple: tuple<i32, i32> @607..627
+      tuple: tuple<i32, i32> @620..626
+        i32 0: i32 @621..622
+        i32 1: i32 @624..625
+    let %20 t: i32 @612..613
+      tuple.get 0: i32 @612..613
+        local %19: tuple<i32, i32> @612..613
+    let %21 u: i32 @615..616
+      tuple.get 1: i32 @615..616
+        local %19: tuple<i32, i32> @615..616
+    expression @630..641
+      assign %20: i32 @630..640
+        add.wrap: i32 @630..640
+          local %20: i32 @630..631
+          global g1: i32 @635..640
+    if @644..670
+      condition
+        is_present: bool @648..657
+          local %18: ?i32 @648..649
+      then
+        expression @661..668
+          assign %20: i32 @661..667
+            add.wrap: i32 @661..667
+              local %20: i32 @661..662
+              unwrap.known: i32 @666..667
+                local %18: ?i32 @666..667
+    tail
+      add.wrap: i32 @673..678
+        local %20: i32 @673..674
+        local %21: i32 @677..678
+  global g0 advance: (bytes, dynamic) -> bytes @1527..1667 ../stdlib/core/RegExp.jello
+    function @1: (bytes, dynamic) -> bytes @1575..1666 ../stdlib/core/RegExp.jello
+  global g1 limit: i32 @14..39 tests/e2e/programs/spans/lib/Limits.jello
+    add.wrap: i32 @33..38 tests/e2e/programs/spans/lib/Limits.jello
+      i32 2: i32 @33..34 tests/e2e/programs/spans/lib/Limits.jello
+      i32 1: i32 @37..38 tests/e2e/programs/spans/lib/Limits.jello
+  global g2 ~r/([a-z]+)/: dynamic @512..534
+    call.native std.regexp_compile: dynamic @512..534
+      bytes "([a-z]+)": bytes @512..534
+      bytes "": bytes @512..534
+  add.wrap: i32 @682..790
+    add.wrap: i32 @682..779
+      add.wrap: i32 @682..759
+        mul.wrap: i32 @682..712
+          call @2: i32 @682..705
+            enum.new Line: Shape @688..704
+              i32 1: i32 @699..700
+              i32 4: i32 @702..703
+          i32 1000: i32 @708..712
+        mul.wrap: i32 @715..759
+          call @2: i32 @715..753
+            enum.new Pair: Shape @721..752
+              enum.new Line: Shape @732..748
+                i32 5: i32 @743..744
+                i32 0: i32 @746..747
+              i32 2: i32 @750..751
+          i32 100: i32 @756..759
+      mul.wrap: i32 @762..779
+        call @3: i32 @762..774
+          bytes "ab1": bytes @768..773
+        i32 10: i32 @777..779
+    call @4: i32 @782..790
+      present: ?i32 @788..789
+        i32 3: i32 @788..789

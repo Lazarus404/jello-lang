@@ -1,0 +1,19 @@
+// expect: 3116
+// Stage-0 procedures end in `null`; their calls are statements. Ternaries
+// without a context join T and null, and a bare-null branch still runs.
+let log: Array<I32> = [];
+let record = fn(value: I32) { log.push(value); null };
+let reset = fn() { Array.resize(log, 0); null };
+
+let pick = fn(flag: Bool): I32 {
+  let name = flag ? "a" : null;
+  let count = flag ? 5 : null;
+  let text = flag ? { record(1); "b" } : { record(2); null };
+  (name == null ? 0 : 10) + (count == null ? 0 : count) + (text == null ? 100 : text.len())
+};
+
+record(3);
+reset();
+record(4);
+
+pick(true) + pick(false) + log.len() * 1000

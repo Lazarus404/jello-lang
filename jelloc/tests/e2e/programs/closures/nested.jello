@@ -1,0 +1,11 @@
+// expect: 4130007
+// A closure inside a closure copies the outer closure's copy.
+let adder = fn(base: I32): (I32) -> (I32) -> I32 {
+  fn(step: I32) { fn(x: I32) { base + step * x } }
+};
+
+let boxer = fn(code: I32): () -> Dynamic { fn() { code as Dynamic } };
+
+let byTens = adder(100)(10);
+let byOnes = adder(5)(1);
+(boxer(4)() as I32) * 1000000 + byTens(3) * 1000 + byOnes(2)

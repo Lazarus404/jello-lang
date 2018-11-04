@@ -4,6 +4,7 @@ import type { Block, Expr, ListLiteral, MatchArm, Parameter, Pattern, Program, S
 import { exprTag, patternTag, stmtTag } from frontend.Ast;
 import type { Syntax, SyntaxKind, SyntaxMark } from frontend.Source;
 import { Syntax, SyntaxKind } from frontend.Source;
+import { internalError } from frontend.Internal;
 
 let _marks = Array.new<SyntaxMark>(0);
 let _next = 0;
@@ -27,15 +28,15 @@ let _contains = fn(start: I32, end: I32, inner: Array<Syntax>): Bool {
 };
 
 let _takeWith = fn(kind: SyntaxKind, tag: I32, children: Array<Syntax>, patterns: Array<Syntax>): Syntax {
-  if (_next >= _marks.len()) { throw "syntax marks end before the AST"; }
+  if (_next >= _marks.len()) { internalError("syntax marks end before the AST"); }
 
   match (_marks[_next]) { Mark(markKind, markTag, start, end) => {
     if (!_sameKind(markKind, kind) || (markTag != tag)) {
-      throw "syntax mark " + Std.string(_next) + " does not match its AST node";
+      internalError("syntax mark " + Std.string(_next) + " does not match its AST node");
     }
 
     if (!_contains(start, end, children) || !_contains(start, end, patterns)) {
-      throw "syntax mark " + Std.string(_next) + " does not contain its children";
+      internalError("syntax mark " + Std.string(_next) + " does not contain its children");
     }
     _next++;
     Syntax.Node(_path, start, end, children, patterns)
@@ -336,7 +337,7 @@ _stmt = fn(value) {
   _takeWith(SyntaxKind.Statement, stmtTag(value), out, patterns)
 };
 
-export let rootSyntax: (Bytes, Array<Syntax>) -> Syntax = fn(path, children) {
+let _rootSyntax = fn(path: Bytes, children: Array<Syntax>): Syntax {
   let end = 1;
   if (children.len() > 0) { match (children[children.len() - 1]) { Node(_, _, last, _, _) => { if (last > end) { end = last; } } } };
   Syntax.Node(path, 0, end, children, [])
@@ -351,7 +352,7 @@ export let syntaxTree: (Program, Bytes, Array<SyntaxMark>) -> Syntax = fn(progra
     let out = Array.new<Syntax>(0);
     _stmts(statements, out);
     _optional(tail, out);
-    if (_next != _marks.len()) { throw "syntax marks remain after the AST"; }
-    rootSyntax(path, out)
+    if (_next != _marks.len()) { internalError("syntax marks remain after the AST"); }
+    _rootSyntax(path, out)
   } }
 };

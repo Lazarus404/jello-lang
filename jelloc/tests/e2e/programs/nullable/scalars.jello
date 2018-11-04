@@ -1,0 +1,24 @@
+// expect: 1025
+// Nullable scalars are boxed: in globals, arrays, arguments and results, with
+// narrowing and checked conversions.
+let hits: ?I32 = null;
+let flags = Array.new<?Bool>(3);
+
+let bump = fn(by: ?I32): I32 { if (by == null) { 0 } else { by } };
+let first = fn(values: Array<?I32>): ?I32 { values.len() > 0 ? values[0] : null };
+
+let run = fn(): I32 {
+  let total = bump(null) + bump(5);
+  hits = 7;
+  total += hits;
+  flags[1] = true;
+  let set = 0; let i = 0;
+  while (i < flags.len()) { let flag = flags[i]; if (flag != null && flag) { set += 10; } i++; }
+  total += set;
+  let maybe = first([3, null]);
+  total += maybe == null ? 100 : maybe;
+  const known = first([]);
+  total + (known == null ? 1000 : known)
+};
+
+run()

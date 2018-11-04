@@ -1,0 +1,7 @@
+// expect: 32
+// `e == E.V` for a variant without a payload compares variants.
+enum K { Rest; Int; Pair(a: I32); }
+let kinds = [K.Int, K.Rest, K.Pair(1)];
+let out = 0; let i = 0;
+while (i < kinds.len()) { out = out * 10 + (kinds[i] == K.Rest ? 1 : 0) + (K.Int != kinds[i] ? 2 : 0); i++; }
+out

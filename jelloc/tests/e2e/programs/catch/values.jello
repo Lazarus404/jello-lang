@@ -1,0 +1,36 @@
+// expect: 362094142
+// A try is a value. The Lexer's loop shape, run past the VM's 16 handler
+// slots with its `Std.string(e)` handler, and payloads extracted by kind.
+let fails = fn(at: I32): Bool { (at == 3) || (at == 9) || (at == 17) };
+let lexOne = fn(at: I32): Tuple<I32, Bytes> {
+  if (fails(at)) { throw "bad"; }
+  let value = at * 2;
+  (value, "ok")
+};
+
+let lexAll = fn(): I32 {
+  let total = 0; let caught = 0; let at = 0;
+  while (at < 20) {
+    let result: Tuple<I32, Bytes> = try {
+      lexOne(at)
+    } catch (e) {
+      caught = caught + Std.string(e).len();
+      (-1, Std.string(e))
+    };
+    let (value, text) = result;
+    total = total + value + text.len();
+    at++;
+  }
+  total * 100 + caught
+};
+
+let raise = fn(kind: I32): I32 {
+  if (kind == 0) { throw 40; }
+  if (kind == 1) { throw "text"; }
+  kind
+};
+let classify = fn(kind: I32): I32 {
+  try { raise(kind) } catch (e) { if (e is I32) { (e as I32) + 1 } else { (e as Bytes).len() } }
+};
+
+lexAll() * 10000 + classify(0) * 100 + classify(1) * 10 + classify(2)

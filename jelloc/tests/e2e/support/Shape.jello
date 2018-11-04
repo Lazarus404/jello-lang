@@ -1,0 +1,99 @@
+package support;
+
+import { endsWith, split, startsWith } from std.core.Bytes;
+
+let _number = fn(word: Bytes, prefix: Bytes, negative: Bool): ?I32 {
+  if (!startsWith(word, prefix)) { return null; }
+  let i = Bytes.len(prefix);
+  let sign = 1;
+
+  if (negative && startsWith(word, prefix + "-")) {
+    sign = -1;
+    i++;
+  }
+  if (Bytes.len(word) == i) { return null; }
+  let value = 0;
+
+  while (i < Bytes.len(word)) {
+    let digit = Bytes.get_u8(word, i) - 48;
+    if ((digit < 0) || (digit > 9)) { return null; }
+    value = value * 10 + digit;
+    i++;
+  }
+  sign * value
+};
+
+let _at = fn(name: Bytes, pc: I32, op: Bytes): Bytes { name + " " + Std.string(pc) + ": " + op };
+
+export let shapeProblems = fn(listing: Bytes, ceiling: I32): Array<Bytes> {
+  let names = Array.new<Bytes>(0);
+  let code = Array.new<Array<Tuple<Bytes, I32, I32, I32>>>(0);
+  let lines = split(listing, "\n");
+  let i = 0;
+
+  while (i < lines.len()) {
+    let line = lines[i];
+
+    if (startsWith(line, "func[")) {
+      names.push(split(line, " ")[0]);
+      code.push(Array.new<Tuple<Bytes, I32, I32, I32>>(0));
+    } else if (startsWith(line, " ")) {
+      let n = 0;
+      while ((n < Bytes.len(line)) && (Bytes.get_u8(line, n) == 32)) { n++; }
+
+      if (n < Bytes.len(line)) {
+        let text = Bytes.slice(line, n, Bytes.len(line) - n);
+        let words = split(text, " ");
+        let pc = endsWith(words[0], ":") ? _number(Bytes.slice(words[0], 0, Bytes.len(words[0]) - 1), "", false) : null;
+        let a = words.len() == 6 ? _number(words[2], "a=r", false) : null;
+        let b = words.len() == 6 ? _number(words[3], "b=r", false) : null;
+        let c = words.len() == 6 ? _number(words[4], "c=r", false) : null;
+        let imm = words.len() == 6 ? _number(words[5], "imm=", true) : null;
+
+        if ((pc == null) || (code.len() == 0) || (pc != code[code.len() - 1].len()) || (a == null) || (b == null) || (c == null) || (imm == null)) {
+          return ["unrecognized instruction: " + text];
+        }
+        code[code.len() - 1].push((words[1], a, b, imm));
+      }
+    }
+    i++;
+  }
+  if (code.len() == 0) { return ["no functions"]; }
+  let problems = Array.new<Bytes>(0);
+  let moves = 0;
+  let f = 0;
+
+  while (f < code.len()) {
+    let insns = code[f];
+    let pc = 0;
+    if (insns.len() == 0) { return [names[f] + " has no instructions"]; }
+
+    while (pc < insns.len()) {
+      let (op, a, b, imm) = insns[pc];
+
+      if ((op == "JMP") || (op == "JMP_IF")) {
+        let target = pc + 1 + imm;
+
+        if (imm == 0) { problems.push(_at(names[f], pc, op) + " to the next instruction"); } else if ((target >= 0) && (target < insns.len())) {
+          let (to, _, _, _) = insns[target];
+          if (to == "JMP") { problems.push(_at(names[f], pc, op) + " to the JMP at " + Std.string(target)); }
+        }
+      }
+
+      if (op == "MOV") {
+        moves++;
+        if (a == b) { problems.push(_at(names[f], pc, op) + " r" + Std.string(a) + " to itself"); }
+      }
+      pc++;
+    }
+    f++;
+  }
+  let shown = moves > ceiling ? [Std.string(moves) + " moves, more than the " + Std.string(ceiling) + " allowed"] : Array.new<Bytes>(0);
+  i = 0;
+
+  while ((i < problems.len()) && (shown.len() < 20)) {
+    shown.push(problems[i]);
+    i++;
+  }
+  shown
+};

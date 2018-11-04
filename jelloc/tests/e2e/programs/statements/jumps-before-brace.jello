@@ -1,0 +1,13 @@
+// expect: 371242
+// `return v`, `throw v`, `break` and `continue` may end at the `}` that closes
+// their block. A variant field may be named by a keyword, and `list` is a name.
+enum Node { New(prototype: Bytes, if: I32); Leaf(n: I32); }
+let size = fn(node: Node): I32 {
+  match (node) { New(_, list) => { if (list < 0) { return 0 } return list }, Leaf(n) => { return n } };
+  -1
+};
+let checked = fn(n: I32): I32 { if (n < 0) { throw "negative" } n };
+let sum = 0; let i = 0;
+while (true) { i++; if (i == 3) { continue } if (i > 5) { break } sum += i }
+let caught = try { checked(-1) } catch (_e) { 7 };
+size(Node.New("p", 40)) + size(Node.Leaf(2)) + size(Node.New("q", -1)) + sum * 100 + caught * 10000 + checked(3) * 100000

@@ -1,0 +1,19 @@
+package compiler;
+
+import { filesUnder } from std.io.Path;
+
+export let CORPUS = "itests";
+
+export let PROGRAMS = "tests/e2e/programs";
+
+export let sources = fn(): Array<Bytes> {
+  let all = filesUnder(CORPUS, ".jello");
+  let programs = filesUnder(PROGRAMS, ".jello");
+  let i = 0;
+
+  while (i < programs.len()) {
+    all.push(programs[i]);
+    i++;
+  }
+  all
+};

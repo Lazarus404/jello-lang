@@ -1,0 +1,6 @@
+// error: 4:67: unreachable match arm: earlier arms already match Ident(…)
+enum Token { Ident(name: Bytes); Eof; }
+let f = fn(t: Token): I32 {
+  match (t) { Ident(name) when (name == "a") => 1, Ident(_) => 2, Ident(_) => 3, Eof => 4 }
+};
+f(Token.Eof)

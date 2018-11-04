@@ -1,0 +1,6 @@
+// error: 4:3: match is not exhaustive: missing Two(…)
+enum Pair { Two(left: Pair, right: Pair); Leaf; }
+let leaf = fn(p: Pair): I32 {
+  match (p) { Two(Leaf, _) => 1, Leaf => 0 }
+};
+leaf(Pair.Leaf)

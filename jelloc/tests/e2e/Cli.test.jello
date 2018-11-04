@@ -1,0 +1,138 @@
+// jelloc's command line, as a developer meets it: what each kind of run
+// prints where, and its exit status (0 success, 1 a program that does not
+// compile, 2 a bad command line), run through support.Run. The fixtures
+// only these checks need are in tests/e2e/cli.
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { exists, readText } from std.io.File;
+import { result } from std.io.Process;
+import degust.Golden as G;
+import { NONE, badCommandLines, concat, finish, fresh, has, jelloc, startJelloc, stdDir, withStd } from support.Run;
+
+const _P = "tests/e2e/programs";
+const _CLI = "tests/e2e/cli";
+
+let _dump = fn(t: Test, args: Array<Bytes>): Bytes {
+  let (status, out, err) = jelloc(args, NONE);
+  if (status != 0) { T.fail(t, "jelloc failed: " + err); }
+  out
+};
+
+let _rejects = fn(t: Test, args: Array<Bytes>, env: Array<Bytes>, message: Bytes): Null {
+  let module = fresh("rejected.jlo");
+  let (status, out, err) = jelloc(concat(args, ["--out", module]), env);
+  T.equal(t, (status, out, exists(module)), (1, "", false));
+  has(t, err, message);
+};
+
+let _usage = fn(t: Test, cases: Array<Tuple<Array<Bytes>, Bytes>>): Null {
+  let started = Array.new<Tuple<Dynamic, Array<Bytes>>>(0);
+  let i = 0;
+
+  while (i < cases.len()) {
+    let (args, message) = cases[i];
+    started.push((startJelloc(args, NONE), ["jelloc: " + message]));
+    i++;
+  }
+  badCommandLines(t, started);
+};
+
+let testHelp = fn(t: Test) {
+  let (status, out, err) = jelloc(["--help"], NONE);
+  T.equal(t, (status, err), (0, ""));
+  has(t, out, "usage: jelloc <input.jello>");
+  has(t, out, "Exit status: 0 on success, 1 when the program does not compile");
+};
+
+let testBadCommandLines = fn(t: Test) {
+  let core = _P + "/core.jello";
+  let zero = _P + "/division/zero.jello";
+  _usage(t, [
+    (NONE, "no input file\nusage: jelloc"),
+    ([core, "--frobnicate"], "unknown option: --frobnicate"),
+
+    (["--frobnicate", core, "--out", fresh("frobnicate.jlo")], "unknown option: --frobnicate"),
+    ([core, "--hir", "--frobnicate"], "unknown option: --frobnicate"),
+    ([core, "--hir", "other.jello"], "unexpected argument: other.jello"),
+    ([core], "output path required; pass --out <path>"),
+    ([core, "--hir", "--out", fresh("core-hir.jlo")], "--out cannot be combined with --lex, --parse, --hir or --ir"),
+    ([core, "--spans"], "--spans requires --hir"),
+
+    ([zero, "--path"], "--path requires a directory"),
+    ([zero, "--path", ""], "--path requires a directory"),
+    ([zero, "--std", ""], "--std requires a directory"),
+    ([zero, "--out", ""], "--out requires a path")
+  ]);
+};
+
+let testCompiles = fn(t: Test) {
+  let module = fresh("core.jlo");
+  let listed = fresh("listed.jlo");
+  T.equal(t, jelloc([_P + "/no-such-file.jello", "--out", module], NONE),
+    (1, "", "jelloc: cannot read " + _P + "/no-such-file.jello"));
+  T.equal(t, jelloc([_P + "/core.jello", "--out", module], NONE), (0, "", ""));
+  T.isTrue(t, exists(module));
+
+  let (status, out, err) = jelloc([_P + "/core.jello", "--jlo", "--out", listed], NONE);
+  T.equal(t, (status, err), (0, ""));
+  has(t, out, "fn @");
+  T.isTrue(t, readText(listed) == readText(module));
+};
+
+let testDumps = fn(t: Test) {
+  let (status, tokens, _) = result(startJelloc(["tests/lex/tokens.jello", "--lex"], NONE));
+  T.equal(t, status, 0);
+  G.equal(t, "tests/lex/tokens.tok", tokens);
+
+  has(t, _dump(t, [_P + "/core.jello", "--hir", "--spans"]), "fn @1 count(%0 limit: i32 @28..38) -> i32 @25..119");
+
+  T.equal(t, jelloc(["itests/while/missing_while.jello", "--parse"], NONE), (1, "",
+    "PARSER\titests/while/missing_while.jello:5:1: ParseError: expected 'while', found '\"ok\"'\n\"ok\"\n^"));
+
+  let escapes = "bytes \"\\x00\\x7f\\x80\\xff\\x07\\x08\\x0c\\x0b\\x00\\xc3\\xa9A'\\\"\\\\\"";
+  has(t, _dump(t, [_P + "/bytes/escapes.jello", "--hir"]), escapes);
+  has(t, _dump(t, [_P + "/bytes/escapes.jello", "--ir"]), escapes);
+};
+
+let testDumpsStopAtALexError = fn(t: Test) {
+  let source = _P + "/bytes/bad_hex.jello";
+  let flags = ["--lex", "--hir", "--ir", "--jlo"];
+  let dumps = Array.new<Dynamic>(0);
+  let i = 0;
+
+  while (i < flags.len()) {
+    dumps.push(startJelloc([source, flags[i]], NONE));
+    i++;
+  }
+  let (_, _, error) = jelloc([source, "--out", fresh("bad_hex.jlo")], NONE);
+  has(t, error, "invalid hex escape");
+  i = 0;
+
+  while (i < flags.len()) {
+    T.equal(t, finish(dumps[i]), (1, "", error));
+    i++;
+  }
+
+  T.equal(t, jelloc([source, "--parse"], NONE), (1, "", "LEXER\t" + error));
+};
+
+let testNeedsStd = fn(t: Test) {
+  _rejects(t, [_CLI + "/needs_std.jello"], ["JELLO_STD_PATH"],
+    "needs_std.jello:1:1: module std.core.Bytes is in the standard library; pass its directory with --std <dir> or set JELLO_STD_PATH");
+};
+
+let testTestBinaries = fn(t: Test) {
+  let pass = _P + "/testing/pass";
+  let strings = pass + "/Strings.test.jello";
+  let hir = _dump(t, withStd(["--test", "--path", pass, strings, "--hir"]));
+  T.equal(t, jelloc(["--test", "--path", pass, strings, "--hir"], ["JELLO_STD_PATH=" + stdDir()]), (0, hir, ""));
+  has(t, hir, "            bytes \"Strings/testJoins\": bytes\n            bytes \"" + strings + ":15\": bytes");
+  _rejects(t, withStd(["--test", "--path", _CLI + "/errors", "--path", pass + "/auxiliary", _CLI + "/errors/frontend/Other.test.jello"]), NONE,
+    "Other.test.jello:4:1: unknown export _step in " + pass + "/auxiliary/frontend/Counter.jello");
+  _rejects(t, [_CLI + "/errors/Misnamed.jello", "--test"], NONE, "a test file's name ends in .test.jello: " + _CLI + "/errors/Misnamed.jello");
+  let hook = _P + "/testing/errors/Hook.test.jello";
+  _rejects(t, [hook, "--test", "--path", pass], NONE, "test file " + hook + " is under no --path root");
+  _usage(t, [(["--test", "--path", pass], "no test file"),
+    (["--test", strings, "--lex"], "--test cannot be combined with --lex or --parse")]);
+};

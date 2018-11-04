@@ -1,0 +1,8 @@
+// trap: NULL_DEREF
+// It would return 7 if a possibly-null read in or after a try were trusted
+// unchecked.
+// The body may have set x to null before throwing.
+let keep = fn(_text: Bytes): I32 { 7 };
+let fail = fn(): I32 { throw "stop"; 0 };
+let run = fn(): I32 { let x: ?Bytes = null; x = "a"; try { x = null; fail(); x = "b"; 0 } catch { keep(x) } };
+run()

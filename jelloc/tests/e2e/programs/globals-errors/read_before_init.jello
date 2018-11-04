@@ -1,0 +1,8 @@
+// error: 5:1: global later is read before it is initialized
+// error: let first = read();
+// error: ^
+// `first` calls `read` before `later` is initialized.
+let first = read();
+let later = 2;
+let read = fn(): I32 { later };
+first

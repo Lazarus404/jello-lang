@@ -1,0 +1,27 @@
+// expect: 6 16 0
+enum Pick { First; Second; }
+
+let sum = fn(xs: List<I32>): I32 {
+  let total = 0;
+  let rest = xs;
+  while (!List.is_nil(rest)) { total += List.head(rest); rest = List.tail(rest); }
+  total
+};
+
+let range = fn(n: I32): List<I32> {
+  let xs = List.nil<I32>();
+  let i = n;
+  while (i > 0) { xs = List.cons(i, xs); i--; }
+  xs
+};
+
+let choose = fn(pick: Pick, a: List<I32>, b: List<I32>): List<I32> {
+  match (pick) { First => a, Second => b }
+};
+
+
+let small = range(3);
+let shared = List.cons(10, small);
+let nested = List.cons(small, List.cons(shared, List.nil<List<I32>>()));
+Std.string(sum(small)) + " " + Std.string(sum(List.head(List.tail(nested)))) + " "
+  + Std.string(sum(choose(Pick.Second, small, List.nil<I32>())))

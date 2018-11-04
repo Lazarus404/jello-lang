@@ -1,0 +1,8 @@
+// expect: 15: 0 127 128 255 7 8 12 11 0 195 169 65 39 34 92
+// Every escape names its byte: \xHH any byte (so Bytes need not be UTF-8),
+// the C control escapes, and \u as UTF-8.
+let s = "\x00\x7f\x80\xFF\a\b\f\v\0\u{e9}\x41\'\"\\";
+let out = Std.string(s.len()) + ":";
+let i = 0;
+while (i < s.len()) { out += " " + Std.string(s[i]); i++; }
+out

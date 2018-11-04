@@ -1,0 +1,6 @@
+// expect: 2
+// flags: --path $DIR/auxiliary
+// A local of an enclosing function shadows the namespace too.
+import ops.Ops as O;
+let outer = fn(O: Tuple<I32, I32>): I32 { let inner = fn(): I32 { O.1 }; inner() };
+outer((1, 2))

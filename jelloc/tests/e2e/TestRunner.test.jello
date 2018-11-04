@@ -1,0 +1,97 @@
+// The test runner, in a test binary built from
+// tests/e2e/cli/runner/Runner.test.jello: log, skip and fatal; subtests,
+// which fail their parent, and a stop of a test inside its subtest; --run,
+// --list and -v; and the options after --, which the tests declare. Results
+// go to standard output; a bad command line exits 2, with the reason and the
+// usage, which lists the declared options, on standard error.
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { join, split, startsWith } from std.core.Bytes;
+import { NONE, badCommandLines, concat, finish, fresh, jelloc, modes, startVm, withStd } from support.Run;
+
+const _DIR = "tests/e2e/cli/runner";
+const _R = "tests/e2e/cli/runner/Runner.test.jello";
+
+const _RUNS = [
+  "=== RUN   Runner/testLogs",
+  "+--- PASS: Runner/testLogs ($R:6)",
+  "+    a note",
+  "+        over two lines",
+  "=== RUN   Runner/testSkips",
+  "+--- SKIP: Runner/testSkips ($R:12)",
+  "+    not on this platform",
+  "=== RUN   Runner/testStops",
+  "--- FAIL: Runner/testStops ($R:19)",
+  "    before",
+  "    cannot go on",
+  "=== RUN   Runner/testDoubles",
+  "=== RUN   Runner/testDoubles/1",
+  "+--- PASS: Runner/testDoubles/1",
+  "=== RUN   Runner/testDoubles/2",
+  "+--- PASS: Runner/testDoubles/2",
+  "=== RUN   Runner/testDoubles/3",
+  "--- FAIL: Runner/testDoubles/3",
+  "    $R:32:49: got 6, want 7",
+  "--- FAIL: Runner/testDoubles ($R:27)",
+  "=== RUN   Runner/testStopsFromSubtest",
+  "=== RUN   Runner/testStopsFromSubtest/inner",
+  "--- FAIL: Runner/testStopsFromSubtest/inner",
+  "    threw test stopped: Runner/testStopsFromSubtest",
+  "--- FAIL: Runner/testStopsFromSubtest ($R:39)",
+  "    stopped from inner",
+  "=== RUN   Runner/testArgs",
+  "+--- PASS: Runner/testArgs ($R:49)",
+  "+    false none true true",
+  "FAIL"
+];
+
+let _output = fn(lines: Array<Bytes>): Bytes { join(split(join(lines, "\n"), "$R"), _R) };
+
+let _runs = fn(verbose: Bool): Bytes {
+  let lines = Array.new<Bytes>(0);
+  let i = 0;
+
+  while (i < _RUNS.len()) {
+    let line = _RUNS[i];
+    if (!startsWith(line, "+")) { lines.push(line); } else if (verbose) { lines.push(Bytes.slice(line, 1, Bytes.len(line) - 1)); }
+    i++;
+  }
+  _output(lines)
+};
+
+let _usage = fn(reason: Bytes): Array<Bytes> {
+  [reason + "\nusage: <tests.jlo> [--run prefix] [--list] [-v]", "after --:\n  --loud\n      log more\n  --name value\n      a name to log"]
+};
+
+let testRunner = fn(t: Test) {
+  let module = fresh("Runner.test.jlo");
+  let (status, _, err) = jelloc(withStd(["--test", "--path", _DIR, _R, "--out", module]), NONE);
+  if (status != 0) { T.fatal(t, "Runner.test.jello does not compile: " + err); }
+  let run = fn(args: Array<Bytes>): Dynamic { startVm("", concat([module], args)) };
+  let all = modes();
+  let inModes = Array.new<Dynamic>(0);
+  let i = 0;
+
+  while (i < all.len()) {
+    inModes.push(startVm(all[i], [module]));
+    i++;
+  }
+  let verbose = run(["-v"]);
+  let one = run(["--run", "Runner/testDoubles/2"]);
+  let listed = run(["--list", "--run", "Runner/testS"]);
+  let options = run(["-v", "--run", "Runner/testArgs/a", "--", "--loud", "--name", "x"]);
+  let bad = [(run(["--", "--bogus"]), _usage("unexpected argument after --: --bogus")), (run(["--", "--name"]), _usage("--name needs a value")),
+    (run(["--bogus"]), _usage("unexpected argument: --bogus")), (run(["--run"]), _usage("--run requires a prefix"))];
+  i = 0;
+
+  while (i < all.len()) {
+    T.equal(t, finish(inModes[i]), (1, _runs(false), ""));
+    i++;
+  }
+  T.equal(t, finish(verbose), (1, _runs(true), ""));
+  T.equal(t, finish(one), (0, "=== RUN   Runner/testDoubles\n=== RUN   Runner/testDoubles/2\nok", ""));
+  T.equal(t, finish(listed), (0, "Runner/testSkips\nRunner/testStops\nRunner/testStopsFromSubtest", ""));
+  T.equal(t, finish(options), (0, _output(["=== RUN   Runner/testArgs", "--- PASS: Runner/testArgs ($R:49)", "    true x true false", "ok"]), ""));
+  badCommandLines(t, bad);
+};

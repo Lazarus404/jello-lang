@@ -1,0 +1,26 @@
+// expect: 11
+// The Lexer's shape: ordered regexp guards with bindings, `advance` and
+// `Std.string`. Stage 0 compiles it too, and both must agree.
+import { group, advance } from std.core.RegExp;
+
+let tokens = fn(text: Bytes): Bytes {
+  let cur = text; let out = "";
+  while (Bytes.len(cur) > 0) {
+    cur = match (cur) {
+      when ~r/\s+/ as ws => advance(cur, ws),
+      when ~r/\/\/[^\n]*/ as m => { out += "c"; advance(cur, m) },
+      when ~r/[a-z]+/ as m => { out += "w" + Std.string(Bytes.len(group(m, 0))); advance(cur, m) },
+      when ~r/[0-9]+/ as m => { out += "n" + group(m, 0); advance(cur, m) },
+
+      when ~r/(=|==)/ as m => { out += "e" + group(m, 0); advance(cur, m) },
+      when ~r/(\.\.\.|==|=>|!=|<-|<=|>=|\+\+|\+=|--|-=|->|\*=|\/=|<<|>>|&&|\|\||\|>)/ as m => { out += "o" + group(m, 0); advance(cur, m) },
+      when ~r/X/i => { out += "x"; Bytes.slice(cur, 1, Bytes.len(cur) - 1) },
+      _ => { out += "?"; Bytes.slice(cur, 1, Bytes.len(cur) - 1) },
+    };
+  }
+  out
+};
+
+let s = tokens("abc 42 == x; BbX || |> // hi\nz");
+let t = Std.string(-2147483648) + Std.string(true) + Std.string(false) + Std.string("b");
+(s == "w3n42e=e=w1??w1xo||o|>cw1" ? 1 : 0) + (t == "-2147483648truefalseb" ? 10 : 0)

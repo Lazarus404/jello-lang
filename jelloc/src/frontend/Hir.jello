@@ -38,6 +38,12 @@ export let TYPE_NULL: I32 = 4;
 export let TYPE_DYNAMIC: I32 = 5;
 export let TYPE_BYTE_BUFFER: I32 = 6;
 
+export let KIND_BOOL: I32 = 1;
+export let KIND_I32: I32 = 2;
+export let KIND_BYTES: I32 = 4;
+export let KIND_I64: I32 = 7;
+export let KIND_ENUM: I32 = 14;
+
 let _ops = Array.new<Op>(0);
 let _nodes = Array.new<I32>(0);
 let _edges = Array.new<I32>(0);
@@ -424,6 +430,7 @@ export let finishHir: (I32) -> Hir = fn(root) {
   Hir.Hir(_ops, _nodes, _edges, _bytes, _kinds, _types, _typeEdges, root, _spans, _globals, _natives, _variants, _fields)
 };
 
+let _source = true;
 let _typeName: (I32) -> Bytes = fn(_ty) { "" };
 
 let _typeArgNames = fn(ty: I32): Bytes {
@@ -437,23 +444,37 @@ let _typeArgNames = fn(ty: I32): Bytes {
   }
   output
 };
+
+let _nullableName = fn(inner: I32): Bytes {
+  let name = _typeName(inner);
+  (kindOf(inner) == Kind.Function) ? "?(" + name + ")" : "?" + name
+};
 _typeName = fn(ty) {
   match (kindOf(ty)) {
-    Bool => "bool",
-    I32 => "i32",
-    I64 => "i64",
-    Bytes => "bytes",
-    Array => "array<" + _typeName(innerOf(ty)) + ">",
-    List => "list<" + _typeName(innerOf(ty)) + ">",
-    Null => innerOf(ty) < 0 ? "null" : "?" + _typeName(innerOf(ty)),
-    Tuple => "tuple<" + _typeArgNames(ty) + ">",
+    Bool => _source ? "Bool" : "bool",
+    I32 => _source ? "I32" : "i32",
+    I64 => _source ? "I64" : "i64",
+    Bytes => _source ? "Bytes" : "bytes",
+    Array => (_source ? "Array<" : "array<") + _typeName(innerOf(ty)) + ">",
+    List => (_source ? "List<" : "list<") + _typeName(innerOf(ty)) + ">",
+    Null => innerOf(ty) < 0 ? (_source ? "Null" : "null") : _nullableName(innerOf(ty)),
+    Tuple => (_source ? "Tuple<" : "tuple<") + _typeArgNames(ty) + ">",
     Function => "(" + _typeArgNames(ty) + ") -> " + _typeName(innerOf(ty)),
     Enum => _bytes[innerOf(ty)],
-    Dynamic => "dynamic",
-    ByteBuffer => "bytebuffer",
+    Dynamic => _source ? "Dynamic" : "dynamic",
+    ByteBuffer => _source ? "ByteBuffer" : "bytebuffer",
   }
 };
-export let typeName: (I32) -> Bytes = fn(ty) { _typeName(ty) };
+
+export let typeName: (I32) -> Bytes = fn(ty) {
+  _source = true;
+  _typeName(ty)
+};
+
+export let hirTypeName: (I32) -> Bytes = fn(ty) {
+  _source = false;
+  _typeName(ty)
+};
 
 export let local: (I32, I32) -> I32 = fn(binding, ty) { node(Op.Local, ty, binding, 0, []) };
 

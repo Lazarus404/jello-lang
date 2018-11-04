@@ -1,0 +1,21 @@
+// expect: 422
+// Enums: nominal, recursive across modules, built by qualified constructors
+// and read by match.
+import { Block, Stmt, sumBlock } from ast.Tree;
+
+
+let tree = Block.Block(Stmt.Return(30), Block.Block(Stmt.Nested(Block.Block(Stmt.Return(12), Block.End)), Block.End));
+let latest = Stmt.Empty;
+
+
+let kind = fn(stmt: Stmt): I32 {
+  match (stmt) {
+    Return(_) => { return 1; },
+    Nested(_) => { return 2; },
+    Empty => { return 3; },
+  }
+  0
+};
+
+latest = Stmt.Nested(tree);
+sumBlock(tree) * 10 + kind(latest)

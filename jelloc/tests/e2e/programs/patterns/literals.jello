@@ -1,0 +1,27 @@
+// expect: 1220367912341210
+let keyword = fn(word: Bytes): I32 {
+  match (word) { "let" => 1, "fn", "fun" => 2, _ => 0 }
+};
+let digit = fn(c: I32): I32 {
+  match (c) { "0".code => 3, "x".code, "X".code => 6, -2 => 7, _ => 9 }
+};
+
+let escape = fn(invalid: Bool, closing: Bool, escaped: Bool): I32 {
+  match ((invalid, closing, escaped)) {
+    (true, _, _) => 1,
+    (_, true, _) => 2,
+    (_, _, false) => 3,
+    _ => 4,
+  }
+};
+let empty = fn(text: Bytes): I32 { match (text.len() == 0) { true => 1, false => 2 } };
+let big = fn(value: I64): I32 { match (value) { 3000000000 => 1, _ => 0 } };
+
+let digits: I64 = 0;
+let add = fn(d: I32): I32 { digits = digits * 10 + (d as I64); 0 };
+add(keyword("let")); add(keyword("fun")); add(keyword("fn")); add(keyword("lettuce"));
+add(digit("0".code)); add(digit("X".code)); add(digit(-2)); add(digit(5));
+add(escape(true, false, false)); add(escape(false, true, true)); add(escape(false, false, false)); add(escape(false, false, true));
+add(empty("")); add(empty("a"));
+add(big(3000000000)); add(big(3));
+digits

@@ -2,8 +2,8 @@ package frontend;
 
 import type { Expr, Package, Stmt } from frontend.Ast;
 import { bindPatternName, isBindPattern } from frontend.Ast;
-import { lexFileSource } from frontend.Lexer;
-import { packageSpan, parseSource, programSyntax } from frontend.Parser;
+import { lexFile } from frontend.Lexer;
+import { packageSpan, parseProgram, programSyntax } from frontend.Parser;
 import { bytesLiteral } from frontend.Tokens;
 import type { SourceSpan, Syntax } from frontend.Source;
 import { SourceSpan } from frontend.Source;
@@ -12,8 +12,8 @@ import { concatAll } from frontend.Text;
 import { exists, readText } from std.io.File;
 
 export enum Import {
-  Import(local: Bytes, module: I32, name: Bytes, typeOnly: Bool, privately: Bool);
-  Namespace(local: Bytes, module: I32, privately: Bool);
+  Import(local: Bytes, module: I32, name: Bytes, typeOnly: Bool, privately: Bool, statement: I32);
+  Namespace(local: Bytes, module: I32, privately: Bool, statement: I32);
 }
 
 export enum Module {
@@ -65,7 +65,7 @@ let _packageMatches = fn(packageName: Package, parts: Array<Bytes>): Bool {
   } }
 };
 
-let _localOf = fn(imported: Import): Bytes { match (imported) { Import(local, _, _, _, _), Namespace(local, _, _) => local } };
+let _localOf = fn(imported: Import): Bytes { match (imported) { Import(local, _, _, _, _, _), Namespace(local, _, _, _) => local } };
 
 let _repeats = fn(imports: Array<Import>, added: Import): Bool {
   let i = 0;
@@ -73,7 +73,7 @@ let _repeats = fn(imports: Array<Import>, added: Import): Bool {
   while (i < imports.len()) {
     if (_localOf(imports[i]) == _localOf(added)) {
       let allowed = match ((imports[i], added)) {
-        (Import(_, module, name, typeOnly, _), Import(_, addedModule, addedName, addedTypeOnly, _)) =>
+        (Import(_, module, name, typeOnly, _, _), Import(_, addedModule, addedName, addedTypeOnly, _, _)) =>
           (module == addedModule) && (name == addedName) && (typeOnly != addedTypeOnly),
         _ => false,
       };
@@ -116,7 +116,7 @@ let _modulePath = fn(parts: Array<Bytes>): Bytes {
   let i = 0;
 
   if (parts[0] == "std") {
-    if (_stdRoot == "") { throw "module " + _joined(parts, ".") + " is in the standard library; pass its directory with --std <dir>"; }
+    if (_stdRoot == "") { throw "module " + _joined(parts, ".") + " is in the standard library; pass its directory with --std <dir> or set JELLO_STD_PATH"; }
     roots = [_stdRoot];
     i = 1;
   }
@@ -176,8 +176,7 @@ export let isHookName: (Bytes) -> Bool = fn(name) { (name == "beforeAll") || (na
 let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<Import>): Module {
   let importing = _failure;
   _failure = null;
-  let (tokens, sourcePath, starts, ends) = lexFileSource(text, path);
-  let program = parseSource(tokens, sourcePath, starts, ends);
+  let program = parseProgram(lexFile(text, path));
   let syntax = programSyntax(program);
   _failure = importing;
 
@@ -220,7 +219,7 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
 
           while (j < items.len()) {
             match (items[j]) { Item(name, alias) => {
-              let added = Import.Import(alias == null ? name : alias, dependency, name, typeOnly, privately);
+              let added = Import.Import(alias == null ? name : alias, dependency, name, typeOnly, privately, i);
               if (_repeats(imports, added)) { throw "duplicate import name: " + _localOf(added); }
               imports.push(added);
             } };
@@ -246,7 +245,7 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
               null
             },
           };
-          let added = Import.Namespace(alias, _import(importParts), testFile && _tests(parts, importParts));
+          let added = Import.Namespace(alias, _import(importParts), testFile && _tests(parts, importParts), i);
           if (_repeats(imports, added)) { throw "duplicate import name: " + alias; }
           imports.push(added);
           null
@@ -256,7 +255,7 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
       i++;
     }
     _failure = null;
-    Module.Module(sourcePath, dotted, statements, syntax, tail, imports)
+    Module.Module(path, dotted, statements, syntax, tail, imports)
   } }
 };
 
@@ -268,7 +267,12 @@ let _add = fn(path: Bytes, module: Module): I32 {
 
 _load = fn(path, parts) {
   let loaded = _indexOf(_paths, path);
-  if (loaded >= 0) { return loaded; }
+
+  if (loaded >= 0) {
+    let name = match (_modules[loaded]) { Module(_, dotted, _, _, _, _) => dotted };
+    if (name != _joined(parts, ".")) { throw "module package does not match import path: " + path; }
+    return loaded;
+  }
   if (_indexOf(_visiting, path) >= 0) { throw "import cycle through " + path; }
   _visiting.push(path);
   let module = _module(path, readText(path), parts, Array.new<Import>(0));
@@ -332,7 +336,7 @@ let _testParts = fn(path: Bytes): Array<Bytes> {
 
 let _suite = fn(index: I32, parts: Array<Bytes>, suites: Array<Bytes>, imports: Array<Import>) {
   let space = "_" + Std.string(imports.len());
-  imports.push(Import.Namespace(space, index, true));
+  imports.push(Import.Namespace(space, index, true, -1));
 
   match (_modules[index]) { Module(path, _, statements, syntax, _, _) => {
     let file = _joined(parts, "/");

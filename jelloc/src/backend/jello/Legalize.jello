@@ -1,8 +1,9 @@
 package backend.jello;
 
-import type { BasicBlock, Function, Instruction, Program, Terminator, ValueType } from ir.Model;
+import type { BasicBlock, Function, Instruction, Program, ValueType } from ir.Model;
 import { BasicBlock, Function, Op, Program, Terminator, ValueType, argsOf, dstOf, handlerPayload, immOf, instructionAt, nodeOf, opOf } from ir.Model;
-import { verifyProgram } from ir.Verify;
+import { terminatorRead } from ir.Cfg;
+import { verifyLegalizedProgram } from ir.Verify;
 
 let _registers = Array.new<ValueType>(0);
 let _out = Array.new<Instruction>(0);
@@ -64,10 +65,6 @@ let _block = fn(block: BasicBlock): BasicBlock {
         _emit(Op.Box, payload, [value], 0);
         Terminator.Throw(payload, node)
       },
-      Unreachable => {
-        throw "JLO legalization does not support unreachable terminators";
-        terminator
-      },
       _ => terminator,
     };
     BasicBlock.Block(id, _out, selected, handler)
@@ -78,10 +75,6 @@ let _defs = Array.new<I32>(0);
 let _uses = Array.new<I32>(0);
 let _constants = Array.new<I32>(0);
 let _isConstant = Array.new<Bool>(0);
-
-let _terminatorUse = fn(terminator: Terminator): I32 {
-  match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => value, _ => -1 }
-};
 
 let _count = fn(params: Array<I32>, blocks: Array<BasicBlock>) {
   _defs = Array.new<I32>(_registers.len());
@@ -134,7 +127,7 @@ let _count = fn(params: Array<I32>, blocks: Array<BasicBlock>) {
         }
         j++;
       }
-      let used = _terminatorUse(terminator);
+      let used = terminatorRead(terminator);
       if (used >= 0) { _uses[used]++; }
       null
     } };
@@ -265,6 +258,6 @@ export let legalizeJlo: (Program) -> Program = fn(program) {
     }
     Program.Program(selected, pool, wides, enums, globals, natives)
   } };
-  verifyProgram(legalized);
+  verifyLegalizedProgram(legalized);
   legalized
 };

@@ -1,0 +1,20 @@
+// Source locations and diagnostics. Columns count code points; the caret is
+// padded by display width.
+import { sourceDiagnostic, sourceLocation, spanEnd, spanPath, spanStart } from frontend.Source;
+import { SourceSpan } from frontend.Source;
+
+let _at = fn(source: Bytes, offset: I32): Bytes {
+  let (line, column) = sourceLocation(source, offset);
+  Std.string(line) + ":" + Std.string(column)
+};
+
+let text = "let a = 1;\n  b(é, c)\n";
+let span = SourceSpan.Span("f.jello", 13, 14);
+
+let wide = "\tx = \"\u{65e5}\u{672c}\" + e\u{301} + ;";
+
+let bad = "ab" + Bytes.slice("\u{e9}", 0, 1) + "c ;";
+_at(text, 0) + " " + _at(text, 13) + " " + _at(text, 18) + " " + spanPath(span) + " " + Std.string(spanEnd(span) - spanStart(span)) + "\n"
+  + sourceDiagnostic("f.jello", text, 18, "expected expression") + "\n"
+  + sourceDiagnostic("g.jello", wide, wide.len() - 1, "expected expression") + "\n"
+  + _at(bad, 4) + " " + sourceDiagnostic("h.jello", bad, 5, "expected expression")

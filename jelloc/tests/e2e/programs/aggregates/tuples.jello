@@ -1,0 +1,34 @@
+// expect: 32
+// Heterogeneous tuples, destructuring, ternaries, casts and increments.
+let split = fn(text: Bytes, at: I32): Tuple<Bytes, Bytes> {
+  (Bytes.slice(text, 0, at), Bytes.slice(text, at, text.len() - at))
+};
+
+let stats = fn(values: Array<I32>): Tuple<I32, I32, Bool> {
+  let low = values[0]; let high = values[0]; let i = 1;
+  while (i < values.len()) {
+    low = values[i] < low ? values[i] : low;
+    high = values[i] > high ? values[i] : high;
+    i++;
+  }
+  (low, high, low == high)
+};
+
+let run = fn(): I32 {
+  let (head, rest) = split("abcdef", 2);
+  let (low, high, _) = stats([5, 3, 9, 4]);
+  let (count, label) = (0, "n");
+  count++;
+  ++count;
+  let before = count--;
+  label += "!";
+  let pairs: Array<Tuple<Bytes, I32>> = [];
+  pairs.push((head, low));
+  pairs.push((rest, high));
+  let wide = (high as I64) as I32;
+  let same = high as I32;
+
+  head.len() + rest.len() + low + high + count + before + label.len() + pairs[1].1 + wide - same
+};
+
+run()

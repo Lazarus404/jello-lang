@@ -1,0 +1,20 @@
+package ast;
+
+
+export enum Stmt { Return(value: I32); Nested(block: Block); Empty; }
+export enum Block { Block(first: Stmt, rest: Block); End; }
+
+let sumStmt = fn(stmt: Stmt): I32 {
+  match (stmt) {
+    Return(value) => value,
+    Nested(block) => sumBlock(block),
+    Empty => 0,
+  }
+};
+
+export let sumBlock = fn(block: Block): I32 {
+  match (block) {
+    Block(first, rest) => sumStmt(first) + sumBlock(rest),
+    End => 0,
+  }
+};

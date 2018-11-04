@@ -1,0 +1,5 @@
+// trap: TYPE_MISMATCH
+// A regexp is not a text: matchAt fails rather than read it as one.
+import { compile, matchAt } from std.core.RegExp;
+let re = compile(".", "");
+matchAt(re, re, 0) == null ? 1 : 2

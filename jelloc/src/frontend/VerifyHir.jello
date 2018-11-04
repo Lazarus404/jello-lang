@@ -1,10 +1,12 @@
 package frontend;
 
 import type { Hir } from frontend.Hir;
+import type { SourceSpan } from frontend.Source;
+import { internalError } from frontend.Internal;
 import {
-  Kind, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
+  KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_I32, KIND_I64, Kind, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
   fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, isKind, kindOf, nativeCount, nativeTypeOf, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
-  spanStartOf, typeArg, typeArgCount, typeOf, useHir, valueOf, variantCount,
+  spanOf, spanStartOf, typeArg, typeArgCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 
 let _used = Array.new<Bool>(0);
@@ -15,12 +17,14 @@ let _visibleTypes = Array.new<I32>(0);
 let _visibleMutable = Array.new<Bool>(0);
 let _declared = Array.new<Bool>(0);
 let _places = Array.new<I32>(0);
-let _nextGlobal = 0;
-let _result = 0;
+let _initialized = Array.new<Bool>(0);
+let _result = -1;
 let _loops = 0;
 
+let _at = -1;
+
 let _fail = fn(message: Bytes) {
-  throw "invalid HIR: " + message;
+  internalError("invalid HIR: " + message);
   null
 };
 
@@ -35,14 +39,22 @@ let _child = fn(parent: I32, index: I32): I32 {
 
 let _arity = fn(id: I32, count: I32) { if (childCount(id) != count) { _fail("wrong operand count"); } null };
 
+let _spanProblem = fn(id: I32): Bytes {
+  let path = spanPathOf(id);
+  if ((path < 0) || (path >= bytesCount()) || (bytesOf(path).len() == 0)) { return "source span without a path"; }
+  let start = spanStartOf(id);
+  (start < 0) || (spanEndOf(id) <= start) ? "empty source span" : ""
+};
+
 let _spans = fn() {
   if (spanCount() != nodeCount()) { _fail("every node needs a source span"); }
   let id = 0;
 
   while (id < nodeCount()) {
+    _at = id;
+    let problem = _spanProblem(id);
+    if (problem != "") { _fail(problem); }
     let path = spanPathOf(id);
-    if ((path < 0) || (path >= bytesCount()) || (bytesOf(path).len() == 0)) { _fail("source span without a path"); }
-    if ((spanStartOf(id) < 0) || (spanEndOf(id) <= spanStartOf(id))) { _fail("empty source span"); }
     let i = 0;
 
     while (i < childCount(id)) {
@@ -55,6 +67,7 @@ let _spans = fn() {
     }
     id++;
   }
+  _at = -1;
   null
 };
 
@@ -106,9 +119,11 @@ let _binding = fn(parent: I32, index: I32, programBody: Bool) {
     Let, Const => _declare(valueOf(binding), typeOf(binding), match (opOf(binding)) { Let => true, _ => false }),
     InitGlobal => {
       if (!programBody) { _fail("global initialized outside the program body"); }
-      if (valueOf(binding) != _nextGlobal) { _fail("globals must be initialized once, in order"); }
-      if (_global(valueOf(binding)) != typeOf(binding)) { _fail("global type mismatch"); }
-      _nextGlobal++;
+      let global = valueOf(binding);
+      let ty = _global(global);
+      if (_initialized[global]) { _fail("global initialized twice"); }
+      _initialized[global] = true;
+      if (ty != typeOf(binding)) { _fail("global type mismatch"); }
       null
     },
     _ => {
@@ -170,16 +185,18 @@ let _block: (I32, Bool) -> I32 = fn(_id, _programBody) { -1 };
 let _try = fn(id: I32, value: Bool) {
   _arity(id, 2);
   let ty = typeOf(id);
-  let body = value ? _operand(id, 0) : _block(_child(id, 0), false);
+  let body = _block(_child(id, 0), false);
   let scope = _visibleIds.len();
   if (valueOf(id) >= 0) { _declare(valueOf(id), TYPE_DYNAMIC, false); }
-  let handler = value ? _operand(id, 1) : _block(_child(id, 1), false);
+  let handler = _block(_child(id, 1), false);
   _popTo(scope);
   if (value && ((body != ty) || (handler != ty))) { _fail("try operand type"); }
   null
 };
 
 _expr = fn(id) {
+  let outer = _at;
+  _at = id;
   let ty = typeOf(id);
 
   let actual = match (opOf(id)) {
@@ -255,7 +272,9 @@ _expr = fn(id) {
       _typed(id, [TYPE_DYNAMIC], ty, "extraction requires a Dynamic operand")
     },
     IsKind => {
-      if (!match (valueOf(id)) { 1, 2, 4, 7 => true, 14 => isKind(auxOf(id), Kind.Enum), _ => false }) { _fail("kind test of an unknown kind"); }
+      let code = valueOf(id);
+      let known = (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64) || ((code == KIND_ENUM) && isKind(auxOf(id), Kind.Enum));
+      if (!known) { _fail("kind test of an unknown kind"); }
       _typed(id, [TYPE_DYNAMIC], TYPE_BOOL, "kind test requires a Dynamic operand")
     },
     Unwrap => {
@@ -386,11 +405,15 @@ _expr = fn(id) {
     },
   };
   if (actual != ty) { _fail("expression type mismatch"); }
+  _at = outer;
   ty
 };
 
 let _statement: (I32, Bool) -> Bool = fn(_id, _programBody) { false };
 _statement = fn(id, programBody) {
+  let outer = _at;
+  _at = id;
+
   match (opOf(id)) {
     Declare => {
       if (childCount(id) < 1) { _fail("declaration without a binding"); }
@@ -413,6 +436,7 @@ _statement = fn(id, programBody) {
       null
     },
     Return => {
+      if (_result < 0) { _fail("return outside a function"); }
       _typed(id, [_result], 0, "return type mismatch");
       null
     },
@@ -471,10 +495,14 @@ _statement = fn(id, programBody) {
       null
     },
   };
+  _at = outer;
   true
 };
 
 _block = fn(id, programBody) {
+  let outer = _at;
+  _at = id;
+
   match (opOf(id)) {
     Block => null, _ => {
       _fail("expected block");
@@ -494,12 +522,14 @@ _block = fn(id, programBody) {
   let ty = auxOf(id) == 1 ? _operand(id, statements) : 0;
   _popTo(scope);
   if (ty != typeOf(id)) { _fail("block type mismatch"); }
+  _at = outer;
   ty
 };
 
 let _function = fn(id: I32, functionId: I32) {
+  let outer = _at;
+  _at = id;
   let ty = typeOf(id);
-  if (ty != _functionTypes[functionId - 1]) { _fail("function type mismatch"); }
   let params = typeArgCount(ty);
   let captures = _captureTypes[functionId - 1];
   if (childCount(id) != params + (captures.len() as I32) + 1) { _fail("parameter count mismatch"); }
@@ -523,11 +553,13 @@ let _function = fn(id: I32, functionId: I32) {
     if (auxOf(body) != 1) { _fail("function falls through without value"); }
     if (tail != innerOf(ty)) { _fail("function result type mismatch"); }
   }
+  _at = outer;
   null
 };
 
 export let verifyHir: (Hir) -> Bool = fn(program) {
   useHir(program);
+  _at = -1;
   let root = rootNode();
   let count = nodeCount();
   let isProgram = (root == count - 1) && (match (opOf(root)) { Program => true, _ => false });
@@ -564,8 +596,8 @@ export let verifyHir: (Hir) -> Bool = fn(program) {
   _visibleMutable = Array.new<Bool>(0);
   _declared = Array.new<Bool>(0);
   _places = Array.new<I32>(0);
-  _nextGlobal = 0;
   i = 0;
+  _initialized = Array.new<Bool>(globalCount());
 
   while (i < childCount(root) - 1) {
     _function(_child(root, i), i + 1);
@@ -581,8 +613,20 @@ export let verifyHir: (Hir) -> Bool = fn(program) {
     }
   };
   if (auxOf(body) != 1) { _fail("program body without a tail"); }
+  _result = -1;
+  _loops = 0;
   _block(body, true);
-  if (_nextGlobal != globalCount()) { _fail("global never initialized"); }
+  i = 0;
+
+  while (i < _initialized.len()) {
+    if (!_initialized[i]) { _fail("global never initialized"); }
+    i++;
+  }
   _spans();
   true
+};
+
+export let verifyFailureSpan: () -> ?SourceSpan = fn() {
+  let valid = (_at >= 0) && (_at < spanCount()) && (_spanProblem(_at) == "");
+  valid ? spanOf(_at) : null
 };

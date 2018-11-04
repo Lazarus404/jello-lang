@@ -1,0 +1,28 @@
+// expect: 1111111
+// Element ++, -- and compound assignment: the array, the index and the value
+// are evaluated once each, in that order, and the element is read before the
+// value, as in Java.
+let counts = [10, 20, 30];
+let calls = 0;
+let next = fn(): I32 { calls++; 1 };
+let bump = fn(): I32 { counts[0] = 100; 1 };
+let digits = 0;
+counts[next()]++;
+digits = digits * 10 + (calls == 1 && counts[1] == 21 ? 1 : 0);
+let old = counts[2]++; let fresh = --counts[2];
+digits = digits * 10 + (old == 30 && fresh == 30 && counts[2] == 30 ? 1 : 0);
+counts[next()] -= 5; counts[2] *= 3; counts[2] /= 2;
+digits = digits * 10 + (calls == 2 && counts[1] == 16 && counts[2] == 45 ? 1 : 0);
+counts[0] += bump();
+digits = digits * 10 + (counts[0] == 11 ? 1 : 0);
+let wide: Array<I64> = [9223372036854775807];
+let before = wide[0]++;
+digits = digits * 10 + (before == 9223372036854775807 && wide[0] == -9223372036854775808 ? 1 : 0);
+let words = ["a"];
+words[0] += "b";
+digits = digits * 10 + (words[0] == "ab" ? 1 : 0);
+let grid = [[1, 2], [3, 4]];
+let row = 0;
+grid[row++][1] += 10;
+digits = digits * 10 + (row == 1 && grid[0][1] == 12 && grid[1][1] == 4 ? 1 : 0);
+digits

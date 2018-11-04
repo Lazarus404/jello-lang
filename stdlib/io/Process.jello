@@ -1,0 +1,48 @@
+package std.io;
+
+import { indexOf } from std.core.Bytes;
+
+load { process_start, process_wait, process_stdout, process_stderr, process_done, process_next, cpu_count } from std;
+
+let _entries = fn(items: Array<Bytes>): Bytes {
+  let out = "";
+  let i = 0;
+
+  while (i < items.len()) {
+    if (indexOf(items[i], "\0") >= 0) { throw "a process argument or variable holds a NUL: " + Std.string(items[i]); }
+    out = out + items[i] + "\0";
+    i++;
+  }
+  out
+};
+
+let _start: (Bytes, Bytes) -> Dynamic = process_start;
+export let start = fn(argv: Array<Bytes>, env: Array<Bytes>): Dynamic { _start(_entries(argv), _entries(env)) };
+
+export let wait: (Dynamic) -> I32 = process_wait;
+export let stdout: (Dynamic) -> Bytes = process_stdout;
+export let stderr: (Dynamic) -> Bytes = process_stderr;
+
+let _done: (Dynamic) -> Bool = process_done;
+let _next: () -> Bool = process_next;
+
+export let waitAny = fn(processes: Array<Dynamic>): I32 {
+  if (processes.len() == 0) { return -1; }
+
+  while (true) {
+    let i = 0;
+
+    while (i < processes.len()) {
+      if (_done(processes[i])) { return i; }
+      i++;
+    }
+    if (!_next()) { return 0; }
+  }
+  -1
+};
+
+export let result = fn(process: Dynamic): Tuple<I32, Bytes, Bytes> { (wait(process), stdout(process), stderr(process)) };
+
+export let run = fn(argv: Array<Bytes>, env: Array<Bytes>): Tuple<I32, Bytes, Bytes> { result(start(argv, env)) };
+
+export let cpuCount: () -> I32 = cpu_count;

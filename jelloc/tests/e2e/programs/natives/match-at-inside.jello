@@ -1,0 +1,4 @@
+// trap: TYPE_MISMATCH
+// Byte 1 is inside "é": matchAt fails rather than read half a character.
+import { compile, text, matchAt } from std.core.RegExp;
+matchAt(text("é"), compile(".", ""), 1) == null ? 1 : 2

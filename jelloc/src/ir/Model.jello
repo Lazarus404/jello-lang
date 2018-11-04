@@ -10,12 +10,7 @@ export enum ValueType {
   ListOf(element: ValueType);
   TupleOf(elements: Array<ValueType>);
   Nominal(id: I32);
-  Function(args: Array<ValueType>, result: ReturnType);
-}
-
-export enum ReturnType {
-  Void;
-  Value(ty: ValueType);
+  Function(args: Array<ValueType>, result: ValueType);
 }
 
 export enum Op {
@@ -45,22 +40,11 @@ export let argsOf: (Instruction) -> Array<I32> = fn(instruction) { match (instru
 export let immOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, _, _, imm, _) => imm } };
 export let nodeOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, _, _, _, node) => node } };
 
-export enum Effect {
-  MayReadMemory;
-  MayWriteMemory;
-  MayAllocate;
-  MayCall;
-  MayThrow;
-  MayTrap;
-}
-
 export enum Terminator {
   Jump(target: I32);
   Branch(condition: I32, thenTarget: I32, elseTarget: I32);
-  ReturnVoid;
   ReturnValue(value: I32);
   Throw(value: I32, node: I32);
-  Unreachable;
 }
 
 export enum ThrowHandler {
@@ -85,7 +69,7 @@ export enum Function {
     params: Array<I32>,
     captures: I32,
     registers: Array<ValueType>,
-    result: ReturnType,
+    result: ValueType,
     blocks: Array<BasicBlock>,
     entry: I32
   );
@@ -106,60 +90,33 @@ export let argumentCount: (Function) -> I32 = fn(function) {
   match (function) { Function(_, params, captures, _, _, _, _) => (params.len() as I32) - captures }
 };
 
-export let opEffects: (Op) -> Array<Effect> = fn(op) {
-  match (op) {
-    Box, ConstFunction, ArrayNew, ListCons, EnumNew, StructNew => [Effect.MayAllocate],
-    BytesNew => [Effect.MayAllocate, Effect.MayTrap],
-    BytesSet => [Effect.MayWriteMemory, Effect.MayTrap],
-    BytesBlit => [Effect.MayReadMemory, Effect.MayWriteMemory, Effect.MayTrap],
-    BytesSlice, BytesConcat => [Effect.MayAllocate, Effect.MayReadMemory, Effect.MayTrap],
-    ArrayResize => [Effect.MayAllocate, Effect.MayWriteMemory, Effect.MayTrap],
-    BytesLen, BytesEq => [Effect.MayReadMemory, Effect.MayTrap],
-    Call, CallIndirect => [Effect.MayCall, Effect.MayThrow],
-    CallNative => [Effect.MayCall, Effect.MayAllocate, Effect.MayTrap],
-    BytesGet, ArrayLen, ArrayGet, ListHead, ListTail, TupleGet, EnumGet => [Effect.MayReadMemory, Effect.MayTrap],
-    GlobalGet => [Effect.MayReadMemory],
-    Unbox, NullCheck => [Effect.MayTrap],
-    GlobalSet => [Effect.MayWriteMemory],
-    ArraySet, StructSet => [Effect.MayWriteMemory, Effect.MayTrap],
-    TupleNew => [Effect.MayAllocate, Effect.MayWriteMemory],
-    _ => [],
-  }
-};
-
 export let instructionMayThrow: (Instruction) -> Bool = fn(instruction) {
   match (opOf(instruction)) { Call, CallIndirect => true, _ => false }
 };
 
-let _equal: (ValueType, ValueType) -> Bool = fn(_left, _right) { false };
+export let valueTypeEqual: (ValueType, ValueType) -> Bool = fn(_left, _right) { false };
 
-export let valueTypesEqual: (Array<ValueType>, Array<ValueType>) -> Bool = fn(left, right) {
+let _valueTypesEqual = fn(left: Array<ValueType>, right: Array<ValueType>): Bool {
   if (left.len() != right.len()) { return false; }
   let i = 0;
 
   while (i < left.len()) {
-    if (!_equal(left[i], right[i])) { return false; }
+    if (!valueTypeEqual(left[i], right[i])) { return false; }
     i++;
   }
   true
 };
 
-export let returnTypeEqual: (ReturnType, ReturnType) -> Bool = fn(left, right) {
-  match ((left, right)) { (Void, Void) => true, (Value(a), Value(b)) => _equal(a, b), _ => false }
-};
-
-_equal = fn(left, right) {
+valueTypeEqual = fn(left, right) {
   match ((left, right)) {
     (Bool, Bool), (I32, I32), (I64, I64), (Bytes, Bytes), (Dynamic, Dynamic) => true,
     (Nominal(a), Nominal(b)) => a == b,
-    (ArrayOf(a), ArrayOf(b)), (ListOf(a), ListOf(b)) => _equal(a, b),
-    (TupleOf(a), TupleOf(b)) => valueTypesEqual(a, b),
+    (ArrayOf(a), ArrayOf(b)), (ListOf(a), ListOf(b)) => valueTypeEqual(a, b),
+    (TupleOf(a), TupleOf(b)) => _valueTypesEqual(a, b),
     (Function(leftArgs, leftResult), Function(rightArgs, rightResult)) =>
-      valueTypesEqual(leftArgs, rightArgs) && returnTypeEqual(leftResult, rightResult),
+      _valueTypesEqual(leftArgs, rightArgs) && valueTypeEqual(leftResult, rightResult),
     _ => false,
   }
 };
-
-export let valueTypeEqual: (ValueType, ValueType) -> Bool = fn(left, right) { _equal(left, right) };
 
 export let canBeNull: (ValueType) -> Bool = fn(ty) { match (ty) { Bool, I32, I64, ListOf(_) => false, _ => true } };

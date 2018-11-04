@@ -1,0 +1,6 @@
+// error: 4:10: cannot assign to n: a closure captures it
+let make = fn(start: I32): () -> I32 {
+  let n = start;
+  fn() { n = n + 1; n }
+};
+make(1)()

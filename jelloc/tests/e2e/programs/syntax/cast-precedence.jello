@@ -1,0 +1,7 @@
+// expect: 6
+// `as` binds looser than a prefix operator and tighter than `*`, as in Rust:
+// `-min as I64` negates in I32, wrapping, then widens.
+let min = -2147483648;
+let wrapped = -min as I64 + (-2147483648 as I64 - -2147483648 as I64);
+let widened = -(min as I64);
+wrapped + widened + 3 as I64 * 2 as I64

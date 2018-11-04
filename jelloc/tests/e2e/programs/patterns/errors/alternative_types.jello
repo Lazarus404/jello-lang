@@ -1,0 +1,4 @@
+// error: 3:43: v has a different type in each alternative: I32 and Bytes
+enum T { A(v: I32); B(v: Bytes); }
+let f = fn(t: T): I32 { match (t) { A(v), B(v) => 1 } };
+f(T.A(1))

@@ -1,0 +1,5 @@
+// trap: NULL_DEREF
+// It would return 7 if a possibly-null read were trusted unchecked.
+let keep = fn(_text: Bytes): I32 { 7 };
+let run = fn(): I32 { let x: ?Bytes = null; x = "a"; if (x != null) { if (true) { x = null; } keep(x) } else { 0 } };
+run()

@@ -1,0 +1,50 @@
+// expect: 2360
+// gc: collects
+// A parser-shaped value: an enum holding arrays, tuples and Bytes slices of a
+// dropped source survives calls and forced collections.
+enum Node {
+  Leaf(text: Bytes);
+  List(items: Array<Node>, spans: Array<Tuple<I32, I32>>);
+}
+
+let parse = fn(round: I32): Node {
+  let source = "item" + "-" + "list";
+  let items: Array<Node> = [];
+  let spans: Array<Tuple<I32, I32>> = [];
+  let i = 0;
+  while (i < 4) {
+    items.push(Node.Leaf(Bytes.slice(source, i, 4)));
+    spans.push((i, round));
+    i++;
+  }
+  Node.List(items, spans)
+};
+
+let churn = fn(n: I32): I32 {
+  let total = 0; let i = 0;
+  while (i < n) { let junk = Array.new<Bytes>(8); junk[0] = "x" + "y"; total += junk[0].len(); i++; }
+  total
+};
+
+let width = fn(node: Node): I32 {
+  match (node) {
+    Leaf(text) => if (text == "item") { 100 } else { text.len() },
+    List(items, spans) => {
+      let sum = 0; let i = 0;
+      while (i < items.len()) { sum += width(items[i]) + spans[i].0; i++; }
+      sum
+    },
+  }
+};
+
+let run = fn(): I32 {
+  let kept: Array<Node> = [];
+  let round = 0;
+  while (round < 20) { kept.push(parse(round)); churn(5000); round++; }
+
+  let sum = 0; let i = 0;
+  while (i < kept.len()) { sum += width(kept[i]); i++; }
+  sum
+};
+
+run()

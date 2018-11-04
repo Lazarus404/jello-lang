@@ -3,6 +3,7 @@ package frontend;
 import type { Expr as AstExpr, Stmt } from frontend.Ast;
 import { Op, declareEnum, defineVariants, fieldCount, fieldType, node, typeOf, variantTag } from frontend.Hir;
 import { checkMatch } from frontend.CheckMatch;
+import { internalError } from frontend.Internal;
 import { declareScopedType, exportScopedType, scopedType } from frontend.ModuleScope;
 import { checkOperand, checkType, enterSyntax, syntaxChild } from frontend.TypeCheck;
 
@@ -97,17 +98,13 @@ let _construct = fn(enumName: Bytes, variant: Bytes, args: Array<AstExpr>, calle
 export let checkEnumExpr: (AstExpr, I32, Bool) -> I32 = fn(expr, expected, statement) {
   match (expr) {
     Match(subject, arms) => checkMatch(subject, arms, expected, statement),
-    Member(base, variant) => match (base) { Variable(name) => _construct(name, variant, Array.new<AstExpr>(0), false), _ => -1 },
-    Call(callee, typeArgs, args) => {
+    Member(Variable(name), variant) => _construct(name, variant, Array.new<AstExpr>(0), false),
+    Call(Member(Variable(name), variant), typeArgs, args) => {
       if (typeArgs.len() != 0) { throw "enum constructors do not take type arguments"; }
-
-      match (callee) {
-        Member(base, variant) => match (base) { Variable(name) => _construct(name, variant, args, true), _ => -1 },
-        _ => -1,
-      }
+      _construct(name, variant, args, true)
     },
     _ => {
-      throw "expected an enum expression";
+      internalError("expected an enum expression");
       -1
     },
   }

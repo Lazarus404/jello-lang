@@ -1,0 +1,25 @@
+// expect: 3727
+// Every node the checker makes up carries the span of the source that implies
+// it; Spans.test checks `--hir --spans`.
+import { group } from std.core.RegExp;
+import { limit } from lib.Limits;
+
+enum Shape { Dot; Line(from: I32, to: I32); Pair(inner: Shape, tag: I32); }
+let width = fn(s: Shape): I32 {
+  match (s) {
+    Dot => 0,
+    Line(a, b) when (a != b) => b - a,
+    Pair(Line(a, _), t) => a + t,
+    Line(a, _), Pair(_, a) => a,
+  }
+};
+let first = fn(text: Bytes): I32 {
+  match (text) { when ~r/([a-z]+)/ as m => Bytes.len(group(m, 1)), _ => 0 }
+};
+let total = fn(n: ?I32): I32 {
+  let (t, u) = (0, 1);
+  t += limit;
+  if (n != null) { t += n; }
+  t + u
+};
+width(Shape.Line(1, 4)) * 1000 + width(Shape.Pair(Shape.Line(5, 0), 2)) * 100 + first("ab1") * 10 + total(3)

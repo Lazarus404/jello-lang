@@ -1,0 +1,27 @@
+// expect: 3000479123
+enum Token { Ident(name: Bytes); Int(value: I32); Eof; }
+enum Box { Box(value: I32); }
+
+
+let pair = fn(p: Tuple<Token, Bool>): I32 {
+  match (p) { (Int(n), true) => n, _ => 0 }
+};
+
+let effects = fn(t: Token): I32 {
+  let r = 0;
+  match (t) { Eof => {}, Int(n) => { r = n; }, Ident(_) => { r = 7; } };
+  r
+};
+let unbox = fn(b: Box): I32 { match (b) { Box(v) => v } };
+
+let both = fn(x: Bool, y: Bool): I32 {
+  match ((x, y)) { (true, _) => 1, (false, true) => 2, (false, false) => 3 }
+};
+
+let total: I64 = 0;
+let add = fn(d: I32): I32 { total = total * 10 + (d as I64); 0 };
+add(pair((Token.Int(3), true))); add(pair((Token.Int(3), false))); add(pair((Token.Eof, true)));
+add(effects(Token.Eof)); add(effects(Token.Int(4))); add(effects(Token.Ident("a")));
+add(unbox(Box.Box(9)));
+add(both(true, false)); add(both(false, true)); add(both(false, false));
+total

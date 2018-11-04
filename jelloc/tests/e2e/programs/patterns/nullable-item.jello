@@ -1,0 +1,8 @@
+// expect: 11
+// A tuple-literal subject's items keep their types: a null item that only
+// `_` matches is not read as present, exactly as when the tuple is a value.
+let a: Null<I32> = null;
+let literal = match ((a, true)) { (_, true) => 1, _ => 0 };
+let t = (a, true);
+let value = match (t) { (_, true) => 1, _ => 0 };
+literal * 10 + value

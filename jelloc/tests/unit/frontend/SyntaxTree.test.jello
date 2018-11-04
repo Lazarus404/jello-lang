@@ -1,0 +1,51 @@
+package frontend;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { lexFile } from frontend.Lexer;
+import { parseProgram, programSyntax } from frontend.Parser;
+import type { Syntax } from frontend.Source;
+
+let tree = fn(source: Bytes): Syntax { programSyntax(parseProgram(lexFile(source, "<input>"))) };
+
+let span = fn(node: Syntax): Bytes { match (node) { Node(_, start, end, _, _) => Std.string(start) + ".." + Std.string(end) } };
+let child = fn(node: Syntax, i: I32): Syntax { match (node) { Node(_, _, _, children, _) => children[i] } };
+let width = fn(node: Syntax): I32 { match (node) { Node(_, _, _, children, _) => children.len() } };
+let pattern = fn(node: Syntax, i: I32): Syntax { match (node) { Node(_, _, _, _, patterns) => patterns[i] } };
+
+let tail = fn(source: Bytes): Syntax {
+  let root = tree(source);
+  child(root, width(root) - 1)
+};
+
+let testSpansEveryExpressionWithItsChildrenInFieldOrder = fn(t: Test) {
+  let product = tail("(1 + 2) * f(3)");
+  T.equal(t, span(product), "0..14");
+  T.equal(t, span(child(product, 0)), "0..7");
+  T.equal(t, span(child(child(product, 0), 1)), "5..6");
+  let call = child(product, 1);
+  T.equal(t, span(call), "10..14");
+  T.equal(t, width(call), 2);
+  T.equal(t, span(child(call, 0)), "10..11");
+  T.equal(t, span(child(call, 1)), "12..13");
+};
+
+let testGivesInventedNodesTheSpanOfTheSourceThatImpliesThem = fn(t: Test) {
+  let branch = tail("if (true) { 1 }");
+  T.equal(t, width(branch), 3);
+  T.equal(t, span(child(branch, 2)), "0..15");
+  let negative = tail("-5");
+  T.equal(t, span(negative), "0..2");
+  T.equal(t, span(child(negative, 0)), "1..2");
+};
+
+let testSpansStatementsParametersAndLoopTails = fn(t: Test) {
+  let root = tree("let f = fn(a: I32, b: I32): I32 { a };\nwhile (false) { f(1, 2) }\n0");
+  T.equal(t, width(root), 3);
+  T.equal(t, span(root), "0..66");
+  let function = child(child(root, 0), 0);
+  T.equal(t, width(function), 3);
+  T.equal(t, span(child(function, 1)), "19..25");
+  let loop = child(root, 1);
+  T.equal(t, span(child(loop, 1)), "55..62");
+};

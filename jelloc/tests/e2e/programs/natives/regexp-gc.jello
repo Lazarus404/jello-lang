@@ -1,0 +1,16 @@
+// expect: 88890
+// gc: collects
+// finalizes: 10000
+// Every match is a native handle the collector frees; the compiled regexp,
+// a module global, survives every collection.
+import { group } from std.core.RegExp;
+
+let count = fn(n: I32): I32 {
+  let i = 0; let hits = 0;
+  while (i < n) {
+    hits += match ("abc" + Std.string(i)) { when ~r/[a-z]+([0-9]+)/ as m => Bytes.len(group(m, 1)), _ => 0 };
+    i++;
+  }
+  hits
+};
+count(20000)

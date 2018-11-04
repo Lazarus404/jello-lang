@@ -10,7 +10,7 @@ import { checkValueExpr } from frontend.CheckValues;
 import type { Hir } from frontend.Hir;
 import { Kind, Op, TYPE_NULL, declareGlobal, declareNative, functionType, globalNameOf, innerOf, isKind, kindOf, node, spanOf, typeArg, typeArgCount, typeName, typeOf } from frontend.Hir;
 import { firstUninitializedRead } from frontend.InitOrder;
-import { Binding, declareScoped, enterModule, exportScoped, exportedType, resetExports, scoped } from frontend.ModuleScope;
+import { Binding, addImport, declareScoped, enterModule, exportScoped, exportedType, resetExports, scoped } from frontend.ModuleScope;
 import type { Import, Module } from frontend.Modules;
 import { Import, Module, isHookName, isTestModule, isTestName, moduleName } from frontend.Modules;
 import { programSyntax } from frontend.Parser;
@@ -18,7 +18,7 @@ import type { Syntax } from frontend.Source;
 import { Syntax } from frontend.Source;
 import {
   beginCheck, bindingType, checkEffect, checkFunctionBody, checkOperand, checkType, declareFunctions, enterSyntax, finishProgram,
-  checkWhile, isDirectFunction, syntaxChild, takeRegexpInits, unsupportedStatement, useAggregateChecks, useAssertionChecks, useEnumChecks, useStructuralEquality, useValueChecks,
+  checkWhile, initializedType, isDirectFunction, syntaxChild, takeRegexpInits, unsupportedStatement, useAggregateChecks, useAssertionChecks, useEnumChecks, useStructuralEquality, useValueChecks,
 } from frontend.TypeCheck;
 import { verifyHir } from frontend.VerifyHir;
 
@@ -34,14 +34,16 @@ let _returnsVoid = fn(ty: AstType): Bool {
 };
 
 let _marshalled = fn(ty: I32, name: Bytes): I32 {
+  let count = typeArgCount(ty);
+  if (count > 8) { throw "native " + name + " takes " + Std.string(count) + " arguments; at most 8 are supported"; }
   let i = 0;
 
-  while (i <= typeArgCount(ty)) {
-    let part = i < typeArgCount(ty) ? typeArg(ty, i) : innerOf(ty);
+  while (i <= count) {
+    let part = i < count ? typeArg(ty, i) : innerOf(ty);
 
     match (kindOf(part)) {
       Bool, I32, Bytes, Dynamic => null, _ => {
-        throw "native " + name + " cannot pass " + typeName(part) + "; natives take and return bool, i32, bytes or dynamic";
+        throw "native " + name + " cannot pass " + typeName(part) + "; natives take and return Bool, I32, Bytes or Dynamic";
         null
       }
     };
@@ -101,7 +103,19 @@ let _checkSignature = fn(statement: Stmt, test: I32) {
 let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bool): I32 {
   match (modules[index]) { Module(_, dotted, statements, syntax, tail, imports) => {
     let outer = enterSyntax(syntax);
-    enterModule(imports, modules, !runs);
+    enterModule(imports, modules);
+    let k = 0;
+
+    while (k < imports.len()) {
+      let at = match (imports[k]) { Import(_, _, _, _, _, statement), Namespace(_, _, _, statement) => statement };
+
+      if (at < 0) { addImport(imports[k], modules, !runs); } else {
+        let parent = enterSyntax(syntaxChild(at));
+        addImport(imports[k], modules, !runs);
+        enterSyntax(parent);
+      }
+      k++;
+    }
     declareEnums(statements, index, opened);
 
     if (!runs) {
@@ -155,8 +169,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
           let global = ty < 0 ? -1 : declareGlobal(name, ty, !isConst);
           if (global >= 0) { declareScoped(name, Binding.Global(global)); }
           let checked = checkOperand(value, 0, ty);
-          if (ty < 0) { ty = typeOf(checked); } else if (ty != typeOf(checked)) { throw "binding annotation type mismatch: " + name; }
-          if (ty == TYPE_NULL) { throw "null needs a type from its context: annotate " + name + " as Null<T>"; }
+          ty = initializedType(ty, checked, name);
 
           if (global < 0) {
             global = declareGlobal(name, ty, !isConst);
@@ -242,11 +255,11 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
 
         while (j < imports.len()) {
           match (imports[j]) {
-            Import(_, module, _, typeOnly, privately) => {
+            Import(_, module, _, typeOnly, privately, _) => {
               if (!typeOnly) { runs[module] = true; }
               if (privately) { opened[module] = true; }
             },
-            Namespace(_, module, privately) => {
+            Namespace(_, module, privately, _) => {
               runs[module] = true;
               if (privately) { opened[module] = true; }
             },

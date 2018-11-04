@@ -1,0 +1,53 @@
+// The compiler's own AST, built and inspected by emitted code.
+import { exprTag, integerValue, isBindPattern, wideIntegerValue } from frontend.Ast;
+import { BinaryOp, Expr, IntSize, Pattern } from frontend.Ast;
+
+let _size: (Expr) -> I32 = fn(expr) {
+  match (expr) {
+    Binary(_, left, right) => 1 + _size(left) + _size(right),
+    Array(items), Tuple(items) => {
+      let total = 1;
+      let i = 0;
+
+      while (i < items.len()) {
+        total += _size(items[i]);
+        i++;
+      }
+      total
+    },
+    Index(base, index) => 1 + _size(base) + _size(index),
+    _ => 1,
+  }
+};
+
+let _tags: (Expr) -> I32 = fn(expr) {
+  match (expr) {
+    Binary(_, left, right) => exprTag(expr) + _tags(left) + _tags(right),
+    Array(items), Tuple(items) => {
+      let total = exprTag(expr);
+      let i = 0;
+
+      while (i < items.len()) {
+        total += _tags(items[i]);
+        i++;
+      }
+      total
+    },
+    _ => exprTag(expr),
+  }
+};
+
+let _rejects = fn(text: Bytes): Bytes {
+  try {
+    integerValue(text, false);
+    "accepted"
+  } catch (e) { Std.string(e) }
+};
+
+let one = Expr.Integer("1", IntSize.Infer);
+let tree = Expr.Tuple([Expr.Binary(BinaryOp.Add, one, Expr.Array([one, Expr.Variable("x"), Expr.Tuple([])])), Expr.Null]);
+let report = Std.string(_size(tree)) + " " + Std.string(_tags(tree))
+  + " " + Std.string(integerValue("0x7fff_ffff", false)) + " " + Std.string(integerValue("2147483648", true))
+  + " " + Std.string(wideIntegerValue("-0b101", false) == -5)
+  + " " + Std.string(isBindPattern(Pattern.BindPattern("x"))) + "\n" + _rejects("2147483648");
+report

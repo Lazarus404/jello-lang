@@ -2,9 +2,10 @@ package backend.jello;
 
 import type { BasicBlock, Function, Instruction, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
 import { BasicBlock, Function, Op, Program, Terminator, ThrowHandler, argsOf, dstOf, handlerPayload, handlerTarget, immOf, instructionAt, nodeOf, opOf, valueTypeEqual } from ir.Model;
-import { blockCatch, blockIndexes } from ir.Cfg;
-import { liveness, terminatorReads } from ir.Liveness;
+import { blockCatch, blockIndexes, terminatorRead } from ir.Cfg;
+import { liveness } from ir.Liveness;
 import { verifyAllocatedProgram } from ir.Verify;
+import { internalError } from frontend.Internal;
 
 let _REGISTER_LIMIT = 256;
 
@@ -105,13 +106,9 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
         _enliven(liveOut[i][m]);
         m++;
       }
-      let last = terminatorReads(terminator);
+      let last = terminatorRead(terminator);
       let a = 0;
-
-      while (a < last.len()) {
-        _enliven(last[a]);
-        a++;
-      }
+      if (last >= 0) { _enliven(last); }
       let j = instructions.len() - 1;
 
       while (j >= 0) {
@@ -353,7 +350,7 @@ let _color = fn(first: Array<I32>, neighbors: Array<Array<I32>>, moves: Array<Tu
     let n = 0;
 
     while ((colors[i] >= 0) && (n < neighbors[i].len())) {
-      if (colors[neighbors[i][n]] == colors[i]) { throw "register allocation gave interfering registers %" + Std.string(i) + " and %" + Std.string(neighbors[i][n]) + " one register"; }
+      if (colors[neighbors[i][n]] == colors[i]) { internalError("register allocation gave interfering registers %" + Std.string(i) + " and %" + Std.string(neighbors[i][n]) + " one register"); }
       n++;
     }
     i++;
@@ -464,6 +461,7 @@ let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
 let _read = fn(register: I32): I32 {
   if (_colors[register] >= 0) { return _colors[register]; }
   let key = _keys[register];
+  if (_nextTemp[key] == 2) { internalError("an instruction reads three spilled registers of one type"); }
   let temp = _tempStart + _tempOffsets[key] + _nextTemp[key];
   _nextTemp[key]++;
   _emit(Op.SpillPop, temp, Array.new<I32>(0), _slots[register]);

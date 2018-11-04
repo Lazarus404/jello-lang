@@ -1,0 +1,9 @@
+// The Lexer, over Bytes and RegExp natives, and Tokens. Workload.test compares
+// the tokens with tests/lex/tokens.tok.
+import { lexFile } from frontend.Lexer;
+import { printTokens } from frontend.Tokens;
+import { readText } from std.io.File;
+
+let path = "tests/lex/tokens.jello";
+let invalid = try { printTokens(lexFile("let s = \"open", "bad.jello").0) } catch (e) { Std.string(e) };
+printTokens(lexFile(readText(path), path).0) + invalid

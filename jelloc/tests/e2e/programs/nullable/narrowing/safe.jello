@@ -1,0 +1,10 @@
+// expect: 436
+// Reads the checker proves present compile to unchecked unwraps.
+let keep = fn(text: Bytes): I32 { text.len() };
+let next = fn(at: I32): ?Bytes { at < 3 ? "ab" : null };
+
+let early = fn(x: ?Bytes): I32 { if (x == null) { return 0; } keep(x) };
+let reassigned = fn(): I32 { let x: ?Bytes = null; x = "abc"; keep(x) };
+let looped = fn(): I32 { let total = 0; let at = 0; let x = next(at); while (x != null) { total = total + keep(x); at++; x = next(at); } total };
+
+early("abcd") * 100 + reassigned() * 10 + looped()

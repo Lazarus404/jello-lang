@@ -21,24 +21,18 @@ let _indexOf = fn(values: Array<I32>, value: I32): I32 {
 let _deciding = Array.new<I32>(0);
 let _unsupported: (I32, Bool) -> I32 = fn(_ty, _printing) { -1 };
 
-let _variantUnsupported = fn(ty: I32, tag: I32, printing: Bool): I32 {
-  let field = 0;
-  let found = -1;
-
-  while ((found < 0) && (field < H.fieldCount(ty, tag))) {
-    found = _unsupported(H.fieldType(ty, tag, field), printing);
-    field++;
-  }
-  found
-};
-
 let _fieldsUnsupported = fn(ty: I32, printing: Bool): I32 {
   _deciding.push(ty);
   let tag = 0;
   let found = -1;
 
   while ((found < 0) && (tag < H.variantCount(ty))) {
-    found = _variantUnsupported(ty, tag, printing);
+    let field = 0;
+
+    while ((found < 0) && (field < H.fieldCount(ty, tag))) {
+      found = _unsupported(H.fieldType(ty, tag, field), printing);
+      field++;
+    }
     tag++;
   }
   _deciding.pop();
@@ -270,21 +264,45 @@ let _enumText = fn(value: I32, ty: I32): Array<I32> {
   [text]
 };
 
+let _stackOf = fn(parts: I32): I32 { H.local(parts, H.arrayType(H.TYPE_BYTES)) };
+let _countOf = fn(parts: I32): I32 { H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [_stackOf(parts)]) };
+
+let _fromTop = fn(parts: I32, depth: I32, length: Bool): I32 {
+  let text = H.node(Op.ArrayGet, H.TYPE_BYTES, 0, 0, [_stackOf(parts), H.node(Op.Sub, H.TYPE_I32, 0, 0, [_countOf(parts), _i32(depth)])]);
+  length ? H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [text]) : text
+};
+
+let _merging = fn(parts: I32, condition: ?I32): I32 {
+  let several = H.node(Op.Gt, H.TYPE_BOOL, 0, 0, [_countOf(parts), _i32(1)]);
+  let merged = _concat(_fromTop(parts, 2, false), _fromTop(parts, 1, false));
+  H.node(Op.While, 0, 0, 0, [
+    condition == null ? several : H.node(Op.And, H.TYPE_BOOL, 0, 0, [several, condition]),
+    H.node(Op.Block, 0, 0, 0, [
+      _expression(H.node(Op.ArraySet, H.TYPE_BYTES, 0, 0, [_stackOf(parts), H.node(Op.Sub, H.TYPE_I32, 0, 0, [_countOf(parts), _i32(2)]), merged])),
+      _expression(H.node(Op.ArrayPop, H.TYPE_BYTES, 0, 0, [_stackOf(parts)]))
+    ])
+  ])
+};
+
 let _bracketed = fn(setup: I32, more: I32, element: I32, next: I32): Array<I32> {
-  let text = newBinding();
+  let parts = newBinding();
   let separator = newBinding();
-  let appended = _concat(_concat(H.local(text, H.TYPE_BYTES), H.local(separator, H.TYPE_BYTES)), _shown(element, true));
+  let twice = H.node(Op.Shl, H.TYPE_I32, 0, 0, [_fromTop(parts, 1, true), _i32(1)]);
+  let shorter = H.node(Op.Lt, H.TYPE_BOOL, 0, 0, [twice, _fromTop(parts, 2, true)]);
   let body = [
-    _expression(H.node(Op.Assign, H.TYPE_BYTES, text, 0, [appended])),
+    _expression(H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [_stackOf(parts), _concat(H.local(separator, H.TYPE_BYTES), _shown(element, true))])),
     _expression(H.node(Op.Assign, H.TYPE_BYTES, separator, 0, [bytesOf(", ")])),
+    _merging(parts, _not(shorter)),
     _expression(next)
   ];
   [
     setup,
-    H.declareBinding(Op.Let, text, "text", bytesOf("[")),
+    H.declareBinding(Op.Let, parts, "parts", H.node(Op.ArrayLiteral, H.arrayType(H.TYPE_BYTES), 0, 0, [bytesOf("[")])),
     H.declareBinding(Op.Let, separator, "separator", bytesOf("")),
     H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, body)]),
-    _concat(H.local(text, H.TYPE_BYTES), bytesOf("]"))
+    _expression(H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [_stackOf(parts), bytesOf("]")])),
+    _merging(parts, null),
+    _fromTop(parts, 1, false)
   ]
 };
 

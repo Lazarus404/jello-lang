@@ -3,9 +3,10 @@ package frontend;
 import type { AssignOp, Expr as AstExpr, IncDecOp, Type as AstType } from frontend.Ast;
 import { AssignOp } from frontend.Ast;
 import frontend.Hir as H;
+import { internalError } from frontend.Internal;
 import { Kind, Op } from frontend.Hir;
 import { stringOf, unprintable } from frontend.CheckDerived;
-import { bufferHint, checkOperand, checkPresent, checkType, enterSyntax, isBound, newBinding, one, syntaxChild } from frontend.TypeCheck;
+import { bufferHint, checkOperand, checkPresent, checkType, compoundOperation, enterSyntax, isBound, newBinding, one, syntaxChild } from frontend.TypeCheck;
 
 let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   let checked = checkOperand(expr, index, H.TYPE_I32);
@@ -208,7 +209,7 @@ let _updateIndex = fn(array: I32, index: I32, op: AssignOp, checked: I32, step: 
   if ((element != H.TYPE_I32) && (element != H.TYPE_I64) && !bytes) {
     throw (step ? "increment and decrement require" : "compound assignment requires") + " an I32 or I64 element, not " + H.typeName(element);
   }
-  let operation = bytes ? Op.BytesConcat : match (op) { Subtract => Op.Sub, Multiply => Op.Mul, Divide => Op.Div, _ => Op.Add };
+  let operation = compoundOperation(op, bytes);
   let declared = Array.new<I32>(0);
   let (arrayRead, arrayWrite) = _twice(array, step, declared, "array");
   let (indexRead, indexWrite) = _twice(index, step, declared, "index");
@@ -399,7 +400,7 @@ export let checkAggregateExpr: (AstExpr, I32) -> I32 = fn(expr, expected) {
     Assign(op, Index(base, index), value) => _assignIndex(base, index, op, value),
     IncDec(op, prefix, Index(base, index)) => _stepIndex(base, index, op, prefix),
     _ => {
-      throw "expected an aggregate expression";
+      internalError("expected an aggregate expression");
       -1
     },
   }

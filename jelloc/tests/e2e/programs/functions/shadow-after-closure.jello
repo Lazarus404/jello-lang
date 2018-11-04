@@ -1,0 +1,14 @@
+// expect: 1320
+// A block shadows `x`, and a function literal in it has a parameter `x`.
+// Each scope that ends gives `x` back to the one around it.
+let f = fn(): I32 {
+  let x = 1;
+  let r = 0;
+  if (x > 0) {
+    let x = 20;
+    let g = fn(x: I32): I32 { x + 280 };
+    r = x + g(20);
+  }
+  x * 1000 + r
+};
+f()

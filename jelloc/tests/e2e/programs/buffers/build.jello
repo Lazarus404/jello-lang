@@ -1,0 +1,32 @@
+// expect: 11111
+// A buffer from Bytes.new is built in place and copied out with Bytes.slice,
+// as Emit builds its output.
+let _buffer = Bytes.new(0);
+let _size = 0;
+let _byte = fn(value: I32) {
+  if (_size == _buffer.len()) {
+    let grown = Bytes.new(_buffer.len() * 2 + 4); let i = 0;
+    while (i < _size) { Bytes.set_u8(grown, i, Bytes.get_u8(_buffer, i)); i++; }
+    _buffer = grown;
+  }
+  Bytes.set_u8(_buffer, _size, value & 255);
+  _size++;
+  null
+};
+let digits = 0;
+let i = 0;
+while (i < 10) { _byte(97 + i); i++; }
+let text = Bytes.slice(_buffer, 0, _size);
+digits = digits * 10 + (text == "abcdefghij" && _buffer.len() == 12 ? 1 : 0);
+
+Bytes.set_u8(_buffer, 0, 90);
+digits = digits * 10 + (text == "abcdefghij" && _buffer[0] == 90 ? 1 : 0);
+
+let fresh = Bytes.new(3);
+digits = digits * 10 + (fresh[0] == 0 && Bytes.get_u8(fresh, 2) == 0 && Bytes.len(fresh) == 3 ? 1 : 0);
+
+fresh[0] = 65; fresh[1]++; fresh[2] += 67;
+digits = digits * 10 + (Bytes.slice(fresh, 0, 3) == "A\u{1}C" ? 1 : 0);
+let tail = Bytes.slice(Bytes.slice(_buffer, 2, 5), 1, 3);
+digits = digits * 10 + (tail == "def" ? 1 : 0);
+digits

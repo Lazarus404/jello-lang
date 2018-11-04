@@ -1,0 +1,57 @@
+// expect: 1145
+// gc: collects
+// Nullable references: a Null<T> of a reference T is that T's null pointer.
+// Optional enum, Bytes, array and tuple fields of a parser-shaped value
+// survive calls and forced collections.
+enum Expr {
+  Name(text: Bytes);
+  Call(callee: Expr, args: ?Array<Expr>, alias: ?Bytes, span: ?Tuple<I32, I32>);
+  Block(tail: ?Expr);
+}
+
+let names: Array<?Bytes> = [null, "b"];
+let last: ?Expr = null;
+
+let build = fn(round: I32, even: Bool): Expr {
+  let alias: ?Bytes = even ? "x" + "y" : null;
+  let args: ?Array<Expr> = even ? null : [Expr.Name("a" + "b"), Expr.Name("c")];
+  let span: ?Tuple<I32, I32> = even ? (round, 1) : null;
+  let call = Expr.Call(Expr.Name("f"), args, alias, span);
+  last = call;
+  Expr.Block(even ? call : null)
+};
+
+let churn = fn(n: I32): I32 {
+  let total = 0; let i = 0;
+  while (i < n) { let junk = Array.new<?Bytes>(8); junk[0] = "x" + "y"; total += junk[0].len(); i++; }
+  total
+};
+
+let size = fn(value: ?Bytes): I32 { if (value == null) { 0 } else { value.len() } };
+
+let weight = fn(expr: Expr): I32 {
+  match (expr) {
+    Name(text) => text.len(),
+    Call(callee, args, alias, span) => {
+      let total = weight(callee) + size(alias);
+      if (alias != null && alias == "xy") { total += 100; }
+      if (args != null) { let i = 0; while (i < args.len()) { total += weight(args[i]); i++; } }
+      if (span != null) { total += span.0 + span.1; }
+      total
+    },
+    Block(tail) => tail != null ? weight(tail) : 1,
+  }
+};
+
+let run = fn(): I32 {
+  let kept: Array<Expr> = [];
+  let even = true; let round = 0;
+  while (round < 20) { kept.push(build(round, even)); churn(5000); even = !even; round++; }
+
+  let sum = 0; let i = 0;
+  while (i < kept.len()) { sum += weight(kept[i]); i++; }
+
+  sum + size(names[0]) + size(names[1]) + (last == null ? 0 : weight(last))
+};
+
+run()

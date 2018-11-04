@@ -1,0 +1,29 @@
+// expect: 1
+// Structural ==: tuples, enums, arrays and lists compare element by element,
+// to any depth; != is its negation.
+enum Expr { Number(value: I32); Name(text: Bytes); Call(callee: Expr, args: Array<Expr>); Missing; }
+enum Mode { Lex; Parse; }
+
+let call = fn(n: I32): Expr { Expr.Call(Expr.Name("f"), [Expr.Number(n), Expr.Missing]) };
+let bit = fn(value: Bool, at: I32): I32 { value ? 1 << at : 0 };
+
+let tuples = bit((1, "one") == (1, "one"), 0) + bit((1, "one") != (1, "uno"), 1) + bit(((1, 2), 3) == ((1, 2), 3), 2);
+let enums = bit(call(1) == call(1), 0) + bit(call(1) != call(2), 1) + bit(Expr.Number(1) != Expr.Name("1"), 2)
+  + bit(Expr.Number(3) == Expr.Number(3), 3) + bit(Expr.Call(Expr.Missing, []) != call(1), 4);
+let modes = [Mode.Lex, Mode.Parse];
+let arrays = bit([1, 2, 3] == [1, 2, 3], 0) + bit([1, 2] != [1, 2, 3], 1) + bit([[1], [2]] == [[1], [2]], 2)
+  + bit(Array.new<I32>(0) == [], 3) + bit(modes[0] != modes[1], 4);
+let list = fn(a: I32, b: I32): List<I32> { List.cons(a, List.cons(b, List.nil<I32>())) };
+let lists = bit(list(1, 2) == list(1, 2), 0) + bit(list(1, 2) != list(1, 3), 1) + bit(List.tail(list(1, 2)) != list(1, 2), 2);
+
+
+
+let some: ?Expr = call(1); let none: ?Expr = null; let lexing: ?Mode = Mode.Lex;
+let nullables = bit(some == call(1), 0) + bit(some != none, 1) + bit(none == none, 2) + bit(lexing == Mode.Lex, 3)
+  + bit(some != Expr.Missing, 4) + bit(Expr.Missing != some, 5);
+
+
+let order = 0;
+let next = fn(): Array<I32> { order = order * 10 + 1; [order] };
+let once = bit(next() != next(), 0);
+[tuples, enums, arrays, lists, nullables, once, order] == [7, 31, 31, 7, 63, 1, 11] ? 1 : 0

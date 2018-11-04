@@ -1,0 +1,10 @@
+// expect: 3 7 5 21
+// `_` binds nothing: it may be bound again in one scope, name more than one
+// parameter, and be read nowhere. A field number ends at the next dot, so
+// `p.0.1` is two fields.
+let _ = 1;
+let _ = 2;
+let ignore = fn(_: I32, _: I32): I32 { 7 };
+let local = fn(): I32 { let _ = 4; let _ = 5; 5 };
+let p = ((1, 20), 3);
+Std.string(p.1) + " " + Std.string(ignore(1, 2)) + " " + Std.string(local()) + " " + Std.string(p.0.1 + p.0.0)

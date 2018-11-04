@@ -1,0 +1,262 @@
+package std;
+
+import { split, startsWith } from std.core.Bytes;
+import { writeText } from std.io.File;
+
+export enum Test { Test(name: Bytes, state: Array<Bool>, output: Array<Bytes>); }
+
+let _FAILED = 0;
+let _SKIPPED = 1;
+let _STOPPED = 2;
+
+let _state = fn(t: Test): Array<Bool> { match (t) { Test(_, state, _) => state } };
+let _output = fn(t: Test): Array<Bytes> { match (t) { Test(_, _, output) => output } };
+
+export let name = fn(t: Test): Bytes { match (t) { Test(value, _, _) => value } };
+
+export let log = fn(t: Test, message: Bytes): Null {
+  _output(t).push(message);
+  null
+};
+
+export let fail = fn(t: Test, message: Bytes): Null {
+  _state(t)[_FAILED] = true;
+  log(t, message)
+};
+
+let _stop = fn(t: Test): Null {
+  _state(t)[_STOPPED] = true;
+  throw "test stopped: " + name(t);
+  null
+};
+
+let _stillStopped = fn(t: Test): Null {
+  if (_state(t)[_STOPPED]) { _stop(t); }
+  null
+};
+
+export let fatal = fn(t: Test, message: Bytes): Null {
+  fail(t, message);
+  _stop(t)
+};
+
+export let skip = fn(t: Test, message: Bytes): Null {
+  _state(t)[_SKIPPED] = true;
+  log(t, message);
+  _stop(t)
+};
+
+export let failEqual = fn(t: Test, at: Bytes, got: Bytes, want: Bytes): Null { fail(t, at + ": got " + got + ", want " + want) };
+export let failNotEqual = fn(t: Test, at: Bytes, got: Bytes): Null { fail(t, at + ": got " + got + ", want any other value") };
+export let failNotNull = fn(t: Test, at: Bytes, got: Bytes): Null { fail(t, at + ": got " + got + ", want null") };
+export let failFalse = fn(t: Test, at: Bytes): Null { fail(t, at + ": got false, want true") };
+
+export let throwsAt = fn(t: Test, at: Bytes, body: () -> Null): Null {
+  let threw = try {
+    body();
+    false
+  } catch (e) { true };
+  _stillStopped(t);
+  if (!threw) { fail(t, at + ": did not throw"); }
+  null
+};
+
+let _filter = "";
+let _verbose = false;
+
+let _declared = Array.new<Tuple<Bytes, Bool, Bytes>>(0);
+let _given = Array.new<Tuple<Bytes, Bytes>>(0);
+let _parsed = false;
+
+let _declaration = fn(name: Bytes): I32 {
+  let i = 0;
+
+  while (i < _declared.len()) {
+    let (declared, _, _) = _declared[i];
+    if (declared == name) { return i; }
+    i++;
+  }
+  -1
+};
+
+let _declare = fn(name: Bytes, valued: Bool, help: Bytes): Null {
+  if (_declaration(name) >= 0) { throw "option " + name + " is declared twice"; }
+  _declared.push((name, valued, help));
+  null
+};
+
+export let declareFlag = fn(name: Bytes, help: Bytes): Null { _declare(name, false, help) };
+export let declareOption = fn(name: Bytes, help: Bytes): Null { _declare(name, true, help) };
+
+let _lastGiven = fn(name: Bytes, valued: Bool): I32 {
+  let at = _declaration(name);
+  if (at < 0) { throw "option " + name + " was never declared"; }
+  if (!_parsed) { throw "option " + name + " is read before the tests run"; }
+  let (_, declaredValued, _) = _declared[at];
+  if (declaredValued != valued) { throw "option " + name + (valued ? " takes no value" : " takes a value"); }
+  let last = -1;
+  let i = 0;
+
+  while (i < _given.len()) {
+    let (given, _) = _given[i];
+    if (given == name) { last = i; }
+    i++;
+  }
+  last
+};
+
+export let flag = fn(name: Bytes): Bool { _lastGiven(name, false) >= 0 };
+
+export let option = fn(name: Bytes, fallback: Bytes): Bytes {
+  let last = _lastGiven(name, true);
+  if (last < 0) { return fallback; }
+  let (_, value) = _given[last];
+  value
+};
+
+let _selected = fn(full: Bytes): Bool { startsWith(full, _filter) || startsWith(_filter, full + "/") };
+
+export let selected = fn(t: Test, subtest: Bytes): Bool { _selected(name(t) + "/" + subtest) };
+
+let _print = fn(text: Bytes) {
+  writeText("/dev/stdout", text);
+  null
+};
+
+let _run = fn(full: Bytes, where: Bytes, body: (Test) -> Null): Bool {
+  _print("=== RUN   " + full + "\n");
+  let t = Test.Test(full, [false, false, false], Array.new<Bytes>(0));
+  try { body(t); } catch (e) { if (!_state(t)[_STOPPED]) { fail(t, "threw " + Std.string(e)); } }
+  let failed = _state(t)[_FAILED];
+
+  if (failed || _verbose) {
+    let result = failed ? "FAIL" : _state(t)[_SKIPPED] ? "SKIP" : "PASS";
+    _print("--- " + result + ": " + full + (where == "" ? "" : " (" + where + ")") + "\n");
+    let output = _output(t);
+    let i = 0;
+
+    while (i < output.len()) {
+      let lines = split(output[i], "\n");
+      let j = 0;
+
+      while (j < lines.len()) {
+        _print((j == 0 ? "    " : "        ") + lines[j] + "\n");
+        j++;
+      }
+      i++;
+    }
+  }
+  !failed
+};
+
+export let run = fn(t: Test, subtest: Bytes, body: (Test) -> Null): Bool {
+  let full = name(t) + "/" + subtest;
+  if (!_selected(full)) { return true; }
+  let passed = _run(full, "", body);
+  if (!passed) { _state(t)[_FAILED] = true; }
+  _stillStopped(t);
+  passed
+};
+
+let _hook = fn(file: Bytes, hookName: Bytes, hook: () -> Null): Bool {
+  try {
+    hook();
+    true
+  } catch (e) {
+    _print("--- FAIL: " + file + "/" + hookName + "\n    threw " + Std.string(e) + "\n");
+    false
+  }
+};
+
+let _USAGE = "usage: <tests.jlo> [--run prefix] [--list] [-v] [-- options...]\n\n  --run prefix  run the tests and subtests whose names start with prefix\n  --list        print the names of the tests --run selects, and run none\n  -v            show every test's result and output, not only failures'\n  -- options    the tests' own options, which follow\n";
+
+let _usage = fn(message: Bytes) {
+  let text = message + "\n" + _USAGE;
+  let i = 0;
+  if (_declared.len() > 0) { text = text + "\nafter --:\n"; }
+
+  while (i < _declared.len()) {
+    let (name, valued, help) = _declared[i];
+    text = text + "  " + name + (valued ? " value" : "") + "\n      " + help + "\n";
+    i++;
+  }
+  writeText("/dev/stderr", text);
+  System.exit(2);
+  null
+};
+
+let _options = fn(args: List<Bytes>): Null {
+  let rest = args;
+
+  while (!List.is_nil(rest)) {
+    let name = List.head(rest);
+    rest = List.tail(rest);
+    let at = _declaration(name);
+    if (at < 0) { _usage("unexpected argument after --: " + name); }
+    let (_, valued, _) = _declared[at];
+
+    if (!valued) { _given.push((name, "")); } else if (List.is_nil(rest)) { _usage(name + " needs a value"); } else {
+      _given.push((name, List.head(rest)));
+      rest = List.tail(rest);
+    }
+  }
+  null
+};
+
+export let main = fn(suites: Array<Tuple<Bytes, () -> Null, () -> Null, Array<Tuple<Bytes, Bytes, (Test) -> Null>>>>): Null {
+  let listing = false;
+  let args = System.args;
+
+  while (!List.is_nil(args)) {
+    let arg = List.head(args);
+    args = List.tail(args);
+
+    if (arg == "-v") { _verbose = true; } else if (arg == "--list") { listing = true; } else if (arg == "--") {
+      _options(args);
+      args = List.nil<Bytes>();
+    } else if ((arg == "--run") && !List.is_nil(args)) {
+      _filter = List.head(args);
+      args = List.tail(args);
+    } else { _usage(arg == "--run" ? "--run requires a prefix" : "unexpected argument: " + arg); }
+  }
+  _parsed = true;
+  let passed = true;
+  let i = 0;
+
+  while (i < suites.len()) {
+    let (file, beforeAll, afterAll, cases) = suites[i];
+    let chosen = Array.new<Tuple<Bytes, Bytes, (Test) -> Null>>(0);
+    let j = 0;
+
+    while (j < cases.len()) {
+      let (test, _, _) = cases[j];
+      if (_selected(test)) { chosen.push(cases[j]); }
+      j++;
+    }
+
+    if (listing) {
+      j = 0;
+
+      while (j < chosen.len()) {
+        let (test, _, _) = chosen[j];
+        _print(test + "\n");
+        j++;
+      }
+    } else if (chosen.len() > 0) {
+      if (_hook(file, "beforeAll", beforeAll)) {
+        j = 0;
+
+        while (j < chosen.len()) {
+          let (test, where, body) = chosen[j];
+          if (!_run(test, where, body)) { passed = false; }
+          j++;
+        }
+      } else { passed = false; }
+      if (!_hook(file, "afterAll", afterAll)) { passed = false; }
+    }
+    i++;
+  }
+  if (!listing) { _print(passed ? "ok\n" : "FAIL\n"); }
+  System.exit(passed ? 0 : 1);
+  null
+};

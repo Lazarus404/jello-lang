@@ -1,0 +1,18 @@
+// The language corpus's parse report, for the workload's corpus program and
+// the integration tier, apart from Digest so the parser program does not
+// carry it.
+import { parseFile } from Digest;
+import { join } from std.core.Bytes;
+import { filesUnder } from std.io.Path;
+
+export let corpusDigests: (Bytes) -> Bytes = fn(dir) {
+  let paths = filesUnder(dir, ".jello");
+  let lines = Array.new<Bytes>(0);
+  let i = 0;
+
+  while (i < paths.len()) {
+    lines.push(paths[i] + " " + parseFile(paths[i]));
+    i++;
+  }
+  join(lines, "\n")
+};

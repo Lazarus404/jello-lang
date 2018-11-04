@@ -1,0 +1,44 @@
+// What the workload fixtures report of a source file, the same whichever
+// compiler built them.
+import { lexFile } from frontend.Lexer;
+import type { Token } from frontend.Lexer;
+import { parseFailureSpan, parseProgram, programSyntax } from frontend.Parser;
+import type { Syntax } from frontend.Source;
+import { sourceDiagnostic, spanStart } from frontend.Source;
+import { readText } from std.io.File;
+
+let _digest: (Syntax, I32) -> I32 = fn(syntax, hash) {
+  match (syntax) { Node(_, start, end, children, patterns) => {
+    let h = (((hash * 31 + start) * 31 + end) * 31 + children.len() as I32) * 31 + patterns.len() as I32;
+    let i = 0;
+
+    while (i < children.len()) {
+      h = _digest(children[i], h);
+      i++;
+    }
+    i = 0;
+
+    while (i < patterns.len()) {
+      h = _digest(patterns[i], h);
+      i++;
+    }
+    h
+  } }
+};
+
+export let parseReport: (Bytes, Bytes) -> Bytes = fn(source, path) {
+  let lexError = "";
+
+  let lexed: ?Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>> = try { lexFile(source, path) } catch (e) {
+    lexError = Std.string(e);
+    null
+  };
+  if (lexed == null) { return "lexer " + lexError; }
+
+  try { "accepted " + Std.string(lexed.0.len()) + " " + Std.string(_digest(programSyntax(parseProgram(lexed)), 0)) } catch (e) {
+    let at = parseFailureSpan();
+    "parser " + (at == null ? Std.string(e) : sourceDiagnostic(path, source, spanStart(at), Std.string(e)))
+  }
+};
+
+export let parseFile: (Bytes) -> Bytes = fn(path) { parseReport(readText(path), path) };

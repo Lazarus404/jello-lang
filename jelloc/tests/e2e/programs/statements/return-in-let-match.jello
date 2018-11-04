@@ -1,0 +1,9 @@
+// expect: 7102
+// A `return` in a match arm that initializes a `let` leaves the function;
+// stage 0, the SDK compiler, fell through with the arm's dead tail.
+enum E { A; B; }
+let f = fn(e: E): I32 {
+  let x = match (e) { A => { return 7; 0 }, B => 2 };
+  x + 100
+};
+f(E.A) * 1000 + f(E.B)

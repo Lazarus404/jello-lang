@@ -1,0 +1,6 @@
+// expect: 33
+// What the body cannot change is still known in the handler and after it.
+let keep = fn(text: Bytes): I32 { text.len() };
+let fail = fn(): I32 { throw "stop"; 0 };
+let run = fn(): I32 { let x: ?Bytes = null; x = "abc"; let caught = try { fail() } catch { keep(x) }; caught * 10 + keep(x) };
+run()

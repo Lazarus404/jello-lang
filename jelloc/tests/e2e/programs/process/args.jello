@@ -1,0 +1,11 @@
+// expect: [one][two words][--no-jit]
+// args: one "two words" --no-jit
+// The program's arguments, without the VM's own flags.
+let args = System.args;
+let shown = "";
+let rest = args;
+while (!List.is_nil(rest)) {
+  shown += "[" + List.head(rest) + "]";
+  rest = List.tail(rest);
+}
+shown

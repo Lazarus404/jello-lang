@@ -2,11 +2,12 @@ package frontend;
 
 import type { Hir } from frontend.Hir;
 import {
-  auxOf, bytesOf, childCount, childOf, globalNameOf, innerOf, lastChild, nativeLibraryOf, nativeNameOf, opOf, rootNode, spanEndOf, spanOf,
-  spanPathOf, spanStartOf, typeArgCount, typeName, typeOf, useHir, valueOf, variantName, wideValueOf,
+  KIND_ENUM, auxOf, bytesOf, childCount, childOf, globalNameOf, hirTypeName, innerOf, lastChild, nativeLibraryOf, nativeNameOf, opOf, rootNode,
+  spanEndOf, spanOf, spanPathOf, spanStartOf, typeArgCount, typeOf, useHir, valueOf, variantName, wideValueOf,
 } from frontend.Hir;
 import { bytesLiteral } from frontend.Tokens;
-import { concatAll, decimal } from frontend.Text;
+import { internalError } from frontend.Internal;
+import { concatAll } from frontend.Text;
 
 let _withSpans = false;
 
@@ -16,7 +17,7 @@ let _at = fn(id: I32): Bytes {
   if (spanPathOf(id) == spanPathOf(rootNode())) { return range; }
   range + " " + match (spanOf(id)) { Span(path, _, _) => path }
 };
-let _typed = fn(id: I32): Bytes { ": " + typeName(typeOf(id)) + _at(id) + "\n" };
+let _typed = fn(id: I32): Bytes { ": " + hirTypeName(typeOf(id)) + _at(id) + "\n" };
 let _id = fn(id: I32): Bytes { Std.string(valueOf(id)) };
 
 let _expr: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
@@ -54,7 +55,7 @@ _expr = fn(id, indent) {
   match (opOf(id)) {
     Bool => indent + "bool " + (valueOf(id) == 1 ? "true" : "false") + _typed(id),
     I32 => indent + "i32 " + _id(id) + _typed(id),
-    I64 => indent + "i64 " + decimal(wideValueOf(id)) + _typed(id),
+    I64 => indent + "i64 " + Std.string(wideValueOf(id)) + _typed(id),
     Bytes => indent + "bytes " + bytesLiteral(bytesOf(valueOf(id))) + _typed(id),
     Null => indent + "null" + _typed(id),
     Local => indent + "local %" + _id(id) + _typed(id),
@@ -83,9 +84,9 @@ _expr = fn(id, indent) {
     Not => _operation("not.bool", id, indent),
     And => _operation("and", id, indent),
     Or => _operation("or", id, indent),
-    Eq => _operation("eq." + typeName(typeOf(childOf(id, 0))), id, indent),
-    Lt => _operation("lt.s." + typeName(typeOf(childOf(id, 0))), id, indent),
-    Gt => _operation("gt.s." + typeName(typeOf(childOf(id, 0))), id, indent),
+    Eq => _operation("eq." + hirTypeName(typeOf(childOf(id, 0))), id, indent),
+    Lt => _operation("lt.s." + hirTypeName(typeOf(childOf(id, 0))), id, indent),
+    Gt => _operation("gt.s." + hirTypeName(typeOf(childOf(id, 0))), id, indent),
     Sext => _operation("sext.i32.i64", id, indent),
     Trunc => _operation("trunc.i64.i32", id, indent),
     Present => _operation("present", id, indent),
@@ -94,7 +95,7 @@ _expr = fn(id, indent) {
     Unwrap => _operation(valueOf(id) == 1 ? "unwrap" : "unwrap.known", id, indent),
     ToDynamic => _operation("to_dynamic", id, indent),
     FromDynamic => _operation("from_dynamic", id, indent),
-    IsKind => _operation("is_kind " + _id(id) + (valueOf(id) == 14 ? " " + typeName(auxOf(id)) : ""), id, indent),
+    IsKind => _operation("is_kind " + _id(id) + (valueOf(id) == KIND_ENUM ? " " + hirTypeName(auxOf(id)) : ""), id, indent),
     ArrayNew => _operation("array.new", id, indent),
     ArrayLen => _operation("array.len", id, indent),
     ArrayGet => _operation("array.get", id, indent),
@@ -120,7 +121,7 @@ _expr = fn(id, indent) {
     If => indent + "if" + _typed(id) + _section("condition", id, 0, indent) + _section("then", id, 1, indent) + _section("else", id, 2, indent),
     Try => indent + "try" + _typed(id) + _section("body", id, 0, indent) + _section(_catch(id), id, 1, indent),
     _ => {
-      throw "invalid HIR expression op";
+      internalError("invalid HIR expression op");
       ""
     },
   }
@@ -157,7 +158,7 @@ _statement = fn(id, indent) {
         + indent + "  " + _catch(id) + "\n" + _statements(childOf(id, 1), indent + "    ")
     },
     _ => {
-      throw "invalid HIR statement op";
+      internalError("invalid HIR statement op");
       ""
     },
   }
@@ -182,11 +183,11 @@ let _function = fn(id: I32, functionId: I32): Bytes {
   while (i < childCount(id) - 1) {
     let param = childOf(id, i);
     if (i == params) { output += ") captures("; } else if (i > 0) { output += ", "; }
-    output += "%" + _id(param) + " " + bytesOf(auxOf(param)) + ": " + typeName(typeOf(param)) + _at(param);
+    output += "%" + _id(param) + " " + bytesOf(auxOf(param)) + ": " + hirTypeName(typeOf(param)) + _at(param);
     i++;
   }
   let body = lastChild(id);
-  output += ") -> " + typeName(innerOf(typeOf(id))) + _at(id) + "\n" + _statements(body, "    ");
+  output += ") -> " + hirTypeName(innerOf(typeOf(id))) + _at(id) + "\n" + _statements(body, "    ");
   if (auxOf(body) == 1) { output += "    tail\n" + _expr(lastChild(body), "      "); }
   output
 };

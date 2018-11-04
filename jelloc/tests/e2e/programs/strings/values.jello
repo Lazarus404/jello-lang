@@ -1,0 +1,36 @@
+// expect: plain
+// expect: (1, "one", true, 7)
+// expect: Expr.Call(Expr.Name("f"), [Expr.Number(1), Expr.Missing])
+// expect: [[1, 2], []]
+// expect: [1, 2] []
+// expect: Expr.Name("x") null [Expr.Name("x"), null]
+// expect: ["quote \" back \\ tab\t nl\n nul\0 bell\x07 del\x7f é"]
+// expect: null
+// expect: ["cccccc", "cccc", "cc", ""]
+// expect: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+// expect: 0
+// Std.string of Bytes is the Bytes itself; anything
+// else prints as a value literal (tuples, enums,
+// arrays, lists, nullables), Bytes in it quoted and
+// escaped so the literal reads back.
+import { writeText } from std.io.File;
+
+enum Expr { Number(value: I32); Name(text: Bytes); Call(callee: Expr, args: Array<Expr>); Missing; }
+
+let say = fn(value: Bytes) { writeText("/dev/stdout", value + "\n"); null };
+let some: ?Expr = Expr.Name("x"); let none: ?Bytes = null;
+let list = List.cons(1, List.cons(2, List.nil<I32>()));
+say(Std.string("plain"));
+say(Std.string((1, "one", true, 7i64)));
+say(Std.string(Expr.Call(Expr.Name("f"), [Expr.Number(1), Expr.Missing])));
+say(Std.string([[1, 2], Array.new<I32>(0)]));
+say(Std.string(list) + " " + Std.string(List.nil<Bytes>()));
+say(Std.string(some) + " " + Std.string(none) + " " + Std.string([some, null]));
+say(Std.string(["quote \" back \\ tab\t nl\n nul\0 bell\x07 del\x7f é"]));
+say(Std.string(null));
+
+say(Std.string(["cccccc", "cccc", "cc", ""]));
+let counted = Array.new<I32>(0);
+while (counted.len() < 20) { counted.push(counted.len() as I32); }
+say(Std.string(counted));
+0

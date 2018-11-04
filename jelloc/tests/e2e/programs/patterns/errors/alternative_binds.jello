@@ -1,0 +1,4 @@
+// error: 3:49: n must be bound by every alternative
+enum Token { Int(value: I32); Eof; }
+let f = fn(t: Token): I32 { match (t) { Int(n), Eof => 1 } };
+f(Token.Eof)

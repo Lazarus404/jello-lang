@@ -1,9 +1,9 @@
 package ir;
 
 import { bytesLiteral } from frontend.Tokens;
-import { concatAll, decimal } from frontend.Text;
-import type { BasicBlock, Function, Instruction, Native, Program, ReturnType, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { ReturnType, ValueType, argumentCount, argsOf, dstOf, immOf, opOf } from ir.Model;
+import { concatAll } from frontend.Text;
+import type { BasicBlock, Function, Instruction, Native, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
+import { ValueType, argumentCount, argsOf, dstOf, immOf, opOf } from ir.Model;
 
 let _type: (ValueType) -> Bytes = fn(_ty) { "" };
 
@@ -18,7 +18,6 @@ let _types = fn(types: Array<ValueType>): Bytes {
   }
   out
 };
-let _returnType = fn(result: ReturnType): Bytes { match (result) { Void => "void", Value(ty) => _type(ty) } };
 _type = fn(ty) {
   match (ty) {
     Bool => "bool",
@@ -30,10 +29,9 @@ _type = fn(ty) {
     ListOf(element) => "list<" + _type(element) + ">",
     TupleOf(elements) => "(" + _types(elements) + ")",
     Nominal(id) => "type@" + Std.string(id),
-    Function(args, result) => "fn(" + _types(args) + ") -> " + _returnType(result),
+    Function(args, result) => "fn(" + _types(args) + ") -> " + _type(result),
   }
 };
-export let printValueType: (ValueType) -> Bytes = fn(ty) { _type(ty) };
 
 let _register = fn(id: I32): Bytes { "%" + Std.string(id) };
 
@@ -133,10 +131,8 @@ let _terminator = fn(terminator: Terminator): Bytes {
     Jump(target) => "jump block " + Std.string(target),
     Branch(condition, thenTarget, elseTarget) => "branch " + _register(condition)
       + ", block " + Std.string(thenTarget) + ", block " + Std.string(elseTarget),
-    ReturnVoid => "return",
     ReturnValue(value) => "return " + _register(value),
     Throw(value, _) => "throw " + _register(value),
-    Unreachable => "unreachable",
   }
 };
 
@@ -170,7 +166,7 @@ let _function = fn(function: Function, pool: Array<Bytes>, out: Array<Bytes>) {
       header += _register(params[i]) + ": " + _type(registers[params[i]]);
       i++;
     }
-    out.push(header + ") -> " + _returnType(result) + " entry " + Std.string(entry) + " {\n");
+    out.push(header + ") -> " + _type(result) + " entry " + Std.string(entry) + " {\n");
     i = 0;
 
     while (i < registers.len()) {
@@ -202,7 +198,7 @@ export let printIr: (Program) -> Bytes = fn(program) {
 
     while (i < natives.len()) {
       match (natives[i]) { Native(library, name, params, result) => {
-        out.push("native n" + Std.string(i) + ": " + library + "." + name + " " + _type(ValueType.Function(params, ReturnType.Value(result))) + "\n");
+        out.push("native n" + Std.string(i) + ": " + library + "." + name + " " + _type(ValueType.Function(params, result)) + "\n");
       } };
       i++;
     }
@@ -210,7 +206,7 @@ export let printIr: (Program) -> Bytes = fn(program) {
     i = 0;
 
     while (i < wides.len()) {
-      out.push("i64 #" + Std.string(i) + " = " + decimal(wides[i]) + "\n");
+      out.push("i64 #" + Std.string(i) + " = " + Std.string(wides[i]) + "\n");
       i++;
     }
     if (wides.len() > 0) { out.push("\n"); }

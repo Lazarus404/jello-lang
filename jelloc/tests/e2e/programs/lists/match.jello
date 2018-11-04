@@ -1,0 +1,9 @@
+// expect: true
+enum E { A(xs: List<I32>); B(xs: List<I32>); C; }
+
+let pick = fn(e: E): Bool {
+  let chosen = match (e) { C => List.cons(1, List.nil<I32>()), _ => List.nil<I32>() };
+  let bound = match (e) { A(xs), B(xs) => xs, C => List.cons(2, List.nil<I32>()) };
+  List.is_nil(chosen) && List.is_nil(bound)
+};
+pick(E.A(List.nil<I32>()))

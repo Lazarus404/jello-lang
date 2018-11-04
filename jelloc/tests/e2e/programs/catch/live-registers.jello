@@ -1,0 +1,25 @@
+// expect: 456030
+// Registers the handler reads survive the body: allocation must not reuse
+// them there, nor give the thrown value their register.
+let fail = fn(code: I32): I32 { throw code; 0 };
+
+
+let onlyInCatch = fn(): I32 {
+  let only = "catch";
+  try { let t = "ab" + "cd"; fail(t.len()) } catch (e) { (e as I32) * 10 + only.len() }
+};
+
+
+let keptBoxed = fn(seed: I32): I32 {
+  let kept: ?I32 = seed;
+  try { fail(seed * 2) } catch (e) { (e as I32) * 100 + kept }
+};
+
+
+let clobbered = fn(x: I32): I32 {
+  let stage = 0; let other = x + 1;
+  try { fail(other); stage = 2; } catch { }
+  stage
+};
+
+onlyInCatch() * 10000 + keptBoxed(3) * 10 + clobbered(5)

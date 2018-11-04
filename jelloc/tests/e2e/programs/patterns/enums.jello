@@ -1,0 +1,56 @@
+// expect: 725301012345561106
+enum Expr { Num(value: I32); Neg(inner: Expr); Add(left: Expr, right: Expr); }
+enum Token { Ident(name: Bytes); Int(value: I32); Eof; }
+
+
+let shape = fn(e: Expr): I32 {
+  match (e) {
+    Neg(Neg(Num(n))) => n,
+    Neg(Num(_)) => 2,
+    Add(Num(0), Num(n)) => n,
+    Add(Num(a), Num(b)) => a + b,
+    Num(_) => 1,
+    _ => 0,
+  }
+};
+
+
+let calls = 0;
+let count = fn(result: Bool): Bool { calls += 1; result };
+let classify = fn(t: Token): I32 {
+  match (t) {
+    Ident(name) when (count(name == "rest")) => 1,
+    Ident(name) when (count(name.len() > 3)) => 2,
+    Ident(_) => 3,
+    Int(n) when (n < 0) => 4,
+    Int(0), Eof => 5,
+    Int(_) => 6,
+  }
+};
+
+
+let last = fn(t: Token): I32 {
+  match (t) { Eof => 0, Int(_) when (count(true)), _ => 1 }
+};
+
+let digits: I64 = 0;
+let add = fn(digit: I32): I32 { digits = digits * 10 + (digit as I64); 0 };
+add(shape(Expr.Neg(Expr.Neg(Expr.Num(7)))));
+add(shape(Expr.Neg(Expr.Num(9))));
+add(shape(Expr.Add(Expr.Num(0), Expr.Num(5))));
+add(shape(Expr.Add(Expr.Num(1), Expr.Num(2))));
+add(shape(Expr.Add(Expr.Neg(Expr.Num(1)), Expr.Num(2))));
+add(shape(Expr.Num(4)));
+add(shape(Expr.Neg(Expr.Neg(Expr.Add(Expr.Num(1), Expr.Num(1))))));
+add(classify(Token.Ident("rest")));
+add(classify(Token.Ident("longer")));
+add(classify(Token.Ident("ab")));
+add(classify(Token.Int(-4)));
+add(classify(Token.Int(0)));
+add(classify(Token.Eof));
+add(classify(Token.Int(8)));
+add(last(Token.Ident("x")));
+add(last(Token.Int(1)));
+add(last(Token.Eof));
+add(calls);
+digits

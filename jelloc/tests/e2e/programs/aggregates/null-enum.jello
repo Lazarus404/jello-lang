@@ -1,0 +1,6 @@
+// trap: NULL_DEREF
+// A zero-filled reference element is null until set,
+// and using it traps.
+enum Shape { Dot; Line(length: I32); }
+let measure = fn(): I32 { let shapes = Array.new<Shape>(1); match (shapes[0]) { Dot => 0, Line(length) => length } };
+measure()

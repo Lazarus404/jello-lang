@@ -1,7 +1,7 @@
 package frontend;
 
 import { childCount, childOf, globalCount, lastChild, nodeCount, opOf, rootNode, valueOf } from frontend.Hir;
-import { bitsAdd, bitsHas, bitsMembers, bitsNew, bitsUnion } from ir.Bits;
+import { bitsAdd, bitsHas, bitsMembers, bitsNew, bitsUnion } from frontend.Bits;
 
 let _reads = Array.new<Array<I32>>(0);
 let _calls = Array.new<Array<I32>>(0);
@@ -37,12 +37,15 @@ _scan = fn(id, reads, calls) {
 
 let _transitive = fn(functions: I32): Array<Array<I32>> {
   let reach = Array.new<Array<I32>>(0);
+  let callees = Array.new<Array<I32>>(0);
   let f = 0;
 
   while (f <= functions) {
     let set = bitsNew(globalCount());
     bitsUnion(set, _reads[f]);
     reach.push(set);
+    if (_indirect[f]) { bitsUnion(_calls[f], _referenced); }
+    callees.push(bitsMembers(_calls[f]));
     f++;
   }
   let changed = true;
@@ -52,23 +55,11 @@ let _transitive = fn(functions: I32): Array<Array<I32>> {
     f = 1;
 
     while (f <= functions) {
-      let callees = bitsMembers(_calls[f]);
-      if (_indirect[f]) { callees = bitsMembers(_referenced); }
       let i = 0;
 
-      while (i < callees.len()) {
-        if (bitsUnion(reach[f], reach[callees[i]])) { changed = true; }
+      while (i < callees[f].len()) {
+        if (bitsUnion(reach[f], reach[callees[f][i]])) { changed = true; }
         i++;
-      }
-
-      if (_indirect[f]) {
-        let direct = bitsMembers(_calls[f]);
-        i = 0;
-
-        while (i < direct.len()) {
-          if (bitsUnion(reach[f], reach[direct[i]])) { changed = true; }
-          i++;
-        }
       }
       f++;
     }

@@ -1,0 +1,54 @@
+import type { Test } from std.testing;
+import std.testing as T;
+
+
+
+let testLogs = fn(t: Test) {
+  T.log(t, "a note\nover two lines");
+  null
+};
+
+
+let testSkips = fn(t: Test) {
+  T.skip(t, "not on this platform");
+  T.fail(t, "ran after skip");
+  null
+};
+
+
+let testStops = fn(t: Test) {
+  T.log(t, "before");
+  T.throws(t, fn() { T.fatal(t, "cannot go on"); null });
+  T.fail(t, "ran after fatal");
+  null
+};
+
+
+let testDoubles = fn(t: Test) {
+  let cases = [(1, 2), (2, 4), (3, 7)];
+  let i = 0;
+  while (i < cases.len()) {
+    let (input, want) = cases[i];
+    T.run(t, Std.string(input), fn(sub: Test) { T.equal(sub, input * 2, want); null });
+    i++;
+  }
+  null
+};
+
+
+let testStopsFromSubtest = fn(t: Test) {
+  T.run(t, "inner", fn(sub: Test) { T.fatal(t, "stopped from inner"); null });
+  T.fail(t, "ran after the stop");
+  null
+};
+
+
+
+T.declareFlag("--loud", "log more");
+T.declareOption("--name", "a name to log");
+let testArgs = fn(t: Test) {
+  T.log(t, Std.string(T.flag("--loud")) + " " + T.option("--name", "none") + " " + Std.string(T.selected(t, "a")) + " " + Std.string(T.selected(t, "b")));
+  T.throws(t, fn() { T.flag("--quiet"); null });
+  T.throws(t, fn() { T.option("--loud", ""); null });
+  null
+};

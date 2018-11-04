@@ -1,0 +1,4 @@
+// error: 3:40: v must be bound by every alternative
+enum T { A; B(v: I32); }
+let f = fn(t: T): I32 { match (t) { A, B(v) => 1 } };
+f(T.A)

@@ -1,0 +1,32 @@
+// expect: 200301406
+// A throw in a handler goes to the next handler out.
+let fail = fn(code: I32): I32 { throw code; 0 };
+
+let rethrows = fn(): I32 {
+  try {
+    try { fail(3); } catch (e) { throw (e as I32) * 2; }
+    0
+  } catch (e) { e as I32 }
+};
+
+
+let rawRethrow = fn(): I32 {
+  try {
+    try { fail(4); } catch (e) { throw e; }
+    0
+  } catch (e) { (e as I32) + 10 }
+};
+
+let nested = fn(depth: I32): I32 {
+  try {
+    try {
+      try { fail(depth) } catch (e) { throw (e as I32) + 1; 0 }
+    } catch (e) { throw (e as I32) * 10; 0 }
+  } catch (e) { e as I32 }
+};
+
+let inCatch = fn(): I32 {
+  try { fail(1) } catch (e) { try { fail((e as I32) + 1) } catch (inner) { (inner as I32) * 100 } }
+};
+
+inCatch() * 1000000 + nested(2) * 10000 + rawRethrow() * 100 + rethrows()

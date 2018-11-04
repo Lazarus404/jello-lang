@@ -1,0 +1,7 @@
+// error: 4:42: cannot assign to i: a closure captures it
+let makers = fn(n: I32): Array<() -> I32> {
+  let made = Array.new<() -> I32>(0); let i = 0;
+  while (i < n) { made.push(fn() { i }); i++; }
+  made
+};
+makers(3)[0]()

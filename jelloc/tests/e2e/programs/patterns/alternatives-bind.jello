@@ -1,0 +1,15 @@
+// expect: 1125333407
+// Alternatives that bind names: the body sees the matching one's.
+enum E { A(items: Array<I32>); B(n: I32, items: Array<I32>); C(items: Array<I32>, n: I32); D; }
+let total = fn(e: E): I32 {
+  match (e) {
+    A(items), B(_, items) => items.len() * 10,
+    C(items, n) when (n > 5) => n,
+    D => -1,
+    C(items, n) => items.len() + n,
+  }
+};
+let pick = fn(e: E): I32 { match (e) { A(xs), B(_, xs), C(xs, _) => xs.len(), D => 0 } };
+let firstN = fn(e: E): I32 { match (e) { D, A(_) => 0, B(n, _), C(_, n) => n } };
+total(E.A([1, 2])) * 1000000 + total(E.B(9, [1, 2, 3])) * 10000 + total(E.C([1], 7)) * 100 + total(E.C([1], 2))
+  + pick(E.C([1, 2, 3, 4], 0)) * 100000000 + firstN(E.C([], 5)) * 1000000000 + firstN(E.D)

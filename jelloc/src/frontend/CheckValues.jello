@@ -3,6 +3,7 @@ package frontend;
 import type { BinaryOp, Expr as AstExpr, Type as AstType } from frontend.Ast;
 import { BinaryOp } from frontend.Ast;
 import frontend.Hir as H;
+import { internalError } from frontend.Internal;
 import { Kind, Op } from frontend.Hir;
 import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, isInferredInteger, isNullaryVariant, newBinding, presentAt, presentKnown, syntaxChild } from frontend.TypeCheck;
 
@@ -85,7 +86,7 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   if (ty == H.TYPE_BYTE_BUFFER) { throw "`as` cannot convert a buffer from Bytes.new" + bufferHint(ty); }
 
   if (target == H.TYPE_DYNAMIC) {
-    if (H.isKind(ty, Kind.List)) { throw "a list cannot become Dynamic: its nil would read as null (decision 42)"; }
+    if (H.isKind(ty, Kind.List)) { throw "a list cannot become Dynamic: its nil would read as null"; }
     return H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [operand]);
   }
 
@@ -118,13 +119,13 @@ let _is = fn(value: AstExpr, targetType: AstType): I32 {
   let target = checkType(targetType);
 
   let code = match (H.kindOf(target)) {
-    Bool => 1, I32 => 2, Bytes => 4, I64 => 7, Enum => 14,
+    Bool => H.KIND_BOOL, I32 => H.KIND_I32, Bytes => H.KIND_BYTES, I64 => H.KIND_I64, Enum => H.KIND_ENUM,
     _ => {
       throw "is supports only Bool, I32, I64, Bytes and enums, not " + H.typeName(target);
       -1
     },
   };
-  H.node(Op.IsKind, H.TYPE_BOOL, code, code == 14 ? target : 0, [operand])
+  H.node(Op.IsKind, H.TYPE_BOOL, code, code == H.KIND_ENUM ? target : 0, [operand])
 };
 
 export let checkValueExpr: (AstExpr, I32) -> I32 = fn(expr, _expected) {
@@ -133,7 +134,7 @@ export let checkValueExpr: (AstExpr, I32) -> I32 = fn(expr, _expected) {
     Cast(value, ty) => _cast(value, ty),
     Is(value, ty) => _is(value, ty),
     _ => {
-      throw "expected a cast, kind test or comparison";
+      internalError("expected a cast, kind test or comparison");
       -1
     },
   }

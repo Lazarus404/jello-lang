@@ -1,0 +1,38 @@
+// expect: 701020157
+// Statement trys: leaving early closes the region, and a handler sees a
+// mutable local's latest value.
+let fail = fn(code: I32): I32 { throw code; 0 };
+
+let middle = fn(code: I32): I32 { fail(code) + 1 };
+
+
+
+let breaks = fn(): I32 {
+  let log = 0; let i = 0;
+  try {
+    while (i < 30) {
+      i++;
+      try {
+        if (i == 20) { break; }
+        if (i < 10) { continue; }
+        log = log + middle(0) * 0 + 1;
+      } catch { log = log + 1; }
+    }
+    middle(7);
+  } catch (e) { log = log + (e as I32) * 1000; }
+  log * 100 + i
+};
+
+let latest = fn(): I32 {
+  let stage = 0;
+  try { stage = 1; fail(0); stage = 2; } catch { }
+  stage
+};
+
+let early = fn(flag: Bool): I32 {
+  try { if (flag) { return 5; } } catch { return 6; }
+  try { fail(9); } catch { return 7; }
+  8
+};
+
+breaks() * 1000 + latest() * 100 + early(true) * 10 + early(false)
