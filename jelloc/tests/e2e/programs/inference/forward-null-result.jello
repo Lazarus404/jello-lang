@@ -1,0 +1,6 @@
+// expect: 3
+// Calls of later and recursive functions whose result is Null.
+let answer = fn(): I32 { reset(); count(3); 3 };
+let reset = fn() { null };
+let count = fn(n: I32) { if (n > 0) { count(n - 1); } null };
+answer()

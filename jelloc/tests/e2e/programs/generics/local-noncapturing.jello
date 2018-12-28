@@ -1,0 +1,9 @@
+// expect: 12hi
+// A local generic function that captures nothing, at two types.
+let run = fn(): Bytes {
+  let pair<T> = fn(x: T): Tuple<T, T> { (x, x) };
+  let (a, b) = pair(6);
+  let (s, _) = pair("hi");
+  Std.string(a + b) + s
+};
+run()

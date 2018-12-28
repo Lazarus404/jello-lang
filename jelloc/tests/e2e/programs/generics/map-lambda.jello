@@ -1,0 +1,9 @@
+// expect: [2, 3, 4]
+// A lambda argument takes its parameter types from the generic's signature.
+let map<T, U> = fn(xs: Array<T>, f: (T) -> U): Array<U> {
+  let out = Array.new<U>(0); let i = 0;
+  while (i < xs.len()) { out.push(f(xs[i])); i++; }
+  out
+};
+let ys = map([1, 2, 3], fn(x) { x + 1 });
+Std.string(ys)

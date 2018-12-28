@@ -25,7 +25,27 @@ import { spanOf, spanPathOf } from frontend.Hir;
 
 enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; Help; }
 
-let _USAGE = "usage: jelloc <input.jello> (--out path | --lex | --parse | --hir [--spans] | --ir | --jlo [--out path]) [--std dir] [--path dir]...\n       jelloc --test <file.test.jello>... --path dir... (--out path | --hir [--spans] | --ir | --jlo [--out path]) [--std dir]\n\n  --test       compile a test binary instead: every test in the files, each\n               under a --path root, run by std.testing\n  --out path   write the compiled module to path\n  --std dir    resolve std.* imports under dir (by default\n               $JELLO_STD_PATH)\n  --path dir   resolve other imports under dir too, after the input's\n               directory (with --test, under these alone); repeatable,\n               searched in order\n  --lex        print the tokens\n  --parse      check the syntax only\n  --hir        print the typed HIR\n  --spans      with --hir, end each node's line with its source byte range\n  --ir         print the CFG IR\n  --jlo        print the allocated JLO instructions (with --out, also\n               write the compiled module)\n  --help       print this help\n\nExit status: 0 on success, 1 when the program does not compile (the\ndiagnostic is on standard error), 2 for a bad command line, 3 for an\ninternal error (a compiler bug).\n";
+let _USAGE = "usage: jelloc <input.jello> (--out path | --lex | --parse | --hir [--spans] | --ir | --jlo [--out path]) [--std dir] [--path dir]...\n"
+  + "       jelloc --test <file.test.jello>... --path dir... (--out path | --hir [--spans] | --ir | --jlo [--out path]) [--std dir]\n\n"
+  + "  --test       compile a test binary instead: every test in the files, each\n"
+  + "               under a --path root, run by std.testing\n"
+  + "  --out path   write the compiled module to path\n"
+  + "  --std dir    resolve std.* imports under dir (by default\n"
+  + "               $JELLO_STD_PATH)\n"
+  + "  --path dir   resolve other imports under dir too, after the input's\n"
+  + "               directory (with --test, under these alone); repeatable,\n"
+  + "               searched in order\n"
+  + "  --lex        print the tokens\n"
+  + "  --parse      check the syntax only\n"
+  + "  --hir        print the typed HIR\n"
+  + "  --spans      with --hir, end each node's line with its source byte range\n"
+  + "  --ir         print the CFG IR\n"
+  + "  --jlo        print the allocated JLO instructions (with --out, also\n"
+  + "               write the compiled module)\n"
+  + "  --help       print this help\n\n"
+  + "Exit status: 0 on success, 1 when the program does not compile (the\n"
+  + "diagnostic is on standard error), 2 for a bad command line, 3 for an\n"
+  + "internal error (a compiler bug).\n";
 
 let _exit = fn(code: I32, message: Bytes) {
   writeText("/dev/stderr", message);

@@ -1,6 +1,6 @@
 package frontend;
 
-import type { Block, Expr, ListLiteral, MatchArm, Parameter, Pattern, Program, Stmt } from frontend.Ast;
+import type { Block, Expr, ListLiteral, MatchArm, Parameter, Pattern, Program, Stmt, Type } from frontend.Ast;
 import { exprTag, patternTag, stmtTag } from frontend.Ast;
 import type { Syntax, SyntaxKind, SyntaxMark } from frontend.Source;
 import { Syntax, SyntaxKind } from frontend.Source;
@@ -12,7 +12,8 @@ let _path = "";
 
 let _sameKind = fn(left: SyntaxKind, right: SyntaxKind): Bool {
   match ((left, right)) {
-    (Expression, Expression), (Statement, Statement), (Parameter, Parameter), (Pattern, Pattern) => true,
+    (Expression, Expression), (Statement, Statement), (Parameter, Parameter), (Pattern, Pattern),
+    (Type, Type) => true,
     _ => false,
   }
 };
@@ -53,6 +54,7 @@ let _addPattern = fn(out: Array<Syntax>, value: Pattern) {
   out.push(_pattern(value));
   null
 };
+let _annotation = fn(): Syntax { _take(SyntaxKind.Type, 0, []) };
 
 let _patternList = fn(values: Array<Pattern>, out: Array<Syntax>) {
   let i = 0;
@@ -233,8 +235,9 @@ _expr = fn(value) {
     },
     Spread(inner), Unary(_, inner), Await(inner), Unquote(inner), Member(inner, _), TypeApply(inner, _),
     IncDec(_, _, inner), Cast(inner, _), Is(inner, _) => _add(out, inner),
-    LetExpr(pattern, _, _, inner) => {
+    LetExpr(pattern, _, annotation, inner) => {
       _addPattern(patterns, pattern);
+      if (annotation != null) { patterns.push(_annotation()); }
       _add(out, inner)
     },
     Bits(segments) => {
@@ -308,8 +311,9 @@ _stmt = fn(value) {
   let patterns = Array.new<Syntax>(0);
 
   match (value) {
-    LetStmt(_, _, pattern, _, _, inner) => {
+    LetStmt(_, _, pattern, _, annotation, inner) => {
       _addPattern(patterns, pattern);
+      if (annotation != null) { patterns.push(_annotation()); }
       _add(out, inner)
     },
     Throw(inner), Expression(inner) => _add(out, inner),

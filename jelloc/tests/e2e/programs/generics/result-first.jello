@@ -1,0 +1,5 @@
+// expect: 6
+// The annotation fixes T before the arguments, so v is an I64 in `v + 1`.
+let apply<T> = fn(f: (T) -> T, x: T): T { f(x) };
+let y: I64 = apply(fn(v) { v + 1 }, 5);
+y

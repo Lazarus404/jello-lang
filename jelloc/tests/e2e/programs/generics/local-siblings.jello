@@ -1,0 +1,9 @@
+// expect: 2|ab
+// A local generic function's instances can call the local generic functions
+// it sees where it is declared.
+let pairs = fn(): Bytes {
+  let first<T> = fn(xs: Array<T>): T { xs[0] };
+  let firstTwice<T> = fn(xs: Array<T>): Array<T> { [first(xs), first(xs)] };
+  Std.string(firstTwice([1, 2]).len()) + "|" + first(["ab"])
+};
+pairs()

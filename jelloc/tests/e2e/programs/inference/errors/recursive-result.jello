@@ -1,0 +1,4 @@
+// error: 3:9: f returns ?I32, but a call uses its result as I32; annotate its result type
+// A recursive call's use and the joined results disagree.
+let f = fn(n: I32) { if (n == 0) { return null; } let x: I32 = f(n - 1); x };
+f(3)

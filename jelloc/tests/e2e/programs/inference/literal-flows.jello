@@ -1,0 +1,14 @@
+// expect: 85899345940true2147483648
+// A literal's width follows it through operators, steps and other literals
+// until a use fixes it.
+let a = 1; let b = 1;
+let sum = a + b;
+let wide: I64 = sum << 31;
+let n = 0; n++; n += 1;
+let shifted: I64 = (n << 32) + 2;
+let negated: I64 = -(n << 31);
+let big = 2147483647;
+let small = big < 0;
+let xs = []; xs.push(big + 1);
+let grown: I64 = xs[0];
+Std.string(shifted) + Std.string(negated + wide) + Std.string(!small) + Std.string(grown)

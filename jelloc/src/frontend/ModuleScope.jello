@@ -5,8 +5,14 @@ import { Module, modulePath } from frontend.Modules;
 import frontend.Hir as H;
 
 export enum Binding {
-  Global(id: I32); Function(index: I32); Loaded(library: Bytes, name: Bytes); Native(id: I32);
-  Namespace(module: I32, path: Bytes); Intrinsic(module: I32, name: Bytes); Unbound;
+  Global(id: I32);
+  Function(index: I32);
+  Loaded(library: Bytes, name: Bytes);
+  Native(id: I32);
+  Namespace(module: I32, path: Bytes);
+  Intrinsic(module: I32, name: Bytes);
+  Template(index: I32);
+  Unbound;
 }
 
 let _bindings = Array.new<Binding>(0);
@@ -28,6 +34,15 @@ let _epoch = 0;
 let _epochs = Array.new<I32>(0);
 let _at = Array.new<I32>(0);
 let _isType = Array.new<Bool>(0);
+let _names = Array.new<I32>(0);
+let _places = Array.new<I32>(0);
+let _nameIsType = Array.new<Bool>(0);
+
+enum Scope {
+  Scope(bindings: Array<Binding>, imported: Array<Bool>, types: Array<I32>, opened: Array<Bool>, names: Array<I32>, places: Array<I32>, isType: Array<Bool>);
+}
+let _scopes = Array.new<Scope>(0);
+let _module = -1;
 
 let _named = fn(name: Bytes): I32 {
   let id = H.findBytesId(name);
@@ -52,6 +67,9 @@ let _record = fn(name: Bytes, types: Bool, index: I32) {
   _epochs[id] = _epoch;
   _at[id] = index;
   _isType[id] = types;
+  _names.push(id);
+  _places.push(index);
+  _nameIsType.push(types);
   null
 };
 
@@ -100,15 +118,23 @@ export let resetExports: () -> Bool = fn() {
   _exportTypeLinks = Array.new<I32>(0);
   _exportTypes = Array.new<I32>(0);
   _exportTypePublic = Array.new<Bool>(0);
+  _scopes = Array.new<Scope>(0);
+  _module = -1;
   true
 };
 
-export let enterModule: (Array<Import>, Array<Module>) -> Bool = fn(imports, modules) {
+export let enterModule: (I32, Array<Import>, Array<Module>) -> Bool = fn(module, imports, modules) {
   _epoch++;
   _bindings = Array.new<Binding>(0);
   _imported = Array.new<Bool>(0);
   _types = Array.new<I32>(0);
   _opened = Array.new<Bool>(0);
+  _names = Array.new<I32>(0);
+  _places = Array.new<I32>(0);
+  _nameIsType = Array.new<Bool>(0);
+  let scope = Scope.Scope(_bindings, _imported, _types, _opened, _names, _places, _nameIsType);
+  _scopes.push(scope);
+  _module = module;
   let i = 0;
 
   while (i < modules.len()) {
@@ -135,6 +161,35 @@ export let addImport: (Import, Array<Module>, Bool) -> Bool = fn(imported, modul
   };
   true
 };
+
+export let useModuleScope: (I32) -> I32 = fn(module) {
+  let outer = _module;
+  if (module == outer) { return outer; }
+
+  match (_scopes[module]) { Scope(bindings, imported, types, opened, names, places, isType) => {
+    _epoch++;
+    _bindings = bindings;
+    _imported = imported;
+    _types = types;
+    _opened = opened;
+    _names = names;
+    _places = places;
+    _nameIsType = isType;
+    let i = 0;
+
+    while (i < names.len()) {
+      let id = names[i];
+      _epochs[id] = _epoch;
+      _at[id] = places[i];
+      _isType[id] = isType[i];
+      i++;
+    }
+  } };
+  _module = module;
+  outer
+};
+
+export let currentModule: () -> I32 = fn() { _module };
 
 export let declareScoped: (Bytes, Binding) -> Bool = fn(name, binding) {
   _add(name, binding, false);

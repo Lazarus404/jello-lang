@@ -1,0 +1,8 @@
+// expect: 2147483648
+// A literal's type argument is decided by every use: the later I64 binding
+// makes `a` an I64, so the call is an instance at I64, which does not wrap.
+let next<T: Integer> = fn(x: T): T { x + 1 };
+let a = 2147483647;
+let b = next(a);
+let c: I64 = a;
+Std.string(b)

@@ -35,6 +35,7 @@ import type {
   StructField,
   Type,
   TypedefBody,
+  TypeParam,
   UnaryOp,
   WithClause,
 } from frontend.Ast;
@@ -274,6 +275,15 @@ let _parseType: () -> Type = fn() {
   Type.Named("?")
 };
 
+let _annotation = fn(): ?Type {
+  if (peek() != Token.Colon) { return null; }
+  next();
+  let start = pos;
+  let ty = _parseType();
+  _mark(SyntaxKind.Type, 0, start);
+  ty
+};
+
 let _parseTypeAtom: () -> Type = fn() {
   throw "internal: type atom parser not initialized";
   Type.Named("?")
@@ -375,16 +385,29 @@ _parseTypeArg = fn() {
   }
 };
 
-let _typeParams = fn(): Array<Bytes> {
-  let out = Array.new<Bytes>(0);
+let _typeParams = fn(): Array<TypeParam> {
+  let out = Array.new<TypeParam>(0);
 
   if (peek() == Token.Less) {
     next();
-    out.push(_ident());
 
-    while (peek() == Token.Comma) {
+    while (true) {
+      let at = pos;
+      let name = _ident();
+      let bounds = Array.new<Bytes>(0);
+
+      if (peek() == Token.Colon) {
+        next();
+        bounds.push(_ident());
+
+        while (peek() == Token.Plus) {
+          next();
+          bounds.push(_ident());
+        }
+      }
+      out.push(TypeParam.TypeParam(name, bounds, _offset(at, false), _offset(at, true)));
+      if (peek() != Token.Comma) { break; }
       next();
-      out.push(_ident());
     }
     _expectGenericClose();
   }
@@ -1112,10 +1135,7 @@ let _primary = fn(start: I32): Expr {
     Let => {
       let pattern = _declarationPattern();
       let typeParams = _typeParams();
-      let annotation: ?Type = (peek() == Token.Colon) ? {
-        next();
-        _parseType()
-      } : null;
+      let annotation = _annotation();
       expect(Token.Equal);
       Expr.LetExpr(pattern, typeParams, annotation, _parseExpr(0))
     },
@@ -1670,10 +1690,7 @@ _parseStmtInner = fn() {
       let isConst = (kind == Token.Const);
       let pattern = _declarationPattern();
       let typeParams = _typeParams();
-      let annotation: ?Type = (peek() == Token.Colon) ? {
-        next();
-        _parseType()
-      } : null;
+      let annotation = _annotation();
       expect(Token.Equal);
       let value = _parseExpr(0);
       expect(Token.Semicolon);

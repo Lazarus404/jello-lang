@@ -1,0 +1,10 @@
+// expect: 1099511627776 2199023255552 4398046511104
+// Literals in branches, arrays and tuples take the width a later use gives them.
+let c = true;
+let x = c ? 1 : 2;
+let y: I64 = x << 40;
+let xs = [1, 2];
+let z: I64 = xs[1] << 40;
+let t = (3, 4);
+let w: I64 = t.1 << 40;
+Std.string(y) + " " + Std.string(z) + " " + Std.string(w)

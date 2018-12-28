@@ -1,0 +1,4 @@
+// error: 3:52: instantiating nest nests more than 64 deep
+// Each call makes a new instance at a bigger type, without end.
+let nest<T> = fn(x: T, n: I32): I32 { n == 0 ? 0 : nest([x], n - 1) };
+nest(1, 3)

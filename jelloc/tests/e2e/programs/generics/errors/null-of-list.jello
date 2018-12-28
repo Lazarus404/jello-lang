@@ -1,0 +1,5 @@
+// error: 5:1: T is used as Null<T> in orNull, so it cannot be List<I32>
+// Null<List<T>> is not a type, so orNull cannot be instantiated at a list.
+let orNull<T> = fn(x: T, keep: Bool): Null<T> { keep ? x : null };
+let xs = List.nil<I32>();
+orNull(xs, true)

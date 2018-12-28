@@ -10,6 +10,7 @@ import { join } from std.core.Bytes;
 import { NONE, finish, fresh, selfModule, startJelloc, startJloTool, withStd } from support.Run;
 import { shapeProblems } from support.Shape;
 
+// A listing of one function holding INSTRUCTIONS, as jlo_tool prints them.
 let _listing = fn(instructions: Array<Bytes>): Bytes {
   let lines = [".jlo module version=1", "func[0] nregs=2 nargs=0 reg_types=[I32, I32]"];
   let i = 0;
@@ -40,6 +41,8 @@ let testRules = fn(t: Test) {
   T.equal(t, shapeProblems(_listing(["RET a=r0 b=r0 c=r0 imm=0"]) + "\n  \n", 0), NONE);
 };
 
+// The compiler under test compiling its own sources: --self when given (at
+// the fixed point, stage 1 itself; test_jello.sh), or a compile here.
 let testCompiler = fn(t: Test) {
   let module = selfModule();
 
@@ -50,5 +53,5 @@ let testCompiler = fn(t: Test) {
   }
   let (disassembled, listing, why) = finish(startJloTool(["disasm", module]));
   if (disassembled != 0) { T.fatal(t, "jlo_tool cannot disassemble the compiler: " + why); }
-  T.equal(t, shapeProblems(listing, 2739), NONE);
+  T.equal(t, shapeProblems(listing, 3106), NONE);
 };

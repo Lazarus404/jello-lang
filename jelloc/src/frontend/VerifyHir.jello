@@ -6,7 +6,7 @@ import { internalError } from frontend.Internal;
 import {
   KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_I32, KIND_I64, Kind, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
   fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, isKind, kindOf, nativeCount, nativeTypeOf, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
-  spanOf, spanStartOf, typeArg, typeArgCount, typeOf, useHir, valueOf, variantCount,
+  spanOf, spanStartOf, typeArg, typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 
 let _used = Array.new<Bool>(0);
@@ -68,6 +68,113 @@ let _spans = fn() {
     id++;
   }
   _at = -1;
+  null
+};
+
+let _closedTypes = fn() {
+  let open = Array.new<Bool>(0);
+  let seen = Array.new<Bool>(0);
+  let queued = Array.new<Bool>(0);
+  let ty = 0;
+
+  while (ty < typeCount()) {
+    let held = match (kindOf(ty)) { Var, Param, Applied => true, Array, List, Null, Function => (innerOf(ty) >= 0) && open[innerOf(ty)], _ => false };
+    let i = 0;
+    let args = match (kindOf(ty)) { Tuple, Function => typeArgCount(ty), _ => 0 };
+
+    while (i < args) {
+      held = held || open[typeArg(ty, i)];
+      i++;
+    }
+    open.push(held);
+    seen.push(false);
+    queued.push(false);
+    ty++;
+  }
+  let reached = Array.new<I32>(0);
+  let root = rootNode();
+  let id = 0;
+  let count = nodeCount();
+
+  while (id < count) {
+    let ty = typeOf(id);
+
+    if ((ty >= 0) && (_used[id] || (id == root))) {
+      _at = id;
+      if (open[ty]) { _fail("a type is not inferred"); }
+
+      if (!queued[ty]) {
+        queued[ty] = true;
+        reached.push(ty);
+      }
+    }
+    id++;
+  }
+  _at = -1;
+  let global = 0;
+
+  while (global < globalCount()) {
+    let ty = globalTypeOf(global);
+    if (open[ty]) { _fail("a global's type is not inferred"); }
+    reached.push(ty);
+    global++;
+  }
+  let native = 0;
+
+  while (native < nativeCount()) {
+    let ty = nativeTypeOf(native);
+    if (open[ty]) { _fail("a native's type is not inferred"); }
+    reached.push(ty);
+    native++;
+  }
+  let next = 0;
+
+  while (next < reached.len()) {
+    let ty = reached[next];
+    next++;
+
+    if ((ty >= 0) && !seen[ty]) {
+      seen[ty] = true;
+
+      match (kindOf(ty)) {
+        Array, List, Null => reached.push(innerOf(ty)),
+        Function => {
+          reached.push(innerOf(ty));
+          let i = 0;
+
+          while (i < typeArgCount(ty)) {
+            reached.push(typeArg(ty, i));
+            i++;
+          }
+        },
+        Tuple => {
+          let i = 0;
+
+          while (i < typeArgCount(ty)) {
+            reached.push(typeArg(ty, i));
+            i++;
+          }
+        },
+        Enum => {
+          let tag = 0;
+
+          while (tag < variantCount(ty)) {
+            let field = 0;
+            let fields = fieldCount(ty, tag);
+
+            while (field < fields) {
+              let fieldTy = fieldType(ty, tag, field);
+              if (open[fieldTy]) { _fail("an enum's field type is not inferred"); }
+              reached.push(fieldTy);
+              field++;
+            }
+            tag++;
+          }
+        },
+        _ => null,
+      };
+    }
+  }
   null
 };
 
@@ -623,6 +730,7 @@ export let verifyHir: (Hir) -> Bool = fn(program) {
     i++;
   }
   _spans();
+  _closedTypes();
   true
 };
 

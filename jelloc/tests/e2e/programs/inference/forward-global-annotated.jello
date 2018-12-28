@@ -1,0 +1,6 @@
+// expect: 20
+// A body checked early may read an annotated global declared before it.
+let answer = fn(): I32 { scaled(2) };
+let limit: I32 = 10;
+let scaled = fn(n: I32) { n * limit };
+answer()

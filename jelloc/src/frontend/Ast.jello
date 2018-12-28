@@ -84,6 +84,10 @@ export enum Block {
   Block(statements: Array<Stmt>, tail: ?Expr);
 }
 
+export enum TypeParam {
+  TypeParam(name: Bytes, bounds: Array<Bytes>, start: I32, end: I32);
+}
+
 export enum QuoteKind {
   Auto;
   Expression;
@@ -205,7 +209,7 @@ export enum Expr {
   Match(subject: Expr, arms: Array<MatchArm>);
   With(clauses: Array<WithClause>, body: Block, elseArms: MatchArms);
   Try(body: Block, catchName: ?Bytes, catchBody: Block);
-  LetExpr(pattern: Pattern, typeParams: Array<Bytes>, annotation: ?Type, value: Expr);
+  LetExpr(pattern: Pattern, typeParams: Array<TypeParam>, annotation: ?Type, value: Expr);
 
   Unary(op: UnaryOp, value: Expr);
   Binary(op: BinaryOp, left: Expr, right: Expr);
@@ -265,10 +269,10 @@ export enum PrototypeField {
 }
 
 export enum Stmt {
-  LetStmt(isConst: Bool, exported: Bool, pattern: Pattern, typeParams: Array<Bytes>, annotation: ?Type, value: Expr);
-  Prototype(exported: Bool, name: Bytes, typeParams: Array<Bytes>, fields: Array<PrototypeField>);
-  Typedef(exported: Bool, name: Bytes, typeParams: Array<Bytes>, body: TypedefBody);
-  Enum(exported: Bool, name: Bytes, typeParams: Array<Bytes>, constructors: Array<EnumConstructor>);
+  LetStmt(isConst: Bool, exported: Bool, pattern: Pattern, typeParams: Array<TypeParam>, annotation: ?Type, value: Expr);
+  Prototype(exported: Bool, name: Bytes, typeParams: Array<TypeParam>, fields: Array<PrototypeField>);
+  Typedef(exported: Bool, name: Bytes, typeParams: Array<TypeParam>, body: TypedefBody);
+  Enum(exported: Bool, name: Bytes, typeParams: Array<TypeParam>, constructors: Array<EnumConstructor>);
   Macro(exported: Bool, name: Bytes, params: Array<Bytes>, body: Array<Stmt>);
 
   ImportModule(kind: ImportKind, path: Array<Bytes>, alias: Bytes);

@@ -2,6 +2,7 @@ package frontend;
 
 import type { Expr, Package, Stmt } from frontend.Ast;
 import { bindPatternName, isBindPattern } from frontend.Ast;
+import { indexOf } from std.core.Arrays;
 import { lexFile } from frontend.Lexer;
 import { packageSpan, parseProgram, programSyntax } from frontend.Parser;
 import { bytesLiteral } from frontend.Tokens;
@@ -84,16 +85,6 @@ let _repeats = fn(imports: Array<Import>, added: Import): Bool {
   false
 };
 
-let _indexOf = fn(values: Array<Bytes>, value: Bytes): I32 {
-  let i = 0;
-
-  while (i < values.len()) {
-    if (values[i] == value) { return i; }
-    i++;
-  }
-  -1
-};
-
 let _modules = Array.new<Module>(0);
 let _paths = Array.new<Bytes>(0);
 let _visiting = Array.new<Bytes>(0);
@@ -131,7 +122,7 @@ let _modulePath = fn(parts: Array<Bytes>): Bytes {
 
   while (i < roots.len()) {
     let path = roots[i] + relative;
-    if ((_indexOf(_paths, path) >= 0) || exists(path)) { return path; }
+    if ((indexOf(_paths, path) >= 0) || exists(path)) { return path; }
     tried += (i == 0 ? "" : ", ") + path;
     i++;
   }
@@ -266,14 +257,14 @@ let _add = fn(path: Bytes, module: Module): I32 {
 };
 
 _load = fn(path, parts) {
-  let loaded = _indexOf(_paths, path);
+  let loaded = indexOf(_paths, path);
 
   if (loaded >= 0) {
     let name = match (_modules[loaded]) { Module(_, dotted, _, _, _, _) => dotted };
     if (name != _joined(parts, ".")) { throw "module package does not match import path: " + path; }
     return loaded;
   }
-  if (_indexOf(_visiting, path) >= 0) { throw "import cycle through " + path; }
+  if (indexOf(_visiting, path) >= 0) { throw "import cycle through " + path; }
   _visiting.push(path);
   let module = _module(path, readText(path), parts, Array.new<Import>(0));
   _visiting.pop();
@@ -396,7 +387,7 @@ export let loadTests: (Array<Bytes>, Bytes, Array<Bytes>) -> Array<Module> = fn(
   i = 0;
 
   while (i < files.len()) {
-    if (_indexOf(_paths, files[i]) < 0) { _suite(_load(files[i], names[i]), names[i], suites, imports); }
+    if (indexOf(_paths, files[i]) < 0) { _suite(_load(files[i], names[i]), names[i], suites, imports); }
     i++;
   }
   let entry = "import { main } from std.testing;\nlet none = fn() { null };\nmain([" + _joined(suites, ",\n  ") + "])\n";

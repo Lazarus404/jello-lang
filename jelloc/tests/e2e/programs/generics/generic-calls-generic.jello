@@ -1,0 +1,5 @@
+// expect: 5|five
+// A generic calls another with its own T.
+let id<T> = fn(x: T): T { x };
+let twice<T> = fn(x: T): T { id(id(x)) };
+Std.string(twice(5)) + "|" + twice("five")

@@ -2,21 +2,12 @@ package frontend;
 
 import type { BinaryOp } from frontend.Ast;
 import { BinaryOp } from frontend.Ast;
+import { indexOf } from std.core.Arrays;
 import frontend.Hir as H;
 import { Kind, Op } from frontend.Hir;
 import { equalValues } from frontend.CheckValues;
 import { Binding } from frontend.ModuleScope;
-import { callFunction, defineFunction, generateFunction, isNullaryVariant, newBinding } from frontend.TypeCheck;
-
-let _indexOf = fn(values: Array<I32>, value: I32): I32 {
-  let i = 0;
-
-  while (i < values.len()) {
-    if (values[i] == value) { return i; }
-    i++;
-  }
-  -1
-};
+import { callFunction, defineFunction, generateFunction, inTemplate, isNullaryVariant, needsBound, newBinding, unknownType } from frontend.TypeCheck;
 
 let _deciding = Array.new<I32>(0);
 let _unsupported: (I32, Bool) -> I32 = fn(_ty, _printing) { -1 };
@@ -54,10 +45,13 @@ _unsupported = fn(ty, printing) {
       }
       found
     },
-    Enum => _indexOf(_deciding, ty) < 0 ? _fieldsUnsupported(ty, printing) : -1,
+    Enum, Applied => indexOf(_deciding, ty) < 0 ? _fieldsUnsupported(ty, printing) : -1,
+    Param => H.hasBounds(ty, printing ? H.BOUND_SHOW : H.BOUND_EQ) ? -1 : ty,
     _ => -1,
   }
 };
+export let unsupported: (I32, Bool) -> I32 = fn(ty, printing) { _unsupported(ty, printing) };
+export let boundHint: (I32, Bool) -> Bytes = fn(bad, printing) { H.isKind(bad, Kind.Param) ? "; it " + needsBound(bad, printing ? "Show" : "Eq") : "" };
 
 let _tagOnly = fn(ty: I32): Bool {
   let tag = 0;
@@ -167,7 +161,8 @@ export let resetDerived: () -> Bool = fn() {
 };
 
 let _derived = fn(types: Array<I32>, functions: Array<I32>, name: Bytes, params: Array<Bytes>, ty: I32, result: I32, body: (Array<I32>, I32) -> Array<I32>): I32 {
-  let found = _indexOf(types, ty);
+  if (H.isOpen(ty)) { throw unknownType("this value"); }
+  let found = indexOf(types, ty);
   if (found >= 0) { return functions[found]; }
   let paramTypes = Array.new<I32>(0);
   let bindings = Array.new<I32>(0);
@@ -200,11 +195,11 @@ let _equalBody = fn(params: Array<I32>, ty: I32): Array<I32> {
 };
 
 export let structuralEquality: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
-  let ty = H.typeOf(left);
+  let ty = H.defaultIntegers(H.typeOf(left));
   let bad = _unsupported(ty, false);
-  if (bad >= 0) { throw "operator == is not defined for " + H.typeName(ty) + ", which holds " + H.typeName(bad); }
-  let equal = H.isKind(ty, Kind.Enum) && _tagOnly(ty)
-    ? H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(left), _tag(right)])
+  if (bad >= 0) { throw "operator == is not defined for " + H.typeName(ty) + ", which holds " + H.typeName(bad) + boundHint(bad, false); }
+  let equal = inTemplate() ? H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [left, right])
+    : H.isKind(ty, Kind.Enum) && _tagOnly(ty) ? H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(left), _tag(right)])
     : callFunction(Binding.Function(_derived(_equalTypes, _equalFunctions, "equal", ["left", "right"], ty, H.TYPE_BOOL, _equalBody)), "equal", [left, right]);
   match (op) { NotEqual => _not(equal), _ => equal }
 };
@@ -237,7 +232,7 @@ let _tupleText = fn(value: I32, ty: I32): Array<I32> {
   [_listed("(", texts, ")")]
 };
 
-let _variantName = fn(ty: I32, tag: I32): Bytes { H.typeName(ty) + "." + H.variantName(ty, tag) };
+let _variantName = fn(ty: I32, tag: I32): Bytes { H.enumName(ty) + "." + H.variantName(ty, tag) };
 
 let _variantText = fn(value: I32, ty: I32, tag: I32): I32 {
   let name = _variantName(ty, tag);
@@ -338,14 +333,16 @@ let _stringBody = fn(params: Array<I32>, ty: I32): Array<I32> {
 };
 
 _shown = fn(value, quoted) {
-  let ty = H.typeOf(value);
+  let present = H.typeOf(value);
+  let ty = H.isInteger(present) ? present : H.defaultIntegers(present);
   if (isNullaryVariant(value)) { return bytesOf(_variantName(ty, H.valueOf(value))); }
 
   match (H.kindOf(ty)) {
     Bytes => quoted ? _callStd("quote", H.TYPE_BYTES, value) : value,
-    Bool, I32, I64 => _callStd("to_string", H.TYPE_DYNAMIC, H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [value])),
+    Bool, I32, I64, Var => _callStd("to_string", H.TYPE_DYNAMIC, H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [value])),
     Dynamic => _callStd("to_string", H.TYPE_DYNAMIC, value),
     Null when (H.innerOf(ty) < 0) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [_expression(value), bytesOf("null")]),
+    _ when (inTemplate()) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [_expression(value), bytesOf("")]),
     _ => callFunction(Binding.Function(_derived(_stringTypes, _stringFunctions, "string", ["value"], ty, H.TYPE_BYTES, _stringBody)), "string", [value]),
   }
 };

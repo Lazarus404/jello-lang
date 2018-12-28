@@ -2,7 +2,7 @@ package compiler.pipeline;
 
 import type { Test } from std.testing;
 import std.testing as T;
-import type { Hir } from frontend.Hir;
+import type { Hir, Kind } from frontend.Hir;
 import frontend.Hir as H;
 import {
   Hir, Op, arrayType, beginHir, bytesId, declareEnum, functionType, hirTypeName, nullType, opOf, tupleType,
@@ -27,6 +27,7 @@ let opName = fn(op: Op): Bytes {
   }
 };
 
+// The ID of the `nth` node named `name`.
 let find = fn(hir: Hir, name: Bytes, nth: I32): I32 {
   useHir(hir);
   let seen = 0;
@@ -53,6 +54,7 @@ let copy = fn(values: Array<I32>): Array<I32> {
   result
 };
 
+// A copy of `hir` with one node column replaced (0 type, 1 value, 2 aux).
 let mutate = fn(hir: Hir, id: I32, column: I32, value: I32): Hir {
   match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
     let changed = copy(nodes);
@@ -74,6 +76,7 @@ let mutateOp = fn(hir: Hir, id: I32, op: Op): Hir {
   } }
 };
 
+// A copy of `hir` whose child `index` of `parent` is `child`.
 let mutateChild = fn(hir: Hir, parent: I32, index: I32, child: I32): Hir {
   match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
     let changed = copy(edges);
@@ -82,6 +85,8 @@ let mutateChild = fn(hir: Hir, parent: I32, index: I32, child: I32): Hir {
   } }
 };
 
+// A copy of `hir` with its span table cut to `count` entries, or with one
+// span column replaced (0 path, 1 start, 2 end) when `id` is a node.
 let mutateSpans = fn(hir: Hir, count: I32, id: I32, column: I32, value: I32): Hir {
   match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
     let changed = Array.new<I32>(0);
@@ -96,6 +101,15 @@ let mutateSpans = fn(hir: Hir, count: I32, id: I32, column: I32, value: I32): Hi
   } }
 };
 
+// A copy of `hir` with field slot `slot` of its field table (name, type) replaced.
+let mutateField = fn(hir: Hir, slot: I32, value: I32): Hir {
+  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
+    let changed = copy(fields);
+    changed[slot] = value;
+    Hir.Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, changed)
+  } }
+};
+
 let rejection = fn(hir: Hir): Bytes {
   try {
     verifyHir(hir);
@@ -103,6 +117,8 @@ let rejection = fn(hir: Hir): Bytes {
   } catch (e) { Std.string(e) }
 };
 
+// Where the verifier located its rejection of `hir`: the failing node's span
+// start and end, or (-1, -1) when it gave none.
 let location = fn(hir: Hir): Tuple<I32, I32> {
   rejection(hir);
   let span = verifyFailureSpan();
@@ -151,7 +167,7 @@ let testInterning = fn(t: Test) {
   T.equal(t, typeName(tu), "Tuple<I32, Bool>");
   T.equal(t, typeName(nullType(a)), "?Array<I32>");
   T.equal(t, hirTypeName(nullType(a)), "?array<i32>");
-
+  // `?` binds to a type atom, so a nullable function type is parenthesized.
   T.equal(t, typeName(nullType(functionType([H.TYPE_I32], H.TYPE_BOOL))), "?((I32) -> Bool)");
   T.equal(t, typeName(e), "Color");
 };
@@ -176,13 +192,18 @@ let testVerifierChecksScopesAndMutability = fn(t: Test) {
 };
 
 let testVerifierChecksGlobals = fn(t: Test) {
+  // pair, xs and maybe are globals 0, 1 and 2; the tail reads maybe.
   let hir = checked(SAMPLE);
   T.equal(t, rejection(mutate(hir, find(hir, "Global", 0), 1, 99)), "invalid HIR: unknown global");
   T.equal(t, rejection(mutate(hir, find(hir, "InitGlobal", 1), 1, 0)), "invalid HIR: global initialized twice");
   T.equal(t, rejection(mutate(hir, find(hir, "InitGlobal", 1), 1, 2)), "invalid HIR: global type mismatch");
 };
 
+// Each global is initialized exactly once, in any order: a module's regexps
+// come first, whatever their IDs, and InitOrder rejects a read before the
+// write.
 let testVerifierChecksEachGlobalIsInitializedOnce = fn(t: Test) {
+  // a and b are I32 globals 0 and 1.
   let hir = checked("let a = 1i32;\nlet b = 2i32;\na + b\n");
   let first = find(hir, "InitGlobal", 0);
   let second = find(hir, "InitGlobal", 1);
@@ -192,6 +213,7 @@ let testVerifierChecksEachGlobalIsInitializedOnce = fn(t: Test) {
 };
 
 let testVerifierChecksClosuresAgainstTheirFunctionsCaptures = fn(t: Test) {
+  // fn @1 makes a closure, fn @2, that captures n.
   let hir = checked("let adder = fn(n: I32): () -> I32 { fn() { n } };\nadder(1i32)()");
   T.equal(t, rejection(hir), "accepted");
   T.equal(t, rejection(mutate(hir, find(hir, "Capture", 0), 0, H.TYPE_BOOL)), "invalid HIR: closure capture type mismatch");
@@ -210,7 +232,7 @@ let testVerifierRequiresATree = fn(t: Test) {
 let testVerifierChecksReturnsAndTries = fn(t: Test) {
   let hir = checked("let f = fn(): I32 { 1i32 };\nlet v = try { f() } catch (e) { 2i32 };\nf();\nv");
   T.equal(t, rejection(hir), "accepted");
-
+  // The program body's `f();`, as a return there.
   T.equal(t, rejection(mutateOp(hir, find(hir, "Expression", 0), Op.Return)), "invalid HIR: return outside a function");
   useHir(hir);
   let body = H.childOf(find(hir, "Try", 0), 0);
@@ -241,18 +263,18 @@ let testVerifierFailuresAreInternalErrorsAtTheirNode = fn(t: Test) {
   let literal = find(hir, "I32", 0);
   T.equal(t, location(mutate(hir, literal, 0, H.TYPE_BOOL)), at(literal));
   T.equal(t, takeInternalError(), true);
-
+  // A check made after a node's operands is the node's, not its last operand's.
   let branch = find(hir, "If", 0);
   T.equal(t, location(mutate(hir, branch, 0, H.TYPE_BOOL)), at(branch));
   let add = find(hir, "Add", 0);
   let end = H.spanEndOf(H.childOf(add, 1)) - 1;
   T.equal(t, location(mutateSpans(hir, H.nodeCount(), add, 2, end)), (H.spanStartOf(add), end));
-
+  // A failure of the whole program, or at a node without a valid span, has none.
   let globals = checked("let a = 1i32;\nlet b = 2i32;\na + b\n");
   T.equal(t, location(mutateOp(globals, find(globals, "InitGlobal", 1), Op.Const)), (-1, -1));
   useHir(hir);
   T.equal(t, location(mutateSpans(hir, H.nodeCount(), 3, 2, H.spanStartOf(3))), (-1, -1));
-
+  // A program the checker rejects is not a compiler bug.
   takeInternalError();
 
   try {
@@ -272,6 +294,9 @@ let testSyntaxMarksThatDoNotFitAreInternalErrors = fn(t: Test) {
   T.equal(t, takeInternalError(), true);
 };
 
+// What jelloc says of a failure, caught as Driver catches it: an internal
+// error is a compiler bug, located at the node it failed at, with status 3;
+// the same failure, not internal, has status 1, after its stage's label.
 let testFailuresReportTheirStatus = fn(t: Test) {
   let hir = checkedFile("tests/integration/compiler/pipeline/answer.jello", Array.new<Bytes>(0));
   let literal = find(hir, "I32", 0);
@@ -281,4 +306,14 @@ let testFailuresReportTheirStatus = fn(t: Test) {
   let message = Std.string(error);
   T.equal(t, failure("PARSER", error), (3, located("internal error: " + message + " (please report this compiler bug)")));
   T.equal(t, failure("PARSER", error), (1, "PARSER\t" + located(message)));
+};
+
+let testVerifierRejectsATypeParameterInAnEnumField = fn(t: Test) {
+  // E is reached only through g's type, so only the closed-type check reads its field.
+  let hir = checked("enum E { A(v: I32); }\nlet id<T> = fn(x: T): T { x };\nlet g: ?E = null;\nid(1)");
+  T.equal(t, rejection(hir), "accepted");
+  useHir(hir);
+  let param = 0;
+  while (!H.isKind(param, Kind.Param)) { param++; }
+  T.equal(t, rejection(mutateField(hir, 1, param)), "invalid HIR: an enum's field type is not inferred");
 };

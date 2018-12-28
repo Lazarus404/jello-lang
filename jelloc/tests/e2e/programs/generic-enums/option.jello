@@ -1,0 +1,8 @@
+// expect: 7|Option.Some(7)|Option.None|hi
+// One generic enum at two types: construction, match and Std.string.
+enum Option<T> { Some(value: T); None; }
+let unwrapOr<T> = fn(o: Option<T>, fallback: T): T { match (o) { Some(v) => v, None => fallback } };
+let a = Option.Some(7);
+let b: Option<I32> = Option.None;
+let s = Option.Some("hi");
+Std.string(unwrapOr(a, 0)) + "|" + Std.string(a) + "|" + Std.string(b) + "|" + unwrapOr(s, "")

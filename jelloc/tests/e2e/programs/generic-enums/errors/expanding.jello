@@ -1,0 +1,5 @@
+// error: 4:8: instantiating W nests more than 64 deep
+// Each W<T> holds a W<Array<T>>, so its instances never end.
+enum W<T> { Stop; More(next: W<Array<T>>); }
+let w: W<I32> = W.Stop;
+w

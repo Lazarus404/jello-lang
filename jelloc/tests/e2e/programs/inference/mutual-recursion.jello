@@ -1,0 +1,5 @@
+// expect: 10
+// Mutually recursive functions need no result annotations.
+let isEven = fn(n: I32) { n == 0 ? true : isOdd(n - 1) };
+let isOdd = fn(n: I32) { n == 0 ? false : isEven(n - 1) };
+(isEven(10) ? 10 : 0) + (isOdd(10) ? 1 : 0)

@@ -1,0 +1,6 @@
+// expect: true|false|false
+// Each instance derives its own ==.
+enum Option<T> { Some(value: T); None; }
+let a = Option.Some(7);
+let b: Option<I32> = Option.None;
+Std.string(a == Option.Some(7)) + "|" + Std.string(a == b) + "|" + Std.string(Option.Some("x") == Option.Some("y"))

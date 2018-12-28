@@ -1,0 +1,5 @@
+// error: 5:1: binding annotation type mismatch: v
+// The annotation's Bytes binds A before I32 fails to match Bytes; rolled back, A is I64 from the
+// argument, so the argument checks and the annotation is what mismatches.
+let mk<A> = fn(a: A): Tuple<A, I32> { (a, 1) };
+let v: Tuple<Bytes, Bytes> = mk(5i64);

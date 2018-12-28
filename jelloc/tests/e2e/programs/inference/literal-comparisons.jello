@@ -1,0 +1,10 @@
+// expect: truefalse8589934592-16
+// Comparisons and discarded statements leave a literal's width open, as other
+// operators do, so a later use can still make it I64.
+let a = 1; let b = 0x10;
+let same = a == 1;
+let less = b < 3;
+b;
+let wa: I64 = a << 33;
+let wb: I64 = -b;
+Std.string(same) + Std.string(less) + Std.string(wa) + Std.string(wb)

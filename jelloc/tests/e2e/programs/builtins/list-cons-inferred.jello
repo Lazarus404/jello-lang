@@ -1,0 +1,6 @@
+// expect: 14294967296
+// A list's element type comes from a later use, as a generic function's type arguments do.
+let xs = List.nil();
+let ys = List.cons(1, xs);
+let wide = List.cons(1i64, List.nil());
+Std.string(List.head(ys)) + Std.string(List.head(wide) + 4294967295)

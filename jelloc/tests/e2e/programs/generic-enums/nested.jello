@@ -1,0 +1,5 @@
+// expect: Option.Some([Option.Some(4294967296), Option.None])
+// Instances nest: an Option of an Array of Options.
+enum Option<T> { Some(value: T); None; }
+let inner: Array<Option<I64>> = [Option.Some(4294967296), Option.None];
+Std.string(Option.Some(inner))

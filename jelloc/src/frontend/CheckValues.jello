@@ -5,7 +5,7 @@ import { BinaryOp } from frontend.Ast;
 import frontend.Hir as H;
 import { internalError } from frontend.Internal;
 import { Kind, Op } from frontend.Hir;
-import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, isInferredInteger, isNullaryVariant, newBinding, presentAt, presentKnown, syntaxChild } from frontend.TypeCheck;
+import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, integerConversion, isNullaryVariant, newBinding, presentAt, presentKnown, syntaxChild } from frontend.TypeCheck;
 
 let _bool = fn(op: Op, children: Array<I32>): I32 { H.node(op, H.TYPE_BOOL, 0, 0, children) };
 
@@ -16,9 +16,7 @@ let _present = fn(binding: I32, ty: I32): I32 {
 };
 
 export let equalityOperands: (AstExpr, AstExpr, I32) -> Tuple<I32, I32> = fn(leftExpr, rightExpr, first) {
-  let early = isInferredInteger(leftExpr) && !isInferredInteger(rightExpr) ? presentKnown(checkOperand(rightExpr, first + 1, -1)) : -1;
-  let hint = (early < 0) || (H.typeOf(early) == H.TYPE_DYNAMIC) ? -1 : H.typeOf(early);
-  let left = presentKnown(checkOperand(leftExpr, first, H.isKind(hint, Kind.Null) ? H.innerOf(hint) : hint));
+  let left = presentKnown(checkOperand(leftExpr, first, -1));
   let leftType = H.typeOf(left);
 
   if (H.isKind(leftType, Kind.Dynamic)) {
@@ -27,7 +25,7 @@ export let equalityOperands: (AstExpr, AstExpr, I32) -> Tuple<I32, I32> = fn(lef
   }
   let inner = H.isKind(leftType, Kind.Null) ? H.innerOf(leftType) : leftType;
   let context = H.isKind(inner, Kind.List) ? inner : H.nullType(inner);
-  let right = early >= 0 ? early : presentKnown(_lifted(checkOperand(rightExpr, first + 1, context)));
+  let right = presentKnown(_lifted(checkOperand(rightExpr, first + 1, context)));
   let rightType = H.typeOf(right);
 
   if (H.isKind(rightType, Kind.Dynamic)) {
@@ -100,6 +98,7 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   if (H.typeOf(present) == target) { return present; }
 
   match ((H.kindOf(H.typeOf(present)), H.kindOf(target))) {
+    (Var, I32), (Var, I64) when (H.isInteger(H.typeOf(present))) => integerConversion(present, target),
     (I32, I64) => H.node(Op.Sext, H.TYPE_I64, 0, 0, [present]),
     (I64, I32) => H.node(Op.Trunc, H.TYPE_I32, 0, 0, [present]),
     _ => {

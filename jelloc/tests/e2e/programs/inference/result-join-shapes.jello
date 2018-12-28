@@ -1,0 +1,9 @@
+// expect: 2null3null1null5null7null
+// A widened result converts every return: in a loop, a try, a match arm, a nested function or a tail block.
+let w = fn(n: I32) { let i = 0; while (i < n) { if (i == 2) { return i; } i++; } null };
+let t = fn(n: I32) { try { if (n > 0) { return n; } } catch { return 9; } null };
+enum E { A; B; }
+let m = fn(e: E) { match (e) { A => { return 1; }, B => { } }; null };
+let b = fn(c: Bool) { { if (c) { return 7; } null } };
+let n = fn(c: Bool) { let g = fn(d: Bool) { if (d) { return 5; } null }; if (c) { return g(true); } null };
+Std.string(w(5)) + Std.string(w(1)) + Std.string(t(3)) + Std.string(t(0)) + Std.string(m(E.A)) + Std.string(m(E.B)) + Std.string(n(true)) + Std.string(n(false)) + Std.string(b(true)) + Std.string(b(false))

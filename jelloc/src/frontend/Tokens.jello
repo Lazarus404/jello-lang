@@ -49,7 +49,7 @@ export let bytesLiteral: (Bytes) -> Bytes = fn(value) {
   concatAll(out)
 };
 
-export let tokenName: (Token) -> Bytes = fn(token) {
+let _tokenName = fn(token: Token): Bytes {
   match (token) {
     Ident(name) => "Ident(" + bytesLiteral(name) + ")",
     IntegerConstant(digits, size) => "IntegerConstant(" + digits + ", " + _integerSize(size) + ")",
@@ -149,7 +149,7 @@ export let printTokens: (Array<Token>) -> Bytes = fn(tokens) {
   let i = 0;
 
   while (i < tokens.len()) {
-    lines.push(tokenName(tokens[i]) + "\n");
+    lines.push(_tokenName(tokens[i]) + "\n");
     i++;
   }
   concatAll(lines)

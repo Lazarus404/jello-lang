@@ -1,0 +1,5 @@
+// expect: 1|2|three|(4, 5)|1
+// One template, instantiated at four types and again at the first.
+let show<T: Show> = fn(x: T): Bytes { Std.string(x) };
+let wide: I64 = 2;
+show(1) + "|" + show(wide) + "|" + show("three") + "|" + show((4, 5)) + "|" + show(1)

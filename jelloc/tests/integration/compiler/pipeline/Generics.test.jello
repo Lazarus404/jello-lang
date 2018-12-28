@@ -1,0 +1,48 @@
+package compiler.pipeline;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { indexOf, join, split, startsWith } from std.core.Bytes;
+import { printHir } from frontend.PrintHir;
+import { printIr } from ir.Print;
+import { checked, lowered } from compiler.Pipeline;
+
+// The IR of SOURCE's function @INDEX, without its header line.
+let _body = fn(source: Bytes, index: I32): Bytes {
+  let functions = split(printIr(lowered(source)), "\n\n");
+  let body = "";
+  let i = 0;
+
+  while (i < functions.len()) {
+    if (startsWith(functions[i], "fn @" + Std.string(index) + "(")) { body = split(functions[i], " {\n")[1]; }
+    i++;
+  }
+  body
+};
+
+let testAnInstanceCompilesAsTheHandWrittenFunction = fn(t: Test) {
+  let source = "let maxI32 = fn(a: I32, b: I32): I32 { a > b ? a : b };\n"
+    + "let max<T: Integer> = fn(a: T, b: T): T { a > b ? a : b };\n"
+    + "maxI32(1, 2) + max(3, 4)";
+  let handWritten = _body(source, 1);
+  T.isTrue(t, handWritten.len() > 0);
+  T.equal(t, _body(source, 2), handWritten);
+};
+
+let testAnEnumInstanceCompilesAsTheHandWrittenEnum = fn(t: Test) {
+  let source = "enum OptionI64 { Some(value: I64); None; }\n"
+    + "enum Option<T> { Some(value: T); None; }\n"
+    + "let orI64 = fn(o: OptionI64, d: I64): I64 { match (o) { Some(v) => v, None => d } };\n"
+    + "let orAny = fn(o: Option<I64>, d: I64): I64 { match (o) { Some(v) => v, None => d } };\n"
+    + "orI64(OptionI64.Some(1i64), 0i64) + orAny(Option.Some(2i64), 0i64)";
+  let handWritten = _body(source, 1);
+  T.isTrue(t, handWritten.len() > 0);
+  // The two enums differ only in their type number.
+  T.equal(t, join(split(_body(source, 2), "type@1"), "type@0"), handWritten);
+};
+
+let testInstancesAreNamedForTheirTypeArguments = fn(t: Test) {
+  let hir = printHir(checked("let id<T> = fn(x: T): T { x };\nid(1) + id(2i64) as I32"));
+  T.isTrue(t, indexOf(hir, " id<I32>(") >= 0);
+  T.isTrue(t, indexOf(hir, " id<I64>(") >= 0);
+};

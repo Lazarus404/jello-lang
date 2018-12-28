@@ -1,0 +1,8 @@
+// expect: 2
+// Eq on T allows == on Array<T>: each instance derives its own comparison.
+let count<T: Eq> = fn(xs: Array<Array<T>>, x: Array<T>): I32 {
+  let n = 0; let i = 0;
+  while (i < xs.len()) { if (xs[i] == x) { n++; } i++; }
+  n
+};
+count([["a"], ["b"], ["a"]], ["a"])

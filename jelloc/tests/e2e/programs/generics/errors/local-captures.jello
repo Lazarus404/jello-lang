@@ -1,0 +1,7 @@
+// error: 4:43: a generic local function cannot capture base; pass it as an argument
+// Each instance is a separate function, so a local template may not capture.
+let run = fn(base: I32): I32 {
+  let add<T: Integer> = fn(x: T): T { x + base };
+  add(1)
+};
+run(2)

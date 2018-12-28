@@ -1,0 +1,9 @@
+// expect: 6|abc
+// A generic enum that holds itself, summed and joined by generic functions.
+enum Tree<T> { Leaf; Node(left: Tree<T>, value: T, right: Tree<T>); }
+let fold<T, A> = fn(t: Tree<T>, start: A, f: (A, T) -> A): A {
+  match (t) { Leaf => start, Node(l, v, r) => fold(r, f(fold(l, start, f), v), f) }
+};
+let numbers = Tree.Node(Tree.Node(Tree.Leaf, 1, Tree.Leaf), 2, Tree.Node(Tree.Leaf, 3, Tree.Leaf));
+let words = Tree.Node(Tree.Leaf, "a", Tree.Node(Tree.Leaf, "b", Tree.Node(Tree.Leaf, "c", Tree.Leaf)));
+Std.string(fold(numbers, 0, fn(acc, x) { acc + x })) + "|" + fold(words, "", fn(acc, x) { acc + x })

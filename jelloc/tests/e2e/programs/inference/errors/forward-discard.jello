@@ -1,0 +1,6 @@
+// error: 5:16: _ binds nothing, so it names no value
+// A body checked early still finds no global named `_`.
+let g = fn(): I32 { h() };
+let _ = 3;
+let h = fn() { _ };
+g()

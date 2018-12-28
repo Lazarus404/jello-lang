@@ -2,7 +2,7 @@ package ir;
 
 import type { Hir } from frontend.Hir;
 import {
-  KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, isReference, kindOf, lastChild, opOf, rootNode, typeArg,
+  KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, isReference, isTemplateEnum, kindOf, lastChild, opOf, rootNode, typeArg,
   typeArgCount, typeCount, globalCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
@@ -63,6 +63,10 @@ _valueType = fn(ty) {
     Enum => ValueType.Nominal(_enumIndexes[ty]),
     Dynamic => ValueType.Dynamic,
     ByteBuffer => ValueType.Bytes,
+    Var, Param, Applied => {
+      internalError("an inferred type reached lowering");
+      ValueType.Dynamic
+    },
   }
 };
 
@@ -755,7 +759,7 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
 
   while (ty < typeCount()) {
     _enumIndexes.push(match (kindOf(ty)) {
-      Enum => {
+      Enum when (!isTemplateEnum(ty)) => {
         enumTypes.push(ty);
         (enumTypes.len() - 1) as I32
       }, _ => -1

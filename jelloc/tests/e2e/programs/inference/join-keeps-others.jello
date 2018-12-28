@@ -1,0 +1,7 @@
+// expect: [null]
+// Joining a result with null makes it nullable without constraining xs, so xs still holds a ?I32.
+let xs = [];
+let g = fn(c: Bool) { if (c) { return xs[0]; } null };
+let found: ?I32 = null;
+xs.push(found);
+Std.string(xs)

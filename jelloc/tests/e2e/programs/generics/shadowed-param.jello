@@ -1,0 +1,8 @@
+// expect: 1|a
+// A local generic function's type parameter hides the enclosing one's.
+let outer<T> = fn(x: T): T {
+  let inner<T: Show> = fn(y: T): Bytes { Std.string(y) };
+  let _shown = inner(1);
+  x
+};
+Std.string(outer(1)) + "|" + outer("a")

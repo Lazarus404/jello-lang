@@ -1,0 +1,4 @@
+// expect: [1, 2] found|missing
+// Eq allows == on T, and Show allows Std.string.
+let describe<T: Eq + Show> = fn(x: T, target: T): Bytes { x == target ? Std.string(x) + " found" : "missing" };
+describe([1, 2], [1, 2]) + "|" + describe("a", "b")

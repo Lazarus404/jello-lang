@@ -40,7 +40,7 @@ let _location = fn(): Bytes {
 let _argument = fn(args: Array<AstExpr>, index: I32, ty: I32, name: Bytes, what: Bytes): I32 {
   let value = checkOperand(args[index], index + 1, ty);
 
-  if (H.typeOf(value) != ty) {
+  if (!H.unify(H.typeOf(value), ty)) {
     enterSyntax(syntaxChild(index + 1));
     throw name + " takes " + what + " of type " + H.typeName(ty) + ", not " + H.typeName(H.typeOf(value));
   }

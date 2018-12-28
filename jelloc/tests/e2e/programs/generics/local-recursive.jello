@@ -1,0 +1,7 @@
+// expect: 3
+// A local generic function's instances call themselves by its name.
+let count = fn(): I32 {
+  let down<T> = fn(x: T, n: I32): I32 { n == 0 ? 0 : 1 + down(x, n - 1) };
+  down("s", 3)
+};
+count()

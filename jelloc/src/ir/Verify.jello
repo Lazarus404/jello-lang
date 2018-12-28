@@ -5,6 +5,7 @@ import { ValueType, argumentCount, argsOf, canBeNull, dstOf, handlerPayload, han
 import { blockId } from ir.Cfg;
 import { liveness } from ir.Liveness;
 import { internalError } from frontend.Internal;
+import { indexOf } from std.core.Arrays;
 
 let _fail = fn(message: Bytes): Bool {
   internalError("invalid IR: " + message);
@@ -590,12 +591,7 @@ let _function = fn(function: Function) {
 
     while (i < params.len()) {
       if (i >= argumentCount(function)) { _expect(params[i], ValueType.Dynamic); } else { _type(params[i]); }
-      let j = 0;
-
-      while (j < i) {
-        if (params[i] == params[j]) { _fail("duplicate parameter register"); }
-        j++;
-      }
+      if (indexOf(params, params[i]) < i) { _fail("duplicate parameter register"); }
       i++;
     }
     let slotTypes = Array.new<ValueType>(0);

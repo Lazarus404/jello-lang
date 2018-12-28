@@ -1,0 +1,13 @@
+// expect: 5 5 -1 4294967295 7
+// A conversion of a literal's binding converts only when the width the binding
+// ends with differs from the target.
+let x = 5;
+let w = x as I64;
+let v: I64 = x;
+let m = 0xFFFFFFFF;
+let t = m as I32;
+let u: I64 = m;
+let k = 7;
+let q = k as I64;
+let p: I32 = k;
+Std.string(w) + " " + Std.string(v) + " " + Std.string(t) + " " + Std.string(u) + " " + Std.string(q + (p as I64) - 7)

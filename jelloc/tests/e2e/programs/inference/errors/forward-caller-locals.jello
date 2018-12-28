@@ -1,0 +1,6 @@
+// error: 5:16: unknown name: k
+// A body checked early, from inside another, sees only module-level names,
+// not the caller's locals.
+let a = fn(): I32 { let k = 3; b() };
+let b = fn() { k };
+a()

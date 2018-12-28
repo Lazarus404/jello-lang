@@ -5,8 +5,8 @@ import { AssignOp } from frontend.Ast;
 import frontend.Hir as H;
 import { internalError } from frontend.Internal;
 import { Kind, Op } from frontend.Hir;
-import { stringOf, unprintable } from frontend.CheckDerived;
-import { bufferHint, checkOperand, checkPresent, checkType, compoundOperation, enterSyntax, isBound, newBinding, one, syntaxChild } from frontend.TypeCheck;
+import { boundHint, stringOf, unprintable } from frontend.CheckDerived;
+import { bufferHint, checkInstance, checkOperand, checkPresent, checkPresentAs, compoundOperation, enterSyntax, isBound, newBinding, one, syntaxChild } from frontend.TypeCheck;
 
 let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   let checked = checkOperand(expr, index, H.TYPE_I32);
@@ -28,18 +28,8 @@ let _readable = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   checked
 };
 
-let _element = fn(expr: AstExpr, index: I32, ty: I32, what: Bytes): I32 {
-  let value = checkOperand(expr, index, ty);
-
-  if (H.typeOf(value) != ty) {
-    enterSyntax(syntaxChild(index));
-    throw what + " element must be " + H.typeName(ty);
-  }
-  value
-};
-
-let _of = fn(expr: AstExpr, index: I32, kind: Kind, what: Bytes): I32 {
-  let checked = checkPresent(expr, index);
+let _of = fn(expr: AstExpr, index: I32, kind: Kind, expected: I32, what: Bytes): I32 {
+  let checked = checkPresentAs(expr, index, expected);
 
   if (!H.isKind(H.typeOf(checked), kind)) {
     enterSyntax(syntaxChild(index));
@@ -98,7 +88,7 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
     Variable(space) when ((space == "System") && (member == "args") && _builtin(space)) => { return _args(); },
     _ => null,
   };
-  let tuple = _of(base, 0, Kind.Tuple, "unknown member: " + member);
+  let tuple = _of(base, 0, Kind.Tuple, -1, "unknown member: " + member);
   let ty = H.typeOf(tuple);
   let field = 0;
   let i = 0;
@@ -134,8 +124,7 @@ let _tuple = fn(items: Array<AstExpr>, expected: I32): I32 {
 };
 
 let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
-  let element = H.isKind(expected, Kind.Array) ? H.innerOf(expected) : -1;
-  if ((element < 0) && (items.len() == 0)) { throw "empty array literal needs a type from its context"; }
+  let element = H.isKind(expected, Kind.Array) ? H.innerOf(expected) : items.len() == 0 ? H.newVar(false) : -1;
   let values = Array.new<I32>(0);
   let i = 0;
 
@@ -143,14 +132,14 @@ let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
     let value = checkOperand(items[i], i, element);
     if (element < 0) { element = H.typeOf(value); }
 
-    if (H.typeOf(value) != element) {
+    if (!H.unify(H.typeOf(value), element)) {
       enterSyntax(syntaxChild(i));
       throw "array element must be " + H.typeName(element);
     }
     values.push(value);
     i++;
   }
-  H.node(Op.ArrayLiteral, H.arrayType(element), 0, 0, values)
+  H.node(Op.ArrayLiteral, H.arrayType(H.resolve(element)), 0, 0, values)
 };
 
 let _index = fn(base: AstExpr, index: AstExpr): I32 {
@@ -204,9 +193,9 @@ let _indexTarget = fn(base: AstExpr, index: AstExpr): Tuple<I32, I32> {
 
 let _updateIndex = fn(array: I32, index: I32, op: AssignOp, checked: I32, step: Bool, postfix: Bool): I32 {
   let element = _elementOf(array);
-  let bytes = (element == H.TYPE_BYTES) && match (op) { Add => true, _ => false };
+  let bytes = !step && (element == H.TYPE_BYTES) && match (op) { Add => true, _ => false };
 
-  if ((element != H.TYPE_I32) && (element != H.TYPE_I64) && !bytes) {
+  if (!H.isInteger(element) && !bytes) {
     throw (step ? "increment and decrement require" : "compound assignment requires") + " an I32 or I64 element, not " + H.typeName(element);
   }
   let operation = compoundOperation(op, bytes);
@@ -225,7 +214,7 @@ let _assignIndex = fn(base: AstExpr, index: AstExpr, op: AssignOp, value: AstExp
   let element = _elementOf(array);
   let checked = checkOperand(value, 1, element);
 
-  if (H.typeOf(checked) != element) {
+  if (!H.unify(H.typeOf(checked), element)) {
     enterSyntax(syntaxChild(1));
     throw (H.isKind(H.typeOf(array), Kind.ByteBuffer) ? "a byte" : "array element") + " must be " + H.typeName(element);
   }
@@ -251,31 +240,63 @@ let _string = fn(args: Array<AstExpr>): I32 {
 
   if (bad >= 0) {
     enterSyntax(syntaxChild(1));
-    throw "Std.string cannot print " + H.typeName(ty) + (bad == ty ? "" : ", which holds " + H.typeName(bad)) + bufferHint(bad);
+    throw "Std.string cannot print " + H.typeName(ty) + (bad == ty ? "" : ", which holds " + H.typeName(bad)) + bufferHint(bad) + boundHint(bad, true);
   }
   stringOf(value)
 };
 
-let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<AstExpr>): I32 {
+enum Builtin { Builtin(signature: I32, op: Op, container: I32, messages: Array<Bytes>); }
+let _T = Array.new<I32>(0);
+let _BUILTINS = Array.new<Builtin>(0);
+
+export let declareBuiltins: () -> Bool = fn() {
+  let t = H.newParam("T", 0);
+  let length = "array length must be ";
+  _T = [t];
+  _BUILTINS = [
+    Builtin.Builtin(H.functionType([H.TYPE_I32], H.arrayType(t)), Op.ArrayNew, -1, [length]),
+    Builtin.Builtin(H.functionType([H.arrayType(t), H.TYPE_I32], H.arrayType(t)), Op.ArrayResize, 0, ["Array.resize requires an array", length]),
+    Builtin.Builtin(H.functionType([], H.listType(t)), Op.ListNil, -1, []),
+    Builtin.Builtin(H.functionType([t, H.listType(t)], H.listType(t)), Op.ListCons, 1, ["list element must be ", "List.cons requires a list"]),
+    Builtin.Builtin(H.functionType([H.listType(t)], H.listType(t)), Op.ListTail, 0, ["List.tail requires a list"]),
+    Builtin.Builtin(H.functionType([H.listType(t)], t), Op.ListHead, 0, ["List.head requires a list"]),
+    Builtin.Builtin(H.functionType([H.arrayType(t)], t), Op.ArrayPop, 0, []),
+    Builtin.Builtin(H.functionType([H.arrayType(t)], H.TYPE_I32), Op.ArrayLen, 0, ["Array.len requires an array"]),
+    Builtin.Builtin(H.functionType([H.arrayType(t), t], H.TYPE_I32), Op.ArrayPush, 0, ["array element must be "]),
+    Builtin.Builtin(H.functionType([H.listType(t)], H.TYPE_BOOL), Op.ListIsNil, 0, ["List.is_nil requires a list"])
+  ];
+  true
+};
+
+let _builtinIndex = fn(name: Bytes): I32 {
+  match (name) {
+    "Array.new" => 0, "Array.resize" => 1, "List.nil" => 2, "List.cons" => 3, "List.tail" => 4,
+    "List.head" => 5, "pop" => 6, "Array.len", "len" => 7, "push" => 8, "List.is_nil" => 9,
+    _ => -1,
+  }
+};
+let _NO_TYPES = Array.new<AstType>(0);
+
+let _checkBuiltin = fn(index: I32, name: Bytes, types: Array<AstType>, receiver: I32, args: Array<AstExpr>, expected: I32): I32 {
+  match (_BUILTINS[index]) { Builtin(signature, op, container, messages) => {
+    checkArity(args, H.typeArgCount(signature) - (receiver < 0 ? 0 : 1), name);
+    let checked = receiver;
+
+    if ((receiver < 0) && (container >= 0) && (types.len() == 0)) {
+      checked = _of(args[container], container + 1, H.kindOf(H.typeArg(signature, container)), -1, messages[container]);
+    }
+    let (_, ty, children) = checkInstance(_T, signature, name, types, args, expected, messages, checked, container);
+    H.node(op, H.innerOf(ty), 0, 0, children)
+  } }
+};
+
+let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<AstExpr>, expected: I32): I32 {
   let qualified = space + "." + name;
-  let generic = (qualified == "Array.new") || (qualified == "List.nil");
-  if (generic && (types.len() != 1)) { throw qualified + " needs an element type: " + qualified + (space == "Array" ? "<T>(length)" : "<T>()"); }
-  if (!generic && (types.len() != 0)) { throw qualified + " does not take type arguments"; }
+  let builtin = _builtinIndex(qualified);
+  if (builtin >= 0) { return _checkBuiltin(builtin, qualified, types, -1, args, expected); }
+  if (types.len() != 0) { throw qualified + " does not take type arguments"; }
 
   match (qualified) {
-    "Array.new" => {
-      checkArity(args, 1, qualified);
-      H.node(Op.ArrayNew, H.arrayType(checkType(types[0])), 0, 0, [_i32(args[0], 1, "array length")])
-    },
-    "Array.len" => {
-      checkArity(args, 1, qualified);
-      H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [_of(args[0], 1, Kind.Array, "Array.len requires an array")])
-    },
-    "Array.resize" => {
-      checkArity(args, 2, qualified);
-      let array = _of(args[0], 1, Kind.Array, "Array.resize requires an array");
-      H.node(Op.ArrayResize, H.typeOf(array), 0, 0, [array, _i32(args[1], 2, "array length")])
-    },
     "Bytes.len" => {
       checkArity(args, 1, qualified);
       H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [_readable(args[0], 1, "Bytes.len requires Bytes")])
@@ -291,7 +312,7 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
     },
     "Bytes.set_u8" => {
       checkArity(args, 3, qualified);
-      let buffer = _of(args[0], 1, Kind.ByteBuffer, "Bytes.set_u8 requires a buffer from Bytes.new; Bytes values are immutable");
+      let buffer = _of(args[0], 1, Kind.ByteBuffer, -1, "Bytes.set_u8 requires a buffer from Bytes.new; Bytes values are immutable");
       let index = _i32(args[1], 2, "byte index");
       H.node(Op.BytesSet, H.TYPE_I32, 0, 0, [buffer, index, _i32(args[2], 3, "byte")])
     },
@@ -300,27 +321,6 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
       let bytes = _readable(args[0], 1, "Bytes.slice requires Bytes");
       let start = _i32(args[1], 2, "slice start");
       H.node(Op.BytesSlice, H.TYPE_BYTES, 0, 0, [bytes, start, _i32(args[2], 3, "slice length")])
-    },
-    "List.nil" => {
-      checkArity(args, 0, qualified);
-      H.node(Op.ListNil, H.listType(checkType(types[0])), 0, 0, [])
-    },
-    "List.cons" => {
-      checkArity(args, 2, qualified);
-      let tail = _of(args[1], 2, Kind.List, "List.cons requires a list");
-      let ty = H.typeOf(tail);
-      H.node(Op.ListCons, ty, 0, 0, [_element(args[0], 1, H.innerOf(ty), "list"), tail])
-    },
-    "List.head", "List.tail", "List.is_nil" => {
-      checkArity(args, 1, qualified);
-      let list = _of(args[0], 1, Kind.List, qualified + " requires a list");
-      let ty = H.typeOf(list);
-
-      match (name) {
-        "head" => H.node(Op.ListHead, H.innerOf(ty), 0, 0, [list]),
-        "tail" => H.node(Op.ListTail, ty, 0, 0, [list]),
-        _ => H.node(Op.ListIsNil, H.TYPE_BOOL, 0, 0, [list]),
-      }
     },
     "Std.string" => _string(args),
     "System.exit" => {
@@ -334,7 +334,7 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
   }
 };
 
-let _method = fn(base: AstExpr, name: Bytes, args: Array<AstExpr>): I32 {
+let _method = fn(base: AstExpr, name: Bytes, args: Array<AstExpr>, expected: I32): I32 {
   let outer = enterSyntax(syntaxChild(0));
   let receiver = checkPresent(base, 0);
   enterSyntax(outer);
@@ -345,23 +345,10 @@ let _method = fn(base: AstExpr, name: Bytes, args: Array<AstExpr>): I32 {
       checkArity(args, 0, "len");
       H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [receiver])
     },
-    Array => match (name) {
-      "len" => {
-        checkArity(args, 0, name);
-        H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [receiver])
-      },
-      "push" => {
-        checkArity(args, 1, name);
-        H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [receiver, _element(args[0], 1, H.innerOf(ty), "array")])
-      },
-      "pop" => {
-        checkArity(args, 0, name);
-        H.node(Op.ArrayPop, H.innerOf(ty), 0, 0, [receiver])
-      },
-      _ => {
-        throw "unknown array method: " + name;
-        -1
-      },
+    Array => {
+      let builtin = _builtinIndex(name);
+      if (builtin < 0) { throw "unknown array method: " + name; }
+      _checkBuiltin(builtin, name, _NO_TYPES, receiver, args, expected)
     },
     _ => {
       throw "unknown method " + name + " of " + H.typeName(ty);
@@ -370,18 +357,18 @@ let _method = fn(base: AstExpr, name: Bytes, args: Array<AstExpr>): I32 {
   }
 };
 
-let _call = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>): I32 {
+let _call = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>, expected: I32): I32 {
   let (target, types) = match (callee) { TypeApply(base, applied) when (typeArgs.len() == 0) => (base, applied), _ => (callee, typeArgs) };
 
   match (target) {
-    Member(Variable(space), name) when (_builtin(space)) => _static(space, name, types, args),
+    Member(Variable(space), name) when (_builtin(space)) => _static(space, name, types, args, expected),
     Member(Variable(space), name) when (!isBound(space)) => {
       throw "unknown name " + space + " in " + space + "." + name + "; import a module as " + space + " to call its exports";
       -1
     },
     Member(base, name) => {
       if (types.len() != 0) { throw name + " does not take type arguments"; }
-      _method(base, name, args)
+      _method(base, name, args, expected)
     },
     _ => {
       throw "calling this expression is not supported yet; bind the function to a name first";
@@ -396,7 +383,7 @@ export let checkAggregateExpr: (AstExpr, I32) -> I32 = fn(expr, expected) {
     Array(items) => _array(items, expected),
     Member(base, member) => _member(base, member),
     Index(base, index) => _index(base, index),
-    Call(callee, typeArgs, args) => _call(callee, typeArgs, args),
+    Call(callee, typeArgs, args) => _call(callee, typeArgs, args, expected),
     Assign(op, Index(base, index), value) => _assignIndex(base, index, op, value),
     IncDec(op, prefix, Index(base, index)) => _stepIndex(base, index, op, prefix),
     _ => {
