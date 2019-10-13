@@ -1,0 +1,18 @@
+// expect: ok
+// The new integer types as values; boxed to Dynamic, nullable, in patterns and in containers.
+let word: U32 = 4000000000;
+let boxed = word as Dynamic;
+System.assertEq(Std.string(boxed), "4000000000");
+System.assertEq(Std.string(boxed as I64), "4000000000");
+let small = -3i16 as Dynamic;
+System.assertEq(Std.string(small as I32), "-3");
+let maybe: Null<U8> = 7;
+System.assertEq(Std.string(maybe), "7");
+let kind = fn(x: U8): Bytes { match (x) { 0 => "zero", 255u8 => "max", _ => "other" } };
+System.assertEq(kind(255), "max");
+System.assertEq(kind(0), "zero");
+System.assertEq(Std.string([1u16, 65535u16]), "[1, 65535]");
+System.assertEq(Std.string((1i8, 2u64)), "(1, 2)");
+System.assert([3u32] == [3u32]);
+System.assertEq(Std.string(18446744073709551615u64 == 0xFFFF_FFFF_FFFF_FFFFu64), "true");
+"ok"

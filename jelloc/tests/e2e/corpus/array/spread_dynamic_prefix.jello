@@ -1,0 +1,10 @@
+// expect:
+// pending: objects
+let ks: Array<Dynamic> = [ { n: 1 }, { n: 2 } ];
+let head: Dynamic = { n: 0 };
+let out: Array<Dynamic> = [head, ...ks];
+System.assert(Array.len(out) == 3);
+
+let [callee, ...args] = ks;
+let piped: Array<Dynamic> = [callee, head, ...args];
+System.assert(Array.len(piped) == 3);

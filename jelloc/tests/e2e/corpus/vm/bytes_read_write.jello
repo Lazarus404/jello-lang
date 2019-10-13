@@ -1,0 +1,30 @@
+// expect: ok
+// pending: unknown function Bytes.writeU32Le
+let buf = Bytes.new(8);
+Bytes.writeU32Le(buf, 0, 16909060);
+System.assert(Bytes.readU32Le(buf, 0) == 16909060);
+
+Bytes.writeU32Be(buf, 0, 16909060);
+System.assert(Bytes.readU32Be(buf, 0) == 16909060);
+
+Bytes.writeI32Le(buf, 0, -1);
+System.assert(Bytes.readI32Le(buf, 0) == -1);
+
+Bytes.writeF32Le(buf, 0, 3.5);
+System.assert(Bytes.readF32Le(buf, 0) == 3.5);
+
+Bytes.writeU16Le(buf, 0, 43981);
+System.assert(Bytes.readU16Le(buf, 0) == 43981);
+Bytes.writeU16Be(buf, 0, 43981);
+System.assert(Bytes.readU16Be(buf, 0) == 43981);
+
+Bytes.writeI32Be(buf, 0, -1000);
+System.assert(Bytes.readI32Be(buf, 0) == -1000);
+Bytes.writeF32Be(buf, 0, -2.5);
+System.assert(Bytes.readF32Be(buf, 0) == -2.5);
+
+let packed = Bytes.new(4);
+Bytes.writeU32Le(packed, 0, 16909060);
+System.assert(Bytes.readU32Le(packed, 0) == 16909060);
+
+"ok"

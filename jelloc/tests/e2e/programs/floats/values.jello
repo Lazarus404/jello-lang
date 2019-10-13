@@ -1,0 +1,22 @@
+// expect: ok
+// Floats are values like any other: in arrays, tuples, optionals and Dynamic.
+System.assertEq(Std.string([1.5, 2.0]), "[1.5, 2.0]");
+let f: F32 = 0.5;
+let h: F16 = 0.25;
+System.assertEq(Std.string((1.5, f, h)), "(1.5, 0.5, 0.25)");
+let o: ?F64 = 2.5;
+System.assertEq(Std.string(o), "2.5");
+let d = 1.5 as Dynamic;
+System.assert(d is F64);
+System.assert(!(d is F32));
+System.assertEq(Std.string(d), "1.5");
+System.assertEq(Std.string(d as F64), "1.5");
+let fd = f as Dynamic;
+System.assert(fd is F32);
+System.assertEq(Std.string(fd as F32), "0.5");
+System.assertEq(Std.string(h as Dynamic), "0.25");
+System.assertEq(Std.string(1e21), "1e+21");
+System.assertEq(Std.string(0.0000001), "0.0000001");
+System.assertEq(Std.string(1e-8f32), "1e-8");
+System.assertEq(Std.string(1.5e300), "1.5e+300");
+"ok"

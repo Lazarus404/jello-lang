@@ -1,4 +1,9 @@
-// error: 6:1: module package does not match import path: $DIR/geometry/Origin.jello
+// error: 11:1: tests/e2e/programs/roots/one-path/geometry/Origin.jello is imported as `geometry.Origin`, so it cannot also be imported as `Origin`
+// error: import { origin as again } from Origin;
+// error: ^
+// error: $DIR/main.jello:10:1: note: it is first imported here
+// error: import { origin } from geometry.Origin;
+// error: ^
 // flags: --path $DIR/geometry
 // A module has one import path, its package's: through the root
 // $DIR/geometry, geometry.Origin is also Origin, which it does not declare.

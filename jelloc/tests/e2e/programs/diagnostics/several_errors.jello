@@ -1,0 +1,35 @@
+// error: 25:18: count is annotated I32, but its value is Bytes
+// error: let count: I32 = "three";
+// error:                  ^
+// error: $DIR/several_errors.jello:27:21: half is annotated Bytes, but its value is I32
+// error:   let half: Bytes = n / 2;
+// error:                     ^
+// error: $DIR/several_errors.jello:28:15: operator + is not defined for I32 and Bytes
+// error:   let twice = n + "x";
+// error:               ^
+// error: $DIR/several_errors.jello:30:23: the function returns I32, but this value is Bytes
+// error:   if (n > 0) { return "big"; }
+// error:                       ^
+// error: $DIR/several_errors.jello:26:13: note: the function is declared here
+// error: let scale = fn(n: I32): I32 {
+// error:             ^
+// error: $DIR/several_errors.jello:33:27: the function returns Bytes, but this value is I32
+// error: let label = fn(): Bytes { scale(1) };
+// error:                           ^
+// error: $DIR/several_errors.jello:34:13: operator + is not defined for I32 and Bool
+// error: let ratio = 1 + true;
+// error:             ^
+// Checking goes on after an error, so one run reports each independent error,
+// in source order. Code that uses a name whose declaration failed is not
+// reported again.
+let count: I32 = "three";
+let scale = fn(n: I32): I32 {
+  let half: Bytes = n / 2;
+  let twice = n + "x";
+  let more = twice * 2;
+  if (n > 0) { return "big"; }
+  n
+};
+let label = fn(): Bytes { scale(1) };
+let ratio = 1 + true;
+ratio + count

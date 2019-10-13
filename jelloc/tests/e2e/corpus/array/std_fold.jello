@@ -1,0 +1,18 @@
+// expect: ok
+// pending: Array.reduce
+let empty: Array<I32> = [];
+System.assert(empty.reduce(fn(a, x) { a + x }, 7) == 7);
+let a = [1, 2, 3];
+System.assert(a.reduce(fn(acc, x) { acc + x }, 0) == 6);
+let parts: Array<Bytes> = ["x", "y"];
+System.assert(parts.reduce(fn(buf, s) { buf + s }, "") == "xy");
+System.assert([10, 20, 30].reduce(fn(acc, x, i) { acc + x + i }, 0) == 63);
+let n = [0];
+let same = a.forEach(fn(_x) { n[0] = n[0] + 1; null });
+System.assert(n[0] == 3);
+System.assert(same.len() == 3);
+System.assert(same[1] == 2);
+let sum = [0];
+a.forEach(fn(x, i) { sum[0] = sum[0] + x + i; null });
+System.assert(sum[0] == 9);
+"ok"

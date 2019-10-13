@@ -1,0 +1,17 @@
+// expect: ok
+// Atoms are interned names; equal names are the same atom, and their names round-trip.
+let a = :hello;
+System.assert(a == Atom.intern("hello"));
+System.assert(a != :world);
+System.assert(a.toString() == "hello");
+System.assert(Atom.intern("").toString() == "");
+System.assert(Std.string(:ok) == "ok");
+System.assert(Std.string([:a, :b]) == "[:a, :b]");
+let d = :ok as Dynamic;
+System.assert(d is Atom);
+System.assert((d as Atom) == :ok);
+let n = 1 as Dynamic;
+System.assert(!(n is Atom));
+let f = fn(x: Atom): Atom { x };
+System.assert(f(:z) == :z);
+"ok"

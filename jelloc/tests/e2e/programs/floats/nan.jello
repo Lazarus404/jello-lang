@@ -1,0 +1,16 @@
+// expect: ok
+// NaN is unordered: every comparison with it is false except !=; zeros and infinities keep
+// their signs.
+let nan = 0.0 / 0.0;
+System.assert(!(nan == nan));
+System.assert(nan != nan);
+System.assert(!(nan < 1.0));
+System.assert(!(nan > 1.0));
+System.assert(!(nan <= 1.0));
+System.assert(!(nan >= 1.0));
+System.assertEq(Std.string(nan), "NaN");
+System.assertEq(Std.string(1.0 / 0.0), "Infinity");
+System.assertEq(Std.string(-1.0 / 0.0), "-Infinity");
+System.assertEq(Std.string(-0.0), "-0.0");
+System.assert(-0.0 == 0.0);
+"ok"

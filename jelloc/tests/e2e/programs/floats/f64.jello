@@ -1,0 +1,25 @@
+// expect: ok
+// F64 is the type of an unsuffixed float literal; its arithmetic is IEEE 754 double.
+let x = 1.5;
+let y = 0.25;
+System.assertEq(Std.string(x + y), "1.75");
+System.assertEq(Std.string(x - y), "1.25");
+System.assertEq(Std.string(x * y), "0.375");
+System.assertEq(Std.string(x / y), "6.0");
+System.assertEq(Std.string(-x), "-1.5");
+System.assertEq(Std.string(0.1 + 0.2), "0.30000000000000004");
+System.assertEq(Std.string(2.0 * x), "3.0");
+System.assertEq(Std.string(2 * x), "3.0");
+let z: F64 = 3;
+System.assertEq(Std.string(z), "3.0");
+System.assert(y < x);
+System.assert(x > y);
+System.assert(x <= 1.5);
+System.assert(x >= 1.5);
+System.assert(x == 1.5);
+System.assert(x != y);
+let total = 0.0;
+total += x;
+total *= 4.0;
+System.assertEq(Std.string(total), "6.0");
+"ok"

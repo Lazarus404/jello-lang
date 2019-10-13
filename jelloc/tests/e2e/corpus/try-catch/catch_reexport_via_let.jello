@@ -1,0 +1,7 @@
+// expect: ok
+// pending: Atom.intern
+// let-bound re-export works when try/catch branches unify (null tail, not Bytes)
+let eqAtom = Atom.intern("equal");
+let v: Dynamic = try { throw 42; null } catch (e) { let x = e; x };
+System.assert(Object.get(System.deepEqual(v, 42), eqAtom) == true);
+"ok"

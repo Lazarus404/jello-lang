@@ -1,0 +1,10 @@
+// expect: ok
+// Integer patterns of a U64 compare all 64 bits.
+let name = fn(x: U64): Bytes {
+  match (x) { 18446744073709551615 => "max", 9223372036854775808 => "half", 1 => "one", _ => "other" }
+};
+System.assertEq(name(18446744073709551615), "max");
+System.assertEq(name(9223372036854775808), "half");
+System.assertEq(name(1), "one");
+System.assertEq(name(2), "other");
+"ok"

@@ -54,10 +54,7 @@ export enum BinaryOp {
 
 export enum AssignOp {
   Assign;
-  Add;
-  Subtract;
-  Multiply;
-  Divide;
+  Compound(op: BinaryOp);
 }
 
 export enum Type {
@@ -339,22 +336,29 @@ let _digitValue = fn(c: I32): I32 {
   if (c <= "9".code) { c - "0".code } else if (c <= "F".code) { c - "A".code + 10 } else { c - "a".code + 10 }
 };
 
-let _integer = fn(text: Bytes, negative: Bool, wide: Bool): I64 {
-  let i = 0;
-  let sign = negative;
+let _outOfRange = fn(text: Bytes, negative: Bool, range: Bytes): Bytes {
+  "integer literal " + (negative ? "-" : "") + text + " is out of range for " + range
+};
 
-  if ((text.len() > 0) && (Bytes.get_u8(text, i) == "-".code)) {
-    sign = !sign;
-    i = 1;
-  }
+let _digits = fn(text: Bytes): Tuple<I32, I32, Bool> {
+  let i = 0;
+  let minus = (text.len() > 0) && (Bytes.get_u8(text, i) == "-".code);
+  if (minus) { i = 1; }
   let radix = 10;
 
   if ((text.len() > i + 2) && (Bytes.get_u8(text, i) == "0".code)) {
     radix = match (Bytes.get_u8(text, i + 1)) { "x".code, "X".code => 16, "b".code, "B".code => 2, "o".code, "O".code => 8, _ => 10 };
     if (radix != 10) { i += 2; }
   }
-  let max: I64 = wide ? 9223372036854775807 : 2147483647;
-  let least: I64 = sign ? -max - 1 : -max;
+  (i, radix, minus)
+};
+
+export let integerIn: (Bytes, Bool, I64, I64, Bytes) -> I64 = fn(text, negative, least, most, range) {
+  let (start, radix, minus) = _digits(text);
+  let i = start;
+  let sign = negative != minus;
+  let max: I64 = 9223372036854775807;
+  let bound: I64 = sign ? -max - 1 : -max;
   let value: I64 = 0;
 
   while (i < text.len()) {
@@ -363,16 +367,41 @@ let _integer = fn(text: Bytes, negative: Bool, wide: Bool): I64 {
 
     if (c != "_".code) {
       let digit = _digitValue(c) as I64;
-
-      if (value < (least + digit) / (radix as I64)) {
-        throw "integer literal " + (negative ? "-" : "") + text + " is out of range for "
-          + (wide ? "I64 (-9223372036854775808 to 9223372036854775807)" : "I32 (-2147483648 to 2147483647)");
-      }
+      if (value < (bound + digit) / (radix as I64)) { throw _outOfRange(text, negative, range); }
       value = value * (radix as I64) - digit;
     }
   }
-  sign ? value : -value
+  let result = sign ? value : -value;
+  if ((result < least) || (result > most)) { throw _outOfRange(text, negative, range); }
+  result
 };
 
-export let integerValue: (Bytes, Bool) -> I32 = fn(text, negative) { _integer(text, negative, false) as I32 };
-export let wideIntegerValue: (Bytes, Bool) -> I64 = fn(text, negative) { _integer(text, negative, true) };
+export let integerValue: (Bytes, Bool) -> I32 = fn(text, negative) {
+  integerIn(text, negative, -2147483648, 2147483647, "I32 (-2147483648 to 2147483647)") as I32
+};
+
+export let wideIntegerValue: (Bytes, Bool) -> I64 = fn(text, negative) {
+  integerIn(text, negative, -9223372036854775807 - 1, 9223372036854775807, "I64 (-9223372036854775808 to 9223372036854775807)")
+};
+
+export let unsignedWideValue: (Bytes, Bool) -> I64 = fn(text, negative) {
+  let (start, radix, minus) = _digits(text);
+  let i = start;
+  let range = "U64 (0 to 18446744073709551615)";
+  let limit: I64 = match (radix) { 16 => 1152921504606846975, 8 => 2305843009213693951, 2 => 9223372036854775807, _ => 1844674407370955161 };
+  let last: I64 = radix == 10 ? 5 : (radix - 1) as I64;
+  let value: I64 = 0;
+
+  while (i < text.len()) {
+    let c = Bytes.get_u8(text, i);
+    i++;
+
+    if (c != "_".code) {
+      let digit = _digitValue(c) as I64;
+      if ((value < 0) || (value > limit) || ((value == limit) && (digit > last))) { throw _outOfRange(text, negative, range); }
+      value = value * (radix as I64) + digit;
+    }
+  }
+  if ((negative != minus) && (value != 0)) { throw _outOfRange(text, negative, range); }
+  value
+};

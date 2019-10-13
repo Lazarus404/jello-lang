@@ -1,0 +1,29 @@
+// expect: ok
+// pending: the I16 type
+let typed: Array<I16> = [1, 2, 3, 4];
+System.assert(Array.len(typed) == 4);
+System.assert(typed.len() == 4);
+System.assert(typed[0] == 1);
+System.assert(typed[3] == 4);
+
+let arr = Array.new<I32>(4);
+let a0 = arr[0] = 10;
+let a1 = arr[1] = 32;
+System.assert(a0 == arr[0]);
+System.assert(a1 == arr[1]);
+System.assert(arr[0] + arr[1] == 42);
+Array.set(arr, 2, 99);
+System.assert(Array.get(arr, 2) == 99);
+
+let anyArr = Array.new<Dynamic>(1);
+anyArr[0] = 7;
+System.assert(anyArr[0] == 7);
+
+let empty: Array<I32> = [];
+System.assert(empty.len() == 0);
+System.assert(Array.new<I32>(0).len() == 0);
+
+let one: Array<I32> = [42];
+System.assert(one.len() == 1);
+System.assert(one[0] == 42);
+"ok"

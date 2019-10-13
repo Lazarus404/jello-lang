@@ -4,7 +4,11 @@ export enum ValueType {
   Bool;
   I32;
   I64;
+  F16;
+  F32;
+  F64;
   Bytes;
+  Atom;
   Dynamic;
   ArrayOf(element: ValueType);
   ListOf(element: ValueType);
@@ -14,8 +18,8 @@ export enum ValueType {
 }
 
 export enum Op {
-  ConstBool; ConstI32; ConstI64; ConstBytes; ConstNull; ConstFunction; Move;
-  Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; Eq; Lt; Sext; Trunc; Box; Unbox; KindOf; IsEnum; IsNull; NullCheck;
+  ConstBool; ConstI32; ConstI64; ConstFloat; ConstBytes; ConstAtom; ConstNull; ConstFunction; Move;
+  Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; Eq; Lt; Sext; Trunc; DivU; RemU; LtU; Zext; Convert; Box; Unbox; KindOf; IsEnum; IsNull; NullCheck;
   ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; ListNil; ListCons; ListHead; ListTail; ListIsNil; BytesNew; BytesSet; BytesBlit; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
   Call; CallIndirect; CallNative; GlobalGet; GlobalSet;
@@ -81,8 +85,8 @@ export enum Native { Native(library: Bytes, name: Bytes, params: Array<ValueType
 
 export enum Program {
   Program(
-    functions: Array<Function>, bytes: Array<Bytes>, wides: Array<I64>, enums: Array<EnumSchema>, globals: Array<ValueType>,
-    natives: Array<Native>
+    functions: Array<Function>, bytes: Array<Bytes>, wides: Array<I64>, floats: Array<I64>, atoms: Array<Bytes>,
+    enums: Array<EnumSchema>, globals: Array<ValueType>, natives: Array<Native>
   );
 }
 
@@ -109,7 +113,7 @@ let _valueTypesEqual = fn(left: Array<ValueType>, right: Array<ValueType>): Bool
 
 valueTypeEqual = fn(left, right) {
   match ((left, right)) {
-    (Bool, Bool), (I32, I32), (I64, I64), (Bytes, Bytes), (Dynamic, Dynamic) => true,
+    (Bool, Bool), (I32, I32), (I64, I64), (Bytes, Bytes), (Atom, Atom), (Dynamic, Dynamic), (F16, F16), (F32, F32), (F64, F64) => true,
     (Nominal(a), Nominal(b)) => a == b,
     (ArrayOf(a), ArrayOf(b)), (ListOf(a), ListOf(b)) => valueTypeEqual(a, b),
     (TupleOf(a), TupleOf(b)) => _valueTypesEqual(a, b),
@@ -119,4 +123,4 @@ valueTypeEqual = fn(left, right) {
   }
 };
 
-export let canBeNull: (ValueType) -> Bool = fn(ty) { match (ty) { Bool, I32, I64, ListOf(_) => false, _ => true } };
+export let canBeNull: (ValueType) -> Bool = fn(ty) { match (ty) { Bool, I32, I64, F16, F32, F64, Atom, ListOf(_) => false, _ => true } };

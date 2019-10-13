@@ -1,0 +1,11 @@
+// expect: ok
+// pending: Tuple.len
+let t = (7, "ok");
+System.assert(t.len() == 2);
+System.assert(Tuple.len(t) == 2);
+System.assert(t == (7, "ok"));
+System.assert(t == (8, "ok") == false);
+let s = t.toString();
+System.assert(Bytes.len(s) > 2);
+System.assert(Bytes.get_u8(s, 0) == 40);
+"ok"

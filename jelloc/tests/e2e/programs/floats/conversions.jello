@@ -1,0 +1,17 @@
+// expect: ok
+// `as` converts between floats and integers; a float converts to an integer toward zero.
+System.assertEq(Std.string(7 as F64), "7.0");
+System.assertEq(Std.string(-2.9 as I32), "-2");
+System.assertEq(Std.string(2.9 as I64), "2");
+System.assertEq(Std.string(255.9 as U8), "255");
+System.assertEq(Std.string(-128.5 as I8), "-128");
+System.assertEq(Std.string(4294967295.0 as U32), "4294967295");
+System.assertEq(Std.string(1e19 as U64), "10000000000000000000");
+let most: U64 = 18446744073709551615;
+System.assertEq(Std.string(most as F64), "18446744073709552000.0");
+let word: U32 = 4294967295;
+System.assertEq(Std.string(word as F64), "4294967295.0");
+System.assertEq(Std.string(0.1 as F32), "0.1");
+System.assertEq(Std.string(70000.0 as F16), "Infinity");
+System.assertEq(Std.string(300 as F16), "300.0");
+"ok"

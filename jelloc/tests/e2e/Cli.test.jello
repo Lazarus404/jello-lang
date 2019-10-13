@@ -5,7 +5,8 @@
 
 import type { Test } from std.testing;
 import std.testing as T;
-import { exists, readText } from std.io.File;
+import { join, split, startsWith } from std.core.Bytes;
+import { exists, readText, writeText } from std.io.File;
 import { result } from std.io.Process;
 import degust.Golden as G;
 import { NONE, badCommandLines, concat, finish, fresh, has, jelloc, startJelloc, stdDir, withStd } from support.Run;
@@ -13,12 +14,16 @@ import { NONE, badCommandLines, concat, finish, fresh, has, jelloc, startJelloc,
 const _P = "tests/e2e/programs";
 const _CLI = "tests/e2e/cli";
 
+// What the compiler prints for ARGS, which must succeed.
 let _dump = fn(t: Test, args: Array<Bytes>): Bytes {
   let (status, out, err) = jelloc(args, NONE);
   if (status != 0) { T.fail(t, "jelloc failed: " + err); }
   out
 };
 
+// ARGS, with ENV over the environment, is a program the compiler rejects:
+// status 1, nothing on standard output, no module, and MESSAGE on standard
+// error.
 let _rejects = fn(t: Test, args: Array<Bytes>, env: Array<Bytes>, message: Bytes): Null {
   let module = fresh("rejected.jlo");
   let (status, out, err) = jelloc(concat(args, ["--out", module]), env);
@@ -26,6 +31,8 @@ let _rejects = fn(t: Test, args: Array<Bytes>, env: Array<Bytes>, message: Bytes
   has(t, err, message);
 };
 
+// Each of CASES, ARGS and MESSAGE, is a bad command line, with MESSAGE on
+// standard error. They run at once.
 let _usage = fn(t: Test, cases: Array<Tuple<Array<Bytes>, Bytes>>): Null {
   let started = Array.new<Tuple<Dynamic, Array<Bytes>>>(0);
   let i = 0;
@@ -51,14 +58,14 @@ let testBadCommandLines = fn(t: Test) {
   _usage(t, [
     (NONE, "no input file\nusage: jelloc"),
     ([core, "--frobnicate"], "unknown option: --frobnicate"),
-
+    // An unknown option is never taken for an input, wherever it is.
     (["--frobnicate", core, "--out", fresh("frobnicate.jlo")], "unknown option: --frobnicate"),
     ([core, "--hir", "--frobnicate"], "unknown option: --frobnicate"),
     ([core, "--hir", "other.jello"], "unexpected argument: other.jello"),
     ([core], "output path required; pass --out <path>"),
     ([core, "--hir", "--out", fresh("core-hir.jlo")], "--out cannot be combined with --lex, --parse, --hir or --ir"),
     ([core, "--spans"], "--spans requires --hir"),
-
+    // A flag that takes a value needs a non-empty one.
     ([zero, "--path"], "--path requires a directory"),
     ([zero, "--path", ""], "--path requires a directory"),
     ([zero, "--std", ""], "--std requires a directory"),
@@ -73,7 +80,7 @@ let testCompiles = fn(t: Test) {
     (1, "", "jelloc: cannot read " + _P + "/no-such-file.jello"));
   T.equal(t, jelloc([_P + "/core.jello", "--out", module], NONE), (0, "", ""));
   T.isTrue(t, exists(module));
-
+  // --jlo with --out prints the listing and writes the module --out alone does.
   let (status, out, err) = jelloc([_P + "/core.jello", "--jlo", "--out", listed], NONE);
   T.equal(t, (status, err), (0, ""));
   has(t, out, "fn @");
@@ -84,17 +91,19 @@ let testDumps = fn(t: Test) {
   let (status, tokens, _) = result(startJelloc(["tests/lex/tokens.jello", "--lex"], NONE));
   T.equal(t, status, 0);
   G.equal(t, "tests/lex/tokens.tok", tokens);
-
+  // --hir --spans ends each node's line with its span
+  // (tests/integration/compiler/dumps checks them).
   has(t, _dump(t, [_P + "/core.jello", "--hir", "--spans"]), "fn @1 count(%0 limit: i32 @28..38) -> i32 @25..119");
-
+  // A parse error points at the token the parser stopped at.
   T.equal(t, jelloc(["itests/while/missing_while.jello", "--parse"], NONE), (1, "",
     "PARSER\titests/while/missing_while.jello:5:1: ParseError: expected 'while', found '\"ok\"'\n\"ok\"\n^"));
-
+  // Bytes escapes, \x reaching every byte, are one literal in the HIR and IR.
   let escapes = "bytes \"\\x00\\x7f\\x80\\xff\\x07\\x08\\x0c\\x0b\\x00\\xc3\\xa9A'\\\"\\\\\"";
   has(t, _dump(t, [_P + "/bytes/escapes.jello", "--hir"]), escapes);
   has(t, _dump(t, [_P + "/bytes/escapes.jello", "--ir"]), escapes);
 };
 
+// Every dump stops at a lex error with the diagnostic a compile gives.
 let testDumpsStopAtALexError = fn(t: Test) {
   let source = _P + "/bytes/bad_hex.jello";
   let flags = ["--lex", "--hir", "--ir", "--jlo"];
@@ -113,15 +122,74 @@ let testDumpsStopAtALexError = fn(t: Test) {
     T.equal(t, finish(dumps[i]), (1, "", error));
     i++;
   }
-
+  // --parse labels it with its phase.
   T.equal(t, jelloc([source, "--parse"], NONE), (1, "", "LEXER\t" + error));
 };
 
+// A value try whose body gives null and whose catch a value, with no type
+// expected, joins to a nullable, each block converting its own tail. It is
+// written here rather than as a fixture because the committed seed fails on it.
+let testJoinsATryToANullable = fn(t: Test) {
+  let source = fresh("nullable_try.jello");
+  writeText(source, "let fail = fn(): I32 { throw \"stop\"; 0 };\n"
+    + "let pick = fn(n: I32): I32 { let v = try { if (n > 0) { fail(); } null } catch { 7 }; v != null ? v : 10 };\n"
+    + "pick(1) + pick(0)\n");
+  let (status, _, err) = jelloc([source, "--out", fresh("nullable_try.jlo")], NONE);
+  T.equal(t, (status, err), (0, ""));
+};
+
+// Fixtures whose error lines list every diagnostic of their run: each run reports
+// those and nothing after them, such as a consequence of an earlier error.
+let testReportsOnlyIndependentErrors = fn(t: Test) {
+  let dir = _P + "/diagnostics";
+  let names = ["several_errors", "notes", "syntax_errors", "missing_brace", "unclosed_block", "unclosed_nested", "same_statement"];
+  let n = 0;
+
+  while (n < names.len()) {
+    let source = dir + "/" + names[n] + ".jello";
+    let lines = split(readText(source), "\n");
+    let want = Array.new<Bytes>(0);
+    let i = 0;
+
+    while ((i < lines.len()) && startsWith(lines[i], "// error: ")) {
+      let line = join(split(Bytes.slice(lines[i], 10, Bytes.len(lines[i]) - 10), "$DIR"), dir);
+      want.push(i == 0 ? source + ":" + line : line);
+      i++;
+    }
+    T.equal(t, jelloc([source, "--hir"], NONE), (1, "", join(want, "\n")));
+    n++;
+  }
+};
+
+// A run reports at most 20 errors, each with its source line, and says so when
+// it stops there.
+let testStopsAfterTwentyErrors = fn(t: Test) {
+  let source = _CLI + "/errors/TooMany.jello";
+  let want = "";
+  let i = 0;
+
+  while (i < 20) {
+    let name = "v" + Std.string(i);
+    let line = "let " + name + ": I32 = \"s\";";
+    let caret = "^";
+    while (Bytes.len(caret) < Bytes.len(line) - 3) { caret = " " + caret; }
+    want = want + source + ":" + Std.string(i + 2) + ":" + Std.string(Bytes.len(caret)) + ": " + name + " is annotated I32, but its value is Bytes\n"
+      + line + "\n" + caret + "\n";
+    i++;
+  }
+  T.equal(t, jelloc([source, "--hir"], NONE), (1, "", want + "stopped after 20 errors"));
+};
+
+// What the compiler emits, where a program's output cannot show it.
+// Without --std or JELLO_STD_PATH, a standard module is not found.
 let testNeedsStd = fn(t: Test) {
   _rejects(t, [_CLI + "/needs_std.jello"], ["JELLO_STD_PATH"],
     "needs_std.jello:1:1: module std.core.Bytes is in the standard library; pass its directory with --std <dir> or set JELLO_STD_PATH");
 };
 
+// Test binaries, as tests/e2e/programs/testing runs them. The generated entry
+// is a program like any other: --hir shows it. Without --std, jelloc reads
+// JELLO_STD_PATH and writes the same program.
 let testTestBinaries = fn(t: Test) {
   let pass = _P + "/testing/pass";
   let strings = pass + "/Strings.test.jello";

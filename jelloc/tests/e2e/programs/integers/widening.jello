@@ -1,0 +1,42 @@
+// expect: ok
+// A declared type widens an integer when every value of its type fits; operands never widen.
+let small: I8 = -5;
+let wide: I64 = small;
+System.assertEq(Std.string(wide), "-5");
+let byte: U8 = 200;
+let signed: I16 = byte;
+let unsigned: U64 = byte;
+System.assertEq(Std.string(signed + 1i16), "201");
+System.assertEq(Std.string(unsigned), "200");
+let word: U32 = 4294967295;
+let long: I64 = word;
+System.assertEq(Std.string(long), "4294967295");
+let total = fn(x: I64): I64 { x + 1 };
+System.assertEq(Std.string(total(small)), "-4");
+let back = fn(x: U16): U32 { x };
+System.assertEq(Std.string(back(65535)), "65535");
+let count: I32 = 7;
+let sum: I64 = 0;
+sum = count;
+System.assertEq(Std.string(sum), "7");
+let product: I64 = count * count;
+System.assertEq(Std.string(product), "49");
+let items: Array<I64> = [small, 2];
+items[1] = byte;
+System.assertEq(Std.string(items), "[-5, 200]");
+let pair: Tuple<I64, U32> = (small, byte);
+System.assertEq(Std.string(pair), "(-5, 200)");
+let maybe: ?I64 = small;
+System.assertEq(Std.string(maybe), "-5");
+enum Holder { Wide(value: I64); }
+System.assertEq(Std.string(match (Holder.Wide(small)) { Wide(x) => x }), "-5");
+// A type argument written, or fixed by the context, is declared; one an earlier value binds is not.
+enum Pair<T> { Both(a: T, b: T); }
+let id<T> = fn(a: T): T { a };
+let both: Pair<I64> = Pair.Both(byte, small);
+let echoed: I64 = id(byte);
+System.assertEq(Std.string(both) + " " + Std.string(id<I64>(small)) + " " + Std.string(echoed), "Pair.Both(200, -5) -5 200");
+enum Tagged<T> { One(n: I64, v: T); }
+let tagged<T: Show> = fn(n: I64, v: T): Bytes { Std.string(n) + Std.string(v) };
+System.assertEq(Std.string(Tagged.One(byte, true)) + " " + tagged(byte, true), "Tagged.One(200, true) 200true");
+"ok"

@@ -1,0 +1,15 @@
+// error: 16:1: ParseError: expected '}', found the end of the file
+// error: 
+// error: ^
+// error: $DIR/unclosed_block.jello:8:19: note: this `{` is not closed
+// error: let f = fn(): I32 {
+// error:                   ^
+// A block left open is reported once, at the end of the file.
+let f = fn(): I32 {
+  let g = fn(): I32 {
+    1
+  };
+  g();
+
+let x = 1;
+x

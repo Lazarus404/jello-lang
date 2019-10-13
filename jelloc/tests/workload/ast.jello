@@ -2,17 +2,13 @@
 import { exprTag, integerValue, isBindPattern, wideIntegerValue } from frontend.Ast;
 import { BinaryOp, Expr, IntSize, Pattern } from frontend.Ast;
 
+
 let _size: (Expr) -> I32 = fn(expr) {
   match (expr) {
     Binary(_, left, right) => 1 + _size(left) + _size(right),
     Array(items), Tuple(items) => {
-      let total = 1;
-      let i = 0;
-
-      while (i < items.len()) {
-        total += _size(items[i]);
-        i++;
-      }
+      let total = 1; let i = 0;
+      while (i < items.len()) { total += _size(items[i]); i++; }
       total
     },
     Index(base, index) => 1 + _size(base) + _size(index),
@@ -24,25 +20,15 @@ let _tags: (Expr) -> I32 = fn(expr) {
   match (expr) {
     Binary(_, left, right) => exprTag(expr) + _tags(left) + _tags(right),
     Array(items), Tuple(items) => {
-      let total = exprTag(expr);
-      let i = 0;
-
-      while (i < items.len()) {
-        total += _tags(items[i]);
-        i++;
-      }
+      let total = exprTag(expr); let i = 0;
+      while (i < items.len()) { total += _tags(items[i]); i++; }
       total
     },
     _ => exprTag(expr),
   }
 };
 
-let _rejects = fn(text: Bytes): Bytes {
-  try {
-    integerValue(text, false);
-    "accepted"
-  } catch (e) { Std.string(e) }
-};
+let _rejects = fn(text: Bytes): Bytes { try { integerValue(text, false); "accepted" } catch (e) { Std.string(e) } };
 
 let one = Expr.Integer("1", IntSize.Infer);
 let tree = Expr.Tuple([Expr.Binary(BinaryOp.Add, one, Expr.Array([one, Expr.Variable("x"), Expr.Tuple([])])), Expr.Null]);

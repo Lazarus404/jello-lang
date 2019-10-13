@@ -1,0 +1,16 @@
+// expect: ok
+// pending: parameter types inferred from use
+import { readText, writeText } from std.io.File;
+
+let make = fn() {
+  let writeSeed = fn(p) { writeText(p, "seed") };
+  return fn() {
+    let path = "io_infer_cap.tmp";
+    writeSeed(path);
+    readText(path)
+  };
+};
+
+let inner = make();
+System.assert(Bytes.eq(inner(), "seed"));
+"ok"

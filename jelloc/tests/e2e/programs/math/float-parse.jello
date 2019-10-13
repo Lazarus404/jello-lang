@@ -1,0 +1,38 @@
+// expect: ok
+// Float.parse reads a sign, digits with an optional point, and an exponent, or NaN, Infinity or
+// -Infinity, as the nearest F64; other text throws.
+System.assertEq(Float.parse("1.5"), 1.5);
+System.assertEq(Float.parse("-0.25"), -0.25);
+System.assertEq(Float.parse("+3"), 3.0);
+System.assertEq(Float.parse(".5"), 0.5);
+System.assertEq(Float.parse("5."), 5.0);
+System.assertEq(Float.parse("1.5e3"), 1500.0);
+System.assertEq(Float.parse("15E-1"), 1.5);
+System.assertEq(Float.parse("0.1"), 0.1);
+System.assertEq(Std.string(Float.parse("-0")), "-0.0");
+System.assert(Float.is_nan(Float.parse("NaN")));
+System.assertEq(Float.parse("Infinity"), 1.0 / 0.0);
+System.assertEq(Float.parse("-Infinity"), -1.0 / 0.0);
+System.assertEq(Float.parse("1e400"), 1.0 / 0.0);
+System.assertEq(Float.parse("1e-400"), 0.0);
+let invalid = fn(text: Bytes): Bool { try { Float.parse(text); false } catch (e) { (e as Bytes) == "Float.parse: not a number" } };
+System.assert(invalid(""));
+System.assert(invalid("."));
+System.assert(invalid("-"));
+System.assert(invalid("e5"));
+System.assert(invalid("1e"));
+System.assert(invalid("1e+"));
+System.assert(invalid("1.2.3"));
+System.assert(invalid(" 1"));
+System.assert(invalid("1 "));
+System.assert(invalid("0x10"));
+System.assert(invalid("inf"));
+System.assert(invalid("nan"));
+System.assert(invalid("-NaN"));
+System.assert(invalid("1_000"));
+// The text is evaluated once.
+let calls = [0];
+let text = fn(): Bytes { calls[0] = calls[0] + 1; "2.5" };
+System.assertEq(Float.parse(text()), 2.5);
+System.assertEq(calls[0], 1);
+"ok"

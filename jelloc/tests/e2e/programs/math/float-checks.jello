@@ -1,0 +1,12 @@
+// expect: ok
+// Float.is_nan and Float.is_infinite test a number of any type.
+System.assert(Float.is_nan(0.0 / 0.0));
+System.assert(Float.is_nan((0.0 / 0.0) as F32));
+System.assert(!Float.is_nan(1.5));
+System.assert(!Float.is_nan(7));
+System.assert(Float.is_infinite(1.0 / 0.0));
+System.assert(Float.is_infinite(-1.0 / 0.0));
+System.assert(Float.is_infinite(70000.0 as F16));
+System.assert(!Float.is_infinite(0.0 / 0.0));
+System.assert(!Float.is_infinite(1.0e308));
+"ok"

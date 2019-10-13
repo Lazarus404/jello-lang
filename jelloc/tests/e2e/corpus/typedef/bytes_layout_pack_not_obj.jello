@@ -1,0 +1,9 @@
+// error: 3:1: bytes-layout pack expects object literal
+// pending: typedefs
+typedef Header = bytes-layout {
+  let tag: U8;
+  let payload: rest;
+};
+
+let _ = Header.pack(42);
+"ok"

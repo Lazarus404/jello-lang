@@ -1,0 +1,21 @@
+// expect: ok
+// pending: Tuple.len
+let t = (7, "ok");
+System.assert(t.0 == 7);
+System.assert(Bytes.len(t.1) == 2);
+System.assert(Bytes.get_u8(t.1, 0) == 111);
+System.assert(Bytes.get_u8(t.1, 1) == 107);
+let t1 = (7, "ok");
+let t2 = (7, "ok");
+let t3 = (8, "ok");
+System.assert(t1 == t2);
+System.assert(t1 != t3);
+System.assert(Tuple.len(()) == 0);
+let single = (1,);
+System.assert(single.0 == 1);
+System.assert(Tuple.len(single) == 1);
+let nested1 = ((1, 2), 3);
+let nested2 = ((1, 2), 3);
+System.assert(nested1 == nested2);
+System.assert(nested1 != ((1, 2), 4));
+"ok"

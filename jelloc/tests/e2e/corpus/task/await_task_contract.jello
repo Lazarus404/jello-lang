@@ -1,0 +1,7 @@
+// expect:
+// pending: std.concurrency.Task is not ported
+import { create, spawn, runOnce } from std.concurrency.Task;
+
+let sched = create();
+spawn(sched, 41);
+System.assert((await sched) == 41);

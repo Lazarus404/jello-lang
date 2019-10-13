@@ -2,8 +2,9 @@ package frontend;
 
 import type { Expr, Package, Stmt } from frontend.Ast;
 import { bindPatternName, isBindPattern } from frontend.Ast;
-import { indexOf } from std.core.Arrays;
+import { appendFrom, indexOf } from std.core.Arrays;
 import { lexFile } from frontend.Lexer;
+import { noteFailure } from frontend.Failures;
 import { packageSpan, parseProgram, programSyntax } from frontend.Parser;
 import { bytesLiteral } from frontend.Tokens;
 import type { SourceSpan, Syntax } from frontend.Source;
@@ -50,20 +51,20 @@ let _joined = fn(parts: Array<Bytes>, separator: Bytes): Bytes {
   concatAll(pieces)
 };
 
-let _packageMatches = fn(packageName: Package, parts: Array<Bytes>): Bool {
-  if (parts.len() == 1) { match (packageName) { None => true, _ => false } } else { match (packageName) {
-    Path(packageParts) => {
-      if (packageParts.len() != parts.len() - 1) { return false; }
-      let i = 0;
+let _packageText = fn(parts: Array<Bytes>): Bytes {
+  if (parts.len() == 0) { "no package" } else { "`package " + _joined(parts, ".") + ";`" }
+};
 
-      while (i < packageParts.len()) {
-        if (packageParts[i] != parts[i]) { return false; }
-        i++;
-      }
-      true
-    },
-    _ => false,
-  } }
+let _checkPackage = fn(path: Bytes, packageName: Package, parts: Array<Bytes>, declaration: ?SourceSpan): Bool {
+  let declared = _packageText(match (packageName) { Path(packageParts) => packageParts, _ => Array.new<Bytes>(0) });
+  let needed = appendFrom(Array.new<Bytes>(0), parts, 0);
+  needed.pop();
+  let expected = _packageText(needed);
+
+  if (declared != expected) {
+    throw noteFailure(declaration, "its package is declared here", path + " declares " + declared + ", but importing it as `" + _joined(parts, ".") + "` needs " + expected);
+  }
+  true
 };
 
 let _localOf = fn(imported: Import): Bytes { match (imported) { Import(local, _, _, _, _, _), Namespace(local, _, _, _) => local } };
@@ -87,6 +88,7 @@ let _repeats = fn(imports: Array<Import>, added: Import): Bool {
 
 let _modules = Array.new<Module>(0);
 let _paths = Array.new<Bytes>(0);
+let _importedAt = Array.new<?SourceSpan>(0);
 let _visiting = Array.new<Bytes>(0);
 let _roots = Array.new<Bytes>(0);
 let _stdRoot = "";
@@ -172,20 +174,12 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
   _failure = importing;
 
   match (program) { Program(packageName, statements, tail) => {
-    if (parts.len() == 0) {
-      match (packageName) {
-        None => null, _ => {
-          _failure = packageSpan();
-          throw "entry module must be package-less";
-          null
-        }
-      };
-    } else {
-      if (!_packageMatches(packageName, parts)) { throw "module package does not match import path: " + path; }
+    if (parts.len() != 0) {
+      _checkPackage(path, packageName, parts, packageSpan());
 
       if (tail != null) {
         _failure = _statementSpan(syntax, statements.len() as I32);
-        throw "dependency module cannot have a tail expression";
+        throw "an imported module cannot end with an expression, since only the program's entry module has a result; end it with `;`";
       }
     }
     let dotted = _joined(parts, ".");
@@ -250,9 +244,10 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
   } }
 };
 
-let _add = fn(path: Bytes, module: Module): I32 {
+let _add = fn(path: Bytes, module: Module, importedAt: ?SourceSpan): I32 {
   _modules.push(module);
   _paths.push(path);
+  _importedAt.push(importedAt);
   (_modules.len() - 1) as I32
 };
 
@@ -261,19 +256,25 @@ _load = fn(path, parts) {
 
   if (loaded >= 0) {
     let name = match (_modules[loaded]) { Module(_, dotted, _, _, _, _) => dotted };
-    if (name != _joined(parts, ".")) { throw "module package does not match import path: " + path; }
+    let dotted = _joined(parts, ".");
+
+    if (name != dotted) {
+      throw noteFailure(_importedAt[loaded], "it is first imported here", path + " is imported as `" + name + "`, so it cannot also be imported as `" + dotted + "`");
+    }
     return loaded;
   }
   if (indexOf(_visiting, path) >= 0) { throw "import cycle through " + path; }
   _visiting.push(path);
+  let importing = _failure;
   let module = _module(path, readText(path), parts, Array.new<Import>(0));
   _visiting.pop();
-  _add(path, module)
+  _add(path, module, importing)
 };
 
 let _begin = fn(std: Bytes, roots: Array<Bytes>) {
   _modules = Array.new<Module>(0);
   _paths = Array.new<Bytes>(0);
+  _importedAt = Array.new<?SourceSpan>(0);
   _visiting = Array.new<Bytes>(0);
   _failure = null;
   _roots = Array.new<Bytes>(0);
@@ -394,7 +395,7 @@ export let loadTests: (Array<Bytes>, Bytes, Array<Bytes>) -> Array<Module> = fn(
 
   match (_module("", entry, Array.new<Bytes>(0), imports)) { Module(path, name, statements, syntax, tail, _) => {
     let relocated = match (_modules[testing]) { Module(_, _, _, at, _, _) => match (at) { Node(file, start, end, _, _) => _relocated(syntax, file, start, end) } };
-    _add(path, Module.Module(path, name, statements, relocated, tail, imports));
+    _add(path, Module.Module(path, name, statements, relocated, tail, imports), null);
   } };
   _modules
 };

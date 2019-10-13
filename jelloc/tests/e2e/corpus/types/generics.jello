@@ -1,0 +1,10 @@
+// expect: ok
+// pending: the Atom type
+let unOpExp: (Bytes, Tuple<Atom, I32>) -> Tuple<Atom, Bytes, Tuple<Atom, I32>> = fn(op, exp) {
+  (:unop, op, exp)
+};
+let f: (Array<Object>, I32) -> Tuple<Tuple<Atom, Bytes, Tuple<Atom, I32>>, I32> = fn(tokens, pos) {
+  (unOpExp("-", (:const, 0)), 0)
+};
+System.assert(f(Array.new<Object>(0), 0).1 == 0);
+"ok"

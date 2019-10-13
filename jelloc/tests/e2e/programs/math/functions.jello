@@ -1,0 +1,42 @@
+// expect: ok
+// Math takes numbers of any type as F64 and returns an F64.
+System.assertEq(Math.sqrt(9), 3.0);
+System.assertEq(Math.abs(-5i8), 5.0);
+System.assertEq(Math.abs(-2.5f32), 2.5);
+System.assertEq(Math.cbrt(27u64), 3.0);
+System.assertEq(Math.floor(-1.5), -2.0);
+System.assertEq(Math.ceil(-1.5), -1.0);
+System.assertEq(Math.trunc(-1.5), -1.0);
+System.assertEq(Math.round(2.5), 3.0);
+System.assertEq(Math.round(-2.5), -3.0);
+System.assertEq(Math.pow(2, 10), 1024.0);
+System.assertEq(Math.exp(0), 1.0);
+System.assertEq(Math.expm1(0), 0.0);
+System.assertEq(Math.log(1), 0.0);
+System.assertEq(Math.log10(1000), 3.0);
+System.assertEq(Math.log2(1024i64), 10.0);
+System.assertEq(Math.log1p(0), 0.0);
+System.assertEq(Math.sin(0), 0.0);
+System.assertEq(Math.cos(0), 1.0);
+System.assertEq(Math.tan(0), 0.0);
+System.assertEq(Math.asin(1) * 2.0, Math.acos(-1));
+System.assertEq(Math.atan(1) * 4.0, Math.acos(-1));
+System.assertEq(Math.atan2(1, 1), Math.atan(1));
+System.assertEq(Math.sinh(0), 0.0);
+System.assertEq(Math.cosh(0), 1.0);
+System.assertEq(Math.tanh(0), 0.0);
+System.assertEq(Math.asinh(0), 0.0);
+System.assertEq(Math.acosh(1), 0.0);
+System.assertEq(Math.atanh(0), 0.0);
+System.assertEq(Math.sign(-3), -1.0);
+System.assertEq(Std.string(Math.sign(-0.0)), "-0.0");
+System.assert(Float.is_nan(Math.sign(0.0 / 0.0)));
+System.assert(Float.is_nan(Math.sqrt(-1)));
+System.assertEq(Math.fround(0.1), 0.10000000149011612);
+System.assertEq(Math.fround(5.5), 5.5);
+System.assertEq(Math.clz32(1), 31);
+System.assertEq(Math.clz32(0), 32);
+System.assertEq(Math.clz32(-1), 0);
+System.assertEq(Math.imul(65536, 65536), 0);
+System.assertEq(Math.imul(-3, 7), -21);
+"ok"

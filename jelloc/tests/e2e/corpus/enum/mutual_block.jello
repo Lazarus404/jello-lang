@@ -1,0 +1,27 @@
+// expect: 1
+// pending: `with` expressions
+export enum Stmt {
+  Return(exp: I32);
+  Compound(block: Block);
+  Null;
+}
+
+export enum BlockItem {
+  S(statement: Stmt);
+}
+
+export enum Block {
+  Block(items: Array<BlockItem>);
+}
+
+let inner = BlockItem.S(Stmt.Return(5));
+let blk = Block.Block([inner]);
+let s = Stmt.Compound(blk);
+match (s) {
+  Compound(b) => {
+    with Block(items) <- b {
+      items.len()
+    }
+  },
+  _ => -1,
+}

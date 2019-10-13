@@ -1,0 +1,15 @@
+// expect: ok
+// F32 takes the f32 suffix or a declared type; its text is the shortest that reads back as it.
+let f: F32 = 0.1;
+let g = 0.2f32;
+System.assertEq(Std.string(f), "0.1");
+System.assertEq(Std.string(f + g), "0.3");
+System.assertEq(Std.string(f * g), "0.020000001");
+System.assertEq(Std.string(g / f), "2.0");
+System.assertEq(Std.string(-f), "-0.1");
+System.assert(f < g);
+System.assert(g >= f);
+System.assertEq(Std.string(f as F64), "0.10000000149011612");
+let big: F32 = 16777216;
+System.assertEq(Std.string(big), "16777216.0");
+"ok"

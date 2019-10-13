@@ -1,0 +1,8 @@
+// error: 7:1: thread_spawn flat varargs requires compile-time-known spread
+// pending: native thread_spawn without a typed binding
+load { thread_spawn } from std;
+
+let add = fn(a: I32, b: I32) { return a + b; };
+let payload: Array<I32> = [10, 20];
+thread_spawn(add, ...payload);
+"ok"

@@ -1,0 +1,30 @@
+// expect: 3 0 9 6 7 12 4
+// expect: 1 null 2 null 3
+// A branch that ends every path, by throw, return, break or continue, gives no value, so the
+// other branches alone give the type: an if, a match arm, a try or its catch. A tail after the
+// end, as in `{ throw e; null }`, never runs and does not widen the type to Null<T>.
+enum Opt { Some(v: I32); None; }
+let half = fn(n: I32): I32 { let h = if (n % 2 == 0) { n / 2 } else { throw "odd"; }; h + 0 };
+let twice = fn(o: Opt): I32 { let r = match (o) { Some(v) => v * 2, None => { return 0; } }; r + 1 };
+let parsed = fn(n: I32): I32 { try { half(n) } catch (e) { throw e; } };
+let placeholder = fn(n: I32): I32 { let h = if (n > 0) { n } else { throw "none"; null }; h * 2 };
+let annotated = fn(left: Bool): I32 { let x: I32 = if (left) { throw "l"; } else { throw "r"; }; x };
+let skipped = fn(): I32 {
+  let i = 0; let total = 0;
+  while (i < 5) { i++; let v = if (i == 3) { continue; } else { i }; total += v; }
+  total
+};
+let firstEven = fn(xs: Array<I32>): I32 {
+  let i = 0; let found = -1;
+  while (true) { let x = if (i == xs.len()) { break; } else { xs[i] }; if (x % 2 == 0) { found = x; break; } i++; }
+  found
+};
+// An inferred result's `return null` converts the other branch's value to Null<I32>.
+let early = fn(b: Bool) { let x = if (b) { 1 } else { return null; null }; x };
+let earlyArm = fn(o: Opt) { let x = match (o) { Some(v) => v, None => { return null; "never" } }; x };
+let earlyCatch = fn(b: Bool) { try { if (b) { 3 } else { throw "x"; } } catch (e) { return null; null } };
+let caught = try { annotated(true) } catch (e) { 7 };
+Std.string(half(6)) + " " + Std.string(twice(Opt.None)) + " " + Std.string(twice(Opt.Some(4))) + " " + Std.string(parsed(12))
+  + " " + Std.string(caught) + " " + Std.string(skipped()) + " " + Std.string(firstEven([3, 5, 4, 8])) + "\n"
+  + Std.string(early(true)) + " " + Std.string(early(false)) + " " + Std.string(earlyArm(Opt.Some(2))) + " "
+  + Std.string(earlyArm(Opt.None)) + " " + Std.string(earlyCatch(true))

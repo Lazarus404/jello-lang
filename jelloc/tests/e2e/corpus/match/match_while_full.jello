@@ -1,0 +1,66 @@
+// expect: ok
+// pending: std.core.Bytes.concat
+package test;
+
+import { concat, len } from std.core.Bytes;
+
+let _selected = -1;
+
+let _fakeSpeak: (Dynamic, Bytes) -> Bool = fn(_v: Dynamic, _m: Bytes) { true };
+
+let _scanIndexFromDigit: (I32) -> I32 = fn(keysym: I32) {
+  if (keysym == 48) {
+    9
+  } else {
+    if (keysym >= 49 && keysym <= 57) {
+      keysym - 48 - 1
+    } else {
+      -1
+    }
+  }
+};
+
+let _speakScanList: (Dynamic) -> Bool = fn(voice: Dynamic) {
+  let count = 3;
+  if (count <= 0) {
+    _fakeSpeak(voice, "No networks found.");
+  } else {
+    _fakeSpeak(voice, "Scan complete.");
+    let i = 0;
+    while (i < count && i < 10) {
+      let ssid = concat("net", "");
+      let sec = if (i == 1) { " secured" } else { " open" };
+      _fakeSpeak(voice, concat(concat(ssid, sec), "."));
+      i += 1;
+    }
+  }
+  true
+};
+
+export let handleKey: (Dynamic, I32) -> Bool = fn(voice: Dynamic, keysym: I32) {
+  match (keysym) {
+    27 => {
+      _fakeSpeak(voice, "closed.");
+      true
+    },
+    115 => {
+      _speakScanList(voice)
+    },
+    112 => {
+      if (_selected < 0) {
+        _fakeSpeak(voice, "No network selected.");
+      } else {
+        _fakeSpeak(voice, "Password prompt.");
+      }
+      true
+    },
+    n when (_scanIndexFromDigit(n) >= 0) => {
+      _selected = _scanIndexFromDigit(n);
+      _fakeSpeak(voice, "Selected.");
+      true
+    },
+    _ => { true },
+  }
+};
+
+if (handleKey(null, 115) == true) { "ok" } else { "fail" }

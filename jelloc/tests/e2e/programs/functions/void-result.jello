@@ -1,0 +1,12 @@
+// expect: 12
+// Void is the result of a function that returns no value: it ends, or returns, without one.
+let log = Array.new<I32>(0);
+let record = fn(n: I32): Void { log.push(n); };
+let positive: (I32) -> Void = fn(n) {
+  if (n <= 0) { return; }
+  record(n);
+};
+positive(-1);
+positive(1);
+record(2);
+log[0] * 10 + log[1]

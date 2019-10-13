@@ -1,0 +1,11 @@
+// The language corpus as program fixtures: the old compiler's language tests,
+// each stating what the language gives it, run as degust.Programs runs the
+// compiler's own fixtures. A feature not yet supported is pending, and a
+// pending fixture that passes fails until its pending line goes. This tree is
+// the living copy; itests keeps the old sources unchanged for the lex, parse,
+// bench and fixed-point corpora.
+
+import type { Test } from std.testing;
+import { run } from degust.Programs;
+
+let testCorpus = fn(t: Test) { run(t, "tests/e2e/corpus"); };

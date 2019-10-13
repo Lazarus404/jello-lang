@@ -1,0 +1,15 @@
+// expect: ok
+// pending: std.sys.Process is not ported
+import { run, readStdout, closeStdin, wait, pid } from std.sys.Process;
+import { env } from std.sys.Sys;
+
+let isWin = Bytes.eq(env("OS"), "Windows_NT");
+let cmd = isWin ? "cmd /c echo std_process" : "/bin/echo std_process";
+let expect = isWin ? "std_process\r\n" : "std_process\n";
+
+let h = run(cmd);
+System.assert(pid(h) > 0);
+System.assert(closeStdin(h));
+System.assert(readStdout(h) == expect);
+System.assert(wait(h) == 0);
+"ok"

@@ -4,8 +4,8 @@ import type { Hir } from frontend.Hir;
 import type { SourceSpan } from frontend.Source;
 import { internalError } from frontend.Internal;
 import {
-  KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_I32, KIND_I64, Kind, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
-  fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, isKind, kindOf, nativeCount, nativeTypeOf, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
+  KIND_ATOM, KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_I32, KIND_I64, Kind, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, TYPE_U64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
+  fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, integerBits, isFloatKind, isFloatType, isKind, isNumberType, kindOf, nativeCount, nativeTypeOf, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
   spanOf, spanStartOf, typeArg, typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 
@@ -266,7 +266,7 @@ let _boxable = fn(ty: I32, what: Bytes): Bool {
   true
 };
 
-let _width = fn(ty: I32): I32 { ty == TYPE_I64 ? TYPE_I64 : TYPE_I32 };
+let _width = fn(ty: I32): I32 { isNumberType(ty) ? ty : TYPE_I32 };
 
 let _typed = fn(id: I32, operands: Array<I32>, result: I32, message: Bytes): I32 {
   _arity(id, operands.len() as I32);
@@ -311,8 +311,12 @@ _expr = fn(id) {
       if ((valueOf(id) != 0) && (valueOf(id) != 1)) { _fail("bool literal"); }
       _typed(id, [], TYPE_BOOL, "")
     },
-    I32 => _typed(id, [], TYPE_I32, ""),
-    I64 => _typed(id, [], TYPE_I64, ""),
+    I32 => _typed(id, [], integerBits(ty) == 64 ? TYPE_I32 : _width(ty), ""),
+    I64 => _typed(id, [], ty == TYPE_U64 ? TYPE_U64 : TYPE_I64, ""),
+    Float => {
+      if (!isFloatType(ty)) { _fail("float literal type"); }
+      _typed(id, [], ty, "")
+    },
     Bytes => {
       if ((valueOf(id) < 0) || (valueOf(id) >= bytesCount())) { _fail("bytes index"); }
       _typed(id, [], TYPE_BYTES, "")
@@ -343,23 +347,36 @@ _expr = fn(id) {
       let function = _functionType(valueOf(id));
       _typed(id, _captureTypes[valueOf(id) - 1], function, "closure capture type mismatch")
     },
+    Rem, Shl, Shr, BitAnd, BitOr, BitXor when (isFloatType(ty)) => {
+      _fail("integer operation on a float");
+      ty
+    },
     Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor => {
       let width = _width(ty);
-      _typed(id, [width, width], width, "integer operation requires operands of its type")
+      _typed(id, [width, width], width, "number operation requires operands of its type")
     },
     Eq when ((childCount(id) > 0) && (typeOf(childOf(id, 0)) == TYPE_BOOL)) => _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "bool equality requires bool operands"),
-    Eq, Lt, Gt => {
+    Eq when ((childCount(id) > 0) && (typeOf(childOf(id, 0)) == TYPE_ATOM)) => _typed(id, [TYPE_ATOM, TYPE_ATOM], TYPE_BOOL, "atom equality requires atom operands"),
+    Le, Ge when ((childCount(id) == 0) || !isFloatType(typeOf(childOf(id, 0)))) => {
+      _fail("float comparison of no float");
+      TYPE_BOOL
+    },
+    Eq, Lt, Gt, Le, Ge => {
       let width = _width(childCount(id) > 0 ? typeOf(childOf(id, 0)) : TYPE_I32);
-      _typed(id, [width, width], TYPE_BOOL, "integer comparison requires operands of one integer type")
+      _typed(id, [width, width], TYPE_BOOL, "number comparison requires operands of one number type")
     },
     Neg => {
       let width = _width(ty);
-      _typed(id, [width], width, "integer negation requires an operand of its type")
+      _typed(id, [width], width, "number negation requires an operand of its type")
     },
     Not => _typed(id, [TYPE_BOOL], TYPE_BOOL, "bool not requires bool operand"),
     And, Or => _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "logical operation requires bool operands"),
-    Sext => _typed(id, [TYPE_I32], TYPE_I64, "i32 to i64 cast requires i32 operand"),
-    Trunc => _typed(id, [TYPE_I64], TYPE_I32, "i64 to i32 cast requires i64 operand"),
+    Convert => {
+      _arity(id, 1);
+      let source = _operand(id, 0);
+      if (!isNumberType(ty) || !isNumberType(source)) { _fail("number conversion type"); }
+      ty
+    },
     Present => {
       if (!isKind(ty, Kind.Null) || (innerOf(ty) < 0)) { _fail("present requires a nullable type"); }
       _typed(id, [innerOf(ty)], ty, "present requires the inner type")
@@ -375,12 +392,13 @@ _expr = fn(id) {
       TYPE_DYNAMIC
     },
     FromDynamic => {
-      if (!match (kindOf(ty)) { Bool, I32, I64, Bytes, Enum => true, _ => false }) { _fail("extraction from Dynamic to an unchecked type"); }
+      if (!match (kindOf(ty)) { Bool, I32, I64, F16, F32, F64, Atom, Bytes, Enum => true, _ => false }) { _fail("extraction from Dynamic to an unchecked type"); }
       _typed(id, [TYPE_DYNAMIC], ty, "extraction requires a Dynamic operand")
     },
     IsKind => {
       let code = valueOf(id);
-      let known = (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64) || ((code == KIND_ENUM) && isKind(auxOf(id), Kind.Enum));
+      let known = (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64) || (code == KIND_ATOM) || isFloatKind(code)
+        || ((code == KIND_ENUM) && isKind(auxOf(id), Kind.Enum));
       if (!known) { _fail("kind test of an unknown kind"); }
       _typed(id, [TYPE_DYNAMIC], TYPE_BOOL, "kind test requires a Dynamic operand")
     },
@@ -498,13 +516,17 @@ _expr = fn(id) {
       _arguments(id, nativeTypeOf(valueOf(id)), 0, "native call signature mismatch")
     },
     Block => {
-      if (auxOf(id) != 1) { _fail("value block without a tail"); }
+      if ((auxOf(id) != 1) && !endsPath(id)) { _fail("value block without a tail"); }
       _block(id, false)
     },
     If => _typed(id, [TYPE_BOOL, ty, ty], ty, "if operand type"),
     Try => {
       _try(id, true);
       ty
+    },
+    Atom => {
+      if ((valueOf(id) < 0) || (valueOf(id) >= bytesCount())) { _fail("atom name index"); }
+      _typed(id, [], TYPE_ATOM, "")
     },
     _ => {
       _fail("expected expression");
@@ -626,8 +648,9 @@ _block = fn(id, programBody) {
     _statement(_child(id, i), programBody);
     i++;
   }
-  let ty = auxOf(id) == 1 ? _operand(id, statements) : 0;
+  let tail = auxOf(id) == 1 ? _operand(id, statements) : 0;
   _popTo(scope);
+  let ty = (auxOf(id) == 0) && endsPath(id) ? typeOf(id) : tail;
   if (ty != typeOf(id)) { _fail("block type mismatch"); }
   _at = outer;
   ty

@@ -1,0 +1,10 @@
+// expect: ok
+// An unsuffixed literal above the greatest I64 is a U64 once its type is known.
+let b: U64 = 18446744073709551615u64;
+System.assertEq(18446744073709551615 == b, true);
+System.assertEq(b < 18446744073709551615, false);
+let z = 18446744073709551615; let w: U64 = z;
+System.assertEq(Std.string(w), "18446744073709551615");
+let c: U64 = 9223372036854775808;
+System.assertEq(Std.string(c + 1), "9223372036854775809");
+"ok"

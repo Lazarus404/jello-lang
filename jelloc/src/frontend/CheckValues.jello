@@ -42,6 +42,11 @@ export let bindOnce: (Array<I32>, Bytes, I32) -> I32 = fn(statements, name, valu
   binding
 };
 
+export let orThrow: (I32, I32) -> I32 = fn(condition, message) {
+  let thrown = H.node(Op.Block, H.TYPE_NULL, 0, 1, [H.node(Op.Throw, 0, 0, 0, [message]), H.node(Op.Null, H.TYPE_NULL, 0, 0, [])]);
+  H.node(Op.If, H.TYPE_NULL, 0, 0, [condition, H.node(Op.Null, H.TYPE_NULL, 0, 0, []), thrown])
+};
+
 let _read = fn(binding: I32, value: I32): I32 { binding < 0 ? value : H.local(binding, H.typeOf(value)) };
 
 export let equalBindings: (BinaryOp, I32, I32, I32, I32) -> I32 = fn(op, a, left, b, right) {
@@ -76,6 +81,15 @@ let _equality = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 {
   equalValues(op, left, right)
 };
 
+let _checkedKind = fn(ty: I32): I32 {
+  match (H.kindOf(ty)) {
+    Bool => H.KIND_BOOL, I32 => H.KIND_I32, Bytes => H.KIND_BYTES, I64 => H.KIND_I64, Atom => H.KIND_ATOM, Enum => H.KIND_ENUM,
+    F64 => H.KIND_F64, F32 => H.KIND_F32, F16 => H.KIND_F16,
+    _ => -1,
+  }
+};
+let _UNCHECKED = ": only Bool, I32, I64, F16, F32, F64, Atom, Bytes and enums are checked";
+
 let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   let target = checkType(targetType);
   let operand = checkOperand(value, 0, -1);
@@ -85,22 +99,26 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
 
   if (target == H.TYPE_DYNAMIC) {
     if (H.isKind(ty, Kind.List)) { throw "a list cannot become Dynamic: its nil would read as null"; }
+    let held = (H.isKind(ty, Kind.Null) && (H.innerOf(ty) >= 0)) ? H.resolve(H.innerOf(ty)) : ty;
+    if (held == H.TYPE_U64) { throw "a " + H.typeName(ty) + " cannot become Dynamic: one above the greatest I64 would read as negative"; }
+    if ((held == H.TYPE_U32) && (held != ty)) { throw "a " + H.typeName(ty) + " cannot become Dynamic: one above the greatest I32 would read as negative"; }
     return H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [operand]);
   }
 
   if (ty == H.TYPE_DYNAMIC) {
-    if (!match (H.kindOf(target)) { Bool, I32, I64, Bytes, Enum => true, _ => false }) {
-      throw "cannot extract " + H.typeName(target) + " from Dynamic: only Bool, I32, I64, Bytes and enums are checked";
-    }
+    if (_checkedKind(target) < 0) { throw "cannot extract " + H.typeName(target) + " from Dynamic" + _UNCHECKED; }
     return H.node(Op.FromDynamic, target, 0, 0, [operand]);
   }
   let present = presentAt(operand, 0);
   if (H.typeOf(present) == target) { return present; }
 
   match ((H.kindOf(H.typeOf(present)), H.kindOf(target))) {
-    (Var, I32), (Var, I64) when (H.isInteger(H.typeOf(present))) => integerConversion(present, target),
-    (I32, I64) => H.node(Op.Sext, H.TYPE_I64, 0, 0, [present]),
-    (I64, I32) => H.node(Op.Trunc, H.TYPE_I32, 0, 0, [present]),
+    (Var, _) when (H.isInteger(H.typeOf(present)) && H.isIntegerType(target)) => integerConversion(present, target),
+    _ when (H.isIntegerType(H.typeOf(present)) && H.isIntegerType(target)) => H.node(Op.Convert, target, 0, 0, [present]),
+    _ when ((H.isInteger(H.typeOf(present)) || H.isFloatType(H.typeOf(present))) && H.isNumberType(target)) => {
+      H.defaultIntegers(H.typeOf(present));
+      H.node(Op.Convert, target, 0, 0, [present])
+    },
     _ => {
       throw "cannot convert " + H.typeName(ty) + " to " + H.typeName(target);
       -1
@@ -116,14 +134,8 @@ let _is = fn(value: AstExpr, targetType: AstType): I32 {
     throw "is tests a Dynamic value, not " + H.typeName(H.typeOf(operand));
   }
   let target = checkType(targetType);
-
-  let code = match (H.kindOf(target)) {
-    Bool => H.KIND_BOOL, I32 => H.KIND_I32, Bytes => H.KIND_BYTES, I64 => H.KIND_I64, Enum => H.KIND_ENUM,
-    _ => {
-      throw "is supports only Bool, I32, I64, Bytes and enums, not " + H.typeName(target);
-      -1
-    },
-  };
+  let code = _checkedKind(target);
+  if (code < 0) { throw "is cannot test for " + H.typeName(target) + _UNCHECKED; }
   H.node(Op.IsKind, H.TYPE_BOOL, code, code == H.KIND_ENUM ? target : 0, [operand])
 };
 

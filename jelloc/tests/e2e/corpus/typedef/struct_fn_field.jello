@@ -1,0 +1,8 @@
+// expect: ok
+// pending: typedefs
+typedef Box = {
+  let f: (I32) -> I32;
+};
+
+let b: Box = { f: fn(x: I32) { x + 1 } };
+(b.f(41) == 42) ? "ok" : "bad"

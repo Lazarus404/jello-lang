@@ -1,0 +1,12 @@
+// error: 9:5: match arms must have the same type, not I32 and Bytes
+// error:     "s" },
+// error:     ^
+// The caret goes on the value of the arm that disagrees.
+let n = 1;
+let v = match (n) {
+  1 => 1,
+  2 => { let q = 2;
+    "s" },
+  _ => 0,
+};
+v

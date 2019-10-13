@@ -36,11 +36,11 @@ import { checked, checkedFile, emitted, encoded, legalized, lowered } from compi
 
 let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
 let none = fn(): Array<I32> { Array.new<I32>(0) };
-let program = fn(functions: Array<Function>): Program { Program.Program(functions, Array.new<Bytes>(0), Array.new<I64>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0)) };
-
+let program = fn(functions: Array<Function>): Program { Program.Program(functions, Array.new<Bytes>(0), Array.new<I64>(0), Array.new<I64>(0), Array.new<Bytes>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0)) };
+// The allocated program the emitter encodes, printed.
 let printJlo = fn(jlo: Program): Bytes { printIr(allocateProgram(jlo)) };
-
-let allocated = fn(jlo: Program): Function { match (allocateProgram(jlo)) { Program(functions, _, _, _, _, _) => functions[0] } };
+// The first allocated function: its register count and spill traffic.
+let allocated = fn(jlo: Program): Function { match (allocateProgram(jlo)) { Program(functions, _, _, _, _, _, _, _) => functions[0] } };
 let registerCount = fn(function: Function): I32 { match (function) { Function(_, _, _, registers, _, _, _) => registers.len() as I32 } };
 
 let spillCount = fn(function: Function, push: Bool): I32 {
@@ -66,6 +66,7 @@ let spillCount = fn(function: Function, push: Bool): I32 {
 let modulesOf = fn(path: Bytes): Array<Module> { loadModules(path, "", Array.new<Bytes>(0)) };
 let checkFile = fn(path: Bytes): Hir { checkedFile(path, Array.new<Bytes>(0)) };
 
+// The paths of MODULES, in initialization order.
 let initializationOrder = fn(modules: Array<Module>): Array<Bytes> {
   let paths = Array.new<Bytes>(0);
   let i = 0;
@@ -77,6 +78,7 @@ let initializationOrder = fn(modules: Array<Module>): Array<Bytes> {
   paths
 };
 
+// The source span of every node, by node ID.
 let spansOf = fn(hir: Hir): Array<SourceSpan> {
   useHir(hir);
   let spans = Array.new<SourceSpan>(0);
@@ -89,6 +91,7 @@ let spansOf = fn(hir: Hir): Array<SourceSpan> {
   spans
 };
 
+// Whether SPANS name both the dependency and the entry module of tests/e2e/programs/modules.
 let spansBothModules = fn(spans: Array<SourceSpan>): Bool {
   let dependency = false;
   let entry = false;
@@ -103,6 +106,7 @@ let spansBothModules = fn(spans: Array<SourceSpan>): Bool {
 };
 
 let testFindsTheCatchAThrowingBlockReaches = fn(t: Test) {
+  // Blocks 0 and 2 sit at indexes 1 and 0.
   let indexes = [1, -1, 0];
   T.equal(t, blockCatch(BasicBlock.Block(0, [], Terminator.Throw(0, -1), ThrowHandler.Catch(2, 1)), indexes), (0, 1));
   T.equal(t, blockCatch(BasicBlock.Block(0, [], Terminator.ReturnValue(0), ThrowHandler.Catch(2, 1)), indexes), (-1, -1));
@@ -157,7 +161,7 @@ let testLowersAParsedBooleanProgramTailToVerifiedIR = fn(t: Test) {
     + "    return %2\n"
     + "}\n");
   T.throws(t, fn() { checked("2147483648i32"); });
-
+  // Unsuffixed literals default to I32.
   T.equal(t, printIr(lowered("1 + 2")),
     printIr(lowered("1i32 + 2i32")));
   T.throws(t, fn() { checked("1i32 + true"); });
@@ -188,7 +192,7 @@ let testPrintsDeterministicTypedHIR = fn(t: Test) {
 
 let testGivesEveryHIRNodeTheSpanOfTheSyntaxItWasCheckedFrom = fn(t: Test) {
   let spans = spansOf(checked("1i32 + 2i32"));
-
+  // Two literals, the addition, the program block and the program.
   T.equal(t, spans.len(), 5);
   let i = 0;
 
@@ -275,7 +279,7 @@ let testPreservesExactSpansThroughFunctionsAssignmentsBranchesAndLoops = fn(t: T
   while (i < spans.len()) {
     T.equal(t, spanPath(spans[i]), path);
     T.isTrue(t, spanEnd(spans[i]) > spanStart(spans[i]));
-
+    // `value += 2i32`: the assignment and its addition span it all; the local read is `value`.
     if ((spanStart(spans[i]) == 63) && (spanEnd(spans[i]) == 68)) { sawTarget = true; }
     if ((spanStart(spans[i]) == 63) && (spanEnd(spans[i]) == 76)) { sawAssignment++; }
     i++;
@@ -712,7 +716,8 @@ let testLegalizesTheExecutableCFGSubsetToJLOOperations = fn(t: Test) {
   T.equal(t, Bytes.get_u8(bytes, 2), "L".code);
   T.equal(t, Bytes.get_u8(bytes, 3), "J".code);
   T.equal(t, encoded(jlo), bytes);
-
+  // Allocation coalesces the loop variable and the call argument into its
+  // window, so no move is left; the step is an immediate add.
   T.equal(t, printJlo(jlo), "fn @1(%0: i32) -> i32 entry 0 {\n"
     + "  register %0: i32\n"
     + "  register %1: i32\n"
@@ -750,7 +755,7 @@ let testCarriesADeduplicatedBytesPoolThroughSelectedJLO = fn(t: Test) {
   let jlo = legalized("\"A\"[0i32] + \"A\"[0i32]");
 
   match (jlo) {
-    Program(_, pool, _, _, _, _) => {
+    Program(_, pool, _, _, _, _, _, _) => {
       T.equal(t, pool, ["A"]);
     },
   };
@@ -779,7 +784,7 @@ let testReusesOneCallScratchWindow = fn(t: Test) {
     [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)],
     0
   );
-
+  // The constant is computed in the window, and both calls share it.
   T.equal(t, registerCount(allocated(program([caller, callee]))), 1);
 };
 
@@ -824,7 +829,7 @@ let testSpillsTrulySimultaneousRegisterPressure = fn(t: Test) {
   let registers = Array.new<ValueType>(0);
   let instructions = Array.new<Instruction>(0);
   let i = 0;
-
+  // 300 constants stay live until the running sum reads them, exceeding 256 registers.
   let count = 300;
 
   while (i < count) {
@@ -851,6 +856,7 @@ let testSpillsTrulySimultaneousRegisterPressure = fn(t: Test) {
 };
 
 let testAllocatesThousandsOfInstructionsAcrossJoins = fn(t: Test) {
+  // Chains split by diamonds every 200 values; every 50th value stays live to the end.
   let count = 4000;
   let registers: Array<ValueType> = [ValueType.Bool, ValueType.I32];
   let blocks = Array.new<BasicBlock>(0);
@@ -889,6 +895,7 @@ let testAllocatesThousandsOfInstructionsAcrossJoins = fn(t: Test) {
 };
 
 let testVerifiesAllocatedCodeAgainstTheProgram = fn(t: Test) {
+  // A call whose argument does not match the callee is caught after allocation too.
   let caller = Function.Function(
     0, [], 0, [ValueType.Bool, ValueType.I32], ValueType.I32,
     [BasicBlock.Block(0, [insn(Op.ConstBool, 0, none(), 1), insn(Op.Call, 1, [0], 1)], Terminator.ReturnValue(1), null)], 0
@@ -913,7 +920,7 @@ let testInitializesImportedPrimitiveConstantsBeforeTheEntryTail = fn(t: Test) {
   T.equal(t, initialization.len(), 2);
   T.isTrue(t, contains(initialization[0], "/math/Constants.jello"));
   T.equal(t, initialization[1], path);
-
+  // Imported constants are immutable globals, initialized in module order.
   T.equal(t, printIr(lowerProgram(hir)), "global g0: i32\n"
     + "global g1: i32\n"
     + "\n"

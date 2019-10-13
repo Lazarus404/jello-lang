@@ -1,0 +1,42 @@
+// expect: ok
+// pending: std.core.Bytes.concat
+package test;
+
+import { concat, len } from std.core.Bytes;
+
+let _fakeSpeak: (Dynamic, Bytes) -> Bool = fn(_v: Dynamic, _m: Bytes) { true };
+
+let _speakScanList: (Dynamic) -> Bool = fn(voice: Dynamic) {
+  let count = 3;
+  if (count <= 0) {
+    _fakeSpeak(voice, "No networks found.");
+    true
+  } else {
+    _fakeSpeak(voice, "Scan complete.");
+    let i = 0;
+    while (i < count && i < 10) {
+      let ssid = concat("net", "");
+      let sec = if (i == 1) { " secured" } else { " open" };
+      _fakeSpeak(voice, concat(concat(ssid, sec), "."));
+      i += 1;
+    }
+    true
+  }
+};
+
+export let handleKey: (Dynamic, I32) -> Bool = fn(voice: Dynamic, keysym: I32) {
+  match (keysym) {
+    115 => { _speakScanList(voice) },
+    27 => {
+      _fakeSpeak(voice, "closed.");
+      true
+    },
+    n when (n >= 48 && n <= 57) => {
+      _fakeSpeak(voice, "selected.");
+      true
+    },
+    _ => { true },
+  }
+};
+
+if (handleKey(null, 115) == true) { "ok" } else { "fail" }

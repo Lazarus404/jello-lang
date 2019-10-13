@@ -1,5 +1,5 @@
 import { lexFile } from frontend.Lexer;
-import { parseFailureSpan, parseProgram, programSyntax } from frontend.Parser;
+import { parseFailureSpan, parseProgram, programSyntax, takeSyntaxErrors } from frontend.Parser;
 import { locate } from frontend.Locations;
 import { sourceDiagnostic } from frontend.Source;
 import type { SourceSpan } from frontend.Source;
@@ -7,6 +7,7 @@ import { printTokens } from frontend.Tokens;
 import { typeCheckModules } from frontend.CheckModules;
 import { currentSpan } from frontend.TypeCheck;
 import { loadFailureSpan, loadModules, loadTests } from frontend.Modules;
+import { MAX_FAILURES, noteFailure, pendingNote, recordFailure, resetFailures, takeFailures } from frontend.Failures;
 import { takeInternalError } from frontend.Internal;
 import { verifyFailureSpan } from frontend.VerifyHir;
 import { printHir, printHirWithSpans } from frontend.PrintHir;
@@ -125,12 +126,26 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Array<Bytes>, Mode, Bytes> {
 };
 
 let _checked = fn(inputs: Array<Bytes>): Hir {
+  resetFailures();
   typeCheckModules(_testing ? loadTests(inputs, _std, _roots) : loadModules(inputs[0], _std, _roots))
 };
 let _allocated = fn(inputs: Array<Bytes>): Program { allocateProgram(legalizeJlo(lowerProgram(_checked(inputs)))) };
 
 let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
   match (span) { Span(path, start, _) => sourceDiagnostic(path, readText(path), start, message) }
+};
+
+let _at = fn(span: ?SourceSpan, message: Bytes): Bytes { span == null ? message : _diagnostic(span, message) };
+
+let _note = fn(span: ?SourceSpan, noteSpan: ?SourceSpan, note: Bytes): Bytes {
+  if (noteSpan == null) { return ""; }
+  let (path, start) = match (noteSpan) { Span(path, start, _) => (path, start) };
+
+  if (span != null) {
+    let (failed, at) = match (span) { Span(failed, at, _) => (failed, at) };
+    if ((failed == path) && (locate(path, at).0 == locate(path, start).0)) { return ""; }
+  }
+  "\n" + _diagnostic(noteSpan, "note: " + note)
 };
 
 let _allocationSpan = fn(): ?SourceSpan {
@@ -143,13 +158,13 @@ let _allocationSpan = fn(): ?SourceSpan {
   span
 };
 
-let _located = fn(message: Bytes): Bytes {
+let _failurePoint = fn(): ?SourceSpan {
   let span = currentSpan();
   if (span == null) { span = loadFailureSpan(); }
   if (span == null) { span = parseFailureSpan(); }
   if (span == null) { span = verifyFailureSpan(); }
   if (span == null) { span = _allocationSpan(); }
-  if (span == null) { message } else { _diagnostic(span, message) }
+  span
 };
 
 let _location = fn(node: I32): Tuple<Bytes, I32, I32> {
@@ -166,8 +181,30 @@ let _write = fn(output: Bytes, program: Program) {
 
 export let failure = fn(label: Bytes, error: Dynamic): Tuple<I32, Bytes> {
   let message = Std.string(error);
-  if (takeInternalError()) { return (3, _located("internal error: " + message + " (please report this compiler bug)")); }
-  let located = _located(message);
+  let errors = takeSyntaxErrors();
+  let e = 0;
+
+  while (e < errors.len()) {
+    let (span, failed, noteSpan, note) = errors[e];
+    if (!recordFailure(span, noteFailure(noteSpan, note, failed) as Dynamic)) { break; }
+    e++;
+  }
+  let (failures, capped) = takeFailures();
+  if (takeInternalError()) { return (3, _at(_failurePoint(), "internal error: " + message + " (please report this compiler bug)")); }
+
+  if (failures.len() == 0) {
+    let (noteSpan, note) = pendingNote(message);
+    failures.push((_failurePoint(), message, noteSpan, note));
+  }
+  let located = "";
+  let i = 0;
+
+  while (i < failures.len()) {
+    let (span, failed, noteSpan, note) = failures[i];
+    located = located + (i == 0 ? "" : "\n") + _at(span, failed) + _note(span, noteSpan, note);
+    i++;
+  }
+  if (capped) { located = located + "\nstopped after " + Std.string(MAX_FAILURES) + " errors"; }
   (1, (label == "" ? "" : label + "\t") + located)
 };
 

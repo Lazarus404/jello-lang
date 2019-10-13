@@ -1,0 +1,36 @@
+// expect: ok
+// Integer.parse reads a sign and decimal digits as the integer type the context requires, or I32;
+// text out of that type's range, or a minus for an unsigned type, throws.
+let a = Integer.parse("-17");
+System.assertEq(a, -17);
+System.assertEq(Integer.parse("+42"), 42);
+System.assertEq(Integer.parse("007"), 7);
+System.assertEq(Integer.parse("2147483647"), 2147483647);
+System.assertEq(Integer.parse("-2147483648"), -2147483648);
+let b: I8 = Integer.parse("-128");
+System.assertEq(b, -128i8);
+let c: U8 = Integer.parse("255");
+System.assertEq(c, 255u8);
+let d: I16 = Integer.parse("32767");
+System.assertEq(d, 32767i16);
+let e: U16 = Integer.parse("65535");
+System.assertEq(e, 65535u16);
+let f: U32 = Integer.parse("4294967295");
+System.assertEq(f, 4294967295u32);
+let g: I64 = Integer.parse("-9223372036854775808");
+System.assertEq(g, -9223372036854775808i64);
+let h: U64 = Integer.parse("18446744073709551615");
+System.assertEq(h, 18446744073709551615u64);
+let message = fn(thunk: () -> Null): Bytes { try { thunk(); "no error" } catch (e) { e as Bytes } };
+System.assertEq(message(fn(): Null { let x = Integer.parse("2147483648"); null }), "Integer.parse: not I32");
+System.assertEq(message(fn(): Null { let x: I8 = Integer.parse("-129"); null }), "Integer.parse: not I8");
+System.assertEq(message(fn(): Null { let x: U8 = Integer.parse("256"); null }), "Integer.parse: not U8");
+System.assertEq(message(fn(): Null { let x: U8 = Integer.parse("-0"); null }), "Integer.parse: not U8");
+System.assertEq(message(fn(): Null { let x: U64 = Integer.parse("18446744073709551616"); null }), "Integer.parse: not U64");
+System.assertEq(message(fn(): Null { let x: I64 = Integer.parse("9223372036854775808"); null }), "Integer.parse: not I64");
+System.assertEq(message(fn(): Null { let x = Integer.parse(""); null }), "Integer.parse: not I32");
+System.assertEq(message(fn(): Null { let x = Integer.parse("-"); null }), "Integer.parse: not I32");
+System.assertEq(message(fn(): Null { let x = Integer.parse("1.0"); null }), "Integer.parse: not I32");
+System.assertEq(message(fn(): Null { let x = Integer.parse(" 1"); null }), "Integer.parse: not I32");
+System.assertEq(message(fn(): Null { let x = Integer.parse("0x10"); null }), "Integer.parse: not I32");
+"ok"

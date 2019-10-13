@@ -83,18 +83,22 @@ export enum Token {
   Semicolon;
 
   Ampersand;
+  AmpersandEqual;
   And;
   Arrow;
   Caret;
+  CaretEqual;
   Equal;
   EqualEqual;
   FatArrow;
   Greater;
   GreaterEqual;
   GreaterGreater;
+  GreaterGreaterEqual;
   Less;
   LessEqual;
   LessLess;
+  LessLessEqual;
   LessMinus;
   Minus;
   MinusEqual;
@@ -102,7 +106,9 @@ export enum Token {
   Not;
   NotEqual;
   Percent;
+  PercentEqual;
   Pipe;
+  PipeEqual;
   PipeGreater;
   PipePipe;
   Plus;
@@ -535,6 +541,10 @@ let _opToken: (Bytes) -> Token = fn(op) {
     "&&" => Token.And,
     "||" => Token.PipePipe,
     "|>" => Token.PipeGreater,
+    "%=" => Token.PercentEqual,
+    "&=" => Token.AmpersandEqual,
+    "|=" => Token.PipeEqual,
+    "^=" => Token.CaretEqual,
     _ => Token.Eof,
   }
 };
@@ -579,6 +589,8 @@ let _lexOp = fn(src: Bytes, i: I32): Tuple<Token, I32> {
         };
         (token, i + 1)
       },
+      LessLess, GreaterGreater when ((i + 3 <= src.len()) && (Bytes.get_u8(src, i + 2) == "=".code)) =>
+        (two == Token.LessLess ? Token.LessLessEqual : Token.GreaterGreaterEqual, i + 3),
       _ => (two, i + 2),
     }
   }

@@ -1,0 +1,15 @@
+// expect: ok
+// pending: native channel_new without a typed binding
+load { channel_new, channel_send, channel_recv, channel_try_recv, channel_close } from std;
+
+let ch = channel_new();
+System.assert(channel_try_recv(ch) == null);
+System.assert(channel_send(ch, 99));
+System.assert(channel_recv(ch) == 99);
+System.assert(channel_send(ch, 7));
+System.assert(channel_try_recv(ch) == 7);
+System.assert(channel_close(ch));
+System.assert(channel_recv(ch) == null);
+System.assert(channel_close(ch) == false);
+System.assert(channel_send(ch, 1) == false);
+"ok"

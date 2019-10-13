@@ -1,0 +1,15 @@
+// expect: ok
+// F16 adds, subtracts and multiplies at its width; it divides, negates and compares through F32.
+let h: F16 = 0.1;
+let k = 3.0f16;
+System.assertEq(Std.string(h), "0.1");
+System.assertEq(Std.string(h + k), "3.1");
+System.assertEq(Std.string(k - h), "2.9");
+System.assertEq(Std.string(k * k), "9.0");
+System.assertEq(Std.string(1.0f16 / k), "0.3333");
+System.assertEq(Std.string(-k), "-3.0");
+System.assert(h < k);
+System.assert(k <= 3.0f16);
+System.assertEq(Std.string(65504.0f16), "65500.0");
+System.assertEq(Std.string(h as F64), "0.0999755859375");
+"ok"

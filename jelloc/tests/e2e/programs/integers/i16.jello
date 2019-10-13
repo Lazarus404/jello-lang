@@ -1,0 +1,44 @@
+// expect: ok
+// I16 arithmetic wraps to its width, and its comparisons, shifts and text follow its signedness.
+let hi: I16 = 32767;
+let lo: I16 = -32768;
+let three: I16 = 3;
+System.assertEq(Std.string(hi), "32767");
+System.assertEq(Std.string(lo), "-32768");
+System.assertEq(Std.string(hi + three), "-32766");
+System.assertEq(Std.string(lo - three), "32765");
+System.assertEq(Std.string(hi * three), "32765");
+System.assertEq(Std.string(hi << three), "-8");
+System.assertEq(Std.string(-hi), "-32767");
+System.assertEq(Std.string(-lo), "-32768");
+System.assertEq(Std.string(hi / three), "10922");
+System.assertEq(Std.string(hi % three), "1");
+let top: I16 = -32768;
+System.assertEq(Std.string(top >> 0i16), "-32768");
+System.assertEq(Std.string(top >> 1i16), "-16384");
+System.assertEq(Std.string(top >> 15i16), "-1");
+System.assertEq(Std.string(lo / (-1i16)), "-32768");
+System.assertEq(Std.string(lo % (-1i16)), "0");
+System.assert(lo < hi);
+System.assert(!(hi < lo));
+System.assert(top != hi);
+let n = hi;
+n++;
+System.assertEq(Std.string(n), "-32768");
+n--;
+System.assertEq(Std.string(n), "32767");
+n += three;
+System.assertEq(Std.string(n), "-32766");
+n *= three;
+System.assertEq(Std.string(n), "-32762");
+n <<= three;
+System.assertEq(Std.string(n), "48");
+let elements = [hi, lo];
+elements[0] += three;
+System.assertEq(Std.string(elements), "[-32766, -32768]");
+System.assertEq(Std.string(1000 as I16), "1000");
+System.assertEq(Std.string(-1 as I16), "-1");
+System.assertEq(Std.string(hi as I32), "32767");
+System.assertEq(Std.string(hi as I64), "32767");
+System.assertEq(Std.string(lo as U64), "18446744073709518848");
+"ok"

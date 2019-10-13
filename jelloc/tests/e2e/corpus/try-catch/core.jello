@@ -1,0 +1,18 @@
+// expect: ok
+// pending: Atom.intern
+let eqAtom = Atom.intern("equal");
+
+let thrownSlot = { ok: false };
+let _ = try { throw 99; null } catch (e) {
+  thrownSlot.ok = Object.get(System.deepEqual(e, 99), eqAtom) == true;
+  null
+};
+System.assert(thrownSlot.ok == true);
+
+let wildThrow: Dynamic = try { throw 1; "bad" } catch (e) { "ok" };
+System.assert(Object.get(System.deepEqual(wildThrow, "ok"), eqAtom) == true);
+
+let bareThrow: Dynamic = try { throw 2; "bad" } catch { "ok" };
+System.assert(Object.get(System.deepEqual(bareThrow, "ok"), eqAtom) == true);
+
+"ok"

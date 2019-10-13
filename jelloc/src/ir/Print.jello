@@ -23,7 +23,11 @@ _type = fn(ty) {
     Bool => "bool",
     I32 => "i32",
     I64 => "i64",
+    F16 => "f16",
+    F32 => "f32",
+    F64 => "f64",
     Bytes => "bytes",
+    Atom => "atom",
     Dynamic => "dynamic",
     ArrayOf(element) => "array<" + _type(element) + ">",
     ListOf(element) => "list<" + _type(element) + ">",
@@ -49,6 +53,11 @@ let _registers = fn(ids: Array<I32>, start: I32): Bytes {
 
 let _width = fn(registers: Array<ValueType>, register: I32): Bytes { _type(registers[register]) };
 
+let _qualified = fn(registers: Array<ValueType>, register: I32, integer: Bytes, float: Bytes): Bytes {
+  let name = match (registers[register]) { F16, F32, F64 => float, _ => integer };
+  name + _type(registers[register])
+};
+
 let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, pool: Array<Bytes>): Bytes {
   let args = argsOf(instruction);
   let imm = Std.string(immOf(instruction));
@@ -58,26 +67,33 @@ let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, poo
     ConstBool => "bool " + (immOf(instruction) == 1 ? "true" : "false"),
     ConstI32 => "i32 " + imm,
     ConstI64 => "i64 #" + imm,
+    ConstFloat => match (registers[dstOf(instruction)]) { F64 => "f64 #" + imm, _ => _type(registers[dstOf(instruction)]) + " bits " + imm },
     ConstBytes => "bytes " + bytesLiteral(pool[immOf(instruction)]),
+    ConstAtom => "atom #" + imm,
     ConstNull => "null",
     ConstFunction => "function @" + imm + (args.len() > 0 ? "(" + operands + ")" : ""),
     Move => "move " + operands,
-    Add => "add.wrap." + _width(registers, args[0]) + " " + operands,
-    Sub => "sub.wrap." + _width(registers, args[0]) + " " + operands,
-    Mul => "mul.wrap." + _width(registers, args[0]) + " " + operands,
-    Div => "div.s." + _width(registers, args[0]) + " " + operands,
+    Add => _qualified(registers, args[0], "add.wrap.", "add.") + " " + operands,
+    Sub => _qualified(registers, args[0], "sub.wrap.", "sub.") + " " + operands,
+    Mul => _qualified(registers, args[0], "mul.wrap.", "mul.") + " " + operands,
+    Div => _qualified(registers, args[0], "div.s.", "div.") + " " + operands,
     Rem => "rem.s." + _width(registers, args[0]) + " " + operands,
+    DivU => "div.u." + _width(registers, args[0]) + " " + operands,
+    RemU => "rem.u." + _width(registers, args[0]) + " " + operands,
     Shl => "shl." + _width(registers, args[0]) + " " + operands,
     Shr => "shr.s." + _width(registers, args[0]) + " " + operands,
     BitAnd => "bitand." + _width(registers, args[0]) + " " + operands,
     BitOr => "bitor." + _width(registers, args[0]) + " " + operands,
     BitXor => "bitxor." + _width(registers, args[0]) + " " + operands,
-    Neg => "neg.wrap." + _width(registers, args[0]) + " " + operands,
+    Neg => _qualified(registers, args[0], "neg.wrap.", "neg.") + " " + operands,
     Not => "not.bool " + operands,
     Eq => "eq." + _width(registers, args[0]) + " " + operands,
-    Lt => "lt.s." + _width(registers, args[0]) + " " + operands,
+    Lt => _qualified(registers, args[0], "lt.s.", "lt.") + " " + operands,
+    LtU => "lt.u." + _width(registers, args[0]) + " " + operands,
     Sext => "sext.i32.i64 " + operands,
+    Zext => "zext.i32.i64 " + operands,
     Trunc => "trunc.i64.i32 " + operands,
+    Convert => "convert." + _width(registers, args[0]) + "." + _type(registers[dstOf(instruction)]) + " " + operands,
     Box => "box " + operands,
     Unbox => "unbox " + operands,
     KindOf => "kind_of " + operands,
@@ -185,7 +201,7 @@ let _function = fn(function: Function, pool: Array<Bytes>, out: Array<Bytes>) {
 };
 
 export let printIr: (Program) -> Bytes = fn(program) {
-  match (program) { Program(functions, pool, wides, _, globals, natives) => {
+  match (program) { Program(functions, pool, wides, floats, atoms, _, globals, natives) => {
     let out = Array.new<Bytes>(0);
     let i = 0;
 
@@ -210,6 +226,20 @@ export let printIr: (Program) -> Bytes = fn(program) {
       i++;
     }
     if (wides.len() > 0) { out.push("\n"); }
+    i = 0;
+
+    while (i < floats.len()) {
+      out.push("f64 #" + Std.string(i) + " = bits " + Std.string(floats[i]) + "\n");
+      i++;
+    }
+    if (floats.len() > 0) { out.push("\n"); }
+    i = 0;
+
+    while (i < atoms.len()) {
+      out.push("atom #" + Std.string(i) + " = :" + atoms[i] + "\n");
+      i++;
+    }
+    if (atoms.len() > 0) { out.push("\n"); }
     i = 0;
 
     while (i < functions.len()) {

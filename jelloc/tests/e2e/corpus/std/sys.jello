@@ -1,0 +1,18 @@
+// expect: ok
+// pending: std.sys.Sys is not ported
+// Compile fixture for std wrapper resolution tests (not an ava suite).
+import { now, sleepMs } from std.sys.Sys;
+import { intBetween } from std.crypto.Random;
+
+let t = now();
+System.assert(t > 0);
+
+let r = intBetween(0, 10);
+System.assert(r >= 0);
+System.assert(r <= 10);
+
+let before = now();
+sleepMs(1);
+System.assert(now() >= before);
+
+"ok"

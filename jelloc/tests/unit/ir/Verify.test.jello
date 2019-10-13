@@ -19,7 +19,7 @@ import { Op, instruction } from ir.Model;
 
 let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
 let none = fn(): Array<I32> { Array.new<I32>(0) };
-let program = fn(functions: Array<Function>, pool: Array<Bytes>): Program { Program.Program(functions, pool, Array.new<I64>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0)) };
+let program = fn(functions: Array<Function>, pool: Array<Bytes>): Program { Program.Program(functions, pool, Array.new<I64>(0), Array.new<I64>(0), Array.new<Bytes>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0)) };
 
 let testVerifiesATypedBranchingFunction = fn(t: Test) {
   let blocks: Array<BasicBlock> = [
@@ -133,6 +133,7 @@ let testRequiresDefinitionsOnEveryPathToAUse = fn(t: Test) {
 };
 
 let testRequiresASpillSlotWrittenOnEveryPathToAPop = fn(t: Test) {
+  // Block 1 pushes slot 0; the pop in block 3 is reached through block 2 too.
   let spilled = fn(id: I32, otherPath: Array<Instruction>, slotType: ValueType): Function {
     Function.Function(
       id,
@@ -155,6 +156,8 @@ let testRequiresASpillSlotWrittenOnEveryPathToAPop = fn(t: Test) {
 };
 
 let testTypesSparseSpillSlotsIndependently = fn(t: Test) {
+  // Slots are numbered by virtual register, so most are unused. Slot 5 holds
+  // one type; slot 0, first used after it, may hold another.
   let sparse = fn(id: I32, popped: ValueType, instructions: Array<Instruction>): Function {
     Function.Function(
       id,
@@ -215,10 +218,12 @@ let testDoesNotDefinePostCallValuesOnExceptionalEdges = fn(t: Test) {
   );
   takeInternalError();
   T.throws(t, fn() { verifyProgram(program([callee, caller], Array.new<Bytes>(0))); });
-
+  // A rejected IR program is a compiler bug.
   T.isTrue(t, takeInternalError());
 };
 
+// An entry block ending in ENTRY, then blocks 1 and 2 returning their Dynamic
+// register 0 with handlers FIRST and SECOND.
 let regions = fn(entry: Terminator, first: ?ThrowHandler, second: ?ThrowHandler): Function {
   let empty = Array.new<Instruction>(0);
   Function.Function(0, none(), 0, [ValueType.Dynamic, ValueType.Bool], ValueType.Dynamic, [
@@ -230,16 +235,16 @@ let regions = fn(entry: Terminator, first: ?ThrowHandler, second: ?ThrowHandler)
 
 let testChecksThatTryRegionsNest = fn(t: Test) {
   T.isTrue(t, verifyFunction(regions(Terminator.Jump(1), ThrowHandler.Catch(2, 0), null)));
-
+  // The entry block is in no region.
   T.throws(t, fn() {
     verifyFunction(Function.Function(0, none(), 0, [ValueType.Dynamic], ValueType.Dynamic, [
       BasicBlock.Block(0, Array.new<Instruction>(0), Terminator.ReturnValue(0), ThrowHandler.Catch(1, 0)),
       BasicBlock.Block(1, Array.new<Instruction>(0), Terminator.ReturnValue(0), null)
     ], 0));
   });
-
+  // Only a jump opens or closes a region.
   T.throws(t, fn() { verifyFunction(regions(Terminator.Branch(1, 1, 2), ThrowHandler.Catch(2, 0), null)); });
-
+  // Catch blocks that catch into each other never reach the outermost region.
   T.throws(t, fn() { verifyFunction(regions(Terminator.Jump(1), ThrowHandler.Catch(2, 0), ThrowHandler.Catch(1, 0))); });
 };
 
@@ -287,11 +292,13 @@ let testChecksCallsFunctionConstantsAndTheBytesPoolAgainstTheProgram = fn(t: Tes
 };
 
 let testChecksClosuresAgainstTheCapturesOfTheirFunction = fn(t: Test) {
+  // fn @1 takes an I32 and captures one boxed value after it.
   let closure = Function.Function(
     1, [0, 1], 1, [ValueType.I32, ValueType.Dynamic], ValueType.I32,
     [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
   );
 
+  // Boxes 5 into %2, then runs MAKE.
   let maker = fn(make: Instruction): Function {
     let registers = [ValueType.Function([ValueType.I32], ValueType.I32), ValueType.I32, ValueType.Dynamic];
     Function.Function(0, [], 0, registers, ValueType.I32,
@@ -310,10 +317,12 @@ let testChecksClosuresAgainstTheCapturesOfTheirFunction = fn(t: Test) {
 };
 
 let testChecksTheFormsLegalizationLeaves = fn(t: Test) {
+  // Reads field 0 of enum ID, given its instructions; enum 0, the only
+  // one, has one variant holding an I32.
   let reading = fn(instructions: Array<Instruction>, id: I32): Program {
     let function = Function.Function(0, [0], 0, [ValueType.Nominal(id), ValueType.I32, ValueType.I32], ValueType.I32,
       [BasicBlock.Block(0, instructions, Terminator.ReturnValue(1), null)], 0);
-    Program.Program([function], Array.new<Bytes>(0), Array.new<I64>(0), [EnumSchema.Enum([[ValueType.I32]])], Array.new<ValueType>(0), Array.new<Native>(0))
+    Program.Program([function], Array.new<Bytes>(0), Array.new<I64>(0), Array.new<I64>(0), Array.new<Bytes>(0), [EnumSchema.Enum([[ValueType.I32]])], Array.new<ValueType>(0), Array.new<Native>(0))
   };
   let lowered = reading([insn(Op.EnumGet, 1, [0], 0)], 0);
   let legalized = reading([insn(Op.ConstI32, 2, none(), 0), insn(Op.EnumGet, 1, [0, 2], 0)], 0);
@@ -326,6 +335,7 @@ let testChecksTheFormsLegalizationLeaves = fn(t: Test) {
   T.isTrue(t, verifyProgram(tuple));
   T.throws(t, fn() { verifyLegalizedProgram(tuple); });
 
+  // A legalized throw raises a boxed value.
   let throwing = fn(value: I32): Program {
     program([Function.Function(0, [], 0, [ValueType.I32, ValueType.Dynamic], ValueType.I32,
       [BasicBlock.Block(0, [insn(Op.ConstI32, 0, none(), 0), insn(Op.Box, 1, [0], 0)], Terminator.Throw(value, -1), null)], 0)], Array.new<Bytes>(0))
@@ -333,7 +343,7 @@ let testChecksTheFormsLegalizationLeaves = fn(t: Test) {
   T.isTrue(t, verifyProgram(throwing(0)));
   T.isTrue(t, verifyLegalizedProgram(throwing(1)));
   T.throws(t, fn() { verifyLegalizedProgram(throwing(0)); });
-
+  // A payload read names an enum the program has.
   let unknown = reading([insn(Op.ConstI32, 2, none(), 0), insn(Op.EnumGet, 1, [0, 2], 0)], 1);
 
   let failure = try {

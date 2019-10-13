@@ -1,0 +1,7 @@
+// expect: ok
+// pending: std.concurrency.Pool is not ported
+import { create, submit, take, shutdown } from std.concurrency.Pool;
+
+let pool = create(1);
+submit(pool, 42);
+(take(pool) == 42) ? "ok" : "bad"

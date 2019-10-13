@@ -1,15 +1,15 @@
 package frontend;
 
 import type { Block as AstBlock, Expr as AstExpr, MatchArm, Pattern } from frontend.Ast;
-import { Pattern, wideIntegerValue } from frontend.Ast;
+import { Pattern, unsignedWideValue, wideIntegerValue } from frontend.Ast;
 import { appendFrom, indexOf } from std.core.Arrays;
 import {
-  Kind, Op, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, declareBinding, fieldCount, fieldType, isEnum, isInteger, isKind,
-  local, node, nullable, nullType, opOf, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, unify, variantCount, variantName, variantTag,
+  Kind, Op, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, declareBinding, endsPath, fieldCount, fieldType, isEnum, isInteger, isKind,
+  local, node, noValueType, nullable, nullType, opOf, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, unify, variantCount, variantName, variantTag,
 } from frontend.Hir;
 import type { Syntax } from frontend.Source;
 import {
-  bufferHint, checkArm, checkOperand, checkPresent, coerceAt, enterSyntax, integerLiteral, joinTypes, newBinding, regexpGlobal, subPattern, syntaxChild, syntaxPattern,
+  branchMismatch, bufferHint, checkArm, checkOperand, checkPresent, coerceTail, enterSyntax, integerLiteral, joinTypes, newBinding, regexpGlobal, sizedType, subPattern, syntaxChild, syntaxPattern,
 } from frontend.TypeCheck;
 
 enum Subject { Subject(roots: Array<I32>, types: Array<I32>, tuple: I32, tag: I32); }
@@ -120,8 +120,7 @@ _test = fn(subject, pattern, syntax, path, ty, tests, bound) {
       null
     },
     Integer(digits, size) => {
-      let sized = match (size) { Infer => ty, I32 => TYPE_I32, I64 => TYPE_I64, _ => -1 };
-      if (!isInteger(ty) || !unify(sized, ty)) { _mismatch("integer", ty); }
+      if (!isInteger(ty) || !unify(sizedType(size, ty), ty)) { _mismatch("integer", ty); }
       let literal = integerLiteral(digits, false, ty);
       tests.push(node(Op.Eq, TYPE_BOOL, 0, 0, [_read(subject, path), literal]));
       null
@@ -197,11 +196,15 @@ _describe = fn(pattern) {
 
 let _wild = fn(pattern: Pattern): Bool { match (pattern) { Wildcard => true, BindPattern(_) => true, _ => false } };
 
+let _bits = fn(text: Bytes): I64 {
+  Bytes.get_u8(text, 0) == "-".code ? wideIntegerValue(text, false) : unsignedWideValue(text, false)
+};
+
 let _same = fn(a: Pattern, b: Pattern): Bool {
   match ((a, b)) {
     (Enum(x, _), Enum(y, _)) => x == y,
     (Bool(x), Bool(y)) => x == y,
-    (Integer(x, _), Integer(y, _)) => wideIntegerValue(x, false) == wideIntegerValue(y, false),
+    (Integer(x, _), Integer(y, _)) => _bits(x) == _bits(y),
     (Bytes(x), Bytes(y)) => x == y,
     (RegExp(_, _, _), _) => false,
     (_, RegExp(_, _, _)) => false,
@@ -336,19 +339,6 @@ let _unlift = fn(block: I32): I32 {
   let value = childOf(childOf(block, last), 0);
   children.push(value);
   node(Op.Block, typeOf(value), 0, 1, children)
-};
-
-let _coerceTail = fn(block: I32, ty: I32, tail: I32): I32 {
-  if (typeOf(block) == ty) { return block; }
-  let children = Array.new<I32>(0);
-  let i = 0;
-
-  while (i < childCount(block)) {
-    children.push(childOf(block, i));
-    i++;
-  }
-  children[children.len() - 1] = coerceAt(children[children.len() - 1], ty, tail);
-  node(Op.Block, ty, 0, 1, children)
 };
 
 let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>): Subject {
@@ -514,7 +504,7 @@ let _armBody = fn(names: Array<Bytes>, values: Array<I32>, body: AstBlock, index
     let context = (expected < 0) && (resultType >= 0) && !statement && !isKind(resultType, Kind.List) ? nullable(resultType) : expected;
     let block = checkArm(names, values, statements, tail, index, context, statement);
     if (context != expected) { block = _unlift(block); }
-    if (!statement && (auxOf(block) == 0)) { throw "match arm requires a trailing expression"; }
+    if (!statement && (auxOf(block) == 0) && !endsPath(block)) { throw "match arm requires a trailing expression"; }
     block
   } }
 };
@@ -597,12 +587,15 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
     let block = _armBody(names, _armReads(checked, shared, group, bound), body, index, expected, resultType, statement);
 
     match (body) { Block(statements, tail) => {
-      if (!statement) {
-        resultType = resultType < 0 ? typeOf(block) : joinTypes(resultType, typeOf(block));
-        if (resultType < 0) { throw "match arms must have the same type"; }
+      let count = (statements.len() as I32) + (tail == null ? 0 : 1);
+
+      if (!statement && !endsPath(block)) {
+        let joined = resultType < 0 ? typeOf(block) : joinTypes(resultType, typeOf(block));
+        if (joined < 0) { throw branchMismatch("match arms", resultType, typeOf(block), count == 0 ? -1 : index + count - 1); }
+        resultType = joined;
       }
       tails.push(index + (statements.len() as I32));
-      index += (statements.len() as I32) + (tail == null ? 0 : 1);
+      index += count;
       bodies.push(block);
     } };
     effects = ownGuard || (guard != null) || (shared && (names.len() > 0));
@@ -611,12 +604,13 @@ export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject
   }
   _declareMatches(checked, subjectRoots, children);
   if (_useful(rows, [Pattern.Wildcard], [ty])) { _notExhaustive(rows, ty); }
+  if (!statement && (resultType < 0)) { resultType = noValueType(expected); }
 
   if (!statement) {
     let b = 0;
 
     while (b < bodies.len()) {
-      bodies[b] = _coerceTail(bodies[b], resultType, tails[b]);
+      bodies[b] = coerceTail(bodies[b], resultType, tails[b]);
       b++;
     }
   }

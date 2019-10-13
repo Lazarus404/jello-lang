@@ -1,0 +1,15 @@
+// expect: ok
+// pending: std.core.Bytes.concat
+import { concat, len } from std.core.Bytes;
+
+export let slug: (Bytes) -> Bytes = fn(title: Bytes) {
+  let out = "";
+  let i = 0;
+  while (i < len(title)) {
+    out = concat(out, "a");
+    i += 1;
+  }
+  out
+};
+
+if (slug("xy") == "aa") { "ok" } else { "fail" }

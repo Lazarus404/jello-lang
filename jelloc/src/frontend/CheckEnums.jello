@@ -2,11 +2,11 @@ package frontend;
 
 import type { Expr as AstExpr, Stmt, Type as AstType } from frontend.Ast;
 import { indexOf } from std.core.Arrays;
-import { Op, appliedType, declareEnum, declareGenericEnum, defineVariants, enumParams, fieldCount, fieldType, newVar, node, typeOf, unify, variantTag } from frontend.Hir;
+import { Op, appliedType, declareEnum, declareGenericEnum, defineVariants, enumParams, fieldCount, fieldType, isOpen, newVar, node, typeOf, unify, variantTag } from frontend.Hir;
 import { checkMatch } from frontend.CheckMatch;
 import { internalError } from frontend.Internal;
 import { declareScopedType, exportScopedType, scopedType } from frontend.ModuleScope;
-import { checkOperand, checkType, checkTypeArgCount, checkTypeParams, enterSyntax, paramNames, syntaxChild, useTypeParams } from frontend.TypeCheck;
+import { checkOperand, checkType, checkTypeArgCount, checkTypeParams, enterSyntax, paramNames, rejectAt, syntaxChild, useTypeParams, widened } from frontend.TypeCheck;
 
 export let declareEnums: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, module, opened) {
   let i = 0;
@@ -100,16 +100,19 @@ let _construct = fn(base: AstExpr, variant: Bytes, variantTypes: Array<AstType>,
   if (tag < 0) { throw "unknown variant " + variant + " of " + enumName; }
   let count = fieldCount(ty, tag);
   if ((called == (count == 0)) || (args.len() != count)) { throw "wrong payload count for enum variant " + enumName + "." + variant; }
-  let fields = Array.new<I32>(0);
+  let declared = Array.new<I32>(0);
   let i = 0;
 
   while (i < count) {
-    let field = checkOperand(args[i], i + 1, fieldType(ty, tag, i));
+    declared.push(isOpen(fieldType(ty, tag, i)) ? -1 : fieldType(ty, tag, i));
+    i++;
+  }
+  let fields = Array.new<I32>(0);
+  i = 0;
 
-    if (!unify(typeOf(field), fieldType(ty, tag, i))) {
-      enterSyntax(syntaxChild(i + 1));
-      throw "wrong payload type for enum variant " + enumName + "." + variant;
-    }
+  while (i < count) {
+    let field = widened(checkOperand(args[i], i + 1, fieldType(ty, tag, i)), declared[i]);
+    if (!unify(typeOf(field), fieldType(ty, tag, i))) { rejectAt(i + 1, "wrong payload type for enum variant " + enumName + "." + variant); }
     fields.push(field);
     i++;
   }

@@ -2,7 +2,7 @@ package ir;
 
 import type { Hir } from frontend.Hir;
 import {
-  KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, isReference, isTemplateEnum, kindOf, lastChild, opOf, rootNode, typeArg,
+  KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_U32, TYPE_U64, TYPE_U8, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits, isFloatKind, isFloatType, isReference, isTemplateEnum, kindOf, lastChild, leastValue, mostValue, opOf, rootNode, typeArg,
   typeArgCount, typeCount, globalCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
@@ -33,6 +33,9 @@ let _handler: ?ThrowHandler = null;
 let _pool = Array.new<Bytes>(0);
 let _poolIndexes = Array.new<I32>(0);
 let _wides = Array.new<I64>(0);
+let _floats = Array.new<I64>(0);
+let _atoms = Array.new<Bytes>(0);
+let _atomIndexes = Array.new<I32>(0);
 let _enumIndexes = Array.new<I32>(0);
 let _natives = Array.new<Native>(0);
 let _nativeIndexes = Array.new<I32>(0);
@@ -55,6 +58,7 @@ _valueType = fn(ty) {
     I32 => ValueType.I32,
     I64 => ValueType.I64,
     Bytes => ValueType.Bytes,
+    Atom => ValueType.Atom,
     Array => ValueType.ArrayOf(_valueType(innerOf(ty))),
     List => ValueType.ListOf(_valueType(innerOf(ty))),
     Null => ((innerOf(ty) >= 0) && isReference(innerOf(ty))) ? _valueType(innerOf(ty)) : ValueType.Dynamic,
@@ -67,6 +71,11 @@ _valueType = fn(ty) {
       internalError("an inferred type reached lowering");
       ValueType.Dynamic
     },
+    I8, I16, U8, U16, U32 => ValueType.I32,
+    U64 => ValueType.I64,
+    F16 => ValueType.F16,
+    F32 => ValueType.F32,
+    F64 => ValueType.F64,
   }
 };
 
@@ -81,14 +90,14 @@ let _node = -1;
 let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) { if (_reachable) { _instructions.push(instructionAt(op, dst, args, imm, _node)); } null };
 let _move = fn(dst: I32, src: I32) { _emit(Op.Move, dst, [src], 0) };
 
-let _poolIndex = fn(id: I32): I32 {
-  while (_poolIndexes.len() <= id) { _poolIndexes.push(-1); }
+let _internAt = fn(indexes: Array<I32>, table: Array<Bytes>, id: I32): I32 {
+  while (indexes.len() <= id) { indexes.push(-1); }
 
-  if (_poolIndexes[id] < 0) {
-    _poolIndexes[id] = _pool.len() as I32;
-    _pool.push(bytesOf(id));
+  if (indexes[id] < 0) {
+    indexes[id] = table.len() as I32;
+    table.push(bytesOf(id));
   }
-  _poolIndexes[id]
+  indexes[id]
 };
 
 let _target = fn(block: I32) {
@@ -227,15 +236,14 @@ let _shortCircuit = fn(id: I32): I32 {
 
 let _operation = fn(id: I32): Op {
   match (opOf(id)) {
-    Bool => Op.ConstBool, I32 => Op.ConstI32, I64 => Op.ConstI64, Bytes => Op.ConstBytes, Null => Op.ConstNull,
+    Bool => Op.ConstBool, I32 => Op.ConstI32, I64 => Op.ConstI64, Float => Op.ConstFloat, Bytes => Op.ConstBytes, Null => Op.ConstNull,
     Add => Op.Add, Sub => Op.Sub, Mul => Op.Mul, Shl => Op.Shl, Shr => Op.Shr, BitAnd => Op.BitAnd, BitOr => Op.BitOr, BitXor => Op.BitXor,
-    Neg => Op.Neg, Not => Op.Not, Eq => Op.Eq, Lt, Gt => Op.Lt,
-    Sext => Op.Sext, Trunc => Op.Trunc, IsNull, IsPresent => Op.IsNull,
+    Neg => Op.Neg, Not => Op.Not, Eq => Op.Eq, Lt, Gt => _wideUnsigned(typeOf(childOf(id, 0))) ? Op.LtU : Op.Lt, IsNull, IsPresent => Op.IsNull,
     ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet,
     ListNil => Op.ListNil, ListCons => Op.ListCons, ListHead => Op.ListHead, ListTail => Op.ListTail, ListIsNil => Op.ListIsNil,
     BytesNew => Op.BytesNew, BytesLen => Op.BytesLen, BytesGet => Op.BytesGet, BytesSlice => Op.BytesSlice, BytesConcat => Op.BytesConcat, BytesEq => Op.BytesEq,
     Tuple => Op.TupleNew, TupleField => Op.TupleGet, Call => Op.Call, CallIndirect => Op.CallIndirect, CallNative => Op.CallNative,
-    EnumNew => Op.EnumNew, EnumTag => Op.EnumTag, EnumField => Op.EnumGet,
+    EnumNew => Op.EnumNew, EnumTag => Op.EnumTag, EnumField => Op.EnumGet, Atom => Op.ConstAtom,
     _ => {
       internalError("invalid HIR expression op");
       Op.Move
@@ -258,9 +266,28 @@ let _i32 = fn(value: I32): I32 {
   dst
 };
 
+let _binaryOp = fn(op: Op, ty: I32, left: I32, right: I32): I32 {
+  let dst = _fresh(ty);
+  _emit(op, dst, [left, right], 0);
+  dst
+};
+
 let _arithmetic = fn(op: Op, left: I32, right: I32): I32 {
   let dst = _fresh(TYPE_I32);
   _emit(op, dst, [left, right], 0);
+  dst
+};
+
+let _converted = fn(ty: I32, value: I32): I32 {
+  let dst = _fresh(ty);
+  _emit(Op.Convert, dst, [value], 0);
+  dst
+};
+
+let _i64 = fn(ty: I32, value: I64): I32 {
+  _wides.push(value);
+  let dst = _fresh(ty);
+  _emit(Op.ConstI64, dst, Array.new<I32>(0), (_wides.len() - 1) as I32);
   dst
 };
 
@@ -271,10 +298,189 @@ let _length = fn(array: I32): I32 {
 };
 
 let _widened = fn(ty: I32, value: I32): I32 {
-  if (ty == TYPE_I32) { return value; }
+  if (integerBits(ty) != 64) { return value; }
   let dst = _fresh(ty);
   _emit(Op.Sext, dst, [value], 0);
   dst
+};
+
+let _wideUnsigned = fn(ty: I32): Bool { (ty == TYPE_U32) || (ty == TYPE_U64) };
+let _isNarrow = fn(ty: I32): Bool { integerBits(ty) < 32 };
+
+let _normalised = fn(ty: I32, value: I32): I32 {
+  match (kindOf(ty)) {
+    I8, I16 => {
+      let shift = _i32(ty == TYPE_I8 ? 24 : 16);
+      _arithmetic(Op.Shr, _arithmetic(Op.Shl, value, shift), shift)
+    },
+    U8, U16 => _arithmetic(Op.BitAnd, value, _i32(ty == TYPE_U8 ? 255 : 65535)),
+    _ => value,
+  }
+};
+
+let _wrapped = fn(id: I32, dst: I32): I32 {
+  if (!_isNarrow(typeOf(id))) { return dst; }
+  match (opOf(id)) { Add, Sub, Mul, Shl, Neg => _normalised(typeOf(id), dst), _ => dst }
+};
+
+let _toDynamic = fn(id: I32): I32 {
+  if (typeOf(id) != TYPE_U32) { return _boxed(id); }
+  let wide = _fresh(TYPE_I64);
+  _emit(Op.Zext, wide, [_expr(id)], 0);
+  let dst = _fresh(TYPE_DYNAMIC);
+  _emit(Op.Box, dst, [wide], 0);
+  dst
+};
+
+let _logicalShift = fn(id: I32): I32 {
+  let ty = typeOf(id);
+  let operands = _values(id, 0);
+  let count = operands[1];
+  let shifted = _binaryOp(Op.Shr, ty, operands[0], count);
+  let ones = _widened(ty, _i32(-1));
+  let room = _binaryOp(Op.Sub, ty, _widened(ty, _i32(integerBits(ty) - 1)), count);
+  let mask = _binaryOp(Op.BitXor, ty, _binaryOp(Op.Shl, ty, _binaryOp(Op.Shl, ty, ones, room), _widened(ty, _i32(1))), ones);
+  _binaryOp(Op.BitAnd, ty, shifted, mask)
+};
+
+let _floatCompare = fn(id: I32, operands: Array<I32>): I32 {
+  let op = opOf(id);
+  let swapped = match (op) { Gt, Ge => true, _ => false };
+  let left = operands[swapped ? 1 : 0];
+  let right = operands[swapped ? 0 : 1];
+  let result = _fresh(TYPE_BOOL);
+  _emit(match (op) { Eq => Op.Eq, _ => Op.Lt }, result, [left, right], 0);
+  if (match (op) { Le, Ge => false, _ => true }) { return result; }
+  let equal = _nextBlock;
+  _nextBlock += 2;
+  _end(Terminator.Branch(result, equal + 1, equal), equal);
+  _emit(Op.Eq, result, [left, right], 0);
+  _end(Terminator.Jump(equal + 1), equal + 1);
+  result
+};
+
+let _float = fn(id: I32): I32 {
+  let operands = _values(id, 0);
+
+  if (typeOf(childOf(id, 0)) == TYPE_F16) {
+    let i = 0;
+
+    while (i < operands.len()) {
+      operands[i] = _converted(TYPE_F32, operands[i]);
+      i++;
+    }
+  }
+
+  match (opOf(id)) {
+    Div => {
+      let f16 = typeOf(id) == TYPE_F16;
+      let q = _binaryOp(Op.Div, f16 ? TYPE_F32 : typeOf(id), operands[0], operands[1]);
+      f16 ? _converted(TYPE_F16, q) : q
+    },
+    Neg => {
+      let dst = _fresh(TYPE_F32);
+      _emit(Op.Neg, dst, operands, 0);
+      _converted(TYPE_F16, dst)
+    },
+    _ => _floatCompare(id, operands),
+  }
+};
+
+let _trapIf = fn(failed: I32) {
+  let trap = _nextBlock;
+  _nextBlock += 2;
+  _end(Terminator.Branch(failed, trap, trap + 1), trap);
+  let nan = _fresh(TYPE_F32);
+  _emit(Op.ConstFloat, nan, Array.new<I32>(0), 2143289344);
+  _converted(TYPE_I32, nan);
+  _end(Terminator.Jump(trap + 1), trap + 1);
+  null
+};
+
+let _inRange = fn(value: I32, offset: I32, span: I32): I32 {
+  _trapIf(_binaryOp(Op.LtU, TYPE_BOOL, span, offset));
+  value
+};
+
+let _fromU64 = fn(target: I32, value: I32): I32 {
+  let ty = target == TYPE_F16 ? TYPE_F32 : target;
+  let result = _fresh(ty);
+  let low = _nextBlock;
+  _nextBlock += 3;
+  _end(Terminator.Branch(_binaryOp(Op.Lt, TYPE_BOOL, value, _i64(TYPE_I64, 0)), low + 1, low), low);
+  _emit(Op.Convert, result, [value], 0);
+  _end(Terminator.Jump(low + 2), low + 1);
+  let half = _binaryOp(Op.BitAnd, TYPE_I64, _binaryOp(Op.Shr, TYPE_I64, value, _i64(TYPE_I64, 1)), _i64(TYPE_I64, 9223372036854775807));
+  let halved = _converted(ty, _binaryOp(Op.BitOr, TYPE_I64, half, _binaryOp(Op.BitAnd, TYPE_I64, value, _i64(TYPE_I64, 1))));
+  _emit(Op.Add, result, [halved, halved], 0);
+  _end(Terminator.Jump(low + 2), low + 2);
+  target == TYPE_F16 ? _converted(TYPE_F16, result) : result
+};
+
+let _toInteger = fn(target: I32, value: I32): I32 {
+  match (kindOf(target)) {
+    I32, I64 => _converted(target, value),
+    I8, I16, U8, U16 => {
+      let least = leastValue(target) as I32;
+      let narrow = _converted(TYPE_I32, value);
+      _inRange(narrow, least == 0 ? narrow : _arithmetic(Op.Sub, narrow, _i32(least)), _i32((mostValue(target) as I32) - least))
+    },
+    U32 => {
+      let converted = _converted(TYPE_I64, value);
+      let wide = _inRange(converted, converted, _i64(TYPE_I64, 4294967295));
+      let dst = _fresh(TYPE_U32);
+      _emit(Op.Trunc, dst, [wide], 0);
+      dst
+    },
+    _ => {
+      let exact = _registers[value] == ValueType.F64 ? value : _converted(TYPE_F64, value);
+      let top = _fresh(TYPE_F64);
+      _floats.push(4890909195324358656);
+      _emit(Op.ConstFloat, top, Array.new<I32>(0), (_floats.len() - 1) as I32);
+      let result = _fresh(TYPE_U64);
+      let low = _nextBlock;
+      _nextBlock += 3;
+      _end(Terminator.Branch(_binaryOp(Op.Lt, TYPE_BOOL, exact, top), low, low + 1), low);
+      _emit(Op.Convert, result, [exact], 0);
+      _trapIf(_binaryOp(Op.Lt, TYPE_BOOL, result, _i64(TYPE_I64, 0)));
+      _end(Terminator.Jump(low + 2), low + 1);
+      _emit(Op.Add, result, [_converted(TYPE_I64, _binaryOp(Op.Sub, TYPE_F64, exact, top)), _i64(TYPE_I64, -9223372036854775807 - 1)], 0);
+      _end(Terminator.Jump(low + 2), low + 2);
+      result
+    },
+  }
+};
+
+let _floatConvert = fn(source: I32, target: I32, value: I32): I32 {
+  if (!isFloatType(target)) { return _toInteger(target, source == TYPE_F16 ? _converted(TYPE_F32, value) : value); }
+  if (source == TYPE_U64) { return _fromU64(target, value); }
+  let operand = value;
+
+  if (source == TYPE_U32) {
+    operand = _fresh(TYPE_I64);
+    _emit(Op.Zext, operand, [value], 0);
+  }
+  let wideSource = (integerBits(source) == 64) || (source == TYPE_U32) || (source == TYPE_F64);
+  let viaF32 = ((target == TYPE_F16) && wideSource) || ((source == TYPE_F16) && (target == TYPE_F64));
+  _converted(target, viaF32 ? _converted(TYPE_F32, operand) : operand)
+};
+
+let _convert = fn(id: I32): I32 {
+  let source = typeOf(childOf(id, 0));
+  let target = typeOf(id);
+  let value = _expr(childOf(id, 0));
+  if (isFloatType(source) || isFloatType(target)) { return _floatConvert(source, target, value); }
+  let wideSource = integerBits(source) == 64;
+  let wide = integerBits(target) == 64;
+  if (wideSource == wide) { return wide ? value : _normalised(target, value); }
+  let dst = _fresh(target);
+
+  if (wide) {
+    _emit(source == TYPE_U32 ? Op.Zext : Op.Sext, dst, [value], 0);
+    return dst;
+  }
+  _emit(Op.Trunc, dst, [value], 0);
+  _normalised(target, dst)
 };
 
 let _byMinusOne = fn(remainder: Bool, ty: I32, left: I32): I32 {
@@ -286,8 +492,16 @@ let _byMinusOne = fn(remainder: Bool, ty: I32, left: I32): I32 {
 
 let _divide = fn(id: I32): I32 {
   let ty = typeOf(id);
+  if (isFloatType(ty)) { return _float(id); }
   let divisor = childOf(id, 1);
   let remainder = match (opOf(id)) { Rem => true, _ => false };
+
+  if (_isNarrow(ty) || _wideUnsigned(ty)) {
+    let operands = _values(id, 0);
+    let dst = _fresh(ty);
+    _emit(_isNarrow(ty) ? (remainder ? Op.Rem : Op.Div) : (remainder ? Op.RemU : Op.DivU), dst, operands, 0);
+    return _normalised(ty, dst);
+  }
   let op = remainder ? Op.Rem : Op.Div;
   let constant = match (opOf(divisor)) { I32, I64 => true, _ => false };
   let minusOne = constant && (valueOf(divisor) == -1) && ((ty == TYPE_I32) || (auxOf(divisor) == -1));
@@ -453,7 +667,8 @@ _exprAt = fn(id) {
       _emit(Op.Box, dst, [value], 0);
       dst
     },
-    ToDynamic => _boxed(childOf(id, 0)),
+    ToDynamic => _toDynamic(childOf(id, 0)),
+    Convert => _convert(id),
     FunctionRef => {
       let captures = Array.new<I32>(0);
       let i = 0;
@@ -481,10 +696,11 @@ _exprAt = fn(id) {
     IsKind => {
       let kind = _fresh(TYPE_I32);
       _emit(Op.KindOf, kind, [_expr(childOf(id, 0))], 0);
-      let wide = valueOf(id) == KIND_I64;
-      let tested = wide ? _arithmetic(Op.Mul, _arithmetic(Op.Sub, kind, _i32(KIND_I32)), _arithmetic(Op.Sub, kind, _i32(KIND_I64))) : kind;
+      let code = valueOf(id);
+      let wide = (code == KIND_I64) || isFloatKind(code);
+      let tested = wide ? _arithmetic(Op.Mul, _arithmetic(Op.Sub, kind, _i32(KIND_I32)), _arithmetic(Op.Sub, kind, _i32(code))) : kind;
       let dst = _fresh(TYPE_BOOL);
-      _emit(Op.Eq, dst, [tested, _i32(wide ? 0 : valueOf(id))], 0);
+      _emit(Op.Eq, dst, [tested, _i32(wide ? 0 : code)], 0);
       dst
     },
     Unwrap => {
@@ -504,18 +720,28 @@ _exprAt = fn(id) {
     And, Or => _shortCircuit(id),
     Eq when (typeOf(childOf(id, 0)) == TYPE_BOOL) => _boolEqual(id),
     Div, Rem => _divide(id),
+    Shr when (_wideUnsigned(typeOf(id))) => _logicalShift(id),
+    Eq, Lt, Gt, Le, Ge when (isFloatType(typeOf(childOf(id, 0)))) => _float(id),
+    Neg when (typeOf(id) == TYPE_F16) => _float(id),
     _ => {
       let operands = _values(id, 0);
       let op = _operation(id);
 
       let imm = match (opOf(id)) {
         Bool, I32, TupleField, Call, EnumNew, EnumField => valueOf(id),
-        Bytes => _poolIndex(valueOf(id)),
+        Bytes => _internAt(_poolIndexes, _pool, valueOf(id)),
         CallNative => _nativeIndex(valueOf(id)),
         I64 => {
           _wides.push(wideValueOf(id));
           (_wides.len() - 1) as I32
         },
+        Float => {
+          if (typeOf(id) == TYPE_F64) {
+            _floats.push(wideValueOf(id));
+            (_floats.len() - 1) as I32
+          } else { valueOf(id) }
+        },
+        Atom => _internAt(_atomIndexes, _atoms, valueOf(id)),
         _ => 0,
       };
 
@@ -533,7 +759,7 @@ _exprAt = fn(id) {
         let negated = _fresh(TYPE_BOOL);
         _emit(Op.Not, negated, [dst], 0);
         negated
-      } else { dst }
+      } else { _wrapped(id, dst) }
     },
   }
 };
@@ -750,6 +976,9 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
   _pool = Array.new<Bytes>(0);
   _poolIndexes = Array.new<I32>(0);
   _wides = Array.new<I64>(0);
+  _floats = Array.new<I64>(0);
+  _atoms = Array.new<Bytes>(0);
+  _atomIndexes = Array.new<I32>(0);
   _natives = Array.new<Native>(0);
   _nativeIndexes = Array.new<I32>(0);
   while (_nativeIndexes.len() < nativeCount()) { _nativeIndexes.push(-1); }
@@ -807,7 +1036,7 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
     globals.push(_valueType(globalTypeOf(i)));
     i++;
   }
-  let lowered = IrProgram.Program(functions, _pool, _wides, enums, globals, _natives);
+  let lowered = IrProgram.Program(functions, _pool, _wides, _floats, _atoms, enums, globals, _natives);
   verifyProgram(lowered);
   lowered
 };

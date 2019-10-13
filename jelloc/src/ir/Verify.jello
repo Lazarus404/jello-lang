@@ -19,6 +19,8 @@ let _signatures = Array.new<ValueType>(0);
 let _captureCounts = Array.new<I32>(0);
 let _poolSize = 0;
 let _wideCount = 0;
+let _floatCount = 0;
+let _atomCount = 0;
 let _enums = Array.new<EnumSchema>(0);
 let _globals = Array.new<ValueType>(0);
 let _natives = Array.new<Native>(0);
@@ -36,6 +38,15 @@ let _expect = fn(register: I32, expected: ValueType) {
 };
 
 let _isNumeric = fn(ty: ValueType): Bool { match (ty) { I32, I64 => true, _ => false } };
+let _isArithmetic = fn(ty: ValueType, half: Bool): Bool { match (ty) { I32, I64, F32, F64 => true, F16 => half, _ => false } };
+
+let _converts = fn(source: ValueType, target: ValueType): Bool {
+  match ((source, target)) {
+    (I32, F16), (I32, F32), (I32, F64), (I64, F32), (I64, F64), (F16, I32), (F32, I32), (F64, I32), (F32, I64), (F64, I64) => true,
+    (F16, F32), (F32, F16), (F32, F64), (F64, F32) => true,
+    _ => false,
+  }
+};
 
 let _index = fn(function: I32): I32 {
   if ((function < 0) || (function >= _functionIndexes.len()) || (_functionIndexes[function] < 0)) { _fail("unknown function @" + Std.string(function)); }
@@ -117,6 +128,18 @@ let _instruction = fn(instruction: Instruction) {
       _expect(dst, ValueType.I64);
       if (_inProgram && ((imm < 0) || (imm >= _wideCount))) { _fail("i64 constant out of range"); } null
     },
+    ConstFloat => {
+      _arity(args, 0);
+
+      match (_type(dst)) {
+        F64 => { if (_inProgram && ((imm < 0) || (imm >= _floatCount))) { _fail("f64 constant out of range"); } null },
+        F32, F16 => null,
+        _ => {
+          _fail("float constant of a type that is no float");
+          null
+        },
+      }
+    },
     ConstBytes => {
       _arity(args, 0);
       _expect(dst, ValueType.Bytes);
@@ -151,15 +174,16 @@ let _instruction = fn(instruction: Instruction) {
       _arity(args, 1);
       if (!valueTypeEqual(_type(dst), _type(args[0]))) { _fail("move type mismatch"); } null
     },
-    Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor => {
+    Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor, DivU, RemU => {
       _arity(args, 2);
-      if (!_isNumeric(_type(dst))) { _fail("arithmetic requires an integer type"); }
+      let numeric = match (opOf(instruction)) { Add, Sub, Mul => _isArithmetic(_type(dst), true), Div => _isArithmetic(_type(dst), false), _ => _isNumeric(_type(dst)) };
+      if (!numeric) { _fail("arithmetic on a type that does not support it"); }
       _expect(args[0], _type(dst));
       _expect(args[1], _type(dst))
     },
     Neg => {
       _arity(args, 1);
-      if (!_isNumeric(_type(dst))) { _fail("negation requires an integer type"); }
+      if (!_isArithmetic(_type(dst), false)) { _fail("negation of a type that does not support it"); }
       _expect(args[0], _type(dst))
     },
     AddImm, SubImm, MulImm => {
@@ -177,13 +201,15 @@ let _instruction = fn(instruction: Instruction) {
       _expect(dst, ValueType.Bool);
       _expect(args[0], ValueType.Bool)
     },
-    Eq, Lt => {
+    Eq, Lt, LtU => {
       _arity(args, 2);
       _expect(dst, ValueType.Bool);
-      if (!_isNumeric(_type(args[0]))) { _fail("comparison requires an integer type"); }
-      _expect(args[1], _type(args[0]))
+      let ty = _type(args[0]);
+      let compared = match ((opOf(instruction), ty)) { (Eq, Atom) => true, (LtU, _) => _isNumeric(ty), _ => _isArithmetic(ty, false) };
+      if (!compared) { _fail("comparison of a type that does not support it"); }
+      _expect(args[1], ty)
     },
-    Sext => {
+    Sext, Zext => {
       _arity(args, 1);
       _expect(dst, ValueType.I64);
       _expect(args[0], ValueType.I32)
@@ -192,6 +218,10 @@ let _instruction = fn(instruction: Instruction) {
       _arity(args, 1);
       _expect(dst, ValueType.I32);
       _expect(args[0], ValueType.I64)
+    },
+    Convert => {
+      _arity(args, 1);
+      if (!_converts(_type(args[0]), _type(dst))) { _fail("conversion the VM lacks"); } null
     },
     Box => {
       _arity(args, 1);
@@ -481,6 +511,11 @@ let _instruction = fn(instruction: Instruction) {
       _arity(args, 1);
       if (_inProgram) { _expect(args[0], _global(imm)); } null
     },
+    ConstAtom => {
+      _arity(args, 0);
+      _expect(dst, ValueType.Atom);
+      if (_inProgram && ((imm < 0) || (imm >= _atomCount))) { _fail("atom constant out of range"); } null
+    },
     SpillPop => {
       _arity(args, 0);
       if ((imm < 0) || (imm >= 65536)) { _fail("spill slot out of range"); } null
@@ -659,7 +694,7 @@ let _signatureOf = fn(function: Function): ValueType {
 let _program = fn(program: Program, legalized: Bool): Bool {
   _legalized = legalized;
 
-  match (program) { Program(functions, pool, wides, enums, globals, natives) => {
+  match (program) { Program(functions, pool, wides, floats, atoms, enums, globals, natives) => {
     _functionIndexes = Array.new<I32>(0);
     _signatures = Array.new<ValueType>(0);
     _captureCounts = Array.new<I32>(0);
@@ -684,6 +719,8 @@ let _program = fn(program: Program, legalized: Bool): Bool {
     }
     _poolSize = pool.len() as I32;
     _wideCount = wides.len() as I32;
+    _floatCount = floats.len() as I32;
+    _atomCount = atoms.len() as I32;
     _enums = enums;
     _globals = globals;
     _natives = natives;
@@ -703,7 +740,7 @@ export let verifyProgram: (Program) -> Bool = fn(program) { _program(program, fa
 export let verifyLegalizedProgram: (Program) -> Bool = fn(program) { _program(program, true) };
 
 export let verifyAllocatedProgram: (Program) -> Bool = fn(program) {
-  match (program) { Program(functions, _, _, _, _, natives) => {
+  match (program) { Program(functions, _, _, _, _, _, _, natives) => {
     let i = 0;
 
     while (i < functions.len()) {

@@ -1,0 +1,12 @@
+// expect: ok
+// pending: a variant pattern cannot match I32
+const KEY_B: I32 = 66;
+
+let f: (I32) -> Bool = fn(keysym: I32) {
+  match (keysym) {
+    KEY_B => true,
+    _ => false,
+  }
+};
+
+if (f(66) == true) { "ok" } else { "no" }

@@ -15,12 +15,15 @@ import { NONE, finish, fresh, modes, startCheck, startJelloc, startJloTool, star
 import { shapeProblems } from support.Shape;
 
 const _DIR = "tests/workload";
-
+// Each program, its move ceiling, or -1, and the file holding its value and
+// a newline.
 const _PROGRAMS = [
   ("ast", -1, "tests/workload/ast.out"), ("source", -1, "tests/workload/source.out"), ("lexer", 180, "tests/workload/lexer.out"),
-  ("parser", 349, "tests/workload/parser.out"), ("reparse", -1, "tests/workload/reparse.out"), ("corpus", -1, "tests/integration/compiler/parse/digests.txt")
+  ("parser", 368, "tests/workload/parser.out"), ("reparse", -1, "tests/workload/reparse.out"), ("corpus", -1, "tests/integration/compiler/parse/digests.txt")
 ];
 
+// What runs of a cleanly compiled program: its decode check, a run in each
+// mode, and its listing, when it has a ceiling, and its gc run, for reparse.
 let _start = fn(name: Bytes, ceiling: I32, module: Bytes, dump: Bytes): Tuple<Dynamic, Array<Dynamic>, ?Dynamic, ?Dynamic> {
   let path = fresh("workload-" + name + ".ir");
   writeText(path, dump);
@@ -36,6 +39,7 @@ let _start = fn(name: Bytes, ceiling: I32, module: Bytes, dump: Bytes): Tuple<Dy
   (startCheck(path, module), runs, listing, gc)
 };
 
+// Checks the runs of program NAME, under CEILING moves, against GOLDEN.
 let _check = fn(t: Test, name: Bytes, ceiling: I32, golden: Bytes, started: Tuple<Dynamic, Array<Dynamic>, ?Dynamic, ?Dynamic>): Null {
   let (check, runs, listing, gc) = started;
   let (checked, said, why) = finish(check);
@@ -61,6 +65,7 @@ let _check = fn(t: Test, name: Bytes, ceiling: I32, golden: Bytes, started: Tupl
     }
   }
 
+  // Run again, it collects garbage at least once.
   if (gc != null) {
     let (_, stats, _) = finish(gc);
 
@@ -82,7 +87,8 @@ let testWorkload = fn(t: Test) {
     compiles.push(startJelloc(withStd([_DIR + "/" + name + ".jello", "--jlo", "--out", modules[i]]), NONE));
     i++;
   }
-
+  // Every compile is reaped before any check; then every clean one's runs
+  // start at once.
   let compiled = Array.new<Tuple<I32, Bytes, Bytes>>(0);
   i = 0;
 

@@ -1,12 +1,15 @@
 package frontend;
 
-import type { AssignOp, Expr as AstExpr, IncDecOp, Type as AstType } from frontend.Ast;
-import { AssignOp } from frontend.Ast;
+import type { AssignOp, BinaryOp, Expr as AstExpr, IncDecOp, Type as AstType } from frontend.Ast;
+import { BinaryOp } from frontend.Ast;
 import frontend.Hir as H;
 import { internalError } from frontend.Internal;
 import { Kind, Op } from frontend.Hir;
 import { boundHint, stringOf, unprintable } from frontend.CheckDerived;
-import { bufferHint, checkInstance, checkOperand, checkPresent, checkPresentAs, compoundOperation, enterSyntax, isBound, newBinding, one, syntaxChild } from frontend.TypeCheck;
+import { checkNumberCall } from frontend.CheckMath;
+import { checkSystemAssertion } from frontend.CheckTesting;
+import { touch } from frontend.Failures;
+import { binaryValues, bufferHint, checkArity, checkInstance, checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, isBound, newBinding, one, rejectAt, syntaxChild, widened } from frontend.TypeCheck;
 
 let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   let checked = checkOperand(expr, index, H.TYPE_I32);
@@ -57,21 +60,17 @@ let _codePoint = fn(value: Bytes): I32 {
   code
 };
 
-let _callStd = fn(name: Bytes, params: Array<I32>, result: I32, args: Array<I32>): I32 {
-  H.node(Op.CallNative, result, H.stdNative(name, params, result), 0, args)
-};
-
 let _builtin = fn(space: Bytes): Bool {
-  ((space == "Array") || (space == "Bytes") || (space == "List") || (space == "Std") || (space == "System")) && !isBound(space)
+  match (space) { "Array", "Atom", "Bytes", "Float", "Integer", "List", "Math", "Std", "System" => !isBound(space), _ => false }
 };
 
 let _args = fn(): I32 {
   let ty = H.listType(H.TYPE_BYTES);
   let args = newBinding();
   let index = newBinding();
-  let count = _callStd("args_count", [], H.TYPE_I32, []);
+  let count = H.callStd("args_count", [], H.TYPE_I32, []);
   let previous = H.node(Op.Assign, H.TYPE_I32, index, 0, [H.node(Op.Sub, H.TYPE_I32, 0, 0, [H.local(index, H.TYPE_I32), one(H.TYPE_I32)])]);
-  let arg = _callStd("args_get", [H.TYPE_I32], H.TYPE_BYTES, [previous]);
+  let arg = H.callStd("args_get", [H.TYPE_I32], H.TYPE_BYTES, [previous]);
   let cons = H.node(Op.Assign, ty, args, 0, [H.node(Op.ListCons, ty, 0, 0, [arg, H.local(args, ty)])]);
   let more = H.node(Op.Gt, H.TYPE_BOOL, 0, 0, [H.local(index, H.TYPE_I32), H.node(Op.I32, H.TYPE_I32, 0, 0, [])]);
   let loop = H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, [H.node(Op.Expression, 0, 0, 0, [cons])])]);
@@ -110,12 +109,13 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
 
 let _tuple = fn(items: Array<AstExpr>, expected: I32): I32 {
   let fits = H.isKind(expected, Kind.Tuple) && (H.typeArgCount(expected) == items.len());
+  let declared = fits ? declaredArgs(expected) : Array.new<I32>(0);
   let values = Array.new<I32>(0);
   let types = Array.new<I32>(0);
   let i = 0;
 
   while (i < items.len()) {
-    let value = checkOperand(items[i], i, fits ? H.typeArg(expected, i) : -1);
+    let value = widened(checkOperand(items[i], i, fits ? H.typeArg(expected, i) : -1), fits ? declared[i] : -1);
     values.push(value);
     types.push(H.typeOf(value));
     i++;
@@ -124,18 +124,16 @@ let _tuple = fn(items: Array<AstExpr>, expected: I32): I32 {
 };
 
 let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
-  let element = H.isKind(expected, Kind.Array) ? H.innerOf(expected) : items.len() == 0 ? H.newVar(false) : -1;
+  let declared = H.isKind(expected, Kind.Array) ? H.innerOf(expected) : -1;
+  let element = declared >= 0 ? declared : items.len() == 0 ? H.newVar(false) : -1;
+  if (H.isOpen(declared)) { declared = -1; }
   let values = Array.new<I32>(0);
   let i = 0;
 
   while (i < items.len()) {
-    let value = checkOperand(items[i], i, element);
+    let value = widened(checkOperand(items[i], i, element), declared);
     if (element < 0) { element = H.typeOf(value); }
-
-    if (!H.unify(H.typeOf(value), element)) {
-      enterSyntax(syntaxChild(i));
-      throw "array element must be " + H.typeName(element);
-    }
+    if (!H.unify(H.typeOf(value), element)) { rejectAt(i, "array element must be " + H.typeName(element)); }
     values.push(value);
     i++;
   }
@@ -191,19 +189,14 @@ let _indexTarget = fn(base: AstExpr, index: AstExpr): Tuple<I32, I32> {
   (array, checkedIndex)
 };
 
-let _updateIndex = fn(array: I32, index: I32, op: AssignOp, checked: I32, step: Bool, postfix: Bool): I32 {
+let _updateIndex = fn(array: I32, index: I32, op: BinaryOp, checked: I32, step: Bool, postfix: Bool): I32 {
   let element = _elementOf(array);
-  let bytes = !step && (element == H.TYPE_BYTES) && match (op) { Add => true, _ => false };
-
-  if (!H.isInteger(element) && !bytes) {
-    throw (step ? "increment and decrement require" : "compound assignment requires") + " an I32 or I64 element, not " + H.typeName(element);
-  }
-  let operation = compoundOperation(op, bytes);
+  if (step && !H.isInteger(element)) { throw "increment and decrement require an integer element, not " + H.typeName(element); }
   let declared = Array.new<I32>(0);
   let (arrayRead, arrayWrite) = _twice(array, step, declared, "array");
   let (indexRead, indexWrite) = _twice(index, step, declared, "index");
-  let set = _set(arrayWrite, indexWrite, H.node(operation, element, 0, 0, [_get(arrayRead, indexRead), checked]));
-  let result = postfix ? H.node(operation == Op.Add ? Op.Sub : Op.Add, element, 0, 0, [set, one(element)]) : set;
+  let set = _set(arrayWrite, indexWrite, binaryValues(op, _get(arrayRead, indexRead), checked));
+  let result = postfix ? H.node(match (op) { Add => Op.Sub, _ => Op.Add }, element, 0, 0, [set, one(element)]) : set;
   if (declared.len() == 0) { return result; }
   declared.push(result);
   H.node(Op.Block, element, 0, 1, declared)
@@ -212,24 +205,19 @@ let _updateIndex = fn(array: I32, index: I32, op: AssignOp, checked: I32, step: 
 let _assignIndex = fn(base: AstExpr, index: AstExpr, op: AssignOp, value: AstExpr): I32 {
   let (array, checkedIndex) = _indexTarget(base, index);
   let element = _elementOf(array);
-  let checked = checkOperand(value, 1, element);
+  let checked = match (op) { Assign => widened(checkOperand(value, 1, element), element), _ => checkOperand(value, 1, element) };
 
   if (!H.unify(H.typeOf(checked), element)) {
-    enterSyntax(syntaxChild(1));
-    throw (H.isKind(H.typeOf(array), Kind.ByteBuffer) ? "a byte" : "array element") + " must be " + H.typeName(element);
+    rejectAt(1, (H.isKind(H.typeOf(array), Kind.ByteBuffer) ? "a byte" : "array element") + " must be " + H.typeName(element));
+    return _set(array, checkedIndex, checked);
   }
-  match (op) { Assign => _set(array, checkedIndex, checked), _ => _updateIndex(array, checkedIndex, op, checked, false, false) }
+  match (op) { Assign => _set(array, checkedIndex, checked), Compound(binary) => _updateIndex(array, checkedIndex, binary, checked, false, false) }
 };
 
 let _stepIndex = fn(base: AstExpr, index: AstExpr, op: IncDecOp, prefix: Bool): I32 {
   let (array, checkedIndex) = _indexTarget(base, index);
   let increment = match (op) { Increment => true, _ => false };
-  _updateIndex(array, checkedIndex, increment ? AssignOp.Add : AssignOp.Subtract, one(_elementOf(array)), true, !prefix)
-};
-
-export let checkArity: (Array<AstExpr>, I32, Bytes) -> Bool = fn(args, count, name) {
-  if (args.len() != count) { throw name + " takes " + Std.string(count) + (count == 1 ? " argument" : " arguments"); }
-  true
+  _updateIndex(array, checkedIndex, increment ? BinaryOp.Add : BinaryOp.Subtract, one(_elementOf(array)), true, !prefix)
 };
 
 let _string = fn(args: Array<AstExpr>): I32 {
@@ -301,6 +289,11 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
       checkArity(args, 1, qualified);
       H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [_readable(args[0], 1, "Bytes.len requires Bytes")])
     },
+    "Bytes.eq" => {
+      checkArity(args, 2, qualified);
+      let left = _of(args[0], 1, Kind.Bytes, H.TYPE_BYTES, "Bytes.eq requires Bytes");
+      H.node(Op.BytesEq, H.TYPE_BOOL, 0, 0, [left, _of(args[1], 2, Kind.Bytes, H.TYPE_BYTES, "Bytes.eq requires Bytes")])
+    },
     "Bytes.get_u8" => {
       checkArity(args, 2, qualified);
       let bytes = _readable(args[0], 1, "Bytes.get_u8 requires Bytes");
@@ -322,15 +315,25 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
       let start = _i32(args[1], 2, "slice start");
       H.node(Op.BytesSlice, H.TYPE_BYTES, 0, 0, [bytes, start, _i32(args[2], 3, "slice length")])
     },
+    "Atom.intern" => {
+      checkArity(args, 1, qualified);
+
+      match (args[0]) {
+        Bytes(value) => H.node(Op.Atom, H.TYPE_ATOM, H.bytesId(value), 0, []),
+        _ => {
+          throw "Atom.intern requires a compile-time bytes literal";
+          -1
+        },
+      }
+    },
     "Std.string" => _string(args),
+    "System.assert" => checkSystemAssertion("assert", qualified, args),
+    "System.assertEq" => checkSystemAssertion("assertEq", qualified, args),
     "System.exit" => {
       checkArity(args, 1, qualified);
-      _callStd("process_exit", [H.TYPE_I32], H.TYPE_I32, [_i32(args[0], 1, "exit status")])
+      H.callStd("process_exit", [H.TYPE_I32], H.TYPE_I32, [_i32(args[0], 1, "exit status")])
     },
-    _ => {
-      throw "unknown function " + qualified;
-      -1
-    },
+    _ => checkNumberCall(space, name, args, expected),
   }
 };
 
@@ -350,6 +353,10 @@ let _method = fn(base: AstExpr, name: Bytes, args: Array<AstExpr>, expected: I32
       if (builtin < 0) { throw "unknown array method: " + name; }
       _checkBuiltin(builtin, name, _NO_TYPES, receiver, args, expected)
     },
+    Atom when (name == "toString") => {
+      checkArity(args, 0, "toString");
+      stringOf(receiver)
+    },
     _ => {
       throw "unknown method " + name + " of " + H.typeName(ty);
       -1
@@ -363,6 +370,7 @@ let _call = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>, 
   match (target) {
     Member(Variable(space), name) when (_builtin(space)) => _static(space, name, types, args, expected),
     Member(Variable(space), name) when (!isBound(space)) => {
+      touch(space);
       throw "unknown name " + space + " in " + space + "." + name + "; import a module as " + space + " to call its exports";
       -1
     },

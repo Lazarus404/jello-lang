@@ -50,7 +50,7 @@ import { utf8Validate, utf8Length, utf8CharAt } from std.core.Bytes;
 
 let tokens = Array.new<Token>(0);
 let pos = 0;
-let pendingGreater = 0;
+let pending = Token.Eof;
 let pipelineDepth = 0;
 let sourcePath = "<input>";
 let starts = Array.new<I32>(0);
@@ -64,6 +64,8 @@ let _offset = fn(index: I32, end: Bool): I32 {
   if (i >= starts.len()) { i = starts.len() - 1; }
   end ? ends[i] : starts[i]
 };
+
+let _tokenSpan = fn(index: I32): SourceSpan { SourceSpan.Span(sourcePath, _offset(index, false), _offset(index, true)) };
 
 let _mark = fn(kind: SyntaxKind, tag: I32, start: I32) {
   marks.push(SyntaxMark.Mark(kind, tag, _offset(start, false), _offset(pos - 1, true)));
@@ -95,25 +97,30 @@ export let programSyntax: (Program) -> Syntax = fn(program) { syntaxTree(program
 let _seen = 0;
 
 let _failure: ?SourceSpan = null;
+let _errors = Array.new<Tuple<SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
+let _packageSpan: ?SourceSpan = null;
+export let packageSpan: () -> ?SourceSpan = fn() { _packageSpan };
+let _noteSpan: ?SourceSpan = null;
+let _note = "";
+
+export let takeSyntaxErrors: () -> Array<Tuple<SourceSpan, Bytes, ?SourceSpan, Bytes>> = fn() {
+  let errors = _errors;
+  _errors = Array.new<Tuple<SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
+  errors
+};
+let _quietUntil = 0;
 export let parseFailureSpan: () -> ?SourceSpan = fn() { _failure };
 
-let _packageEnd = -1;
-
-export let packageSpan: () -> ?SourceSpan = fn() {
-  if (_packageEnd < 0) { return null; }
-  SourceSpan.Span(sourcePath, _offset(0, false), _offset(_packageEnd, true))
-};
-
 let _error = fn(msg: Bytes): I32 {
-  _failure = SourceSpan.Span(sourcePath, _offset(_seen, false), _offset(_seen, true));
+  _failure = _tokenSpan(_seen);
   throw ("ParseError: " + msg);
   0
 };
 
 let peek = fn(): Token {
-  if (pendingGreater > 0) {
+  if (pending != Token.Eof) {
     _seen = pos - 1;
-    Token.Greater
+    pending
   } else if (pos < tokens.len()) {
     _seen = pos;
     tokens[pos]
@@ -126,8 +133,8 @@ let peek = fn(): Token {
 let next = fn(): Token {
   let tok = peek();
 
-  if (pendingGreater > 0) {
-    pendingGreater--;
+  if (pending != Token.Eof) {
+    pending = Token.Eof;
   } else {
     pos++;
   }
@@ -260,7 +267,15 @@ let _expectGenericClose = fn() {
   match (actual) {
     Greater => null,
     GreaterGreater => {
-      pendingGreater++;
+      pending = Token.Greater;
+      null
+    },
+    GreaterEqual => {
+      pending = Token.Equal;
+      null
+    },
+    GreaterGreaterEqual => {
+      pending = Token.GreaterEqual;
       null
     },
     _ => {
@@ -1356,6 +1371,7 @@ let _parseCast = fn(): Expr {
 
 let _precedence = fn(tok: Token): I32 {
   match (tok) {
+    RParen, Semicolon, Comma, RBrace, RBracket => -1,
     Star, Slash, Percent => 80,
     LessLess, GreaterGreater => 75,
     Plus, Minus => 70,
@@ -1368,7 +1384,8 @@ let _precedence = fn(tok: Token): I32 {
     PipePipe => 20,
     Question => 15,
     PipeGreater => 10,
-    Equal, PlusEqual, MinusEqual, StarEqual, SlashEqual => 5,
+    Equal, PlusEqual, MinusEqual, StarEqual, SlashEqual, PercentEqual, LessLessEqual, GreaterGreaterEqual,
+    AmpersandEqual, PipeEqual, CaretEqual => 5,
     _ => -1,
   }
 };
@@ -1403,10 +1420,16 @@ let _binaryOp = fn(tok: Token): BinaryOp {
 let _assignOp = fn(tok: Token): AssignOp {
   match (tok) {
     Equal => AssignOp.Assign,
-    PlusEqual => AssignOp.Add,
-    MinusEqual => AssignOp.Subtract,
-    StarEqual => AssignOp.Multiply,
-    SlashEqual => AssignOp.Divide,
+    PlusEqual => AssignOp.Compound(BinaryOp.Add),
+    MinusEqual => AssignOp.Compound(BinaryOp.Subtract),
+    StarEqual => AssignOp.Compound(BinaryOp.Multiply),
+    SlashEqual => AssignOp.Compound(BinaryOp.Divide),
+    PercentEqual => AssignOp.Compound(BinaryOp.Remainder),
+    LessLessEqual => AssignOp.Compound(BinaryOp.ShiftLeft),
+    GreaterGreaterEqual => AssignOp.Compound(BinaryOp.ShiftRight),
+    AmpersandEqual => AssignOp.Compound(BinaryOp.BitAnd),
+    PipeEqual => AssignOp.Compound(BinaryOp.BitOr),
+    CaretEqual => AssignOp.Compound(BinaryOp.BitXor),
     _ => {
       _error("expected assignment operator");
       AssignOp.Assign
@@ -1511,36 +1534,117 @@ _parseStatement = fn() {
   }
 };
 
+let _skipStatement = fn(start: I32, end: Token) {
+  let i = start;
+  let open = 0;
+  let braces = 0;
+
+  while ((i < tokens.len()) && (tokens[i] != Token.Eof)) {
+    let token = tokens[i];
+
+    if (i >= _seen) {
+      if ((braces == 0) && (token == Token.Semicolon)) {
+        i++;
+        break;
+      }
+
+      if ((braces == 0) && (token == Token.RBrace)) {
+        if (end == Token.Eof) { i++; }
+        break;
+      }
+      if ((i > start) && (open == 0) && _stmtStarts(token)) { break; }
+    }
+
+    match (token) {
+      LParen, LBracket => {
+        open++;
+        null
+      },
+      LBrace => {
+        open++;
+        braces++;
+        null
+      },
+      RParen, RBracket => { if (open > 0) { open--; } null },
+      RBrace => {
+        if (open > 0) { open--; }
+        if (braces > 0) { braces--; } null
+      },
+      _ => null,
+    }
+    i++;
+  }
+  pos = i;
+  null
+};
+
+let _recover = fn(error: Dynamic, marked: I32, start: I32, end: Token) {
+  let span = _failure;
+  _failure = null;
+  let noteSpan = _noteSpan;
+  _noteSpan = null;
+  if (span == null) { throw error; }
+  if (_seen >= _quietUntil) { _errors.push((span, Std.string(error), noteSpan, noteSpan == null ? "" : _note)); }
+  Array.resize(marks, marked);
+  pending = Token.Eof;
+  _skipStatement(start, end);
+  _quietUntil = pos + 3;
+  null
+};
+
 let _statements = fn(end: Token, expected: Bytes): Block {
   let statements = Array.new<Stmt>(0);
   let tail: ?Expr = null;
+  let saved = pos;
+  let marked = marks.len();
+  let piped = pipelineDepth;
+  let going = true;
+  let recovered = false;
 
-  while ((peek() != end) && (tail == null)) {
-    if (_stmtStarts(peek()) && (peek() != Token.Let)) {
-      statements.push(_parseStmt());
-    } else {
-      let start = peek();
-      let saved = pos;
-      let value = _statementExpr(start);
+  while (going) {
+    try {
+      while ((peek() != end) && (peek() != Token.Eof) && (tail == null)) {
+        saved = pos;
+        marked = marks.len();
 
-      if (peek() == Token.Semicolon) {
-        next();
-        statements.push(_markStmt(_expressionStatement(value), saved));
-      } else if (peek() == end) {
-        tail = value;
-      } else if (_selfDelimiting(start, value)) {
-        statements.push(_markStmt(_expressionStatement(value), saved));
-      } else {
-        _error("expected ';' or " + expected);
+        if (_stmtStarts(peek()) && (peek() != Token.Let)) {
+          statements.push(_parseStmt());
+        } else {
+          let start = peek();
+          let value = _statementExpr(start);
+
+          if (peek() == Token.Semicolon) {
+            next();
+            statements.push(_markStmt(_expressionStatement(value), saved));
+          } else if ((peek() == end) || (peek() == Token.Eof)) {
+            tail = value;
+          } else if (_selfDelimiting(start, value)) {
+            statements.push(_markStmt(_expressionStatement(value), saved));
+          } else {
+            _error("expected ';' or " + expected);
+          }
+        }
       }
+      going = false;
+    } catch (e) {
+      _recover(e, marked, saved, end);
+      pipelineDepth = piped;
+      recovered = true;
     }
   }
+  if (recovered && (end == Token.RBrace) && (peek() == Token.Eof)) { _quietUntil = tokens.len() + 1; }
   Block.Block(statements, tail)
 };
 
 _parseBlock = fn() {
+  let open = pos;
   expect(Token.LBrace);
   let block = _statements(Token.RBrace, "'}'");
+
+  if (peek() == Token.Eof) {
+    _noteSpan = _tokenSpan(open);
+    _note = "this `{` is not closed";
+  }
   expect(Token.RBrace);
   block
 };
@@ -1856,16 +1960,26 @@ export let parseProgram: (Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>>) ->
   pos = 0;
   _seen = 0;
   _failure = null;
-  _packageEnd = -1;
-  pendingGreater = 0;
+  _errors = Array.new<Tuple<SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
+  _quietUntil = 0;
+  _noteSpan = null;
+  pending = Token.Eof;
   pipelineDepth = 0;
   let pkg = Package.None;
+  _packageSpan = null;
 
   if (peek() == Token.Package) {
+    let first = pos;
     next();
     pkg = Package.Path(_path());
     expect(Token.Semicolon);
-    _packageEnd = pos - 1;
+    _packageSpan = SourceSpan.Span(sourcePath, _offset(first, false), _offset(pos - 1, true));
   }
-  match (_statements(Token.Eof, "end of input")) { Block(statements, tail) => Program.Program(pkg, statements, tail) }
+  let block = _statements(Token.Eof, "end of input");
+
+  if (_errors.len() > 0) {
+    _failure = _errors[0].0;
+    throw _errors[0].1;
+  }
+  match (block) { Block(statements, tail) => Program.Program(pkg, statements, tail) }
 };

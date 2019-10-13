@@ -717,7 +717,7 @@ export let allocationFailure: () -> I32 = fn() { _failed };
 export let allocateProgram: (Program) -> Program = fn(program) {
   _failed = -1;
 
-  let allocated = match (program) { Program(functions, pool, wides, enums, globals, natives) => {
+  let allocated = match (program) { Program(functions, pool, wides, floats, atoms, enums, globals, natives) => {
     let out = Array.new<Function>(0);
     let i = 0;
 
@@ -728,7 +728,7 @@ export let allocateProgram: (Program) -> Program = fn(program) {
       }
       i++;
     }
-    Program.Program(out, pool, wides, enums, globals, natives)
+    Program.Program(out, pool, wides, floats, atoms, enums, globals, natives)
   } };
   verifyAllocatedProgram(allocated);
   allocated

@@ -2,17 +2,18 @@ package frontend;
 
 import type { SourceSpan } from frontend.Source;
 import { SourceSpan } from frontend.Source;
+import { internalError } from frontend.Internal;
 
 export enum Op {
-  Bool; I32; I64; Bytes; Null; Local; Assign; Global; SetGlobal; InitGlobal; FunctionRef;
-  Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; And; Or; Eq; Lt; Gt; Sext; Trunc; Present; IsNull; IsPresent; Unwrap; ToDynamic; FromDynamic; IsKind;
+  Bool; I32; I64; Float; Bytes; Atom; Null; Local; Assign; Global; SetGlobal; InitGlobal; FunctionRef;
+  Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; And; Or; Eq; Lt; Gt; Le; Ge; Convert; Present; IsNull; IsPresent; Unwrap; ToDynamic; FromDynamic; IsKind;
   ArrayNew; ArrayLiteral; ArrayLen; ArrayGet; ArraySet; ArrayPush; ArrayPop; ArrayResize; ListNil; ListCons; ListHead; ListTail; ListIsNil;
   BytesNew; BytesSet; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq; Tuple; TupleField; EnumNew; EnumTag; EnumField;
   Call; CallIndirect; CallNative; Block; If; Try;
   Let; Const; Parameter; Capture; Declare; Expression; Return; Throw; Break; Continue; IfStatement; TryStatement; While; Function; Program;
 }
 
-export enum Kind { Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; Dynamic; ByteBuffer; List; Var; Param; Applied; }
+export enum Kind { Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; Dynamic; ByteBuffer; List; Var; Param; Applied; Atom; I8; I16; U8; U16; U32; U64; F16; F32; F64; }
 
 export enum Hir {
   Hir(
@@ -37,12 +38,37 @@ export let TYPE_BYTES: I32 = 3;
 export let TYPE_NULL: I32 = 4;
 export let TYPE_DYNAMIC: I32 = 5;
 export let TYPE_BYTE_BUFFER: I32 = 6;
+export let TYPE_ATOM: I32 = 7;
+export let TYPE_I8: I32 = 8;
+export let TYPE_I16: I32 = 9;
+export let TYPE_U8: I32 = 10;
+export let TYPE_U16: I32 = 11;
+export let TYPE_U32: I32 = 12;
+export let TYPE_U64: I32 = 13;
+export let TYPE_F16: I32 = 14;
+export let TYPE_F32: I32 = 15;
+export let TYPE_F64: I32 = 16;
+export let isFloatType: (I32) -> Bool = fn(ty) { (ty >= TYPE_F16) && (ty <= TYPE_F64) };
+export let isIntegerType: (I32) -> Bool = fn(ty) { ((ty >= TYPE_I32) && (ty <= TYPE_I64)) || ((ty >= TYPE_I8) && (ty <= TYPE_U64)) };
+
+export let integerBits: (I32) -> I32 = fn(ty) {
+  (ty == TYPE_I8) || (ty == TYPE_U8) ? 8 : (ty == TYPE_I16) || (ty == TYPE_U16) ? 16 : (ty == TYPE_I64) || (ty == TYPE_U64) ? 64 : 32
+};
+export let isUnsigned: (I32) -> Bool = fn(ty) { (ty >= TYPE_U8) && (ty <= TYPE_U64) };
+export let isNumberType: (I32) -> Bool = fn(ty) { isIntegerType(ty) || isFloatType(ty) };
+export let leastValue: (I32) -> I64 = fn(ty) { isUnsigned(ty) ? 0 : -((1 as I64) << ((integerBits(ty) - 1) as I64)) };
+export let mostValue: (I32) -> I64 = fn(ty) { ((1 as I64) << ((integerBits(ty) - (isUnsigned(ty) ? 0 : 1)) as I64)) - 1 };
 
 export let KIND_BOOL: I32 = 1;
 export let KIND_I32: I32 = 2;
+export let KIND_ATOM: I32 = 3;
 export let KIND_BYTES: I32 = 4;
 export let KIND_I64: I32 = 7;
 export let KIND_ENUM: I32 = 14;
+export let KIND_F64: I32 = 8;
+export let KIND_F32: I32 = 9;
+export let KIND_F16: I32 = 10;
+export let isFloatKind: (I32) -> Bool = fn(code) { (code >= KIND_F64) && (code <= KIND_F16) };
 
 export let BOUND_EQ: I32 = 1;
 export let BOUND_SHOW: I32 = 2;
@@ -147,7 +173,7 @@ export let nativeNameOf: (I32) -> Bytes = fn(native) { _bytes[_natives[native * 
 export let nativeTypeOf: (I32) -> I32 = fn(native) { _natives[native * _NATIVE_WIDTH + 2] };
 
 let _kindCode = fn(kind: Kind): I32 {
-  match (kind) { Bool => 0, I32 => 1, I64 => 2, Bytes => 3, Array => 4, Tuple => 5, Null => 6, Function => 7, Enum => 8, Dynamic => 9, ByteBuffer => 10, List => 11, Var => 12, Param => 13, Applied => 14 }
+  match (kind) { Bool => 0, I32 => 1, I64 => 2, Bytes => 3, Array => 4, Tuple => 5, Null => 6, Function => 7, Enum => 8, Dynamic => 9, ByteBuffer => 10, List => 11, Var => 12, Param => 13, Applied => 14, Atom => 15, I8 => 16, I16 => 17, U8 => 18, U16 => 19, U32 => 20, U64 => 21, F16 => 22, F32 => 23, F64 => 24 }
 };
 
 export let typeCount: () -> I32 = fn() { _kinds.len() as I32 };
@@ -222,6 +248,13 @@ export let setCallee: (I32, I32) -> Bool = fn(id, function) {
   true
 };
 
+export let retype: (I32, I32) -> Bool = fn(id, ty) {
+  if (!endsPath(id)) { internalError("only a block that ends every path is retyped"); }
+  _nodes[id * _NODE_WIDTH] = ty;
+  true
+};
+export let noValueType: (I32) -> I32 = fn(expected) { expected >= 0 ? resolve(expected) : TYPE_NULL };
+
 export let copyNode: (I32, I32, Array<I32>) -> I32 = fn(id, ty, children) {
   let path = _spanPath;
   let start = _spanStart;
@@ -237,7 +270,8 @@ export let copyNode: (I32, I32, Array<I32>) -> I32 = fn(id, ty, children) {
 };
 
 let _wideNode = fn(op: Op, ty: I32, value: I64): I32 { node(op, ty, value as I32, (value >> 32) as I32, []) };
-export let wideLiteral: (I64) -> I32 = fn(value) { _wideNode(Op.I64, TYPE_I64, value) };
+export let wideLiteral: (I64, I32) -> I32 = fn(value, ty) { _wideNode(Op.I64, ty, value) };
+export let floatLiteral: (I64, I32) -> I32 = fn(pattern, ty) { _wideNode(Op.Float, ty, pattern) };
 
 let _mix = fn(hash: I32, word: I32): I32 { (hash ^ word) * 16777619 };
 let _slot = fn(hash: I32, capacity: I32): I32 { (hash & 2147483647) % capacity };
@@ -547,7 +581,7 @@ let _bind = fn(var: I32, ty: I32): Bool {
     return true;
   }
 
-  if ((_flags(var) == _INTEGER) && !isKind(ty, Kind.Var) && (ty != TYPE_I32) && (ty != TYPE_I64) && !(isKind(ty, Kind.Param) && hasBounds(ty, BOUND_INTEGER))) {
+  if ((_flags(var) == _INTEGER) && !isKind(ty, Kind.Var) && !isIntegerType(ty) && !(isKind(ty, Kind.Param) && hasBounds(ty, BOUND_INTEGER))) {
     return false;
   }
   let nullable = isKind(ty, Kind.Null) || isKind(ty, Kind.Dynamic) || isKind(ty, Kind.List);
@@ -625,9 +659,9 @@ export let isUnknown: (I32) -> Bool = fn(ty) {
 };
 
 export let isInteger: (I32) -> Bool = fn(ty) {
-  if ((ty == TYPE_I32) || (ty == TYPE_I64)) { return true; }
+  if (isIntegerType(ty)) { return true; }
   let at = _current(ty);
-  (at == TYPE_I32) || (at == TYPE_I64) || (isKind(at, Kind.Var) && (_flags(at) == _INTEGER)) || (isKind(at, Kind.Param) && hasBounds(at, BOUND_INTEGER))
+  isIntegerType(at) || (isKind(at, Kind.Var) && (_flags(at) == _INTEGER)) || (isKind(at, Kind.Param) && hasBounds(at, BOUND_INTEGER))
 };
 export let holdsUnknown: (I32) -> Bool = fn(ty) { (ty >= 0) && _open[ty] && !isInteger(ty) && _open[resolve(ty)] };
 
@@ -662,7 +696,7 @@ export let fitsI32: (I32) -> Bool = fn(id) { auxOf(id) == (valueOf(id) >> 31) };
 export let settleLiteral: (I32, I32) -> Bool = fn(id, ty) {
   let slot = id * _NODE_WIDTH;
   _nodes[slot] = ty;
-  if (ty == TYPE_I64) { _ops[id] = Op.I64; } else { _nodes[slot + 2] = 0; }
+  if ((ty == TYPE_I64) || (ty == TYPE_U64)) { _ops[id] = Op.I64; } else { _nodes[slot + 2] = 0; }
   true
 };
 
@@ -702,6 +736,10 @@ export let resolveTypes: () -> I32 = fn() {
 
 export let stdNative: (Bytes, Array<I32>, I32) -> I32 = fn(name, params, result) {
   declareNative("std", name, functionType(params, result))
+};
+
+export let callStd: (Bytes, Array<I32>, I32, Array<I32>) -> I32 = fn(name, params, result, args) {
+  node(Op.CallNative, result, stdNative(name, params, result), 0, args)
 };
 export let declareEnum: (Bytes) -> I32 = fn(name) { _addType(Kind.Enum, bytesId(name), []) };
 
@@ -837,6 +875,16 @@ export let beginHir: () -> Bool = fn() {
   _intern(Kind.Null, -1, []);
   _intern(Kind.Dynamic, -1, []);
   _intern(Kind.ByteBuffer, 0, []);
+  _intern(Kind.Atom, 0, []);
+  _intern(Kind.I8, 0, []);
+  _intern(Kind.I16, 0, []);
+  _intern(Kind.U8, 0, []);
+  _intern(Kind.U16, 0, []);
+  _intern(Kind.U32, 0, []);
+  _intern(Kind.U64, 0, []);
+  _intern(Kind.F16, 0, []);
+  _intern(Kind.F32, 0, []);
+  _intern(Kind.F64, 0, []);
   true
 };
 
@@ -871,6 +919,16 @@ _typeName = fn(ty) {
     I32 => _source ? "I32" : "i32",
     I64 => _source ? "I64" : "i64",
     Bytes => _source ? "Bytes" : "bytes",
+    Atom => _source ? "Atom" : "atom",
+    I8 => _source ? "I8" : "i8",
+    I16 => _source ? "I16" : "i16",
+    U8 => _source ? "U8" : "u8",
+    U16 => _source ? "U16" : "u16",
+    U32 => _source ? "U32" : "u32",
+    U64 => _source ? "U64" : "u64",
+    F16 => _source ? "F16" : "f16",
+    F32 => _source ? "F32" : "f32",
+    F64 => _source ? "F64" : "f64",
     Array => (_source ? "Array<" : "array<") + _typeName(innerOf(ty)) + ">",
     List => (_source ? "List<" : "list<") + _typeName(innerOf(ty)) + ">",
     Null => innerOf(ty) < 0 ? (_source ? "Null" : "null") : _nullableName(innerOf(ty)),

@@ -1,0 +1,20 @@
+// expect: ok
+// min, max and hypot take one number or more; NaN wins, and -0 is below +0.
+System.assertEq(Math.max(1, 7.5, 3u16), 7.5);
+System.assertEq(Math.min(4, -2i64, 3.5f32), -2.0);
+System.assertEq(Math.max(5), 5.0);
+System.assert(Float.is_nan(Math.max(1, 0.0 / 0.0, 3)));
+System.assert(Float.is_nan(Math.min(0.0 / 0.0, 1)));
+System.assertEq(Std.string(Math.max(-0.0, 0.0)), "0.0");
+System.assertEq(Std.string(Math.max(0.0, -0.0)), "0.0");
+System.assertEq(Std.string(Math.min(0.0, -0.0)), "-0.0");
+System.assertEq(Std.string(Math.min(-0.0, 0.0)), "-0.0");
+System.assertEq(Math.hypot(3, 4), 5.0);
+System.assertEq(Math.hypot(2, 3, 6), 7.0);
+System.assertEq(Math.hypot(-4), 4.0);
+// Each argument is evaluated once, in order.
+let order = [0];
+let next = fn(n: I32): I32 { order.push(n); n };
+System.assertEq(Math.max(next(1), next(2), next(3)), 3.0);
+System.assertEq(Std.string(order), "[0, 1, 2, 3]");
+"ok"

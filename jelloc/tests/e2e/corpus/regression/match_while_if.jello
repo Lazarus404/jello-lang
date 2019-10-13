@@ -1,0 +1,21 @@
+// expect: ok
+package test;
+
+let _speakList: (I32) -> Bool = fn(count: I32) {
+  let i = 0;
+  while (i < count && i < 10) {
+    let sec = if (i == 1) { " secured" } else { " open" };
+    let _ = sec;
+    i += 1;
+  }
+  true
+};
+
+export let handleKey: (I32) -> Bool = fn(keysym: I32) {
+  match (keysym) {
+    115 => { _speakList(3) },
+    _ => { true },
+  }
+};
+
+if (handleKey(115) == true) { "ok" } else { "fail" }

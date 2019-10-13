@@ -1,0 +1,20 @@
+// expect: ok
+// pending: Bytes methods such as isEmpty
+let b = "he" + "llo";
+System.assert(Bytes.len(b) == 5);
+System.assert(b.len() == 5);
+System.assert(Bytes.get_u8(b, 0) == 104);
+System.assert(Bytes.get_u8(b, 4) == 111);
+System.assert(Bytes.eq(b, "hello"));
+System.assert(Bytes.eq(b, b));
+System.assert(!Bytes.eq(b, "hell"));
+let chain = "a" + "b" + "c" + "d";
+System.assert(Bytes.len(chain) == 4);
+let piece = Bytes.slice("abcd", 1, 2);
+System.assert(Bytes.len(piece) == 2);
+System.assert(Bytes.get_u8(piece, 0) == 98);
+System.assert(Bytes.get_u8(piece, 1) == 99);
+let empty = "";
+System.assert(Bytes.len(empty) == 0);
+System.assert(empty.isEmpty());
+"ok"

@@ -1,0 +1,16 @@
+// expect: ok
+// A shift count is taken modulo 32, or 64 for a 64-bit type; U32 and U64 shift right logically.
+let word: U32 = 2147483648;
+System.assertEq(Std.string(word >> 0u32), "2147483648");
+System.assertEq(Std.string(word >> 31u32), "1");
+System.assertEq(Std.string(word >> 32u32), "2147483648");
+System.assertEq(Std.string(word >> 33u32), "1073741824");
+let long = 0x8000_0000_0000_0000u64;
+System.assertEq(Std.string(long >> 0u64), "9223372036854775808");
+System.assertEq(Std.string(long >> 63u64), "1");
+System.assertEq(Std.string(long >> 64u64), "9223372036854775808");
+System.assertEq(Std.string(0xFFFF_FFFF_FFFF_FFFFu64 >> 4u64), "1152921504606846975");
+let byte: I8 = 1;
+System.assertEq(Std.string(byte << 8i8), "0");
+System.assertEq(Std.string(byte << 32i8), "1");
+"ok"

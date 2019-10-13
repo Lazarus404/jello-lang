@@ -1,0 +1,13 @@
+// expect: ok
+// pending: top-level destructuring
+let t = (7, "ok");
+let (a, b) = t;
+System.assert(a == 7);
+System.assert(Bytes.len(b) == 2);
+let (x, y): Tuple<I32, I32> = (3, 4);
+System.assert(x + y == 7);
+let ((p, q), r) = ((1, 2), 3);
+System.assert(p + q + r == 6);
+let (_, tail) = (99, 100);
+System.assert(tail == 100);
+"ok"

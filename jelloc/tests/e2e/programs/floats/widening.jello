@@ -1,0 +1,18 @@
+// expect: ok
+// A declared type widens a float, or an integer whose every value it holds exactly.
+let half: F16 = 1.5;
+let single: F32 = half;
+let double: F64 = single;
+System.assertEq(Std.string(double), "1.5");
+let byte: U8 = 200;
+let fromByte: F16 = byte;
+System.assertEq(Std.string(fromByte), "200.0");
+let short: I16 = -30000;
+let fromShort: F32 = short;
+System.assertEq(Std.string(fromShort), "-30000.0");
+let word: I32 = 2147483647;
+let fromWord: F64 = word;
+System.assertEq(Std.string(fromWord), "2147483647.0");
+let scale = fn(x: F64): F64 { x * 2.0 };
+System.assertEq(Std.string(scale(single)), "3.0");
+"ok"
