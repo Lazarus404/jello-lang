@@ -1,0 +1,7 @@
+// trap: NULL_DEREF 5:29
+// A closure may clear a local the checker knows is present; reading it then traps.
+let run = fn(): I32 {
+  let x: Null<Bytes> = "set"; let clear = fn() { x = null; null };
+  if (x != null) { clear(); x.len() as I32 } else { 0 }
+};
+run()

@@ -2,7 +2,7 @@
 enum Expr { Num(value: I32); Neg(inner: Expr); Add(left: Expr, right: Expr); }
 enum Token { Ident(name: Bytes); Int(value: I32); Eof; }
 
-
+// Nested constructors: a payload is read only after its tag test passes.
 let shape = fn(e: Expr): I32 {
   match (e) {
     Neg(Neg(Num(n))) => n,
@@ -14,7 +14,7 @@ let shape = fn(e: Expr): I32 {
   }
 };
 
-
+// Guards run after their arm's tests, and a failing guard tries the next arm.
 let calls = 0;
 let count = fn(result: Bool): Bool { calls += 1; result };
 let classify = fn(t: Token): I32 {
@@ -28,7 +28,7 @@ let classify = fn(t: Token): I32 {
   }
 };
 
-
+// The last arm's guard still runs when its alternative's tests pass.
 let last = fn(t: Token): I32 {
   match (t) { Eof => 0, Int(_) when (count(true)), _ => 1 }
 };

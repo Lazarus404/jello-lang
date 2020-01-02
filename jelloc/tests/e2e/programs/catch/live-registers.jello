@@ -3,19 +3,19 @@
 // them there, nor give the thrown value their register.
 let fail = fn(code: I32): I32 { throw code; 0 };
 
-
+// ONLY is read by the handler alone, while the body makes more Bytes.
 let onlyInCatch = fn(): I32 {
   let only = "catch";
   try { let t = "ab" + "cd"; fail(t.len()) } catch (e) { (e as I32) * 10 + only.len() }
 };
 
-
+// KEPT is boxed, like the thrown value.
 let keptBoxed = fn(seed: I32): I32 {
   let kept: ?I32 = seed;
   try { fail(seed * 2) } catch (e) { (e as I32) * 100 + kept }
 };
 
-
+// STAGE must keep 0 until the body's assignment, which the throw skips.
 let clobbered = fn(x: I32): I32 {
   let stage = 0; let other = x + 1;
   try { fail(other); stage = 2; } catch { }

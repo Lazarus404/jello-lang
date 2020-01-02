@@ -222,14 +222,14 @@ let testLowersStatementIfAndDropsCodeAfterTheEndOfEveryPath = fn(t: Test) {
     + "      i32 3: i32\n"
     + "  call @1: i32\n"
     + "    bool true: bool\n");
-
+  // The inner if has no else, so its join (and the tail) still runs.
   T.isTrue(t, contains(printIr(lowerProgram(hir)), "i32 3"));
   let dead = lowered(
     "let f = fn(flag: Bool): I32 { if (flag) { return 1; } else { return 2; } 3 }; f(true)"
   );
   T.isTrue(t, !contains(printIr(dead), "i32 3"));
   T.isTrue(t, !contains(printIr(dead), "block 2"));
-
+  // A result type is inferred from a return inside an if.
   T.isTrue(t, verifyProgram(lowered(
     "let f = fn(flag: Bool) { if (flag) { return 1; } 2 }; f(true)"
   )));
@@ -276,7 +276,7 @@ let testLowersExplicitThrowAsATerminatingControlFlowEdge = fn(t: Test) {
     "let fail = fn(): I32 { throw 1i32; return 1i32; }; fail()"
   );
   });
-
+  // A tail after a throw never runs; stage-0 code needs one as a placeholder.
   T.isTrue(t, verifyProgram(lowered(
     "let fail = fn(): I32 { throw 1i32; 1i32 }; fail()"
   )));

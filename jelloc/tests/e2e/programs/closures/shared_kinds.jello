@@ -1,0 +1,18 @@
+// expect: 2
+// Cells of several kinds; a closure re-captures a cell it was given, and a shared local that a
+// closure converts to Dynamic is its value.
+let run = fn(): I32 {
+  let small: U32 = 1; let maybe: Null<I32> = null; let word = "a";
+  let set = fn() {
+    let deeper = fn() { small = 4294967295; null };
+    deeper(); maybe = 2; word = word + "b";
+    null
+  };
+  let show = fn(): Dynamic { small as Dynamic };
+  set();
+  let seen = show();
+  if (!(seen is I64) || ((seen as I64) != 4294967295)) { throw "not its value"; }
+  if (small != 4294967295) { throw "lost a write"; }
+  (maybe != null ? maybe : 0) * (word.len() as I32) - 2
+};
+run()

@@ -13,6 +13,7 @@ import { NONE, badCommandLines, concat, finish, fresh, jelloc, modes, startVm, w
 const _DIR = "tests/e2e/cli/runner";
 const _R = "tests/e2e/cli/runner/Runner.test.jello";
 
+// What the binary prints with no flags, and with -v the lines marked +.
 const _RUNS = [
   "=== RUN   Runner/testLogs",
   "+--- PASS: Runner/testLogs ($R:6)",
@@ -46,8 +47,10 @@ const _RUNS = [
   "FAIL"
 ];
 
+// LINES, joined, with $R the fixture's path.
 let _output = fn(lines: Array<Bytes>): Bytes { join(split(join(lines, "\n"), "$R"), _R) };
 
+// _RUNS as the binary prints them, with -v when VERBOSE.
 let _runs = fn(verbose: Bool): Bytes {
   let lines = Array.new<Bytes>(0);
   let i = 0;
@@ -60,10 +63,16 @@ let _runs = fn(verbose: Bool): Bytes {
   _output(lines)
 };
 
+// The usage, after REASON, which lists the options the tests declared.
 let _usage = fn(reason: Bytes): Array<Bytes> {
   [reason + "\nusage: <tests.jlo> [--run prefix] [--list] [-v]", "after --:\n  --loud\n      log more\n  --name value\n      a name to log"]
 };
 
+// One binary, run every way at once: in every mode only what fails is
+// shown, and -v shows the rest; --run and --list select. What follows --
+// are the options the tests declared (T.flag, T.option), and T.selected
+// follows --run; an undeclared option, or one without its value, is a bad
+// command line.
 let testRunner = fn(t: Test) {
   let module = fresh("Runner.test.jlo");
   let (status, _, err) = jelloc(withStd(["--test", "--path", _DIR, _R, "--out", module]), NONE);

@@ -1,5 +1,8 @@
 package compiler;
 
+// The compiler's stages run in order on one source, or on a program's
+// files, for the pipeline tests.
+
 import type { Hir } from frontend.Hir;
 import type { Program } from ir.Model;
 import { lexFile } from frontend.Lexer;
@@ -12,21 +15,25 @@ import { emitAllocated, noSource } from backend.jello.Emit;
 import { loadModules, loadTests } from frontend.Modules;
 import { printIr } from ir.Print;
 
+// SOURCE lexed, parsed and checked.
 export let checked = fn(source: Bytes): Hir { typeCheckProgram(parseProgram(lexFile(source, "<input>"))) };
-
+// SOURCE checked and lowered to IR.
 export let lowered = fn(source: Bytes): Program { lowerProgram(checked(source)) };
-
+// SOURCE lowered and legalized for the .jlo backend.
 export let legalized = fn(source: Bytes): Program { legalizeJlo(lowered(source)) };
-
+// A legalized PROGRAM allocated and encoded as .jlo bytes.
 export let encoded = fn(program: Program): Bytes { emitAllocated(allocateProgram(program), noSource) };
-
+// HIR lowered, legalized and encoded as .jlo bytes.
 export let emitted = fn(hir: Hir): Bytes { encoded(legalizeJlo(lowerProgram(hir))) };
 
+// The standard library, from the compiler's directory, where the tiers run.
 let _STD = "../stdlib";
 
+// The program at PATH, with its imports under ROOTS after its directory,
+// checked.
 export let checkedFile = fn(path: Bytes, roots: Array<Bytes>): Hir { typeCheckModules(loadModules(path, _STD, roots)) };
-
+// The program at PATH allocated; and as --jlo prints it.
 export let allocatedFile = fn(path: Bytes, roots: Array<Bytes>): Program { allocateProgram(legalizeJlo(lowerProgram(checkedFile(path, roots)))) };
 export let jloOf = fn(path: Bytes, roots: Array<Bytes>): Bytes { printIr(allocatedFile(path, roots)) };
-
+// The test binary of FILES, each under one of ROOTS, checked.
 export let checkedTests = fn(files: Array<Bytes>, roots: Array<Bytes>): Hir { typeCheckModules(loadTests(files, _STD, roots)) };

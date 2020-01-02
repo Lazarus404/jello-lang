@@ -1,0 +1,29 @@
+// expect: 789
+// A call may spread tuples, whose fields are arguments in turn, and arrays, which go with the
+// arguments after them to the variadic parameter; arguments are evaluated in order.
+let log = Array.new<I32>(0);
+let note = fn(n: I32): I32 { log.push(n); n };
+let pair = fn(): Tuple<I32, I32> { note(2); (20, 21) };
+let add3 = fn(a: I32, b: I32, c: I32): I32 { a * 100 + b * 10 + c };
+let sum = fn(first: I32, ...rest: I32): I32 { let t = first; let i = 0; while (i < rest.len()) { t += rest[i]; i++; } t };
+let grab = fn(...xs: I32): Array<I32> { xs[0] = 99; xs };
+let opt = fn(a: I32, c: I32 = 5, ?b: I32, ...more: I32): I32 { a + (b == null ? 0 : b) + c + more.len() };
+let count<T> = fn(label: Bytes, ...items: T): I32 { label.len() + items.len() };
+System.assert(add3(note(1), ...pair()) == 321);
+System.assert((log[0] == 1) && (log[1] == 2));
+let t = (1, 2, 3);
+System.assert(add3(...t) == 123);
+let xs = [4, 5];
+System.assert(sum(1, ...xs) == 10);
+System.assert(sum(...t, ...xs, 6) == 21);
+let got = grab(...xs);
+System.assert((xs[0] == 4) && (got[0] == 99));
+System.assert(opt(...(1, 2)) == 3);
+System.assert(opt(1, ...xs) == 8);
+System.assert(opt(...(1, 2, 3, 4)) == 7);
+System.assert(count("ab", ...[1, 2, 3]) == 5);
+let pick = fn(): (I32, I32, I32) -> I32 { note(3); add3 };
+System.assert(pick()(note(4), ...(0, 0)) == 400);
+System.assert((log[2] == 3) && (log[3] == 4));
+let f: (I32, I32, I32) -> I32 = add3;
+f(...(7, 8, 9))

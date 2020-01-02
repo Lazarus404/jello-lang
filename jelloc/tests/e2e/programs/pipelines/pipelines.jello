@@ -1,0 +1,33 @@
+// expect: 42
+// `value |> body` gives the body the value as `%`; a body that does not use it is a call, which
+// takes it as its first argument. The value is evaluated once, before the body.
+let double = fn(x: I32) { x + x };
+let inc = fn(x: I32) { x + 1 };
+System.assert((5 |> double()) == 10);
+System.assert((5 |> double(%)) == 10);
+System.assert((5 |> double() |> inc()) == 11);
+let xs: Array<I32> = [1, 2, 3];
+System.assert((xs |> %.len()) == 3);
+System.assert((10 |> % % 3) == 1);
+let add = fn(a: I32, b: I32) { a + b };
+System.assert((2 |> add(3)) == 5);
+System.assert((2 |> add(%, 3)) == 5);
+let log = Array.new<I32>(0);
+let note = fn(n: I32): I32 { log.push(n); n };
+System.assert((note(4) |> add(%, %)) == 8);
+System.assert(log.len() == 1);
+System.assert((1 |> (% + 1 |> % * 10)) == 20);
+System.assert((3 |> (% |> add(%, 1))) == 4);
+let k = 7 |> fn(y: I32): I32 { y + % };
+System.assert(k(1) == 8);
+let sum = fn(first: I32, ...rest: I32): I32 { first + rest.len() };
+System.assert((1 |> sum(2, 3)) == 3);
+System.assert((1 |> sum(...[2, 3])) == 3);
+let id<T> = fn(a: T): T { a };
+System.assert(("s" |> id()) == "s");
+let wide = fn(a: I64, ?b: I32): I64 { a };
+System.assert((5 |> wide()) == (5 as I64));
+let f = fn(n: I32): I32 { return n |> add(%, 1); };
+let opt = fn(a: ?I32): I32 { a == null ? 0 : a };
+System.assert((6 |> opt()) == 6);
+f(41)

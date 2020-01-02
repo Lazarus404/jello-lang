@@ -2,11 +2,11 @@
 // Statement trys: leaving early closes the region, and a handler sees a
 // mutable local's latest value.
 let fail = fn(code: I32): I32 { throw code; 0 };
-
+// The throw unwinds through a caller between it and the handler.
 let middle = fn(code: I32): I32 { fail(code) + 1 };
 
-
-
+// A break or continue out of the inner try must close it: the loop runs past
+// 16 iterations, and the later throw must reach the outer handler.
 let breaks = fn(): I32 {
   let log = 0; let i = 0;
   try {

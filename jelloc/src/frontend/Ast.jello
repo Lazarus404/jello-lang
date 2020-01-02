@@ -214,7 +214,7 @@ export enum Expr {
   Cast(value: Expr, ty: Type);
   Is(value: Expr, ty: Type);
   Conditional(condition: Expr, thenBranch: Expr, elseBranch: Expr);
-  Pipe(value: Expr, body: Expr);
+  Pipe(value: Expr, body: Expr, topic: Bool);
   Topic;
   Assign(op: AssignOp, target: Expr, value: Expr);
   Await(value: Expr);
@@ -312,7 +312,7 @@ export let exprTag: (Expr) -> I32 = fn(expr) {
     TypeApply(_, _) => 20, New(_, _) => 21, Function(_, _, _, _) => 22, BlockExpr(_) => 23, If(_, _, _) => 24,
     Match(_, _) => 25, With(_, _, _) => 26, Try(_, _, _) => 27, LetExpr(_, _, _, _) => 28, Unary(_, _) => 29,
     Binary(_, _, _) => 30, IncDec(_, _, _) => 31, Cast(_, _) => 32, Is(_, _) => 33, Conditional(_, _, _) => 34,
-    Pipe(_, _) => 35, Topic => 36, Assign(_, _, _) => 37, Await(_) => 38, Quote(_, _) => 39, Unquote(_) => 40,
+    Pipe(_, _, _) => 35, Topic => 36, Assign(_, _, _) => 37, Await(_) => 38, Quote(_, _) => 39, Unquote(_) => 40,
   }
 };
 

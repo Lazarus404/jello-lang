@@ -5,10 +5,10 @@ import { getEnv } from std.io.Env;
 import { start, wait, stdout, stderr, run, waitAny, cpuCount } from std.io.Process;
 import { endsWith, split, startsWith } from std.core.Bytes;
 
-
-
-
-
+// Child processes: status, both outputs, the environment
+// applied in order, a signal, a program that cannot run, two children at
+// once, a NUL refused, whichever of two ends first, past a stray; then directories and files, and std.core.Bytes'
+// split and endsWith.
 let shown = fn(result: Tuple<I32, Bytes, Bytes>): Bytes {
   let (status, out, err) = result;
   "[" + Std.string(status) + "|" + out + "|" + err + "]"
@@ -24,8 +24,8 @@ let first = start(sh("sleep 0.2; printf first"), []);
 let second = start(["printf", "second"], []);
 text += stdout(second) + stdout(first) + Std.string(wait(first)) + stderr(first);
 text += try { start(["printf", "a\0b"], []); "" } catch (e) { "[NUL]" };
-
-
+// waitAny finds whichever child ends first, here the second, past a stray
+// child outside the set, which ends before both and is still waited for.
 let slow = start(sh("sleep 1"), []); let stray = start(["true"], []); let fast = start(sh("sleep 0.2"), []);
 text += Std.string((waitAny([slow, fast]), wait(stray), waitAny([missing]), waitAny([])));
 

@@ -20,7 +20,7 @@ import type { Syntax } from frontend.Source;
 import { Syntax } from frontend.Source;
 import {
   annotatedGlobal, beginCheck, checkAnnotation, bindingType, checkDirect, checkEffect, checkLiteralRanges, checkOperand, currentSpan, declareFunctions, declareStatementGlobal, enterNode, enterSpan, enterSyntax,
-  finishProgram, checkInitializer, checkTemplate, checkThrow, checkWhile, instantiateTemplates, isDirectFunction, isLoaded, isTemplate, poisonDeclared, recoverTopLevel, syntaxChild, takeRegexpInits,
+  finishProgram, checkGlobalInitializer, checkTemplate, checkThrow, checkDoWhile, checkWhile, instantiateTemplates, isDirectFunction, isLoaded, isTemplate, poisonDeclared, recoverTopLevel, syntaxChild, takeRegexpInits,
   unsupportedStatement, useAggregateChecks, useAssertionChecks, useEnumChecks, useStructuralEquality, useUnsupported, useValueChecks,
 } from frontend.TypeCheck;
 import { verifyHir } from frontend.VerifyHir;
@@ -174,7 +174,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
             let name = bindPatternName(pattern);
             if (typeParams.len() != 0) { throw "globals do not support type parameters"; }
             let global = annotation == null ? -1 : annotatedGlobal(i);
-            let (checked, suspect) = checkInitializer(value, global < 0 ? -1 : globalTypeOf(global), name);
+            let (checked, suspect) = checkGlobalInitializer(value, global < 0 ? -1 : globalTypeOf(global), name);
             let ty = typeOf(checked);
 
             if (global < 0) {
@@ -196,6 +196,10 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
           },
           While(condition, body) => {
             _initializers.push(checkWhile(condition, body));
+            null
+          },
+          DoWhile(body, condition) => {
+            _initializers.push(checkDoWhile(body, condition));
             null
           },
           Throw(value) => {

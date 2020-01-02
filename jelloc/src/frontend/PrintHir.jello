@@ -106,6 +106,7 @@ _expr = fn(id, indent) {
     ArrayGet => _operation("array.get", id, indent),
     ArraySet => _operation("array.set", id, indent),
     ArrayLiteral => _operation("array.literal", id, indent),
+    ArrayConcat => _operation("array.concat", id, indent),
     ArrayPush => _operation("array.push", id, indent),
     ArrayPop => _operation("array.pop", id, indent),
     ArrayResize => _operation("array.resize", id, indent),
@@ -151,7 +152,7 @@ _statement = fn(id, indent) {
     Throw => indent + "throw" + _at(id) + "\n" + _expr(childOf(id, 0), indent + "  "),
     Break => indent + "break" + _at(id) + "\n",
     Continue => indent + "continue" + _at(id) + "\n",
-    While => indent + "while" + _at(id) + "\n" + _section("condition", id, 0, indent) + indent + "  body\n" + _statements(childOf(id, 1), indent + "    "),
+    While => indent + (auxOf(id) == 0 ? "while" : "do-while") + _at(id) + "\n" + _section("condition", id, 0, indent) + indent + "  body\n" + _statements(childOf(id, 1), indent + "    "),
     IfStatement => {
       let output = indent + "if" + _at(id) + "\n" + _section("condition", id, 0, indent) + indent + "  then\n" + _statements(childOf(id, 1), indent + "    ");
       if (childCount(id) < 3) { return output; }

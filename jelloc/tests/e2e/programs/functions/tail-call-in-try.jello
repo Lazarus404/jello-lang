@@ -1,0 +1,7 @@
+// expect: 1
+// A call inside a try is not in return position: its throw is caught by the caller's frame.
+let f = fn(n: I32): I32 {
+  if (n == 0) { throw "bottom"; }
+  try { return f(n - 1); } catch (e) { return n; }
+};
+f(3)

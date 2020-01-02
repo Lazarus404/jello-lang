@@ -1,0 +1,9 @@
+// expect: 11
+// A local declared in a loop's body gets a cell of its own on each iteration.
+let made = Array.new<() -> I32>(0); let i = 0;
+while (i < 3) {
+  let k = i;
+  made.push(fn() { k += 10; k });
+  i++;
+}
+made[0]() + made[2]() - made[1]()

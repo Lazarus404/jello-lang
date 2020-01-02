@@ -1,0 +1,15 @@
+// expect: 3132
+// Two closures share one counter, and its creator sees their writes.
+let counter = fn(): Tuple<() -> Null, () -> I32> {
+  let n = 0;
+  let add = fn() { n += 10; null };
+  let get = fn() { n++; n };
+  (add, get)
+};
+let run = fn(): I32 {
+  let (add, get) = counter();
+  add(); add(); add();
+  let seen = get();
+  seen * 100 + get()
+};
+run()

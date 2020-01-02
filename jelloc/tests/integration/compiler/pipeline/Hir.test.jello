@@ -169,6 +169,12 @@ let testInterning = fn(t: Test) {
   T.equal(t, hirTypeName(nullType(a)), "?array<i32>");
   // `?` binds to a type atom, so a nullable function type is parenthesized.
   T.equal(t, typeName(nullType(functionType([H.TYPE_I32], H.TYPE_BOOL))), "?((I32) -> Bool)");
+  // A parameter `?T` may be omitted; a Null<T> one is spelt so.
+  let params = functionType([nullType(H.TYPE_I32), H.optionalType(H.TYPE_I32), H.restType(H.TYPE_BYTES)], H.TYPE_BOOL);
+  T.equal(t, typeName(params), "(Null<I32>, ?I32, Bytes...) -> Bool");
+  T.equal(t, hirTypeName(params), "(null<i32>, ?i32, bytes...) -> bool");
+  T.equal(t, H.slotType(H.optionalType(H.TYPE_I32)), nullType(H.TYPE_I32));
+  T.equal(t, H.slotType(H.restType(H.TYPE_BYTES)), arrayType(H.TYPE_BYTES));
   T.equal(t, typeName(e), "Color");
 };
 

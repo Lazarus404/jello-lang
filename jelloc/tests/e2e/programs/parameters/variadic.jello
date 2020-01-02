@@ -1,0 +1,21 @@
+// expect: 16
+// A variadic parameter `...xs: T` holds an Array<T> of the arguments after the others; an
+// optional parameter before it is filled first.
+let sum = fn(...xs: I32) {
+  let total = 0; let i = 0;
+  while (i < xs.len()) { total += xs[i]; i++; }
+  total
+};
+let addN: (I32, I32...) -> I32 = fn(base: I32, ...xs: I32) { base + sum(xs[0], xs[1]) };
+let shape = fn(a: I32, ?b: I32, ...rest: I32) { (b == null ? 0 : 10) + rest.len() + a };
+// Each call gets its own array.
+let grow = fn(...xs: Bytes): I32 { xs.push("!"); xs.len() };
+System.assert(sum() == 0);
+System.assert(sum(1, 2, 3) == 6);
+System.assert(shape(1) == 1);
+System.assert(shape(1, 2) == 11);
+System.assert(shape(1, 2, 3) == 12);
+System.assert(grow("a") == 2);
+System.assert(grow("a") == 2);
+let total = sum;
+total(1, 2) + addN(10, 1, 2) + grow() - 1

@@ -1,5 +1,9 @@
 package support;
 
+// Running the compiler under test and the VM as processes, for the e2e tests
+// that check their command lines. What runs is the test package's options,
+// which scripts/test.sh passes; this is the one module that reads them.
+
 import type { Test } from std.testing;
 import std.testing as T;
 import { contains } from std.core.Bytes;
@@ -9,11 +13,15 @@ import { checkCommand, checkEnv, compiler, jloTool, modes as _modes, outDir, std
 
 T.declareOption("--self", "what the compiler under test builds from its own sources, when known (at the fixed point, the compiler itself)");
 
+// The module the compiler under test builds from its own sources (--self),
+// or "" when the tests must build it.
 export let selfModule = fn(): Bytes { T.option("--self", "") };
 
+// The standard library's directory, and the VM's modes.
 export let stdDir: () -> Bytes = _stdDir;
 export let modes: () -> Array<Bytes> = _modes;
 
+// TEXT less its trailing newlines, as a shell's $(...) gives output.
 let _chomp = fn(text: Bytes): Bytes {
   let n = Bytes.len(text);
   while ((n > 0) && (Bytes.get_u8(text, n - 1) == 10)) { n--; }
@@ -39,6 +47,8 @@ export let concat = fn(a: Array<Bytes>, b: Array<Bytes>): Array<Bytes> {
 
 export const NONE = Array.new<Bytes>(0);
 
+// The path of module NAME, in a directory of its own under --out, and not
+// there yet.
 export let fresh = fn(name: Bytes): Bytes {
   let dir = outDir() + "/e2e";
   makeDirs(dir);
@@ -46,32 +56,47 @@ export let fresh = fn(name: Bytes): Bytes {
   dir + "/" + name
 };
 
+// ARGS with the standard library's directory.
 export let withStd = fn(args: Array<Bytes>): Array<Bytes> { concat(args, ["--std", _stdDir()]) };
 
+// Starts the compiler under test with ARGS, and ENV over the environment.
 export let startJelloc = fn(args: Array<Bytes>, env: Array<Bytes>): Dynamic {
   let argv = compiler();
   if (argv.len() == 0) { throw "the e2e tests need -- --compiler CMD"; }
   start(concat(argv, args), env)
 };
 
+// Waits for PROCESS: its status, standard output and standard error, less
+// trailing newlines.
 export let finish = fn(process: Dynamic): Tuple<I32, Bytes, Bytes> {
   let (status, out, err) = result(process);
   (status, _chomp(out), _chomp(err))
 };
 
+// The compiler under test given ARGS, with ENV over the environment, run to
+// the end.
 export let jelloc = fn(args: Array<Bytes>, env: Array<Bytes>): Tuple<I32, Bytes, Bytes> { finish(startJelloc(args, env)) };
 
+// Starts the VM in MODE ("" for the default) on ARGS, which start with the
+// module, as the fixtures run.
 export let startVm = fn(mode: Bytes, args: Array<Bytes>): Dynamic { start(vmCommand(mode, args), vmEnv()) };
 
+// Starts the check after each compile on DUMP, the compiler's --jlo output,
+// and MODULE, as degust.Programs runs it.
 export let startCheck = fn(dump: Bytes, module: Bytes): Dynamic { start(checkCommand(dump, module), checkEnv()) };
 
+// Starts jlo_tool, beside the VM, with ARGS.
 export let startJloTool = fn(args: Array<Bytes>): Dynamic { start(concat([jloTool()], args), vmEnv()) };
 
+// Fails T unless TEXT contains PART.
 export let has = fn(t: Test, text: Bytes, part: Bytes): Null {
   if (!contains(text, part)) { T.fail(t, "want " + Std.string(part) + " in " + Std.string(text)); }
   null
 };
 
+// Each of CASES, a started process and what its standard error contains, is
+// a bad command line: status 2 and nothing on standard output. Start them
+// all before calling this, so they run at once.
 export let badCommandLines = fn(t: Test, cases: Array<Tuple<Dynamic, Array<Bytes>>>): Null {
   let i = 0;
 

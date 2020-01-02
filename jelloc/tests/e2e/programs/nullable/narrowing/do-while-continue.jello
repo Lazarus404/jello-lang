@@ -1,0 +1,6 @@
+// trap: NULL_DEREF
+// It would return 1 if the condition trusted the test in the body to leave x present: a `continue`
+// reaches the condition with x null.
+let keep = fn(_text: Bytes): Bool { false };
+let run = fn(x: ?Bytes): I32 { let n = 0; do { n++; if (x == null) { continue; } } while (keep(x)); n };
+run(null)

@@ -1,0 +1,21 @@
+// expect: 1550
+// A do-while runs its body before it first tests the condition, and `continue` goes to the test.
+let f = fn(limit: I32): I32 {
+  let runs = 0;
+  do { runs++; } while (runs < limit);
+  runs
+};
+System.assertEq(f(0), 1);
+System.assertEq(f(3), 3);
+let tested = 0; let i = 0;
+do {
+  i++;
+  if (i == 2) { continue; }
+  if (i == 5) { break; }
+} while ({ tested++; true });
+System.assertEq(tested, 4);
+let total = 0; let j = 0;
+do { j += 1; total += j; } while (j < 10);
+let k = 0;
+do { k++; } while (k < 10);
+total * 10 + k * 100 + (f(1) - 1) * 7

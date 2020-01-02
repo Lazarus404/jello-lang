@@ -307,6 +307,19 @@ let _instruction = fn(instruction: Instruction) {
       };
       _expect(args[1], ValueType.I32)
     },
+    ArrayConcat => {
+      _arity(args, 2);
+
+      match (_type(dst)) {
+        ArrayOf(_) => {
+          _expect(args[0], _type(dst));
+          _expect(args[1], _type(dst))
+        }, _ => {
+          _fail("array.concat defines a non-array");
+          null
+        }
+      }
+    },
     ListNil => {
       _arity(args, 0);
 

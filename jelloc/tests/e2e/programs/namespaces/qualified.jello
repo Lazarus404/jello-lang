@@ -8,8 +8,8 @@ import std.core.Bytes as B;
 let before = O.count;
 O.bump();
 O.bump();
-
+// A parameter named O shadows the namespace.
 let second = fn(O: Tuple<I32, I32>): I32 { O.1 };
 let doubled: (I32) -> I32 = O.twice;
-
+// Namespace reads are live: O.count sees the bumps.
 O.twice(20) + O.scale(1) + O.count - before + B.utf8Length("日本") + second((0, 3)) + doubled(1)

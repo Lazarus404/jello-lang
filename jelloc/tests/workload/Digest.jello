@@ -7,8 +7,8 @@ import type { Syntax } from frontend.Source;
 import { sourceDiagnostic, spanStart } from frontend.Source;
 import { readText } from std.io.File;
 
-
-
+// A hash of a syntax tree: every node's span and child and pattern counts,
+// in order.
 let _digest: (Syntax, I32) -> I32 = fn(syntax, hash) {
   match (syntax) { Node(_, start, end, children, patterns) => {
     let h = (((hash * 31 + start) * 31 + end) * 31 + children.len() as I32) * 31 + patterns.len() as I32;
@@ -20,8 +20,8 @@ let _digest: (Syntax, I32) -> I32 = fn(syntax, hash) {
   } }
 };
 
-
-
+// SOURCE at PATH: `lexer <error>`, `parser <located error>`, or `accepted
+// <tokens> <digest>`.
 export let parseReport: (Bytes, Bytes) -> Bytes = fn(source, path) {
   let lexError = "";
   let lexed: ?Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>> = try { lexFile(source, path) } catch (e) { lexError = Std.string(e); null };

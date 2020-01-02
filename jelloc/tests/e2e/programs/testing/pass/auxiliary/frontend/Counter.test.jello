@@ -8,7 +8,7 @@ import type { Parity } from frontend.Counter;
 import frontend.Counter as C;
 import { triple } from support.Numbers;
 
-
+// beforeAll runs before the file's tests, and afterAll after them.
 let ready = false;
 
 let beforeAll = fn() { ready = true; null };
@@ -21,8 +21,8 @@ let testCountsInSteps = fn(t: Test) {
   null
 };
 
-
-
+// A test file sees the private names of the module it tests: values, types,
+// and members of a namespace import.
 let testSeesPrivateNames = fn(t: Test) {
   if (_scaled(triple(_step)) != 12) { T.fail(t, "_scaled(triple(_step)) is not 12"); }
   let parity: Parity = C._parity(count(C._step));
@@ -30,5 +30,5 @@ let testSeesPrivateNames = fn(t: Test) {
   null
 };
 
-
+// Not a test: only `test` and an uppercase letter name one.
 let tester = fn(t: Test) { T.fail(t, "tester ran as a test"); null };

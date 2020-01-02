@@ -1,5 +1,11 @@
 package compiler.parse;
 
+// Every source in the corpus, the program fixtures included, lexed and parsed
+// as jelloc --parse does. The golden file lists each source the lexer or the
+// parser rejects, and the size of the language corpus. An accepted source
+// whose syntax marks do not match its tree is a compiler bug, listed as
+// SYNTAX. The language corpus's trees are pinned too (digests.txt).
+
 import type { Test } from std.testing;
 import degust.Golden as G;
 import { readText } from std.io.File;
@@ -10,6 +16,8 @@ import type { Token } from frontend.Lexer;
 import { lexFile } from frontend.Lexer;
 import { parseProgram, programSyntax } from frontend.Parser;
 
+// Which phase rejects SOURCE: lexer, parser, SYNTAX and what failed, or
+// accepted.
 let _phase = fn(source: Bytes): Bytes {
   let lexed: ?Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>> = try { lexFile(readText(source), source) } catch (e) { null };
   if (lexed == null) { return "lexer"; }
@@ -39,6 +47,9 @@ let testClassifiesTheCorpus = fn(t: Test) {
   G.equal(t, "tests/integration/compiler/parse/corpus.txt", report + "language corpus: " + Std.string(language) + "\n");
 };
 
+// The language corpus through the parser: each source's token count and a
+// digest of its tree, or its located error. The workload's corpus program
+// reports the same in every mode (Workload.test).
 let testDigestsTheCorpus = fn(t: Test) {
   G.equal(t, "tests/integration/compiler/parse/digests.txt", corpusDigests(CORPUS) + "\n");
 };

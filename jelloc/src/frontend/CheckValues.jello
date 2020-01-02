@@ -5,7 +5,7 @@ import { BinaryOp } from frontend.Ast;
 import frontend.Hir as H;
 import { internalError } from frontend.Internal;
 import { Kind, Op } from frontend.Hir;
-import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, integerConversion, isNullaryVariant, newBinding, presentAt, presentKnown, syntaxChild } from frontend.TypeCheck;
+import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, hideValue, integerConversion, isNullaryVariant, presentAt, presentKnown, syntaxChild } from frontend.TypeCheck;
 
 let _bool = fn(op: Op, children: Array<I32>): I32 { H.node(op, H.TYPE_BOOL, 0, 0, children) };
 
@@ -36,10 +36,7 @@ export let equalityOperands: (AstExpr, AstExpr, I32) -> Tuple<I32, I32> = fn(lef
 };
 
 export let bindOnce: (Array<I32>, Bytes, I32) -> I32 = fn(statements, name, value) {
-  if (isNullaryVariant(value)) { return -1; }
-  let binding = newBinding();
-  statements.push(H.declareBinding(Op.Const, binding, name, value));
-  binding
+  isNullaryVariant(value) ? -1 : hideValue(statements, name, value)
 };
 
 export let orThrow: (I32, I32) -> I32 = fn(condition, message) {

@@ -1,0 +1,4 @@
+// error: 3:34: add is annotated (I32) -> (I32) -> I32, but its value is (I32, I32) -> I32
+// Typed parameters need nothing from the context, so the mismatch is reported as it is.
+let add: (I32) -> (I32) -> I32 = fn(a: I32, b: I32): I32 { a + b };
+add(1)(2)

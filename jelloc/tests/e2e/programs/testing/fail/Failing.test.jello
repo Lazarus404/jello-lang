@@ -18,14 +18,14 @@ import std.testing as T;
 
 let testPasses = fn(t: Test) { null };
 
-
+// A failure is reported, and the test goes on.
 let testFailsTwice = fn(t: Test) {
   T.fail(t, "first");
   T.fail(t, "second");
   null
 };
 
-
+// A throw that escapes a test fails it; the next test still runs.
 let testThrows = fn(t: Test) { throw "boom"; null };
 
 let testRunsAfterAThrow = fn(t: Test) { null };

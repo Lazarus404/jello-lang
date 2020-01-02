@@ -2,14 +2,15 @@ package ir;
 
 import type { Hir } from frontend.Hir;
 import {
-  KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_U32, TYPE_U64, TYPE_U8, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits, isFloatKind, isFloatType, isReference, isTemplateEnum, kindOf, lastChild, leastValue, mostValue, opOf, rootNode, typeArg,
-  typeArgCount, typeCount, globalCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, typeOf, useHir, valueOf, variantCount,
+  KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_U32, TYPE_U64, TYPE_U8, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits, isFloatKind, isFloatType, isReference, isTemplateEnum, kindOf, lastChild, leastValue, mostValue, opOf, rootNode, slotType, typeArg,
+  typeArgCount, typeCount, globalCount, nodeCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
 import { BasicBlock, EnumSchema, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType, handlerTarget, instructionAt } from ir.Model;
 import { blockMayThrow } from ir.Cfg;
 import { verifyProgram } from ir.Verify;
 import { internalError } from frontend.Internal;
+import { indexOf } from std.core.Arrays;
 
 let _registers = Array.new<ValueType>(0);
 let _instructions = Array.new<Instruction>(0);
@@ -25,11 +26,15 @@ let _lastRead = Array.new<I32>(0);
 let _walked = 0;
 let _assignedRegisters = Array.new<Bool>(0);
 let _boxes = Array.new<I32>(0);
+let _cells = Array.new<Bool>(0);
 let _targeted = Array.new<Bool>(0);
 let _reachable = true;
 let _breakTarget = -1;
 let _continueTarget = -1;
 let _handler: ?ThrowHandler = null;
+let _self = -1;
+let _params = Array.new<I32>(0);
+let _start = -1;
 let _pool = Array.new<Bytes>(0);
 let _poolIndexes = Array.new<I32>(0);
 let _wides = Array.new<I64>(0);
@@ -64,6 +69,7 @@ _valueType = fn(ty) {
     Null => ((innerOf(ty) >= 0) && isReference(innerOf(ty))) ? _valueType(innerOf(ty)) : ValueType.Dynamic,
     Tuple => ValueType.TupleOf(_valueTypes(ty)),
     Function => ValueType.Function(_valueTypes(ty), _valueType(innerOf(ty))),
+    Optional, Rest => _valueType(slotType(ty)),
     Enum => ValueType.Nominal(_enumIndexes[ty]),
     Dynamic => ValueType.Dynamic,
     ByteBuffer => ValueType.Bytes,
@@ -81,11 +87,12 @@ _valueType = fn(ty) {
 
 let _isDynamic = fn(id: I32): Bool { match (_valueType(typeOf(id))) { Dynamic => true, _ => false } };
 
-let _fresh = fn(ty: I32): I32 {
+let _freshValue = fn(ty: ValueType): I32 {
   let register = _registers.len() as I32;
-  _registers.push(_valueType(ty));
+  _registers.push(ty);
   register
 };
+let _fresh = fn(ty: I32): I32 { _freshValue(_valueType(ty)) };
 let _node = -1;
 let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) { if (_reachable) { _instructions.push(instructionAt(op, dst, args, imm, _node)); } null };
 let _move = fn(dst: I32, src: I32) { _emit(Op.Move, dst, [src], 0) };
@@ -141,6 +148,16 @@ let _markAssigned = fn(register: I32) {
   null
 };
 
+let _isCell = fn(binding: I32): Bool { (binding < _cells.len()) && _cells[binding] };
+let _cellOf = fn(id: I32): I32 { match (opOf(id)) { Local when (_isCell(valueOf(id))) => valueOf(id), _ => -1 } };
+let _freshCell = fn(ty: I32): I32 { _freshValue(ValueType.ArrayOf(_valueType(ty))) };
+
+let _setBox = fn(binding: I32, box: I32) {
+  while (_boxes.len() <= binding) { _boxes.push(-1); }
+  _boxes[binding] = box;
+  null
+};
+
 let _copy = fn(ty: I32, register: I32): I32 {
   let dst = _fresh(ty);
   _move(dst, register);
@@ -155,6 +172,15 @@ let _bind = fn(binding: I32) {
 
   match (opOf(binding)) {
     InitGlobal => _emit(Op.GlobalSet, -1, [value], valueOf(binding)),
+    Let when (_isCell(valueOf(binding))) => {
+      let cell = _freshCell(typeOf(binding));
+      _emit(Op.ArrayNew, cell, [_i32(1)], 0);
+      _emit(Op.ArraySet, -1, [cell, _i32(0), value], 0);
+      let box = _fresh(TYPE_DYNAMIC);
+      _emit(Op.Box, box, [cell], 0);
+      _setBox(valueOf(binding), box);
+      _bindRegister(binding, cell)
+    },
     Let => {
       let register = _copy(typeOf(binding), value);
       if ((_usesOf(valueOf(binding)) & _ASSIGNED) != 0) { _markAssigned(register); }
@@ -179,13 +205,18 @@ let _values = fn(id: I32, start: I32): Array<I32> {
 };
 
 let _boxed = fn(id: I32): I32 {
-  let box = match (opOf(id)) { Local when (valueOf(id) < _boxes.len()) => _boxes[valueOf(id)], _ => -1 };
+  let box = match (opOf(id)) { Local when ((valueOf(id) < _boxes.len()) && (_cellOf(id) < 0)) => _boxes[valueOf(id)], _ => -1 };
   if (box >= 0) { return box; }
   let value = _expr(id);
   if (_isDynamic(id)) { return value; }
   let dst = _fresh(TYPE_DYNAMIC);
   _emit(Op.Box, dst, [value], 0);
   dst
+};
+
+let _capturedBox = fn(id: I32): I32 {
+  let binding = _cellOf(id);
+  binding >= 0 ? _boxes[binding] : _boxed(id)
 };
 
 let _if = fn(id: I32): I32 {
@@ -239,7 +270,7 @@ let _operation = fn(id: I32): Op {
     Bool => Op.ConstBool, I32 => Op.ConstI32, I64 => Op.ConstI64, Float => Op.ConstFloat, Bytes => Op.ConstBytes, Null => Op.ConstNull,
     Add => Op.Add, Sub => Op.Sub, Mul => Op.Mul, Shl => Op.Shl, Shr => Op.Shr, BitAnd => Op.BitAnd, BitOr => Op.BitOr, BitXor => Op.BitXor,
     Neg => Op.Neg, Not => Op.Not, Eq => Op.Eq, Lt, Gt => _wideUnsigned(typeOf(childOf(id, 0))) ? Op.LtU : Op.Lt, IsNull, IsPresent => Op.IsNull,
-    ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet,
+    ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet, ArrayConcat => Op.ArrayConcat,
     ListNil => Op.ListNil, ListCons => Op.ListCons, ListHead => Op.ListHead, ListTail => Op.ListTail, ListIsNil => Op.ListIsNil,
     BytesNew => Op.BytesNew, BytesLen => Op.BytesLen, BytesGet => Op.BytesGet, BytesSlice => Op.BytesSlice, BytesConcat => Op.BytesConcat, BytesEq => Op.BytesEq,
     Tuple => Op.TupleNew, TupleField => Op.TupleGet, Call => Op.Call, CallIndirect => Op.CallIndirect, CallNative => Op.CallNative,
@@ -614,9 +645,19 @@ _expr = fn(id) {
 
 _exprAt = fn(id) {
   match (opOf(id)) {
+    Local when (_isCell(valueOf(id))) => {
+      let dst = _fresh(typeOf(id));
+      _emit(Op.ArrayGet, dst, [_bindings[valueOf(id)], _i32(0)], 0);
+      dst
+    },
     Local => {
       let register = _bindings[valueOf(id)];
       (_usesOf(valueOf(id)) & _OVERTAKEN) == 0 ? register : _copy(typeOf(id), register)
+    },
+    Assign when (_isCell(valueOf(id))) => {
+      let value = _expr(childOf(id, 0));
+      _emit(Op.ArraySet, -1, [_bindings[valueOf(id)], _i32(0), value], 0);
+      value
     },
     Assign => {
       let value = _expr(childOf(id, 0));
@@ -674,7 +715,7 @@ _exprAt = fn(id) {
       let i = 0;
 
       while (i < childCount(id)) {
-        captures.push(_boxed(childOf(id, i)));
+        captures.push(_capturedBox(childOf(id, i)));
         i++;
       }
       let dst = _fresh(typeOf(id));
@@ -704,14 +745,15 @@ _exprAt = fn(id) {
       dst
     },
     Unwrap => {
-      let value = _expr(childOf(id, 0));
+      let operand = childOf(id, 0);
+      let value = _expr(operand);
 
       if (!isReference(typeOf(id))) {
         let dst = _fresh(typeOf(id));
         _emit(Op.Unbox, dst, [value], 0);
         return dst;
       }
-      if (valueOf(id) == 1) { _emit(Op.NullCheck, -1, [value], 0); }
+      if ((valueOf(id) == 1) || (_cellOf(operand) >= 0)) { _emit(Op.NullCheck, -1, [value], 0); }
       value
     },
     Block => _lowerBlock(id),
@@ -785,8 +827,74 @@ let _while = fn(id: I32) {
   null
 };
 
+let _doWhile = fn(id: I32) {
+  let bodyBlock = _nextBlock;
+  let conditionBlock = bodyBlock + 1;
+  let exitBlock = bodyBlock + 2;
+  _nextBlock += 3;
+  _end(Terminator.Jump(bodyBlock), bodyBlock);
+  let outerBreak = _breakTarget;
+  let outerContinue = _continueTarget;
+  _breakTarget = exitBlock;
+  _continueTarget = conditionBlock;
+  _lowerBlock(childOf(id, 1));
+  _breakTarget = outerBreak;
+  _continueTarget = outerContinue;
+  _end(Terminator.Jump(conditionBlock), conditionBlock);
+  _end(Terminator.Branch(_expr(childOf(id, 0)), bodyBlock, exitBlock), exitBlock);
+  null
+};
+
 let _statement: (I32) -> Bool = fn(_id) { false };
 let _statementAt: (I32) -> Bool = fn(_id) { false };
+
+let _restart = fn(id: I32) {
+  let args = _values(id, 0);
+  let i = 0;
+
+  while (i < args.len()) {
+    let held = indexOf(_params, args[i]);
+    if ((held >= 0) && (held < i) && (args[held] != _params[held])) { args[i] = _copy(typeOf(childOf(id, i)), args[i]); }
+    i++;
+  }
+  i = 0;
+
+  while (i < args.len()) {
+    if (args[i] != _params[i]) { _move(_params[i], args[i]); }
+    i++;
+  }
+  _exit(Terminator.Jump(_start))
+};
+
+let _returned: (I32) -> Null = fn(_id) { null };
+_returned = fn(id) {
+  if (_start < 0) { return _exit(Terminator.ReturnValue(_expr(id))); }
+
+  match (opOf(id)) {
+    Call when ((valueOf(id) == _self) && (_handler == null)) => _restart(id),
+    If => {
+      let condition = _expr(childOf(id, 0));
+      let thenBlock = _nextBlock;
+      _nextBlock += 2;
+      _end(Terminator.Branch(condition, thenBlock, thenBlock + 1), thenBlock);
+      _returned(childOf(id, 1));
+      _open(thenBlock + 1);
+      _returned(childOf(id, 2))
+    },
+    Block => {
+      let statements = childCount(id) - auxOf(id);
+      let i = 0;
+
+      while (i < statements) {
+        _statement(childOf(id, i));
+        i++;
+      }
+      if (_reachable && (auxOf(id) == 1)) { _returned(lastChild(id)); }
+      null
+    },
+    _ => _exit(Terminator.ReturnValue(_expr(id))),
+  }
+};
 
 let _ifStatement = fn(id: I32) {
   let condition = _expr(childOf(id, 0));
@@ -835,11 +943,11 @@ _statementAt = fn(id) {
       _expr(childOf(id, 0));
       null
     },
-    Return => _exit(Terminator.ReturnValue(_expr(childOf(id, 0)))),
+    Return => _returned(childOf(id, 0)),
     Throw => _exit(Terminator.Throw(_expr(childOf(id, 0)), id)),
     Break => _exit(Terminator.Jump(_breakTarget)),
     Continue => _exit(Terminator.Jump(_continueTarget)),
-    While => _while(id),
+    While => auxOf(id) == 0 ? _while(id) : _doWhile(id),
     IfStatement => _ifStatement(id),
     TryStatement => {
       _try(id, false);
@@ -897,10 +1005,15 @@ _markUses = fn(id, expression) {
       _lastRead[valueOf(id)] = at;
       true
     },
-    FunctionRef, ToDynamic => {
+    FunctionRef => {
       reboxes = true;
       false
     },
+    ToDynamic => {
+      reboxes = _cellOf(childOf(id, 0)) < 0;
+      false
+    },
+    Call => { if (valueOf(id) == _self) { _start = 1; } false },
     _ => false,
   };
   let inner = ((expression < 0) && !sequential && (childCount(id) > 1)) ? at : expression;
@@ -914,7 +1027,7 @@ _markUses = fn(id, expression) {
   null
 };
 
-let _begin = fn(body: I32) {
+let _begin = fn(body: I32, self: I32) {
   _registers = Array.new<ValueType>(0);
   _instructions = Array.new<Instruction>(0);
   _blocks = Array.new<BasicBlock>(0);
@@ -932,11 +1045,13 @@ let _begin = fn(body: I32) {
   _continueTarget = -1;
   _handler = null;
   _node = -1;
+  _self = self;
+  _start = -1;
   _markUses(body, -1)
 };
 
 let _function = fn(id: I32, functionId: I32): IrFunction {
-  _begin(lastChild(id));
+  _begin(lastChild(id), functionId);
   let params = Array.new<I32>(0);
   let arguments = typeArgCount(typeOf(id));
   let i = 0;
@@ -946,22 +1061,25 @@ let _function = fn(id: I32, functionId: I32): IrFunction {
     let capture = match (opOf(param)) { Capture => true, _ => false };
     let register = _fresh(capture ? TYPE_DYNAMIC : typeOf(param));
     params.push(register);
-
-    if (capture) {
-      while (_boxes.len() <= valueOf(param)) { _boxes.push(-1); }
-      _boxes[valueOf(param)] = register;
-    }
+    if (capture) { _setBox(valueOf(param), register); }
     let bound = register;
+    let cell = _isCell(valueOf(param));
+    let used = (_usesOf(valueOf(param)) & (cell ? _UNBOXED | _ASSIGNED : _UNBOXED)) != 0;
 
-    if (capture && !_isDynamic(param) && ((_usesOf(valueOf(param)) & _UNBOXED) != 0)) {
-      bound = _fresh(typeOf(param));
+    if (capture && used && (cell || !_isDynamic(param))) {
+      bound = cell ? _freshCell(typeOf(param)) : _fresh(typeOf(param));
       _emit(Op.Unbox, bound, [register], 0);
     }
     _bindRegister(param, bound);
     i++;
   }
-  let result = _lowerBlock(lastChild(id));
-  _end(Terminator.ReturnValue(result), -1);
+
+  if (_start >= 0) {
+    _params = params;
+    _nextBlock++;
+    _end(Terminator.Jump(_start), _start);
+  }
+  _returned(lastChild(id));
   let captures = (params.len() as I32) - arguments;
   IrFunction.Function(functionId, params, captures, _registers, _valueType(innerOf(typeOf(id))), _blocks, 0)
 };
@@ -969,6 +1087,76 @@ let _function = fn(id: I32, functionId: I32): IrFunction {
 export let functionNode: (I32) -> I32 = fn(functionId) {
   let root = rootNode();
   functionId == 0 ? lastChild(root) : childOf(root, functionId - 1)
+};
+
+let _findCells = fn() {
+  let groups = Array.new<I32>(0);
+  let assigned = Array.new<Bool>(0);
+  let captured = Array.new<Bool>(0);
+
+  let grow = fn(binding: I32) {
+    while (groups.len() <= binding) {
+      groups.push(groups.len() as I32);
+      assigned.push(false);
+      captured.push(false);
+    }
+    null
+  };
+
+  let find = fn(binding: I32): I32 {
+    grow(binding);
+    let group = binding;
+    while (groups[group] != group) { group = groups[group]; }
+    group
+  };
+  let count = nodeCount();
+  let id = 0;
+
+  while (id < count) {
+    match (opOf(id)) {
+      Assign => {
+        assigned[find(valueOf(id))] = true;
+        null
+      },
+      FunctionRef => {
+        let function = functionNode(valueOf(id));
+        let first = typeArgCount(typeOf(function));
+        let i = 0;
+
+        while (i < childCount(id)) {
+          let source = childOf(id, i);
+
+          match (opOf(source)) {
+            Local => {
+              let group = find(valueOf(source));
+              let copy = find(valueOf(childOf(function, first + i)));
+
+              if (group != copy) {
+                groups[copy] = group;
+                assigned[group] = assigned[group] || assigned[copy];
+              }
+              captured[group] = true;
+              null
+            },
+            _ => null,
+          };
+          i++;
+        }
+        null
+      },
+      _ => null,
+    };
+    id++;
+  }
+  _cells = Array.new<Bool>(0);
+  let binding = 0;
+
+  while (binding < groups.len()) {
+    let group = find(binding);
+    _cells.push(assigned[group] && captured[group]);
+    binding++;
+  }
+  null
 };
 
 export let lowerProgram: (Hir) -> IrProgram = fn(program) {
@@ -1016,6 +1204,7 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
     enums.push(EnumSchema.Enum(variants));
     e++;
   }
+  _findCells();
   let root = rootNode();
   let functions = Array.new<IrFunction>(0);
   let i = 0;
@@ -1025,7 +1214,7 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
     i++;
   }
   let body = lastChild(root);
-  _begin(body);
+  _begin(body, -1);
   let result = _lowerBlock(body);
   _end(Terminator.ReturnValue(result), -1);
   functions.push(IrFunction.Function(0, [], 0, _registers, _valueType(typeOf(body)), _blocks, 0));

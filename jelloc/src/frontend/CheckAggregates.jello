@@ -9,7 +9,8 @@ import { boundHint, stringOf, unprintable } from frontend.CheckDerived;
 import { checkNumberCall } from frontend.CheckMath;
 import { checkSystemAssertion } from frontend.CheckTesting;
 import { touch } from frontend.Failures;
-import { binaryValues, bufferHint, checkArity, checkInstance, checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, isBound, newBinding, one, rejectAt, syntaxChild, widened } from frontend.TypeCheck;
+import { appendFrom } from std.core.Arrays;
+import { binaryValues, bufferHint, checkArity, checkInstance, checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, hasSpread, hideValue, isBound, joinArrays, newBinding, one, rejectAt, spreadArray, spreadOperand, syntaxChild, tupleFields, widened } from frontend.TypeCheck;
 
 let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   let checked = checkOperand(expr, index, H.TYPE_I32);
@@ -107,7 +108,39 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
   H.node(Op.TupleField, H.typeArg(ty, field), field, 0, [tuple])
 };
 
+let _spreadTuple = fn(items: Array<AstExpr>, expected: I32): I32 {
+  let fits = H.isKind(expected, Kind.Tuple);
+  let declared = fits ? declaredArgs(expected) : Array.new<I32>(0);
+  let statements = Array.new<I32>(0);
+  let values = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < items.len()) {
+    match (items[i]) {
+      Spread(operand) => { appendFrom(values, tupleFields(spreadOperand(operand, i, -1, true, false), i, statements), 0); },
+      _ => {
+        let at = values.len();
+        let place = at < declared.len();
+        let value = widened(checkOperand(items[i], i, place ? H.typeArg(expected, at) : -1), place ? declared[at] : -1);
+        values.push(H.local(hideValue(statements, "item", value), H.typeOf(value)));
+      },
+    };
+    i++;
+  }
+  let types = Array.new<I32>(0);
+  i = 0;
+
+  while (i < values.len()) {
+    types.push(H.typeOf(values[i]));
+    i++;
+  }
+  let ty = H.tupleType(types);
+  statements.push(H.node(Op.Tuple, ty, 0, 0, values));
+  H.node(Op.Block, ty, 0, 1, statements)
+};
+
 let _tuple = fn(items: Array<AstExpr>, expected: I32): I32 {
+  if (hasSpread(items)) { return _spreadTuple(items, expected); }
   let fits = H.isKind(expected, Kind.Tuple) && (H.typeArgCount(expected) == items.len());
   let declared = fits ? declaredArgs(expected) : Array.new<I32>(0);
   let values = Array.new<I32>(0);
@@ -128,16 +161,31 @@ let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
   let element = declared >= 0 ? declared : items.len() == 0 ? H.newVar(false) : -1;
   if (H.isOpen(declared)) { declared = -1; }
   let values = Array.new<I32>(0);
+  let parts = Array.new<I32>(0);
   let i = 0;
 
   while (i < items.len()) {
-    let value = widened(checkOperand(items[i], i, element), declared);
-    if (element < 0) { element = H.typeOf(value); }
-    if (!H.unify(H.typeOf(value), element)) { rejectAt(i, "array element must be " + H.typeName(element)); }
-    values.push(value);
+    match (items[i]) {
+      Spread(operand) => {
+        let array = spreadArray(operand, i, element);
+        if (element < 0) { element = H.innerOf(H.typeOf(array)); }
+
+        if (values.len() > 0) {
+          parts.push(H.node(Op.ArrayLiteral, H.arrayType(element), 0, 0, values));
+          values = Array.new<I32>(0);
+        }
+        parts.push(array);
+      },
+      _ => {
+        let value = widened(checkOperand(items[i], i, element), declared);
+        if (element < 0) { element = H.typeOf(value); }
+        if (!H.unify(H.typeOf(value), element)) { rejectAt(i, "array element must be " + H.typeName(element)); }
+        values.push(value);
+      },
+    };
     i++;
   }
-  H.node(Op.ArrayLiteral, H.arrayType(H.resolve(element)), 0, 0, values)
+  joinArrays(parts, values, H.arrayType(H.resolve(element)))
 };
 
 let _index = fn(base: AstExpr, index: AstExpr): I32 {
@@ -159,8 +207,7 @@ let _index = fn(base: AstExpr, index: AstExpr): I32 {
 let _twice = fn(id: I32, stable: Bool, declared: Array<I32>, name: Bytes): Tuple<I32, I32> {
   let leaf = match (H.opOf(id)) { I32 => true, Local, Global => stable, _ => false };
   if (leaf) { return (id, H.node(H.opOf(id), H.typeOf(id), H.valueOf(id), 0, [])); }
-  let binding = newBinding();
-  declared.push(H.declareBinding(Op.Const, binding, name, id));
+  let binding = hideValue(declared, name, id);
   (H.local(binding, H.typeOf(id)), H.local(binding, H.typeOf(id)))
 };
 

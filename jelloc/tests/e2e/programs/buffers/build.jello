@@ -18,13 +18,13 @@ let i = 0;
 while (i < 10) { _byte(97 + i); i++; }
 let text = Bytes.slice(_buffer, 0, _size);
 digits = digits * 10 + (text == "abcdefghij" && _buffer.len() == 12 ? 1 : 0);
-
+// The copy does not change when the buffer does.
 Bytes.set_u8(_buffer, 0, 90);
 digits = digits * 10 + (text == "abcdefghij" && _buffer[0] == 90 ? 1 : 0);
-
+// A new buffer is zero-filled.
 let fresh = Bytes.new(3);
 digits = digits * 10 + (fresh[0] == 0 && Bytes.get_u8(fresh, 2) == 0 && Bytes.len(fresh) == 3 ? 1 : 0);
-
+// Indexing writes a byte, as an array element is written.
 fresh[0] = 65; fresh[1]++; fresh[2] += 67;
 digits = digits * 10 + (Bytes.slice(fresh, 0, 3) == "A\u{1}C" ? 1 : 0);
 let tail = Bytes.slice(Bytes.slice(_buffer, 2, 5), 1, 3);

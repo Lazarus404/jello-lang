@@ -2,18 +2,18 @@
 enum Token { Ident(name: Bytes); Int(value: I32); Eof; }
 enum Box { Box(value: I32); }
 
-
+// A tuple value subject, matched through its items.
 let pair = fn(p: Tuple<Token, Bool>): I32 {
   match (p) { (Int(n), true) => n, _ => 0 }
 };
-
+// An empty arm body does nothing; it does not share the next arm's body.
 let effects = fn(t: Token): I32 {
   let r = 0;
   match (t) { Eof => {}, Int(n) => { r = n; }, Ident(_) => { r = 7; } };
   r
 };
 let unbox = fn(b: Box): I32 { match (b) { Box(v) => v } };
-
+// Exhaustive without `_`: every Bool pair is covered.
 let both = fn(x: Bool, y: Bool): I32 {
   match ((x, y)) { (true, _) => 1, (false, true) => 2, (false, false) => 3 }
 };

@@ -3,11 +3,11 @@
 // and read by match.
 import { Block, Stmt, sumBlock } from ast.Tree;
 
-
+// An enum held in module state, built once and replaced later.
 let tree = Block.Block(Stmt.Return(30), Block.Block(Stmt.Nested(Block.Block(Stmt.Return(12), Block.End)), Block.End));
 let latest = Stmt.Empty;
 
-
+// A statement match whose arms all return, so the tail never runs.
 let kind = fn(stmt: Stmt): I32 {
   match (stmt) {
     Return(_) => { return 1; },

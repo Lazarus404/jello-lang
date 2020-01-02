@@ -3,7 +3,7 @@
 let adder = fn(base: I32): (I32) -> (I32) -> I32 {
   fn(step: I32) { fn(x: I32) { base + step * x } }
 };
-
+// A capture only boxed again is passed on as it arrived.
 let boxer = fn(code: I32): () -> Dynamic { fn() { code as Dynamic } };
 
 let byTens = adder(100)(10);

@@ -19,14 +19,14 @@ let total = fn(items: List): I32 {
   0
 };
 
-
+// Allocates ROUNDS lists and drops each at once.
 let churn = fn(rounds: I32): I32 {
   let round = 0;
   while (round < rounds) { build(1000); round = round + 1; }
   round
 };
 
-
+// The kept list must survive the collections this garbage forces.
 let kept = build(1000);
 churn(200);
 total(kept)

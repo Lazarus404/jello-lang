@@ -1,0 +1,6 @@
+// error: 4:1: global g is read before it is initialized
+// f may name g, declared after it, but this call runs before g's initializer.
+let f: (I32) -> I32 = fn(n) { g(n) };
+let x = f(1);
+let g: (I32) -> I32 = fn(n) { n + 1 };
+x

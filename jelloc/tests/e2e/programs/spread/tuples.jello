@@ -1,0 +1,12 @@
+// expect: 6
+// A tuple literal may spread tuples among its items; items are evaluated in order.
+let log = Array.new<I32>(0);
+let note = fn(n: I32): I32 { log.push(n); n };
+let pair = fn(): Tuple<I32, I32> { note(2); (20, 21) };
+let t = (1, 2, 3);
+let u = (0, ...t, ...(4, "x"), 5);
+System.assert((u.0 == 0) && (u.3 == 3) && (u.5 == "x") && (u.6 == 5));
+let w: Tuple<I64, I32> = (1, ...(2,));
+let order = (note(1), ...pair(), note(3));
+System.assert((log[0] == 1) && (log[1] == 2) && (log[2] == 3) && (order.2 == 21));
+u.6 + (w.0 as I32)

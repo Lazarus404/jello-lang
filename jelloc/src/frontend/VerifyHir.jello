@@ -6,7 +6,7 @@ import { internalError } from frontend.Internal;
 import {
   KIND_ATOM, KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_I32, KIND_I64, Kind, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, TYPE_U64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
   fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, integerBits, isFloatKind, isFloatType, isKind, isNumberType, kindOf, nativeCount, nativeTypeOf, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
-  spanOf, spanStartOf, typeArg, typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
+  slotType, spanOf, spanStartOf, typeArg, typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.Hir;
 
 let _used = Array.new<Bool>(0);
@@ -78,7 +78,7 @@ let _closedTypes = fn() {
   let ty = 0;
 
   while (ty < typeCount()) {
-    let held = match (kindOf(ty)) { Var, Param, Applied => true, Array, List, Null, Function => (innerOf(ty) >= 0) && open[innerOf(ty)], _ => false };
+    let held = match (kindOf(ty)) { Var, Param, Applied => true, Array, List, Null, Function, Optional, Rest => (innerOf(ty) >= 0) && open[innerOf(ty)], _ => false };
     let i = 0;
     let args = match (kindOf(ty)) { Tuple, Function => typeArgCount(ty), _ => 0 };
 
@@ -137,7 +137,7 @@ let _closedTypes = fn() {
       seen[ty] = true;
 
       match (kindOf(ty)) {
-        Array, List, Null => reached.push(innerOf(ty)),
+        Array, List, Null, Optional, Rest => reached.push(innerOf(ty)),
         Function => {
           reached.push(innerOf(ty));
           let i = 0;
@@ -251,7 +251,7 @@ let _arguments = fn(id: I32, functionType: I32, first: I32, message: Bytes): I32
   let i = 0;
 
   while (i < typeArgCount(functionType)) {
-    if (_operand(id, first + i) != typeArg(functionType, i)) { _fail(message); }
+    if (_operand(id, first + i) != slotType(typeArg(functionType, i))) { _fail(message); }
     i++;
   }
   innerOf(functionType)
@@ -422,6 +422,10 @@ _expr = fn(id) {
       }
       ty
     },
+    ArrayConcat => {
+      if (!isKind(ty, Kind.Array)) { _fail("array type"); }
+      _typed(id, [ty, ty], ty, "array concat operand type")
+    },
     ArrayPush => {
       _arity(id, 2);
       let array = _operand(id, 0);
@@ -586,6 +590,7 @@ _statement = fn(id, programBody) {
     },
     While => {
       _arity(id, 2);
+      if ((auxOf(id) != 0) && (auxOf(id) != 1)) { _fail("loop body-first flag"); }
       if (_operand(id, 0) != TYPE_BOOL) { _fail("while condition must be bool"); }
       _loops++;
       _block(_child(id, 1), false);
@@ -668,10 +673,10 @@ let _function = fn(id: I32, functionId: I32) {
 
   while (i < params + captures.len()) {
     let param = _child(id, i);
-    let expected = match (opOf(param)) { Parameter when (i < params) => typeArg(ty, i), Capture when (i >= params) => captures[i - params], _ => -1 };
+    let expected = match (opOf(param)) { Parameter when (i < params) => slotType(typeArg(ty, i)), Capture when (i >= params) => captures[i - params], _ => -1 };
     if (typeOf(param) != expected) { _fail("parameter type mismatch"); }
     _arity(param, 0);
-    _declare(valueOf(param), typeOf(param), false);
+    _declare(valueOf(param), expected, i >= params);
     i++;
   }
   _result = innerOf(ty);

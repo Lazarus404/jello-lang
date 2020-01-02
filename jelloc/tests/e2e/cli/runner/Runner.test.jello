@@ -1,21 +1,21 @@
 import type { Test } from std.testing;
 import std.testing as T;
 
-
-
+// A log shows only when its test fails, or under -v; its later lines are
+// indented further.
 let testLogs = fn(t: Test) {
   T.log(t, "a note\nover two lines");
   null
 };
 
-
+// A skipped test passes, and nothing after the skip runs.
 let testSkips = fn(t: Test) {
   T.skip(t, "not on this platform");
   T.fail(t, "ran after skip");
   null
 };
 
-
+// fatal fails its test and stops it, even inside throws.
 let testStops = fn(t: Test) {
   T.log(t, "before");
   T.throws(t, fn() { T.fatal(t, "cannot go on"); null });
@@ -23,7 +23,7 @@ let testStops = fn(t: Test) {
   null
 };
 
-
+// Subtests from a table: each case captures its own row.
 let testDoubles = fn(t: Test) {
   let cases = [(1, 2), (2, 4), (3, 7)];
   let i = 0;
@@ -35,15 +35,15 @@ let testDoubles = fn(t: Test) {
   null
 };
 
-
+// A stop of a test inside its subtest stops the test too.
 let testStopsFromSubtest = fn(t: Test) {
   T.run(t, "inner", fn(sub: Test) { T.fatal(t, "stopped from inner"); null });
   T.fail(t, "ran after the stop");
   null
 };
 
-
-
+// Options after --, declared as the file loads, and which subtests --run
+// selects.
 T.declareFlag("--loud", "log more");
 T.declareOption("--name", "a name to log");
 let testArgs = fn(t: Test) {

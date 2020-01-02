@@ -1,0 +1,5 @@
+// error: 4:29: g is annotated (Null<I32>) -> I32, but its value is (?I32) -> I32
+// A `?T` parameter may be omitted and a Null<T> one may not, so the types differ.
+let f = fn(?x: I32) { 0 };
+let g: (Null<I32>) -> I32 = f;
+0

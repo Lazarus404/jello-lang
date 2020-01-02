@@ -16,13 +16,13 @@ let arrays = bit([1, 2, 3] == [1, 2, 3], 0) + bit([1, 2] != [1, 2, 3], 1) + bit(
 let list = fn(a: I32, b: I32): List<I32> { List.cons(a, List.cons(b, List.nil<I32>())) };
 let lists = bit(list(1, 2) == list(1, 2), 0) + bit(list(1, 2) != list(1, 3), 1) + bit(List.tail(list(1, 2)) != list(1, 2), 2);
 
-
-
+// Nullables: null equals only null, either side may be the variant, and a
+// present value compares structurally.
 let some: ?Expr = call(1); let none: ?Expr = null; let lexing: ?Mode = Mode.Lex;
 let nullables = bit(some == call(1), 0) + bit(some != none, 1) + bit(none == none, 2) + bit(lexing == Mode.Lex, 3)
   + bit(some != Expr.Missing, 4) + bit(Expr.Missing != some, 5);
 
-
+// Each side is evaluated once, left first.
 let order = 0;
 let next = fn(): Array<I32> { order = order * 10 + 1; [order] };
 let once = bit(next() != next(), 0);

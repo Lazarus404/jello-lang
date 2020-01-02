@@ -13,7 +13,7 @@ enum Shape { Dot; Circle(radius: I32); }
 let calls = 0;
 let next = fn(): I32 { calls++; calls };
 
-
+// Each assertion takes any type == compares.
 let testEqualValues = fn(t: Test) {
   T.equal(t, 1 + 1, 2);
   T.equal(t, 1i64 << 40, 1099511627776i64);
@@ -33,7 +33,7 @@ let testEqualValues = fn(t: Test) {
   null
 };
 
-
+// Each argument is evaluated once, in order. An assertion imports by name too.
 let testEvaluatesOnce = fn(t: Test) {
   T.equal(t, next(), 1);
   T.notEqual(t, next(), next());

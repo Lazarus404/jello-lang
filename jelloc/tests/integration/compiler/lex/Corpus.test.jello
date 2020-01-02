@@ -1,5 +1,9 @@
 package compiler.lex;
 
+// The language corpus lexed, against its golden tokens: what jelloc --lex
+// prints for each source, or the lexer's diagnostic. The compiler's own emit
+// fixtures are left to the end-to-end tests.
+
 import type { Test } from std.testing;
 import std.testing as T;
 import degust.Golden as G;
@@ -11,11 +15,13 @@ import { CORPUS } from compiler.Corpus;
 
 let _GOLDEN = "tests/integration/compiler/lex/tokens";
 
+// PATH's part under ROOT, less SUFFIX.
 let _relative = fn(path: Bytes, root: Bytes, suffix: Bytes): Bytes {
   let start = Bytes.len(root) + 1;
   Bytes.slice(path, start, Bytes.len(path) - start - Bytes.len(suffix))
 };
 
+// What jelloc --lex prints for SOURCE, on either stream.
 let _tokens = fn(source: Bytes): Bytes {
   try { printTokens(lexFile(readText(source), source).0) } catch (e) { Std.string(e) + "\n" }
 };

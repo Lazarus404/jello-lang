@@ -10,9 +10,9 @@ let _at = fn(source: Bytes, offset: I32): Bytes {
 
 let text = "let a = 1;\n  b(é, c)\n";
 let span = SourceSpan.Span("f.jello", 13, 14);
-
+// A tab is kept, each CJK character takes 2 columns, a combining mark 0.
 let wide = "\tx = \"\u{65e5}\u{672c}\" + e\u{301} + ;";
-
+// A byte that is not UTF-8 is one column.
 let bad = "ab" + Bytes.slice("\u{e9}", 0, 1) + "c ;";
 _at(text, 0) + " " + _at(text, 13) + " " + _at(text, 18) + " " + spanPath(span) + " " + Std.string(spanEnd(span) - spanStart(span)) + "\n"
   + sourceDiagnostic("f.jello", text, 18, "expected expression") + "\n"

@@ -1,7 +1,13 @@
 package support;
 
+// Whether bytecode looks hand-written, from a module's `jlo_tool disasm`
+// listing: no jump to the next instruction, no jump to a JMP, no move of a
+// register to itself, and at most a ceiling of moves.
+
 import { endsWith, split, startsWith } from std.core.Bytes;
 
+// WORD after PREFIX as a decimal number, with a leading - when NEGATIVE
+// may be; null unless it is one.
 let _number = fn(word: Bytes, prefix: Bytes, negative: Bool): ?I32 {
   if (!startsWith(word, prefix)) { return null; }
   let i = Bytes.len(prefix);
@@ -23,9 +29,15 @@ let _number = fn(word: Bytes, prefix: Bytes, negative: Bool): ?I32 {
   sign * value
 };
 
+// Where a problem is: the function NAME's instruction at PC, an OP.
 let _at = fn(name: Bytes, pc: I32, op: Bytes): Bytes { name + " " + Std.string(pc) + ": " + op };
 
+// What is not hand-written in LISTING, with at most CEILING moves: the
+// move count over the ceiling first, then the first problems, 20 in all;
+// or the one indented, nonblank line that is not an instruction, or that
+// it holds no function, or the first function without instructions.
 export let shapeProblems = fn(listing: Bytes, ceiling: I32): Array<Bytes> {
+  // Each function's name and instructions, as (op, a, b, imm).
   let names = Array.new<Bytes>(0);
   let code = Array.new<Array<Tuple<Bytes, I32, I32, I32>>>(0);
   let lines = split(listing, "\n");
@@ -38,9 +50,11 @@ export let shapeProblems = fn(listing: Bytes, ceiling: I32): Array<Bytes> {
       names.push(split(line, " ")[0]);
       code.push(Array.new<Tuple<Bytes, I32, I32, I32>>(0));
     } else if (startsWith(line, " ")) {
+      // "  PC: OP a=rA b=rB c=rC imm=IMM"
       let n = 0;
       while ((n < Bytes.len(line)) && (Bytes.get_u8(line, n) == 32)) { n++; }
 
+      // A blank line holds nothing to check.
       if (n < Bytes.len(line)) {
         let text = Bytes.slice(line, n, Bytes.len(line) - n);
         let words = split(text, " ");

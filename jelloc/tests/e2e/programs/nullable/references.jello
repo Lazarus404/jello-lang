@@ -47,10 +47,10 @@ let run = fn(): I32 {
   let kept: Array<Expr> = [];
   let even = true; let round = 0;
   while (round < 20) { kept.push(build(round, even)); churn(5000); even = !even; round++; }
-
+  // Even rounds weigh round + 104 (1130 in all), odd rounds 1 (10).
   let sum = 0; let i = 0;
   while (i < kept.len()) { sum += weight(kept[i]); i++; }
-
+  // The last call, from round 19, weighs 1 + 2 + 1.
   sum + size(names[0]) + size(names[1]) + (last == null ? 0 : weight(last))
 };
 

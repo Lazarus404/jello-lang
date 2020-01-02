@@ -1,0 +1,17 @@
+// expect: 7
+// An optional parameter `?x: T` holds a Null<T>, and a call that omits it passes null, through
+// a function value too, whose type writes it `?T`.
+let pick = fn(a: I32, ?b: I32) { b == null ? a : a + b };
+let fallback: (?I32) -> I32 = fn(?x) { x == null ? 0 : x };
+let both = fn(h: (?I32) -> I32): I32 { h() + h(3) };
+let local = fn(): I32 {
+  let inner = fn(a: I32, ?b: I32) { b == null ? a : a * b };
+  inner(2) + inner(2, 3)
+};
+System.assert(pick(1) == 1);
+System.assert(pick(1, 2) == 3);
+System.assert(fallback() == 0);
+System.assert(fallback(null) == 0);
+System.assert(both(fallback) == 3);
+System.assert(both(fn(?x) { x == null ? 1 : 0 }) == 1);
+local() - 1

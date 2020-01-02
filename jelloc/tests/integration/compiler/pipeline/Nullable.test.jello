@@ -13,12 +13,12 @@ let testNullableI32ReachesExecutableJLO = fn(t: Test) {
   let hir = checked("let check = fn(value: ?I32): Bool { value != null }; check(7i32)");
   T.isTrue(t, contains(printHir(hir), "present: ?i32"));
   let ir = lowerProgram(hir);
-
+  // A ?I32 is boxed, so it is null exactly when it is the null box.
   let printed = printIr(ir);
   T.isTrue(t, contains(printed, "register %0: dynamic"));
   T.isTrue(t, contains(printed, "is_null"));
   let jlo = legalizeJlo(ir);
-
+  // The VM tests for null directly.
   T.isTrue(t, contains(printIr(jlo), "is_null"));
   T.isTrue(t, Bytes.len(encoded(jlo)) > 0);
 };

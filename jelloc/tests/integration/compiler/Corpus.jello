@@ -1,11 +1,16 @@
 package compiler;
 
+// The corpus of sources the lex and parse tests walk.
+
 import { filesUnder } from std.io.Path;
 
+// The language corpus's directory.
 export let CORPUS = "itests";
-
+// The compiler's own program fixtures, in the end-to-end tier
+// (degust.Programs), which grow with each feature.
 export let PROGRAMS = "tests/e2e/programs";
 
+// Every source of the corpus, the program fixtures last.
 export let sources = fn(): Array<Bytes> {
   let all = filesUnder(CORPUS, ".jello");
   let programs = filesUnder(PROGRAMS, ".jello");

@@ -167,6 +167,7 @@ let testBuildsExactASTsForNamesSpreadsNewListsAndVarargs = fn(t: Test) {
   };
 };
 
+// A list element is any expression; a `|` outside brackets ends it.
 let testParsesListElementsUpToATopLevelPipe = fn(t: Test) {
   let program = parse("list[a && b | t]; list[c ? x : y]; list[(a | b)]; t.1.0");
   let a = Expr.Variable("a");
@@ -256,6 +257,8 @@ let testParsesMacroAndQuoteControlExpressionStatements = fn(t: Test) {
   };
 };
 
+/* A `while`, `enum` or `macro` may end with a `;` that adds nothing; a
+ * second one is still an error. */
 let testTakesOneSemicolonAfterABlockEndingStatement = fn(t: Test) {
   T.equal(t, parse("macro m() { value; }; while (x) { y; }; enum E { A; }; 1"), parse("macro m() { value; } while (x) { y; } enum E { A; } 1"));
   T.throws(t, fn() { parse("while (x) { y; };;"); });
@@ -318,7 +321,7 @@ let testDefinesAssignmentAndShiftPrecedence = fn(t: Test) {
       T.equal(t, statements[2], Stmt.Expression(Expr.Binary(BinaryOp.Add, Expr.Variable("a"),
         Expr.Binary(BinaryOp.ShiftLeft, Expr.Variable("b"), Expr.Variable("c")))));
       T.equal(t, tail, Expr.Pipe(Expr.Variable("value"),
-        Expr.Member(Expr.Topic, "field")));
+        Expr.Member(Expr.Topic, "field"), true));
     }
   };
   T.throws(t, fn() { parse("a = b = c"); });

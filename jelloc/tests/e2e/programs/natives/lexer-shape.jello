@@ -11,7 +11,7 @@ let tokens = fn(text: Bytes): Bytes {
       when ~r/\/\/[^\n]*/ as m => { out += "c"; advance(cur, m) },
       when ~r/[a-z]+/ as m => { out += "w" + Std.string(Bytes.len(group(m, 0))); advance(cur, m) },
       when ~r/[0-9]+/ as m => { out += "n" + group(m, 0); advance(cur, m) },
-
+      // Leftmost-first alternation: `=` wins over `==`.
       when ~r/(=|==)/ as m => { out += "e" + group(m, 0); advance(cur, m) },
       when ~r/(\.\.\.|==|=>|!=|<-|<=|>=|\+\+|\+=|--|-=|->|\*=|\/=|<<|>>|&&|\|\||\|>)/ as m => { out += "o" + group(m, 0); advance(cur, m) },
       when ~r/X/i => { out += "x"; Bytes.slice(cur, 1, Bytes.len(cur) - 1) },

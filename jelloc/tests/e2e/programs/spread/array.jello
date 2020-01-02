@@ -1,0 +1,20 @@
+// expect: 27
+// An array literal may spread arrays among its items, in order, into a new array.
+let xs = [1, 2, 3];
+let copy = [...xs];
+copy[0] = 9;
+System.assert(xs[0] == 1);
+let log = Array.new<I32>(0);
+let note = fn(n: I32): I32 { log.push(n); n };
+let more = fn(): Array<I32> { note(2); [20, 21] };
+let joined = [note(1), ...more(), note(3), ...[], ...xs];
+System.assert(joined.len() == 7);
+System.assert((log.len() == 3) && (log[0] == 1) && (log[1] == 2) && (log[2] == 3));
+let empty: Array<Bytes> = [...Array.new<Bytes>(0)];
+let words = ["a", ...["b", "c"]];
+System.assert(words[2] == "c");
+let nested = [[1], ...[[2, 3]]];
+System.assert(nested[1][1] == 3);
+let maybe: Array<?I32> = [null, 4];
+System.assert([...maybe, null].len() == 3);
+joined[2] + joined[3] + empty.len() + joined[6]

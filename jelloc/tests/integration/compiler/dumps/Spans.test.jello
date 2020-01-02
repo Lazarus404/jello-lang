@@ -1,5 +1,10 @@
 package compiler.dumps;
 
+// Every node the checker makes up (match tests and bindings, regexp globals,
+// narrowing unwraps, destructured names, the Not of !=) takes the span of the
+// source that implies it, as jelloc --hir --spans prints them; spans.hir was
+// checked by hand.
+
 import type { Test } from std.testing;
 import degust.Golden as G;
 import { printHirWithSpans } from frontend.PrintHir;
@@ -7,6 +12,7 @@ import { checkedFile } from compiler.Pipeline;
 import { PROGRAMS } from compiler.Corpus;
 
 let testSpansEveryNode = fn(t: Test) {
+  // The spans print these paths as given.
   let hir = checkedFile(PROGRAMS + "/spans/main.jello", Array.new<Bytes>(0));
   G.equal(t, "tests/integration/compiler/dumps/spans.hir", printHirWithSpans(hir));
 };

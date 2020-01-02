@@ -5,7 +5,7 @@ import { parseFile } from Digest;
 import { join } from std.core.Bytes;
 import { filesUnder } from std.io.Path;
 
-
+// Each source under DIR and its parseFile report, one a line, in path order.
 export let corpusDigests: (Bytes) -> Bytes = fn(dir) {
   let paths = filesUnder(dir, ".jello"); let lines = Array.new<Bytes>(0); let i = 0;
   while (i < paths.len()) { lines.push(paths[i] + " " + parseFile(paths[i])); i++; }

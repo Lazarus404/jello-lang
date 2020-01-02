@@ -1,0 +1,23 @@
+// expect: 9
+// A call may omit the parameters with defaults, which are constants: literals, or a const,
+// even one declared after the function.
+let scaled = fn(x: F64 = 2, label: Bytes = "n", tag: Atom = :a, on: Bool = true, low: I32 = -3, top: I32 = LATER) {
+  System.assert(label == "n");
+  System.assert(tag == :a);
+  System.assert(on);
+  x + (low + top) as F64
+};
+const CHAIN = 10;
+const LATER = CHAIN;
+let add = fn(x: I32, y: I32 = 1, z: I32 = CHAIN) { x + y + z };
+// `?x: T = value` holds a Null<T>; a call that omits it passes the default, not null.
+let orFive = fn(?x: I32 = 5) { x == null ? -1 : x };
+System.assert(add(1) == 12);
+System.assert(add(1, 2) == 13);
+System.assert(add(1, 2, 3) == 6);
+System.assert(orFive() == 5);
+System.assert(orFive(null) == -1);
+// Through a value, a parameter with a default is required.
+let viaValue: (Null<I32>) -> I32 = orFive;
+System.assert(viaValue(null) == -1);
+scaled() as I32

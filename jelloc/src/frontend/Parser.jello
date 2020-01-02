@@ -52,6 +52,7 @@ let tokens = Array.new<Token>(0);
 let pos = 0;
 let pending = Token.Eof;
 let pipelineDepth = 0;
+let pipelineTopic = false;
 let sourcePath = "<input>";
 let starts = Array.new<I32>(0);
 let ends = Array.new<I32>(0);
@@ -1191,6 +1192,7 @@ let _primary = fn(start: I32): Expr {
     Bits => _parseBitExpr(),
     Percent => {
       if (pipelineDepth == 0) { _error("pipeline topic used outside pipeline body"); }
+      pipelineTopic = true;
       Expr.Topic
     },
     _ => {
@@ -1459,10 +1461,13 @@ _parseBinary = fn(minPrec, element) {
         } else { _markExpr(Expr.Null, start) });
     } else if (tok == Token.PipeGreater) {
       next();
+      let outerTopic = pipelineTopic;
+      pipelineTopic = false;
       pipelineDepth++;
       let body = _parseBinary(prec + 1, element);
       pipelineDepth--;
-      left = Expr.Pipe(left, body);
+      left = Expr.Pipe(left, body, pipelineTopic);
+      pipelineTopic = outerTopic;
     } else if (prec == 5) {
       next();
       if (!_assignable(left)) { _error("invalid assignment target"); }
@@ -1965,6 +1970,7 @@ export let parseProgram: (Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>>) ->
   _noteSpan = null;
   pending = Token.Eof;
   pipelineDepth = 0;
+  pipelineTopic = false;
   let pkg = Package.None;
   _packageSpan = null;
 

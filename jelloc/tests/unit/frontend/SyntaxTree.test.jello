@@ -6,6 +6,7 @@ import { lexFile } from frontend.Lexer;
 import { parseProgram, programSyntax } from frontend.Parser;
 import type { Syntax } from frontend.Source;
 
+// The program's syntax: its statements, then its tail.
 let tree = fn(source: Bytes): Syntax { programSyntax(parseProgram(lexFile(source, "<input>"))) };
 
 let span = fn(node: Syntax): Bytes { match (node) { Node(_, start, end, _, _) => Std.string(start) + ".." + Std.string(end) } };
@@ -19,6 +20,7 @@ let tail = fn(source: Bytes): Syntax {
 };
 
 let testSpansEveryExpressionWithItsChildrenInFieldOrder = fn(t: Test) {
+  // (1 + 2) * f(3)
   let product = tail("(1 + 2) * f(3)");
   T.equal(t, span(product), "0..14");
   T.equal(t, span(child(product, 0)), "0..7");
@@ -31,6 +33,7 @@ let testSpansEveryExpressionWithItsChildrenInFieldOrder = fn(t: Test) {
 };
 
 let testGivesInventedNodesTheSpanOfTheSourceThatImpliesThem = fn(t: Test) {
+  // A missing else is null over the if; a negative literal keeps both nodes.
   let branch = tail("if (true) { 1 }");
   T.equal(t, width(branch), 3);
   T.equal(t, span(child(branch, 2)), "0..15");

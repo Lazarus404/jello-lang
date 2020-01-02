@@ -1,0 +1,15 @@
+// expect: 7
+// A closure within a closure assigns a local two functions out.
+let total = 0;
+let outer = fn(): I32 {
+  let n = 1;
+  let middle = fn() {
+    let inner = fn() { n = n * 7; null };
+    inner();
+    null
+  };
+  middle();
+  n
+};
+total = outer();
+total

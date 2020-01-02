@@ -1,0 +1,11 @@
+// expect: 6
+// A generic function's parameters may be optional or variadic too.
+let firstOr<T> = fn(xs: Array<T>, ?fallback: T): ?T { xs.len() > 0 ? xs[0] : fallback };
+let count<T> = fn(label: Bytes, ...items: T): I32 { label.len() + items.len() };
+let either<T> = fn(a: T, ?b: T = null): T { b == null ? a : b };
+System.assert(firstOr([4, 5]) == 4);
+System.assert(firstOr(Array.new<I32>(0)) == null);
+System.assert(firstOr(Array.new<I32>(0), 9) == 9);
+System.assert(either(4) == 4);
+System.assert(either("a", "b") == "b");
+count("ab", true, false) + count<Bytes>("x") + count("", 1)
