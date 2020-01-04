@@ -1,15 +1,17 @@
 package frontend;
 
 import type { Block as AstBlock, Expr as AstExpr, MatchArm, Pattern } from frontend.Ast;
-import { Pattern, unsignedWideValue, wideIntegerValue } from frontend.Ast;
+import { BinaryOp, Pattern, unsignedWideValue, wideIntegerValue } from frontend.Ast;
 import { appendFrom, indexOf } from std.core.Arrays;
 import {
-  Kind, Op, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, declareBinding, endsPath, fieldCount, fieldType, isEnum, isInteger, isKind,
-  local, node, noValueType, nullable, nullType, opOf, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, unify, variantCount, variantName, variantTag,
+  Kind, Op, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, declareBinding, endsPath, fieldCount, fieldType, isEnum, isFloatType, isInteger,
+  isKind, local, node, noValueType, nullable, nullType, opOf, resolve, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, unify, variantCount, variantName, variantTag,
 } from frontend.Hir;
 import type { Syntax } from frontend.Source;
+import { equalValues } from frontend.CheckValues;
 import {
-  branchMismatch, bufferHint, checkArm, checkOperand, checkPresent, coerceTail, enterSyntax, integerLiteral, joinTypes, newBinding, regexpGlobal, sizedType, subPattern, syntaxChild, syntaxPattern,
+  branchMismatch, bufferHint, checkArm, checkOperand, checkPatternName, checkPresent, coerceTail, enterSyntax, floatLiteral, integerLiteral, joinTypes, newBinding, regexpGlobal, sizedType,
+  subPattern, syntaxChild, syntaxPattern,
 } from frontend.TypeCheck;
 
 enum Subject { Subject(roots: Array<I32>, types: Array<I32>, tuple: I32, tag: I32); }
@@ -64,6 +66,12 @@ let _tagOf = fn(ty: I32, name: Bytes): I32 {
   tag
 };
 
+let _equalTo = fn(subject: Subject, path: Array<I32>, ty: I32, value: I32, what: Bytes, tests: Array<I32>) {
+  if (!unify(typeOf(value), ty)) { throw what + " is " + typeName(typeOf(value)) + ", but the value it matches is " + typeName(ty); }
+  tests.push(equalValues(BinaryOp.Equal, _read(subject, path), value));
+  null
+};
+
 enum Bound { Bound(names: Array<Bytes>, paths: Array<Array<I32>>, places: Array<Syntax>); }
 
 let _noBound = fn(): Bound { Bound.Bound(Array.new<Bytes>(0), Array.new<Array<I32>>(0), Array.new<Syntax>(0)) };
@@ -89,18 +97,23 @@ _test = fn(subject, pattern, syntax, path, ty, tests, bound) {
     Wildcard => null,
     BindPattern(name) => _bind(bound, name, path, syntax),
     Enum(name, args) => {
-      let tag = _tagOf(ty, name);
-      if (args.len() != fieldCount(ty, tag)) { throw "wrong payload count for enum variant pattern " + name; }
+      let known = isEnum(ty) ? variantTag(ty, name) : -1;
+      let constant = ((known < 0) && (args.len() == 0)) ? checkPatternName(name, true) : -1;
 
-      if (variantCount(ty) > 1) {
-        let read = match (subject) { Subject(_, _, _, tagBinding) => (path.len() == 1) && (tagBinding >= 0) ? local(tagBinding, TYPE_I32) : node(Op.EnumTag, TYPE_I32, 0, 0, [_read(subject, path)]) };
-        tests.push(node(Op.Eq, TYPE_BOOL, 0, 0, [read, node(Op.I32, TYPE_I32, tag, 0, [])]));
-      }
-      let f = 0;
+      if (constant >= 0) { _equalTo(subject, path, ty, constant, name, tests); } else {
+        let tag = known >= 0 ? known : _tagOf(ty, name);
+        if (args.len() != fieldCount(ty, tag)) { throw "wrong payload count for enum variant pattern " + name; }
 
-      while (f < args.len()) {
-        _test(subject, args[f], subPattern(syntax, f), _step(path, tag, f), fieldType(ty, tag, f), tests, bound);
-        f++;
+        if (variantCount(ty) > 1) {
+          let read = match (subject) { Subject(_, _, _, tagBinding) => (path.len() == 1) && (tagBinding >= 0) ? local(tagBinding, TYPE_I32) : node(Op.EnumTag, TYPE_I32, 0, 0, [_read(subject, path)]) };
+          tests.push(node(Op.Eq, TYPE_BOOL, 0, 0, [read, node(Op.I32, TYPE_I32, tag, 0, [])]));
+        }
+        let f = 0;
+
+        while (f < args.len()) {
+          _test(subject, args[f], subPattern(syntax, f), _step(path, tag, f), fieldType(ty, tag, f), tests, bound);
+          f++;
+        }
       }
       null
     },
@@ -150,16 +163,20 @@ _test = fn(subject, pattern, syntax, path, ty, tests, bound) {
       tests.push(node(Op.IsPresent, TYPE_BOOL, 0, 0, [found]));
       null
     },
+    Float(literal, size) => {
+      if (!isFloatType(resolve(ty))) { _mismatch("float", ty); }
+      _equalTo(subject, path, ty, floatLiteral(literal, size, false, ty), literal, tests)
+    },
+    Atom(name) => {
+      if (resolve(ty) != TYPE_ATOM) { _mismatch("atom", ty); }
+      _equalTo(subject, path, ty, node(Op.Atom, TYPE_ATOM, bytesId(name), 0, []), ":" + name, tests)
+    },
+    Pin(name) => {
+      if (indexOf(_names(bound), name) >= 0) { throw "cannot pin " + name + ": this pattern binds it"; }
+      _equalTo(subject, path, ty, checkPatternName(name, false), "^" + name, tests)
+    },
     IsType(_, _) => {
       throw "`is` patterns are not supported yet";
-      null
-    },
-    Pin(_) => {
-      throw "pinned patterns are not supported yet";
-      null
-    },
-    Atom(_) => {
-      throw "atom patterns are not supported yet";
       null
     },
     Object(_) => {
@@ -188,6 +205,9 @@ _describe = fn(pattern) {
     Tuple(_) => "(…)",
     Bool(value) => value ? "true" : "false",
     Integer(digits, _) => digits,
+    Float(literal, _) => literal,
+    Atom(name) => ":" + name,
+    Pin(name) => "^" + name,
     Bytes(value) => "\"" + value + "\"",
     RegExp(source, flags, _) => "~r/" + source + "/" + flags,
     _ => "this pattern",
@@ -205,10 +225,11 @@ let _same = fn(a: Pattern, b: Pattern): Bool {
     (Enum(x, _), Enum(y, _)) => x == y,
     (Bool(x), Bool(y)) => x == y,
     (Integer(x, _), Integer(y, _)) => _bits(x) == _bits(y),
+    (Float(x, _), Float(y, _)) => x == y,
     (Bytes(x), Bytes(y)) => x == y,
-    (RegExp(_, _, _), _) => false,
-    (_, RegExp(_, _, _)) => false,
-    _ => true,
+    (Atom(x), Atom(y)) => x == y,
+    (Tuple(_), Tuple(_)) => true,
+    _ => false,
   }
 };
 

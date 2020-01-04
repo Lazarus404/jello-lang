@@ -589,14 +589,19 @@ _patternInner = fn() {
       next();
       Pattern.Integer(digits, _intSize(size))
     },
+    FloatConstant(literal, size) => {
+      next();
+      Pattern.Float(literal, _floatSize(size))
+    },
     Minus => {
       next();
       let number = next();
 
       match (number) {
         IntegerConstant(digits, size) => Pattern.Integer("-" + digits, _intSize(size)),
+        FloatConstant(literal, size) => Pattern.Float("-" + literal, _floatSize(size)),
         _ => {
-          _error("expected integer after '-'");
+          _error("expected a number after '-'");
           Pattern.Wildcard
         },
       }

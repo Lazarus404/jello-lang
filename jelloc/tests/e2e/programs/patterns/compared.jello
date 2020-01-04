@@ -1,0 +1,18 @@
+// expect: 1234567
+// Pins, constants, atoms and floats compare the matched value with `==`.
+const LIMIT: I32 = 10;
+let base = 4;
+let pinned = fn(n: I32): I32 {
+  const Small = 2;
+  match (n) { LIMIT => 1, Small => 2, ^base => 3, _ => 0 }
+};
+let captured = fn(word: Bytes): () -> I32 {
+  fn() { match ("go") { ^word => 4, _ => 0 } }
+};
+let atom = fn(a: Atom): I32 { match (a) { :ok => 5, :error => 9, _ => 0 } };
+let float = fn(x: F64): I32 { match (x) { 0.5 => 6, -1.5 => 7, _ => 0 } };
+let total = 0;
+let add = fn(d: I32) { total = total * 10 + d; null };
+add(pinned(10)); add(pinned(2)); add(pinned(4)); add(captured("go")());
+add(atom(:ok)); add(float(0.5)); add(float(-1.5));
+total

@@ -968,6 +968,17 @@ let _checkVariable = fn(name: Bytes): I32 {
   _bindingValue(_scoped(name, "read"), name)
 };
 
+export let checkPatternName: (Bytes, Bool) -> I32 = fn(name, constant) {
+  if (constant) {
+    let found = _find(name, 0);
+    let local = found >= 0 ? _ids[found] : _enclosingFind(name).1;
+    let mutable = local >= 0 ? (_mutable[local] ? 1 : 0) : match (_scoped(name, "read")) { Global(id) => H.globalIsMutable(id) ? 1 : 0, _ => -1 };
+    if (mutable < 0) { return -1; }
+    if (mutable > 0) { throw name + " can be assigned, so it is no constant; pin it as ^" + name; }
+  }
+  _checkVariable(name)
+};
+
 export let hasSpread: (Array<AstExpr>) -> Bool = fn(args) {
   let i = 0;
 
@@ -1470,6 +1481,7 @@ let _checkAssignment = fn(expr: AstExpr, op: AssignOp, target: AstExpr, value: A
 
 export let one: (I32) -> I32 = fn(ty) { _checkInteger("1", IntSize.Infer, false, ty) };
 export let integerLiteral: (Bytes, Bool, I32) -> I32 = fn(digits, negative, ty) { _checkInteger(digits, IntSize.Infer, negative, ty) };
+export let floatLiteral: (Bytes, FloatSize, Bool, I32) -> I32 = fn(text, size, negative, ty) { _checkFloat(text, size, negative, ty) };
 
 let _conversions = Array.new<I32>(0);
 

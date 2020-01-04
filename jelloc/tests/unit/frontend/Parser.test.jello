@@ -9,6 +9,7 @@ import type {
   BinaryOp,
   Block,
   Expr,
+  FloatSize,
   ImportItem,
   ImportKind,
   IntSize,
@@ -186,7 +187,7 @@ let testParsesListElementsUpToATopLevelPipe = fn(t: Test) {
 };
 
 let testBuildsExactPatternAndControlStatementASTs = fn(t: Test) {
-  let program = parse("let f = fn() { if (x) { 1 } let y = 2; }; match (x) { is fn as f => f, \"#\".code => 1, -2 => 2 }");
+  let program = parse("let f = fn() { if (x) { 1 } let y = 2; }; match (x) { is fn as f => f, \"#\".code => 1, -2 => 2, -1.5 => 3 }");
 
   match (program) {
     Program(_, statements, tail) => {
@@ -206,7 +207,9 @@ let testBuildsExactPatternAndControlStatementASTs = fn(t: Test) {
         MatchArm.Arm([MatchAlternative.Alternative(Pattern.Integer("35", IntSize.Infer), null)], null,
           Block.Block([], Expr.Integer("1", IntSize.Infer))),
         MatchArm.Arm([MatchAlternative.Alternative(Pattern.Integer("-2", IntSize.Infer), null)], null,
-          Block.Block([], Expr.Integer("2", IntSize.Infer)))
+          Block.Block([], Expr.Integer("2", IntSize.Infer))),
+        MatchArm.Arm([MatchAlternative.Alternative(Pattern.Float("-1.5", FloatSize.Infer), null)], null,
+          Block.Block([], Expr.Integer("3", IntSize.Infer)))
       ]));
     }
   };

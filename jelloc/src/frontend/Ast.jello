@@ -173,6 +173,7 @@ export enum Pattern {
   RegExp(pattern: Bytes, flags: Bytes, binding: ?Bytes);
   IsType(ty: Type, binding: ?Bytes);
   Bits(segments: Array<BitPatternSegment>);
+  Float(literal: Bytes, size: FloatSize);
 }
 
 export enum Expr {
@@ -320,7 +321,7 @@ export let patternTag: (Pattern) -> I32 = fn(pattern) {
   match (pattern) {
     Wildcard => 1, BindPattern(_) => 2, Pin(_) => 3, Bool(_) => 4, Integer(_, _) => 5, Bytes(_) => 6, Atom(_) => 7,
     Object(_) => 8, Tuple(_) => 9, Array(_) => 10, ArrayCons(_, _) => 11, ArrayRest(_, _) => 12, Enum(_, _) => 13,
-    RegExp(_, _, _) => 14, IsType(_, _) => 15, Bits(_) => 16,
+    RegExp(_, _, _) => 14, IsType(_, _) => 15, Bits(_) => 16, Float(_, _) => 17,
   }
 };
 
