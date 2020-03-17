@@ -364,11 +364,13 @@ let testScopesBlockBindingsAndPermitsNestedShadowing = fn(t: Test) {
 };
 
 let testLowersExpressionValuedIfThroughATypedJoin = fn(t: Test) {
-  let hir = checked("if (true) { 1i32 } else { 2i32 }");
+  let hir = checked("if (1i32 < 2i32) { 1i32 } else { 2i32 }");
   T.equal(t, printHir(hir), "program\n"
     + "  if: i32\n"
     + "    condition\n"
-    + "      bool true: bool\n"
+    + "      lt.s.i32: bool\n"
+    + "        i32 1: i32\n"
+    + "        i32 2: i32\n"
     + "    then\n"
     + "      block: i32\n"
     + "        i32 1: i32\n"
@@ -376,23 +378,27 @@ let testLowersExpressionValuedIfThroughATypedJoin = fn(t: Test) {
     + "      block: i32\n"
     + "        i32 2: i32\n");
   T.equal(t, printIr(lowerProgram(hir)), "fn @0() -> i32 entry 0 {\n"
-    + "  register %0: bool\n"
+    + "  register %0: i32\n"
     + "  register %1: i32\n"
     + "  register %2: i32\n"
-    + "  register %3: i32\n"
+    + "  register %3: bool\n"
+    + "  register %4: i32\n"
+    + "  register %5: i32\n"
     + "  block 0:\n"
-    + "    %0 = bool true\n"
-    + "    branch %0, block 1, block 2\n"
-    + "  block 1:\n"
-    + "    %2 = i32 1\n"
-    + "    %1 = move %2\n"
-    + "    jump block 3\n"
+    + "    %1 = i32 1\n"
+    + "    %2 = i32 2\n"
+    + "    %3 = lt.s.i32 %1, %2\n"
+    + "    branch %3, block 2, block 3\n"
     + "  block 2:\n"
-    + "    %3 = i32 2\n"
-    + "    %1 = move %3\n"
-    + "    jump block 3\n"
+    + "    %4 = i32 1\n"
+    + "    %0 = move %4\n"
+    + "    jump block 1\n"
     + "  block 3:\n"
-    + "    return %1\n"
+    + "    %5 = i32 2\n"
+    + "    %0 = move %5\n"
+    + "    jump block 1\n"
+    + "  block 1:\n"
+    + "    return %0\n"
     + "}\n");
   T.isTrue(t, verifyProgram(lowered(
     "if (true) { if (false) { 1i32 } else { 2i32 } } else { 3i32 }"
@@ -988,12 +994,12 @@ let testCanonicalizesAliasesAcrossADiamondImportGraph = fn(t: Test) {
 
 let testLowersSignedI32GreaterThanBySwappingLessThanOperands = fn(t: Test) {
   let hir = checked("if (2i32 > 1i32) { 1i32 } else { 0i32 }");
-  T.isTrue(t, contains(printIr(lowerProgram(hir)), "lt.s.i32 %1, %0"));
+  T.isTrue(t, contains(printIr(lowerProgram(hir)), "lt.s.i32 %2, %1"));
   let effectful = printIr(lowered(
     "let first = fn(): I32 { 2i32 }; let second = fn(): I32 { 1i32 }; if (first() > second()) { 1i32 } else { 0i32 }"
   ));
   T.isTrue(t, indexOf(effectful, "call @1") < indexOf(effectful, "call @2"));
-  T.isTrue(t, contains(effectful, "lt.s.i32 %1, %0"));
+  T.isTrue(t, contains(effectful, "lt.s.i32 %2, %1"));
   T.throws(t, fn() { checked("true > false"); });
 };
 

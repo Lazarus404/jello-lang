@@ -1,0 +1,53 @@
+// expect: wild,5,int,no,float,bool,bytes,atom,code,null,const,5,pin,3,4,124,short,78,3,no,6,2,small,sure,pinned,joined,4,
+// `if (let ...)` tests any pattern; the names it binds are in scope to its right in the
+// condition and in the then branch.
+enum Shape { Circle(r: I32); Square(s: I32); }
+const LIMIT: I32 = 10;
+let base = 4;
+let of = fn(xs: Array<I32>): List<I32> {
+  let out: List<I32> = List.nil(); let i = xs.len() - 1;
+  while (i >= 0) { out = List.cons(xs[i], out); i--; }
+  out
+};
+let out = "";
+let put = fn(v: Bytes) { out = out + v + ","; null };
+let n = fn(v: I32): Bytes { Std.string(v) };
+let five = 5; let half = 2.5; let yes = true; let word = "go";
+let status = :ok; let missing: ?I32 = null;
+let shape = Shape.Circle(3); let maybe: ?I32 = 6; let xs = [1, 2, 3, 4];
+put(if (let _ = five) { "wild" } else { "no" });
+put(if (let x = five) { n(x) } else { "no" });
+put(if (let 5 = five) { "int" } else { "no" });
+put(if (let 3 = five) { "int" } else { "no" });
+put(if (let 2.5 = half) { "float" } else { "no" });
+put(if (let true = yes) { "bool" } else { "no" });
+put(if (let "go" = word) { "bytes" } else { "no" });
+put(if (let :ok = status) { "atom" } else { "no" });
+put(if (let "g".code = word[0]) { "code" } else { "no" });
+put(if (let null = missing) { "null" } else { "no" });
+put(if (let (LIMIT, _) = (five * 2, 0)) { "const" } else { "no" });
+// As in a `let` statement, a pattern that is just a name declares it, even a capitalised one.
+put(if (let LIMIT = five) { n(LIMIT) } else { "no" });
+put(if (let ^base = five - 1) { "pin" } else { "no" });
+put(if (let (a, (b, _)) = (1, (2, 3))) { n(a + b) } else { "no" });
+put(if (let (first, ...rest) = (1, 2, 3)) { n(first + rest.1) } else { "no" });
+put(if (let [h, ...mid, l] = xs) { n(h * 100 + mid.len() * 10 + l) } else { "no" });
+put(if (let [_, _, ..._] = [9]) { "long" } else { "short" });
+put(if (let [h | t] = of([7, 8])) { n(h) + n(match (t) { [u] => u, _ => 0 }) } else { "no" });
+put(if (let Circle(r) = shape) { n(r) } else { "no" });
+put(if (let Square(s) = shape) { n(s) } else { "no" });
+put(if (let is I32 as v = maybe) { n(v) } else { "no" });
+// Tests chain with `&&`; under `||` or `!` a `let` only tests.
+put(if (let [h, ..._] = xs && h > 0 && let Circle(r) = shape && r > h) { n(r - h) } else { "no" });
+put(if (let [h, ..._] = xs && h > 1) { "big" } else { "small" });
+let sure: ?Bool = true;
+put(if (let [h, ..._] = xs && sure) { "sure" } else { "no" });
+// A pin to the right of a test may name what it bound, which hides an outer name.
+let lead = 9;
+put(if (let [lead, ..._] = xs && let [^lead, ..._] = [1, 7]) { "pinned" } else { "no" });
+put(if (!(let [] = xs) && ((let [_] = xs) || five > 4)) { "joined" } else { "no" });
+// A statement `if` too, whose then branch may assign the enclosing locals.
+let total = 0;
+if (let [h, ...t] = xs) { total = h + t.len(); }
+put(n(total));
+out

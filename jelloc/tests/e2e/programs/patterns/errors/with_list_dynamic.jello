@@ -1,0 +1,5 @@
+// error: 3:37: a list cannot become Dynamic: its nil would read as null
+let f = fn(a: ?I32, b: List<I32>): I32 {
+  with is I32 as x <- a, [h | _] <- b { x + h } else { _ => 0 }
+};
+f(1, List.nil())

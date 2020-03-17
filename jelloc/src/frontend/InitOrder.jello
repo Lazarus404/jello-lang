@@ -1,6 +1,6 @@
 package frontend;
 
-import { childCount, childOf, globalCount, lastChild, opOf, rootNode, valueOf } from frontend.Hir;
+import { Op, childCount, childOf, globalCount, lastChild, opOf, rootNode, valueOf } from frontend.Hir;
 import { bitsAdd, bitsHas, bitsMembers, bitsNew, bitsUnion } from frontend.Bits;
 
 let _reads = Array.new<Array<I32>>(0);
@@ -118,15 +118,15 @@ export let firstUninitializedRead: () -> Tuple<I32, I32> = fn() {
       m++;
     }
 
-    match (opOf(binding)) {
-      Declare => match (opOf(childOf(binding, 0))) {
-        InitGlobal => {
-          bitsAdd(initialized, valueOf(childOf(binding, 0)));
-          null
-        }, _ => null
-      },
-      _ => null,
-    };
+    if (opOf(binding) == Op.Declare) {
+      let d = 0;
+
+      while (d < childCount(binding)) {
+        let child = childOf(binding, d);
+        if (opOf(child) == Op.InitGlobal) { bitsAdd(initialized, valueOf(child)); }
+        d++;
+      }
+    }
     i++;
   }
   (-1, -1)

@@ -180,6 +180,18 @@ let testStopsAfterTwentyErrors = fn(t: Test) {
   T.equal(t, jelloc([source, "--hir"], NONE), (1, "", want + "stopped after 20 errors"));
 };
 
+// A warning goes to standard error, with its source line, and the program
+// still compiles.
+let testWarns = fn(t: Test) {
+  let source = _CLI + "/with_cannot_fail.jello";
+  let module = fresh("warned.jlo");
+  let line = "let f = fn(v: I32): I32 { with x <- v, y <- x { y } };";
+  let (status, out, err) = jelloc([source, "--out", module], NONE);
+  T.equal(t, (status, out, exists(module)), (0, "", true));
+  T.equal(t, err, source + ":2:32: warning: this clause cannot fail: use `let`\n" + line + "\n" + "                               ^\n"
+    + source + ":2:40: warning: this clause cannot fail: use `let`\n" + line + "\n" + "                                       ^");
+};
+
 // What the compiler emits, where a program's output cannot show it.
 // Without --std or JELLO_STD_PATH, a standard module is not found.
 let testNeedsStd = fn(t: Test) {

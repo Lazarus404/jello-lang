@@ -1,0 +1,14 @@
+// expect: 6,0,4,12,107,1,2,
+// List patterns test each cell they need and read heads; a rest is the tail, never a copy.
+let of = fn(xs: Array<I32>): List<I32> {
+  let out: List<I32> = List.nil(); let i = xs.len() - 1;
+  while (i >= 0) { out = List.cons(xs[i], out); i--; }
+  out
+};
+let sum: (List<I32>) -> I32 = fn(xs) { 0 };
+sum = fn(xs) { match (xs) { [] => 0, [h | t] => h + sum(t) } };
+let f = fn(xs: List<I32>): I32 { match (xs) { [] => 0, [a] => a, [a, b] => a * 10 + b, [_, _, ...rest] => 100 + sum(rest) } };
+let nested = fn(xs: List<List<I32>>): I32 { match (xs) { [[]] => 0, [[_, ..._]] => 1, [] => 2, [_, _ | _] => 3 } };
+let s = fn(n: I32): Bytes { Std.string(n) + "," };
+s(sum(of([1, 2, 3]))) + s(f(of([]))) + s(f(of([4]))) + s(f(of([1, 2]))) + s(f(of([1, 2, 3, 4])))
+  + s(nested(List.cons(of([5]), List.nil()))) + s(nested(List.nil()))

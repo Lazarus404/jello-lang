@@ -339,7 +339,7 @@ let _suite = fn(index: I32, parts: Array<Bytes>, suites: Array<Bytes>, imports: 
     let i = 0;
 
     while (i < statements.len()) {
-      let declared = match (statements[i]) { LetStmt(_, _, pattern, _, _, _) when (isBindPattern(pattern)) => bindPatternName(pattern), _ => "" };
+      let declared = match (statements[i]) { LetStmt(_, _, pattern, _, _, _, _) when (isBindPattern(pattern)) => bindPatternName(pattern), _ => "" };
 
       if (declared == "beforeAll") { before = space + "." + declared; } else if (declared == "afterAll") { after = space + "." + declared; } else if (isTestName(declared)) {
         let (line, _) = match (_statementSpan(syntax, i)) { Span(_, start, _) => locate(path, start) };

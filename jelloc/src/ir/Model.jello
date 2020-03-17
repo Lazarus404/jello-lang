@@ -98,6 +98,8 @@ export let instructionMayThrow: (Instruction) -> Bool = fn(instruction) {
   match (opOf(instruction)) { Call, CallIndirect => true, _ => false }
 };
 
+export let comparesByIdentity = fn(ty: ValueType): Bool { match (ty) { Atom, Function(_, _) => true, _ => false } };
+
 export let valueTypeEqual: (ValueType, ValueType) -> Bool = fn(_left, _right) { false };
 
 let _valueTypesEqual = fn(left: Array<ValueType>, right: Array<ValueType>): Bool {

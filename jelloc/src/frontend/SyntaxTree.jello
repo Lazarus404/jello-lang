@@ -69,7 +69,7 @@ _pattern = fn(value) {
   let out = Array.new<Syntax>(0);
 
   match (value) {
-    Wildcard, BindPattern(_), Pin(_), Bool(_), Integer(_, _), Float(_, _), Bytes(_), Atom(_), RegExp(_, _, _), IsType(_, _) => null,
+    Wildcard, BindPattern(_), Pin(_), Bool(_), Integer(_, _), Float(_, _), Bytes(_), Atom(_), RegExp(_, _, _), IsType(_, _), Null, Spread(_) => null,
     Object(fields) => {
       let i = 0;
 
@@ -78,8 +78,7 @@ _pattern = fn(value) {
         i++;
       } null
     },
-    Tuple(items), Array(items), ArrayRest(items, _) => _patternList(items, out),
-    ArrayCons(head, _) => _addPattern(out, head),
+    Tuple(items), Array(items) => _patternList(items, out),
     Enum(_, args) => _patternList(args, out),
     Bits(segments) => {
       let i = 0;
@@ -284,7 +283,11 @@ _expr = fn(value) {
             _addPattern(patterns, pattern);
             _optional(guard, out);
             _add(out, clause)
-          }
+          },
+          Let(pattern, clause) => {
+            _addPattern(patterns, pattern);
+            _add(out, clause)
+          },
         };
         i++;
       }
@@ -311,10 +314,11 @@ _stmt = fn(value) {
   let patterns = Array.new<Syntax>(0);
 
   match (value) {
-    LetStmt(_, _, pattern, _, annotation, inner) => {
+    LetStmt(_, _, pattern, _, annotation, inner, otherwise) => {
       _addPattern(patterns, pattern);
       if (annotation != null) { patterns.push(_annotation()); }
-      _add(out, inner)
+      _add(out, inner);
+      if (otherwise != null) { _block(otherwise, out); } null
     },
     Throw(inner), Expression(inner) => _add(out, inner),
     Prototype(_, _, _, fields) => {

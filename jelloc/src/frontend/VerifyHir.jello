@@ -357,6 +357,10 @@ _expr = fn(id) {
     },
     Eq when ((childCount(id) > 0) && (typeOf(childOf(id, 0)) == TYPE_BOOL)) => _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "bool equality requires bool operands"),
     Eq when ((childCount(id) > 0) && (typeOf(childOf(id, 0)) == TYPE_ATOM)) => _typed(id, [TYPE_ATOM, TYPE_ATOM], TYPE_BOOL, "atom equality requires atom operands"),
+    Eq when ((childCount(id) > 0) && isKind(typeOf(childOf(id, 0)), Kind.Function)) => {
+      let f = typeOf(childOf(id, 0));
+      _typed(id, [f, f], TYPE_BOOL, "function equality requires operands of one function type")
+    },
     Le, Ge when ((childCount(id) == 0) || !isFloatType(typeOf(childOf(id, 0)))) => {
       _fail("float comparison of no float");
       TYPE_BOOL

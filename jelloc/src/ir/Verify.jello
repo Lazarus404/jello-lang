@@ -1,7 +1,7 @@
 package ir;
 
 import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { ValueType, argumentCount, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, opOf, valueTypeEqual } from ir.Model;
+import { ValueType, argumentCount, comparesByIdentity, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, opOf, valueTypeEqual } from ir.Model;
 import { blockId } from ir.Cfg;
 import { liveness } from ir.Liveness;
 import { internalError } from frontend.Internal;
@@ -205,7 +205,7 @@ let _instruction = fn(instruction: Instruction) {
       _arity(args, 2);
       _expect(dst, ValueType.Bool);
       let ty = _type(args[0]);
-      let compared = match ((opOf(instruction), ty)) { (Eq, Atom) => true, (LtU, _) => _isNumeric(ty), _ => _isArithmetic(ty, false) };
+      let compared = match (opOf(instruction)) { Eq when (comparesByIdentity(ty)) => true, LtU => _isNumeric(ty), _ => _isArithmetic(ty, false) };
       if (!compared) { _fail("comparison of a type that does not support it"); }
       _expect(args[1], ty)
     },

@@ -1,0 +1,26 @@
+// Each destructuring form, for destructure.ir.
+let pair = fn(t: Tuple<I32, I32>): I32 {
+  let (a, b) = t;
+  a + b
+};
+
+let rest = fn(t: Tuple<I32, I32, I32>): I32 {
+  let (a, ...r) = t;
+  a + r.1
+};
+
+let exact = fn(xs: Array<I32>): I32 {
+  let [a, b] = xs else { return 0; };
+  a + b
+};
+
+let ends = fn(xs: Array<I32>): I32 {
+  let [a, ..._, c] = xs else { return 0; };
+  a * c
+};
+
+let middle = fn(xs: Array<I32>): I32 {
+  let [a, ...m, c] = xs else { return 0; };
+  a + m.len() + c
+};
+pair((1, 2)) + rest((1, 2, 3)) + exact([1, 2]) + ends([1, 2, 3]) + middle([1, 2, 3])

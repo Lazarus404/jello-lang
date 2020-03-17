@@ -1,0 +1,25 @@
+package compiler.dumps;
+
+// What the lowering makes of patterns, as jelloc --ir prints it; each dump
+// was checked by hand. Destructuring a tuple or an array reads its fields and
+// elements, the bindings sharing their registers. A match whose arms test one
+// binding with constants, as an enum's tag, tests each constant once, then
+// tries only the arms that test it.
+
+import type { Test } from std.testing;
+import degust.Golden as G;
+import { lowerProgram } from ir.Lower;
+import { printIr } from ir.Print;
+import { checkedFile } from compiler.Pipeline;
+
+const _DIR = "tests/integration/compiler/dumps";
+
+let testDestructuresByReads = fn(t: Test) {
+  let hir = checkedFile(_DIR + "/destructure.jello", Array.new<Bytes>(0));
+  G.equal(t, _DIR + "/destructure.ir", printIr(lowerProgram(hir)));
+};
+
+let testDecidesEachConstantOnce = fn(t: Test) {
+  let hir = checkedFile(_DIR + "/decision.jello", Array.new<Bytes>(0));
+  G.equal(t, _DIR + "/decision.ir", printIr(lowerProgram(hir)));
+};

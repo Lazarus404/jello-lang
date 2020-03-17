@@ -1,0 +1,57 @@
+// expect: unit,big5,small2,fit,square4,point,zero,one,unit,two,many,a,b,c,1234,40,40,9,bumped,bumped,other,moved,other,
+// Arms that test one value with constants try only those of its constant, in order; a guard that
+// fails goes on to the next arm of the same constant, and an else-if chain on a parameter decides
+// the same way.
+enum Shape { Circle(r: I32); Square(s: I32); Point; }
+let out = "";
+let put = fn(v: Bytes) { out = out + v + ","; null };
+let area = fn(s: Shape, k: I32): Bytes {
+  match (s) {
+    Circle(1) => "unit",
+    Circle(r) when (r > k) => "big" + Std.string(r),
+    Square(s) when (s == k) => "fit",
+    Circle(r) => "small" + Std.string(r),
+    Square(s) => "square" + Std.string(s),
+    Point => "point",
+  }
+};
+put(area(Shape.Circle(1), 0)); put(area(Shape.Circle(5), 2)); put(area(Shape.Circle(2), 5));
+put(area(Shape.Square(3), 3)); put(area(Shape.Square(4), 3)); put(area(Shape.Point, 0));
+let digit = fn(n: I32, odd: Bool): Bytes {
+  match (n) { 0 => "zero", 1 when (odd) => "one", 2 => "two", 1 => "unit", _ => "many" }
+};
+put(digit(0, true)); put(digit(1, true)); put(digit(1, false)); put(digit(2, false));
+put(digit(9, true));
+let chain = fn(n: I32): Bytes {
+  if (n == 1) { "a" } else if (n == 2) { "b" } else if (n == 1) { "never" } else { "c" }
+};
+put(chain(1)); put(chain(2)); put(chain(3));
+// As a statement, and in the tail of a function that calls itself.
+let tally = fn(s: Shape): I32 {
+  let n = 0;
+  match (s) {
+    Circle(1) => { n = 1; }, Circle(_) => { n = 2; }, Square(_) => { n = 3; }, Point => { n = 4; },
+  };
+  n
+};
+let digits = tally(Shape.Circle(1)) * 1000 + tally(Shape.Circle(7)) * 100;
+digits = digits + tally(Shape.Square(1)) * 10;
+put(Std.string(digits + tally(Shape.Point)));
+let count = fn(n: I32, k: I32): I32 {
+  match (n) {
+    0 => k, 1 when (k > 3) => count(0, k * 10), 1 => count(0, k + 1), _ => count(n - 1, k + 2),
+  }
+};
+put(Std.string(count(3, 0))); put(Std.string(count(1, 4))); put(Std.string(count(0, 9)));
+// A value that a test assigns is tested again by the next.
+let bumped = fn(n: I32): Bytes {
+  let v = n; let bump = fn(): Bool { v = v + 1; false };
+  if ((v == 1) && bump()) { "never" } else if (v == 2) { "bumped" } else { "other" }
+};
+put(bumped(1)); put(bumped(2)); put(bumped(5));
+let moved = fn(n: I32): Bytes {
+  let v = n;
+  if ((v == 1) && { v = 2; false }) { "never" } else if (v == 2) { "moved" } else { "other" }
+};
+put(moved(1)); put(moved(5));
+out

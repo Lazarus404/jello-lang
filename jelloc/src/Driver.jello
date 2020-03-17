@@ -7,11 +7,11 @@ import { printTokens } from frontend.Tokens;
 import { typeCheckModules } from frontend.CheckModules;
 import { currentSpan } from frontend.TypeCheck;
 import { loadFailureSpan, loadModules, loadTests } from frontend.Modules;
-import { MAX_FAILURES, noteFailure, pendingNote, recordFailure, resetFailures, takeFailures } from frontend.Failures;
+import { MAX_FAILURES, noteFailure, pendingNote, recordFailure, resetFailures, takeFailures, takeWarnings } from frontend.Failures;
 import { takeInternalError } from frontend.Internal;
 import { verifyFailureSpan } from frontend.VerifyHir;
 import { printHir, printHirWithSpans } from frontend.PrintHir;
-import { functionNode, lowerProgram } from ir.Lower;
+import { functionNode, lowerProgram, lowerProgramInParts } from ir.Lower;
 import { printIr } from ir.Print;
 import { legalizeJlo } from backend.jello.Legalize;
 import { allocateProgram, allocationFailure } from backend.jello.Allocate;
@@ -129,7 +129,15 @@ let _checked = fn(inputs: Array<Bytes>): Hir {
   resetFailures();
   typeCheckModules(_testing ? loadTests(inputs, _std, _roots) : loadModules(inputs[0], _std, _roots))
 };
-let _allocated = fn(inputs: Array<Bytes>): Program { allocateProgram(legalizeJlo(lowerProgram(_checked(inputs)))) };
+
+let _allocated = fn(inputs: Array<Bytes>): Program {
+  let hir = _checked(inputs);
+
+  try { allocateProgram(legalizeJlo(lowerProgram(hir))) } catch (e) {
+    if (allocationFailure() != 0) { throw e; }
+    allocateProgram(legalizeJlo(lowerProgramInParts(hir)))
+  }
+};
 
 let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
   match (span) { Span(path, start, _) => sourceDiagnostic(path, readText(path), start, message) }
@@ -213,8 +221,26 @@ let _fail = fn(label: Bytes, error: Dynamic) {
   _exit(status, report + "\n")
 };
 
+let _warn = fn() {
+  let warnings = takeWarnings();
+  let text = "";
+  let i = 0;
+
+  while (i < warnings.len()) {
+    let (span, message) = warnings[i];
+    text = text + _at(span, "warning: " + message) + "\n";
+    i++;
+  }
+  if (text != "") { writeText("/dev/stderr", text); }
+  null
+};
+
 let _report: (() -> Bytes, Bytes) -> Bytes = fn(stage, label) {
-  try { stage() } catch (e) {
+  try {
+    let out = stage();
+    _warn();
+    out
+  } catch (e) {
     _fail(label, e);
     ""
   }

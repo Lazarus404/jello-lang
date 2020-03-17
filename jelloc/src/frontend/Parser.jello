@@ -43,7 +43,7 @@ import type { FloatSize as LexerFloatSize, IntegerSize, Token } from frontend.Le
 import type { SourceSpan, Syntax, SyntaxMark } from frontend.Source;
 import { SourceSpan, SyntaxKind, SyntaxMark } from frontend.Source;
 import { syntaxTree } from frontend.SyntaxTree;
-import { exprTag, patternTag, stmtTag } from frontend.Ast;
+import { exprTag, isBindPattern, patternTag, stmtTag } from frontend.Ast;
 import { isKeyword, tokenText } from frontend.Tokens;
 import { internalError } from frontend.Internal;
 import { utf8Validate, utf8Length, utf8CharAt } from std.core.Bytes;
@@ -53,6 +53,7 @@ let pos = 0;
 let pending = Token.Eof;
 let pipelineDepth = 0;
 let pipelineTopic = false;
+let inCondition = false;
 let sourcePath = "<input>";
 let starts = Array.new<I32>(0);
 let ends = Array.new<I32>(0);
@@ -557,6 +558,13 @@ let _parseBitPattern = fn(): Pattern {
   Pattern.Bits(segments)
 };
 
+let _spreadPattern = fn(): Pattern {
+  let start = pos;
+  next();
+  let name = _ident();
+  _markPattern(Pattern.Spread(name == "_" ? null : name), start)
+};
+let _itemPattern = fn(): Pattern { peek() == Token.DotDotDot ? _spreadPattern() : _parsePattern() };
 let _patternInner: () -> Pattern = fn() { Pattern.Wildcard };
 _parsePattern = fn() {
   let start = pos;
@@ -584,6 +592,10 @@ _patternInner = fn() {
     False => {
       next();
       Pattern.Bool(false)
+    },
+    Null => {
+      next();
+      Pattern.Null
     },
     IntegerConstant(digits, size) => {
       next();
@@ -647,13 +659,13 @@ _patternInner = fn() {
         next();
         Pattern.Tuple([])
       } else {
-        let items = [_parsePattern()];
+        let items = [_itemPattern()];
         if (peek() != Token.Comma) { _error("tuple pattern requires a comma"); }
 
         while (peek() == Token.Comma) {
           next();
           if (peek() == Token.RParen) { break; }
-          items.push(_parsePattern());
+          items.push(_itemPattern());
         }
         expect(Token.RParen);
         Pattern.Tuple(items)
@@ -661,43 +673,20 @@ _patternInner = fn() {
     },
     LBracket => {
       next();
+      let items = Array.new<Pattern>(0);
 
-      if (peek() == Token.RBracket) {
-        next();
-        return Pattern.Array([]);
-      }
-      let first = _parsePattern();
+      while (peek() != Token.RBracket) {
+        items.push(_itemPattern());
 
-      if (peek() == Token.Pipe) {
-        next();
-        let rest = _ident();
-        expect(Token.RBracket);
-        return Pattern.ArrayCons(first, rest);
-      }
-      let prefix = [first];
-
-      while (peek() == Token.Comma) {
-        next();
-        if (peek() == Token.RBracket) { break; }
-
-        if (peek() == Token.DotDotDot) {
-          next();
-          let rest = _ident();
-          expect(Token.RBracket);
-          return Pattern.ArrayRest(prefix, rest);
+        if (peek() == Token.Pipe) {
+          items.push(_spreadPattern());
+          break;
         }
-        prefix.push(_parsePattern());
-      }
-
-      if (peek() == Token.DotDotDot) {
+        if (peek() != Token.Comma) { break; }
         next();
-        let rest = _ident();
-        expect(Token.RBracket);
-        Pattern.ArrayRest(prefix, rest)
-      } else {
-        expect(Token.RBracket);
-        Pattern.Array(prefix)
       }
+      expect(Token.RBracket);
+      Pattern.Array(items)
     },
     Ident(name) => {
       next();
@@ -719,6 +708,14 @@ let _parseBinary: (I32, Bool) -> Expr = fn(_minPrec, _element) {
   Expr.Null
 };
 let _parseExpr = fn(minPrec: I32): Expr { _parseBinary(minPrec, false) };
+
+let _condition = fn(): Expr {
+  let outer = inCondition;
+  inCondition = true;
+  let condition = _parseExpr(0);
+  inCondition = outer;
+  condition
+};
 
 let _parseStmtInner: () -> Stmt = fn() {
   throw "internal: statement parser not initialized";
@@ -1095,7 +1092,7 @@ let _primary = fn(start: I32): Expr {
     Await => Expr.Await(_parsePrimary()),
     If => {
       expect(Token.LParen);
-      let condition = _parseExpr(0);
+      let condition = _condition();
       expect(Token.RParen);
       let branchStart = pos;
       let thenBranch = Expr.BlockExpr(_parseBlock());
@@ -1125,10 +1122,17 @@ let _primary = fn(start: I32): Expr {
       let more = true;
 
       while (more) {
-        let pattern = _parsePattern();
-        let guard = _optionalGuard();
-        expect(Token.LessMinus);
-        clauses.push(WithClause.Clause(pattern, guard, _parseExpr(0)));
+        if (peek() == Token.Let) {
+          next();
+          let bound = _parsePattern();
+          expect(Token.Equal);
+          clauses.push(WithClause.Let(bound, _parseExpr(0)));
+        } else {
+          let pattern = _parsePattern();
+          let guard = _optionalGuard();
+          expect(Token.LessMinus);
+          clauses.push(WithClause.Clause(pattern, guard, _parseExpr(0)));
+        }
         if (peek() == Token.Comma) { next(); } else { more = false; }
       }
       let body = _parseBlock();
@@ -1158,13 +1162,15 @@ let _primary = fn(start: I32): Expr {
       let typeParams = _typeParams();
       let annotation = _annotation();
       expect(Token.Equal);
-      Expr.LetExpr(pattern, typeParams, annotation, _parseExpr(0))
+      Expr.LetExpr(pattern, typeParams, annotation, _parseExpr(inCondition ? _precedence(Token.And) + 1 : 0))
     },
     LParen => {
       if (peek() == Token.RParen) {
         next();
         return Expr.Tuple([]);
       }
+      let conditioned = inCondition;
+      inCondition = false;
       let first = _element();
 
       if (peek() == Token.Comma) {
@@ -1176,9 +1182,11 @@ let _primary = fn(start: I32): Expr {
           items.push(_element());
         }
         expect(Token.RParen);
+        inCondition = conditioned;
         Expr.Tuple(items)
       } else {
         expect(Token.RParen);
+        inCondition = conditioned;
         _dropMark();
         first
       }
@@ -1502,9 +1510,31 @@ let _expressionStatement = fn(value: Expr): Stmt {
   match (value) {
     LetExpr(pattern, typeParams, annotation, init) => {
       _dropMark();
-      Stmt.LetStmt(false, false, pattern, typeParams, annotation, init)
+      Stmt.LetStmt(false, false, pattern, typeParams, annotation, init, null)
     },
     _ => Stmt.Expression(value),
+  }
+};
+
+let _otherwise = fn(pattern: Pattern): ?Block {
+  if (peek() != Token.Else) { return null; }
+  next();
+  if (isBindPattern(pattern)) { _error("a `let` of one name cannot fail, so it takes no else"); }
+  _parseBlock()
+};
+
+let _letElse = fn(value: Expr): Stmt {
+  match (value) {
+    LetExpr(pattern, typeParams, annotation, init) => {
+      _dropMark();
+      let otherwise = _otherwise(pattern);
+      expect(Token.Semicolon);
+      Stmt.LetStmt(false, false, pattern, typeParams, annotation, init, otherwise)
+    },
+    _ => {
+      _error("only a `let` may have an else");
+      Stmt.Expression(value)
+    },
   }
 };
 
@@ -1610,6 +1640,8 @@ let _statements = fn(end: Token, expected: Bytes): Block {
   let piped = pipelineDepth;
   let going = true;
   let recovered = false;
+  let conditioned = inCondition;
+  inCondition = false;
 
   while (going) {
     try {
@@ -1623,7 +1655,9 @@ let _statements = fn(end: Token, expected: Bytes): Block {
           let start = peek();
           let value = _statementExpr(start);
 
-          if (peek() == Token.Semicolon) {
+          if (peek() == Token.Else) {
+            statements.push(_markStmt(_letElse(value), saved));
+          } else if (peek() == Token.Semicolon) {
             next();
             statements.push(_markStmt(_expressionStatement(value), saved));
           } else if ((peek() == end) || (peek() == Token.Eof)) {
@@ -1639,9 +1673,11 @@ let _statements = fn(end: Token, expected: Bytes): Block {
     } catch (e) {
       _recover(e, marked, saved, end);
       pipelineDepth = piped;
+      inCondition = false;
       recovered = true;
     }
   }
+  inCondition = conditioned;
   if (recovered && (end == Token.RBrace) && (peek() == Token.Eof)) { _quietUntil = tokens.len() + 1; }
   Block.Block(statements, tail)
 };
@@ -1807,8 +1843,9 @@ _parseStmtInner = fn() {
       let annotation = _annotation();
       expect(Token.Equal);
       let value = _parseExpr(0);
+      let otherwise = _otherwise(pattern);
       expect(Token.Semicolon);
-      Stmt.LetStmt(isConst, exported, pattern, typeParams, annotation, value)
+      Stmt.LetStmt(isConst, exported, pattern, typeParams, annotation, value, otherwise)
     },
     Prototype => {
       let name = _ident();
@@ -1902,7 +1939,7 @@ _parseStmtInner = fn() {
     },
     While => {
       expect(Token.LParen);
-      let condition = _parseExpr(0);
+      let condition = _condition();
       expect(Token.RParen);
       let block = _parseBlock();
       _optionalSemicolon();
@@ -1976,6 +2013,7 @@ export let parseProgram: (Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>>) ->
   pending = Token.Eof;
   pipelineDepth = 0;
   pipelineTopic = false;
+  inCondition = false;
   let pkg = Package.None;
   _packageSpan = null;
 

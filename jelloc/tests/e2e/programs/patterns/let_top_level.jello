@@ -1,0 +1,12 @@
+// expect: 3,12,8,9,4
+// A top-level `let` that destructures declares a global for each name it binds.
+enum Shape { Point(x: I32, y: I32); }
+let (a, (b, c)) = (1, (2, 3));
+const Point(x, y) = Shape.Point(4, 5);
+let xs = [6, 7, 8];
+let [first, ..._, last] = xs else { throw "too short"; };
+// Functions after the `let` read its globals; the `let` names may be assigned.
+let sum = fn(): I32 { a + b + c + x };
+a = a + 2;
+let s = fn(v: I32): Bytes { Std.string(v) };
+s(a) + "," + s(sum()) + "," + s(last) + "," + s(first + y - 2) + "," + s(x)

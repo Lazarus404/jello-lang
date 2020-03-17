@@ -4,6 +4,7 @@ import type { Program as AstProgram, Stmt, Type as AstType } from frontend.Ast;
 import { bindPatternName, isBindPattern } from frontend.Ast;
 import { checkAggregateExpr, declareBuiltins } from frontend.CheckAggregates;
 import { checkEnumExpr, declareEnums } from frontend.CheckEnums;
+import { checkCondition, checkLet } from frontend.CheckMatch;
 import { resetDerived, structuralEquality, unsupported } from frontend.CheckDerived;
 import { checkAssertion, declareAssertions } from frontend.CheckTesting;
 import { checkValueExpr } from frontend.CheckValues;
@@ -19,9 +20,9 @@ import { programSyntax } from frontend.Parser;
 import type { Syntax } from frontend.Source;
 import { Syntax } from frontend.Source;
 import {
-  annotatedGlobal, beginCheck, checkAnnotation, bindingType, checkDirect, checkEffect, checkLiteralRanges, checkOperand, currentSpan, declareFunctions, declareStatementGlobal, enterNode, enterSpan, enterSyntax,
-  finishProgram, checkGlobalInitializer, checkTemplate, checkThrow, checkDoWhile, checkWhile, instantiateTemplates, isDirectFunction, isLoaded, isTemplate, poisonDeclared, recoverTopLevel, syntaxChild, takeRegexpInits,
-  unsupportedStatement, useAggregateChecks, useAssertionChecks, useEnumChecks, useStructuralEquality, useUnsupported, useValueChecks,
+  annotatedGlobal, beginCheck, checkAnnotation, bindingType, checkDestructure, checkDirect, checkEffect, checkLiteralRanges, checkOperand, currentSpan, declareFunctions, declareGlobal, enterNode, enterSpan, enterSyntax,
+  finishProgram, checkGlobalInitializer, checkTemplate, checkThrow, checkDoWhile, checkWhile, instantiateTemplates, isDirectFunction, isLoaded, isTemplate, patternNames, poisonDeclared, recoverTopLevel, syntaxChild, takeRegexpInits,
+  unsupportedStatement, useAggregateChecks, useAssertionChecks, useConditionChecks, useEnumChecks, useLetChecks, useStructuralEquality, useUnsupported, useValueChecks,
 } from frontend.TypeCheck;
 import { verifyHir } from frontend.VerifyHir;
 
@@ -83,7 +84,7 @@ let _publish = fn(index: I32, name: Bytes, exported: Bool, opened: Bool) {
 
 let _checkSignature = fn(statement: Stmt, test: I32) {
   match (statement) {
-    LetStmt(_, _, pattern, _, _, _) when (isBindPattern(pattern)) => {
+    LetStmt(_, _, pattern, _, _, _, _) when (isBindPattern(pattern)) => {
       let name = bindPatternName(pattern);
 
       if (isTestName(name) || isHookName(name)) {
@@ -145,7 +146,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
             null
           },
           ImportFrom(_, _, _), ImportModule(_, _, _) => null,
-          LetStmt(_, exported, pattern, _, annotation, value) when (isBindPattern(pattern) && isLoaded(value)) => {
+          LetStmt(_, exported, pattern, _, annotation, value, _) when (isBindPattern(pattern) && isLoaded(value)) => {
             let name = bindPatternName(pattern);
             if ((annotation != null) && _returnsVoid(annotation)) { throw "native " + name + " needs a result type: natives without a result are not supported yet"; }
             let ty = checkAnnotation(annotation);
@@ -158,36 +159,38 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
             _publish(index, name, exported, opened);
             null
           },
-          LetStmt(_, exported, pattern, _, _, _) when (isTemplate(statements[i])) => {
+          LetStmt(_, exported, pattern, _, _, _, _) when (isTemplate(statements[i])) => {
             let name = bindPatternName(pattern);
             checkTemplate(name);
             _publish(index, name, exported, opened);
             null
           },
-          LetStmt(_, exported, pattern, _, _, value) when (isDirectFunction(statements[i])) => {
+          LetStmt(_, exported, pattern, _, _, value, _) when (isDirectFunction(statements[i])) => {
             checkDirect(functionIndex);
             functionIndex++;
             _publish(index, bindPatternName(pattern), exported, opened);
             null
           },
-          LetStmt(isConst, exported, pattern, typeParams, annotation, value) when (isBindPattern(pattern)) => {
+          LetStmt(isConst, exported, pattern, typeParams, annotation, value, _) when (isBindPattern(pattern)) => {
             let name = bindPatternName(pattern);
             if (typeParams.len() != 0) { throw "globals do not support type parameters"; }
             let global = annotation == null ? -1 : annotatedGlobal(i);
             let (checked, suspect) = checkGlobalInitializer(value, global < 0 ? -1 : globalTypeOf(global), name);
-            let ty = typeOf(checked);
-
-            if (global < 0) {
-              global = declareStatementGlobal(name, ty, !isConst);
-              declareScoped(name, Binding.Global(global));
-            }
+            let init = global < 0 ? declareGlobal(name, checked, !isConst) : node(Op.InitGlobal, typeOf(checked), global, 0, [checked]);
             if (suspect) { poison(name); }
-            _initializers.push(node(Op.Declare, 0, 0, 0, [node(Op.InitGlobal, ty, global, 0, [checked])]));
+            _initializers.push(node(Op.Declare, 0, 0, 0, [init]));
             _publish(index, name, exported, opened);
             null
           },
-          LetStmt(_, _, _, _, _, _) => {
-            throw "top-level destructuring is not supported yet";
+          LetStmt(isConst, exported, pattern, typeParams, annotation, value, otherwise) => {
+            _initializers.push(checkDestructure(pattern, isConst, typeParams, annotation, value, otherwise, true));
+            let names = patternNames(pattern);
+            let n = 0;
+
+            while (n < names.len()) {
+              _publish(index, names[n], exported, opened);
+              n++;
+            }
             null
           },
           Expression(value) => {
@@ -262,6 +265,8 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
   beginCheck();
   resetExports();
   useEnumChecks(checkEnumExpr);
+  useLetChecks(checkLet);
+  useConditionChecks(checkCondition);
   useAggregateChecks(checkAggregateExpr);
   declareBuiltins();
   useValueChecks(checkValueExpr);

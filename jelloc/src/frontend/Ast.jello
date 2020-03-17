@@ -149,6 +149,7 @@ export enum MatchAlternative {
 
 export enum WithClause {
   Clause(pattern: Pattern, guard: ?Expr, value: Expr);
+  Let(pattern: Pattern, value: Expr);
 }
 
 export enum MatchArms {
@@ -167,13 +168,13 @@ export enum Pattern {
   Object(fields: Array<Tuple<Bytes, Pattern>>);
   Tuple(items: Array<Pattern>);
   Array(items: Array<Pattern>);
-  ArrayCons(head: Pattern, tail: Bytes);
-  ArrayRest(prefix: Array<Pattern>, rest: Bytes);
   Enum(name: Bytes, args: Array<Pattern>);
   RegExp(pattern: Bytes, flags: Bytes, binding: ?Bytes);
   IsType(ty: Type, binding: ?Bytes);
   Bits(segments: Array<BitPatternSegment>);
   Float(literal: Bytes, size: FloatSize);
+  Null;
+  Spread(binding: ?Bytes);
 }
 
 export enum Expr {
@@ -267,7 +268,8 @@ export enum PrototypeField {
 }
 
 export enum Stmt {
-  LetStmt(isConst: Bool, exported: Bool, pattern: Pattern, typeParams: Array<TypeParam>, annotation: ?Type, value: Expr);
+  LetStmt(isConst: Bool, exported: Bool, pattern: Pattern, typeParams: Array<TypeParam>,
+    annotation: ?Type, value: Expr, otherwise: ?Block);
   Prototype(exported: Bool, name: Bytes, typeParams: Array<TypeParam>, fields: Array<PrototypeField>);
   Typedef(exported: Bool, name: Bytes, typeParams: Array<TypeParam>, body: TypedefBody);
   Enum(exported: Bool, name: Bytes, typeParams: Array<TypeParam>, constructors: Array<EnumConstructor>);
@@ -320,14 +322,14 @@ export let exprTag: (Expr) -> I32 = fn(expr) {
 export let patternTag: (Pattern) -> I32 = fn(pattern) {
   match (pattern) {
     Wildcard => 1, BindPattern(_) => 2, Pin(_) => 3, Bool(_) => 4, Integer(_, _) => 5, Bytes(_) => 6, Atom(_) => 7,
-    Object(_) => 8, Tuple(_) => 9, Array(_) => 10, ArrayCons(_, _) => 11, ArrayRest(_, _) => 12, Enum(_, _) => 13,
-    RegExp(_, _, _) => 14, IsType(_, _) => 15, Bits(_) => 16, Float(_, _) => 17,
+    Object(_) => 8, Tuple(_) => 9, Array(_) => 10, Enum(_, _) => 11, RegExp(_, _, _) => 12,
+    IsType(_, _) => 13, Bits(_) => 14, Float(_, _) => 15, Null => 16, Spread(_) => 17,
   }
 };
 
 export let stmtTag: (Stmt) -> I32 = fn(stmt) {
   match (stmt) {
-    LetStmt(_, _, _, _, _, _) => 1, Prototype(_, _, _, _) => 2, Typedef(_, _, _, _) => 3, Enum(_, _, _, _) => 4,
+    LetStmt(_, _, _, _, _, _, _) => 1, Prototype(_, _, _, _) => 2, Typedef(_, _, _, _) => 3, Enum(_, _, _, _) => 4,
     Macro(_, _, _, _) => 5, ImportModule(_, _, _) => 6, ImportFrom(_, _, _) => 7, While(_, _) => 8,
     DoWhile(_, _) => 9, Break => 10, Continue => 11, Throw(_) => 12, Return(_) => 13, Expression(_) => 14,
   }

@@ -31,7 +31,8 @@ let _fieldsUnsupported = fn(ty: I32, printing: Bool): I32 {
 };
 _unsupported = fn(ty, printing) {
   match (H.kindOf(ty)) {
-    Function, ByteBuffer => ty,
+    Function => printing ? ty : -1,
+    ByteBuffer => ty,
     Dynamic => printing ? -1 : ty,
     Null => H.innerOf(ty) < 0 ? -1 : _unsupported(H.innerOf(ty), printing),
     Array, List => _unsupported(H.innerOf(ty), printing),
@@ -72,7 +73,7 @@ let _tag = fn(value: I32): I32 { H.node(Op.EnumTag, H.TYPE_I32, 0, 0, [value]) }
 let _unlessEqual = fn(equal: I32): I32 {
   H.node(Op.IfStatement, 0, 0, 0, [_not(equal), H.node(Op.Block, 0, 0, 0, [H.node(Op.Return, 0, 0, 0, [boolOf(false)])])])
 };
-let _expression = fn(value: I32): I32 { H.node(Op.Expression, 0, 0, 0, [value]) };
+export let expressionOf: (I32) -> I32 = fn(value) { H.node(Op.Expression, 0, 0, 0, [value]) };
 
 let _tuples = fn(left: I32, right: I32, ty: I32): Array<I32> {
   let equal = -1;
@@ -126,7 +127,7 @@ let _arrays = fn(left: I32, right: I32, ty: I32): Array<I32> {
     H.declareBinding(Op.Const, length, "length", lengthOf(left)),
     _unlessEqual(H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [H.local(length, H.TYPE_I32), lengthOf(right)])),
     H.declareBinding(Op.Let, index, "index", i32Of(0)),
-    H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, [_unlessEqual(equalValues(BinaryOp.Equal, at(left), at(right))), _expression(next)])]),
+    H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, [_unlessEqual(equalValues(BinaryOp.Equal, at(left), at(right))), expressionOf(next)])]),
     boolOf(true)
   ]
 };
@@ -137,7 +138,7 @@ let _lists = fn(left: I32, right: I32, ty: I32): Array<I32> {
   let element = H.innerOf(ty);
   let isNil = fn(binding: I32): I32 { H.node(Op.ListIsNil, H.TYPE_BOOL, 0, 0, [H.local(binding, ty)]) };
   let head = fn(binding: I32): I32 { H.node(Op.ListHead, element, 0, 0, [H.local(binding, ty)]) };
-  let advance = fn(binding: I32): I32 { _expression(H.node(Op.Assign, ty, binding, 0, [H.node(Op.ListTail, ty, 0, 0, [H.local(binding, ty)])])) };
+  let advance = fn(binding: I32): I32 { expressionOf(H.node(Op.Assign, ty, binding, 0, [H.node(Op.ListTail, ty, 0, 0, [H.local(binding, ty)])])) };
   let same = H.node(Op.And, H.TYPE_BOOL, 0, 0, [_not(isNil(b)), equalValues(BinaryOp.Equal, head(a), head(b))]);
   [
     H.declareBinding(Op.Let, a, "left", H.local(left, ty)),
@@ -227,7 +228,7 @@ let _tupleText = fn(value: I32, ty: I32): Array<I32> {
     texts.push(_shown(H.node(Op.TupleField, H.typeArg(ty, i), i, 0, [H.local(value, ty)]), true));
     i++;
   }
-  [_listed("(", texts, ")")]
+  [_listed("(", texts, texts.len() == 1 ? ",)" : ")")]
 };
 
 let _variantName = fn(ty: I32, tag: I32): Bytes { H.enumName(ty) + "." + H.variantName(ty, tag) };
@@ -271,8 +272,8 @@ let _merging = fn(parts: I32, condition: ?I32): I32 {
   H.node(Op.While, 0, 0, 0, [
     condition == null ? several : H.node(Op.And, H.TYPE_BOOL, 0, 0, [several, condition]),
     H.node(Op.Block, 0, 0, 0, [
-      _expression(H.node(Op.ArraySet, H.TYPE_BYTES, 0, 0, [_stackOf(parts), H.node(Op.Sub, H.TYPE_I32, 0, 0, [_countOf(parts), i32Of(2)]), merged])),
-      _expression(H.node(Op.ArrayPop, H.TYPE_BYTES, 0, 0, [_stackOf(parts)]))
+      expressionOf(H.node(Op.ArraySet, H.TYPE_BYTES, 0, 0, [_stackOf(parts), H.node(Op.Sub, H.TYPE_I32, 0, 0, [_countOf(parts), i32Of(2)]), merged])),
+      expressionOf(H.node(Op.ArrayPop, H.TYPE_BYTES, 0, 0, [_stackOf(parts)]))
     ])
   ])
 };
@@ -283,17 +284,17 @@ let _bracketed = fn(setup: I32, more: I32, element: I32, next: I32): Array<I32> 
   let twice = H.node(Op.Shl, H.TYPE_I32, 0, 0, [_fromTop(parts, 1, true), i32Of(1)]);
   let shorter = H.node(Op.Lt, H.TYPE_BOOL, 0, 0, [twice, _fromTop(parts, 2, true)]);
   let body = [
-    _expression(H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [_stackOf(parts), concatOf(H.local(separator, H.TYPE_BYTES), _shown(element, true))])),
-    _expression(H.node(Op.Assign, H.TYPE_BYTES, separator, 0, [bytesOf(", ")])),
+    expressionOf(H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [_stackOf(parts), concatOf(H.local(separator, H.TYPE_BYTES), _shown(element, true))])),
+    expressionOf(H.node(Op.Assign, H.TYPE_BYTES, separator, 0, [bytesOf(", ")])),
     _merging(parts, _not(shorter)),
-    _expression(next)
+    expressionOf(next)
   ];
   [
     setup,
     H.declareBinding(Op.Let, parts, "parts", H.node(Op.ArrayLiteral, H.arrayType(H.TYPE_BYTES), 0, 0, [bytesOf("[")])),
     H.declareBinding(Op.Let, separator, "separator", bytesOf("")),
     H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, body)]),
-    _expression(H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [_stackOf(parts), bytesOf("]")])),
+    expressionOf(H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [_stackOf(parts), bytesOf("]")])),
     _merging(parts, null),
     _fromTop(parts, 1, false)
   ]
@@ -341,8 +342,8 @@ _shown = fn(value, quoted) {
     Bool, I32, I64, Atom, I8, I16, U8, U16, U32, F64, F32, F16, Var => H.callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [value])]),
     U64 => H.callStd("u64_string", [H.TYPE_U64], H.TYPE_BYTES, [value]),
     Dynamic => H.callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [value]),
-    Null when (H.innerOf(ty) < 0) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [_expression(value), bytesOf("null")]),
-    _ when (inTemplate()) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [_expression(value), bytesOf("")]),
+    Null when (H.innerOf(ty) < 0) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("null")]),
+    _ when (inTemplate()) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("")]),
     _ => callFunction(Binding.Function(_derived(_stringTypes, _stringFunctions, "string", ["value"], ty, H.TYPE_BYTES, _stringBody)), "string", [value]),
   }
 };

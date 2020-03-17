@@ -87,7 +87,7 @@ let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, poo
     BitXor => "bitxor." + _width(registers, args[0]) + " " + operands,
     Neg => _qualified(registers, args[0], "neg.wrap.", "neg.") + " " + operands,
     Not => "not.bool " + operands,
-    Eq => "eq." + _width(registers, args[0]) + " " + operands,
+    Eq => "eq." + match (registers[args[0]]) { Function(_, _) => "fn", _ => _width(registers, args[0]) } + " " + operands,
     Lt => _qualified(registers, args[0], "lt.s.", "lt.") + " " + operands,
     LtU => "lt.u." + _width(registers, args[0]) + " " + operands,
     Sext => "sext.i32.i64 " + operands,

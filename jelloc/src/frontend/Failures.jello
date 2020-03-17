@@ -16,6 +16,7 @@ let _poisonedLocals = Array.new<I32>(0);
 let _given = 0;
 let _touched = false;
 let _doubted = false;
+let _warnings = Array.new<Tuple<?SourceSpan, Bytes>>(0);
 
 export let resetFailures = fn(): Bool {
   _failures = Array.new<Tuple<?SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
@@ -26,6 +27,7 @@ export let resetFailures = fn(): Bool {
   _given = 0;
   _touched = false;
   _doubted = false;
+  _warnings = Array.new<Tuple<?SourceSpan, Bytes>>(0);
   true
 };
 
@@ -82,6 +84,18 @@ export let takeFailures = fn(): Tuple<Array<Tuple<?SourceSpan, Bytes, ?SourceSpa
   let failures = _failures;
   _failures = Array.new<Tuple<?SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
   (failures, failures.len() >= MAX_FAILURES)
+};
+
+export let warn = fn(span: ?SourceSpan, message: Bytes): Bool {
+  let warning = (span, message);
+  if (indexOf(_warnings, warning) < 0) { _warnings.push(warning); }
+  true
+};
+
+export let takeWarnings = fn(): Array<Tuple<?SourceSpan, Bytes>> {
+  let warnings = _warnings;
+  _warnings = Array.new<Tuple<?SourceSpan, Bytes>>(0);
+  warnings
 };
 
 export let poison = fn(name: Bytes): Bool {

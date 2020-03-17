@@ -1,0 +1,7 @@
+// expect: 3,9,4,7,
+// A tuple spread stands for the items between; bound, it is a tuple of them.
+let t = fn(p: Tuple<I32, Bytes, Bool>): I32 { match (p) { (a, ...rest) => a + rest.0.len() } };
+let u = fn(p: Tuple<I32, I32, I32>): I32 { match (p) { (..._, 9) => 9, (a, ..._, c) => a + c } };
+let w = fn(p: Tuple<I32, I32, I32>): I32 { match (p) { (a, ...mid, c) => a + mid.0 + c } };
+let s = fn(n: I32): Bytes { Std.string(n) + "," };
+s(t((1, "ab", true))) + s(u((1, 2, 9))) + s(u((1, 2, 3))) + s(w((1, 2, 4)))

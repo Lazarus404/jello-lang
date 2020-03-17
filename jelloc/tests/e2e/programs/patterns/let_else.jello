@@ -1,0 +1,47 @@
+// expect: all,bool,atom,int,float,bytes,code,both,not the limit,not the base,4,square,7,none,null,some,31,empty,5,not one,
+// `let ... else` takes each kind of pattern that can fail; the else leaves when it does not match.
+enum Shape { Circle(r: I32); Square(s: I32); }
+const LIMIT: I32 = 10;
+let out = "";
+let put = fn(v: Bytes) { out = out + v + ","; null };
+let n = fn(v: I32): Bytes { Std.string(v) };
+let literals = fn(i: I32, f: F64, b: Bool, w: Bytes, a: Atom, c: I32): Bytes {
+  let 5 = i else { return "int"; };
+  let 2.5 = f else { return "float"; };
+  let true = b else { return "bool"; };
+  let "go" = w else { return "bytes"; };
+  let :ok = a else { return "atom"; };
+  let "g".code = c else { return "code"; };
+  "all"
+};
+put(literals(5, 2.5, true, "go", :ok, "g".code));
+put(literals(5, 2.5, false, "go", :ok, 0));
+put(literals(5, 2.5, true, "go", :no, 0));
+put(literals(4, 2.5, true, "go", :ok, 0)); put(literals(5, 0.5, true, "go", :ok, 0));
+put(literals(5, 2.5, true, "no", :ok, 0)); put(literals(5, 2.5, true, "go", :ok, 0));
+let names = fn(v: I32, base: I32): Bytes {
+  let (LIMIT, _) = (v, 0) else { return "not the limit"; };
+  let (^base, _) = (v, 0) else { return "not the base"; };
+  "both"
+};
+put(names(10, 10)); put(names(3, 10)); put(names(10, 3));
+let shapes = fn(s: Shape): Bytes { let Circle(r) = s else { return "square"; }; n(r) };
+put(shapes(Shape.Circle(4))); put(shapes(Shape.Square(4)));
+let nulls = fn(v: ?I32): Bytes {
+  let is I32 as x = v else { return "none"; };
+  n(x)
+};
+put(nulls(7)); put(nulls(null));
+let absent = fn(v: ?I32): Bytes { let null = v else { return "some"; }; "null" };
+put(absent(null)); put(absent(1));
+let heads = fn(xs: List<I32>): Bytes {
+  let [h | t] = xs else { return "empty"; };
+  n(h) + n(match (t) { [] => 0, _ => 1 })
+};
+put(heads(List.cons(3, List.cons(4, List.nil())))); put(heads(List.nil()));
+let tuples = fn(t: Tuple<I32, I32, I32>): Bytes {
+  let (1, ...rest) = t else { return "not one"; };
+  n(rest.0 + rest.1)
+};
+put(tuples((1, 2, 3))); put(tuples((2, 2, 3)));
+out

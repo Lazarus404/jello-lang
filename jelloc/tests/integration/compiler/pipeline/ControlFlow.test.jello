@@ -228,7 +228,7 @@ let testLowersStatementIfAndDropsCodeAfterTheEndOfEveryPath = fn(t: Test) {
     "let f = fn(flag: Bool): I32 { if (flag) { return 1; } else { return 2; } 3 }; f(true)"
   );
   T.isTrue(t, !contains(printIr(dead), "i32 3"));
-  T.isTrue(t, !contains(printIr(dead), "block 2"));
+  T.isTrue(t, !contains(printIr(dead), "block 1"));
   // A result type is inferred from a return inside an if.
   T.isTrue(t, verifyProgram(lowered(
     "let f = fn(flag: Bool) { if (flag) { return 1; } 2 }; f(true)"

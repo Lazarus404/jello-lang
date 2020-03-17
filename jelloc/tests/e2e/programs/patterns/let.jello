@@ -1,0 +1,26 @@
+// expect: 133,7,0,3,6,
+// A local `let` destructures with any pattern that cannot fail; `let ... else` takes one that can.
+enum Shape { Point(x: I32, y: I32); }
+let f = fn(): I32 {
+  let (a, (b, c)) = (1, (2, 3));
+  let Point(x, y) = Shape.Point(4, 5);
+  let [..._, last] = [6, 7, 8] else { return -1; };
+  // A `let`'s names may be assigned; a `const`'s may not.
+  a = a + 10;
+  const (k, _) = (100, 0);
+  a + b + c + x + y + last + k
+};
+let g = fn(xs: Array<I32>): I32 { const [h, ...t] = xs else { return 0; }; h + t.len() };
+let n = fn(): I32 { let (p, q): Tuple<I32, I32> = (1, 2); p + q };
+// The else may leave a loop too.
+let sum = fn(rows: Array<Array<I32>>): I32 {
+  let total = 0; let i = 0;
+  while (i < rows.len()) {
+    let row = rows[i]; i++;
+    let [first, ..._] = row else { continue; };
+    total += first;
+  }
+  total
+};
+let s = fn(v: I32): Bytes { Std.string(v) + "," };
+s(f()) + s(g([5, 6, 7])) + s(g([])) + s(n()) + s(sum([[1, 9], [], [5]]))

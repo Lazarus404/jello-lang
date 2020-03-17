@@ -3,7 +3,7 @@ package frontend;
 import type { Expr as AstExpr, Stmt, Type as AstType } from frontend.Ast;
 import { indexOf } from std.core.Arrays;
 import { Op, appliedType, declareEnum, declareGenericEnum, defineVariants, enumParams, fieldCount, fieldType, isOpen, newVar, node, typeOf, unify, variantTag } from frontend.Hir;
-import { checkMatch } from frontend.CheckMatch;
+import { checkMatch, checkWith } from frontend.CheckMatch;
 import { internalError } from frontend.Internal;
 import { declareScopedType, exportScopedType, scopedType } from frontend.ModuleScope;
 import { checkOperand, checkType, checkTypeArgCount, checkTypeParams, enterSyntax, paramNames, rejectAt, syntaxChild, useTypeParams, widened } from frontend.TypeCheck;
@@ -122,6 +122,7 @@ let _construct = fn(base: AstExpr, variant: Bytes, variantTypes: Array<AstType>,
 export let checkEnumExpr: (AstExpr, I32, Bool) -> I32 = fn(expr, expected, statement) {
   match (expr) {
     Match(subject, arms) => checkMatch(subject, arms, expected, statement),
+    With(clauses, body, elseArms) => checkWith(clauses, body, elseArms, expected),
     Member(base, variant) => _construct(base, variant, Array.new<AstType>(0), Array.new<AstExpr>(0), false, expected),
     Call(Member(base, variant), typeArgs, args) => _construct(base, variant, typeArgs, args, true, expected),
     _ => {

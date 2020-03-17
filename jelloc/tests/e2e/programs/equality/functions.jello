@@ -1,0 +1,25 @@
+// expect: ttftttftttfttfft
+// Functions are equal when they are the same value: a function without captures has one, and each
+// closure made is its own.
+enum Handler { On(run: () -> I32); Off; }
+let f = fn() { 1 };
+let g = fn() { 2 };
+let h = f;
+let make = fn(n: I32): () -> I32 { fn() { n } };
+let c = make(1);
+let maybe: ?(() -> I32) = f;
+let none: ?(() -> I32) = null;
+let out = "";
+let put = fn(b: Bool) { out = out + (b ? "t" : "f"); null };
+put(h == f); put(f != g); put(make(1) == make(1)); put(c == c);
+put(maybe == f); put(none == null); put(none == f); put(maybe != null);
+put(Array.new<() -> I32>(0) == Array.new<() -> I32>(0));
+let xs = Array.new<() -> I32>(0); xs.push(f);
+let ys = Array.new<() -> I32>(0); ys.push(h);
+put(xs == ys); ys.push(g); put(xs == ys);
+put(List.cons(f, List.nil()) == List.cons(h, List.nil()));
+put(Handler.On(f) == Handler.On(h)); put(Handler.On(f) == Handler.On(g));
+put(Handler.On(f) == Handler.Off);
+let local = fn(): Bool { let k = fn() { 3 }; k == k };
+put(local());
+out

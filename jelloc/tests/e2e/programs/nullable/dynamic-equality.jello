@@ -1,0 +1,27 @@
+// expect: ttttttfttttftttttttt,lr
+// A Dynamic equals a value when it holds a value of that type equal to it; an integer compares
+// by number with a boxed I32 or I64.
+enum Shape { Circle(r: I32); Dot; }
+let out = "";
+let put = fn(b: Bool) { out = out + (b ? "t" : "f"); null };
+let small = 7 as Dynamic;
+let wide = (7 as I64) as Dynamic;
+let narrow: I8 = 7;
+put(small == 7); put(wide == 7); put(7 == small); put(small == narrow); put(wide == (7 as I64));
+put(small != 8); put(small == "7");
+let text = "ok" as Dynamic;
+put(text == "ok"); put((:a as Dynamic) == :a); put((true as Dynamic) == true);
+put((1.5 as Dynamic) == 1.5); put((1.5 as Dynamic) == 2.5);
+put((Shape.Circle(2) as Dynamic) == Shape.Circle(2)); put((Shape.Dot as Dynamic) == Shape.Dot);
+put((Shape.Dot as Dynamic) != Shape.Circle(1));
+let none: ?I32 = null;
+let some: ?I32 = 7;
+let empty: Dynamic = null;
+put(empty == none); put(small == some); put(empty != some); put(small != none);
+put(empty == null);
+// The left operand is evaluated first.
+let order = "";
+let left = fn(): Dynamic { order = order + "l"; 1 as Dynamic };
+let right = fn(): I32 { order = order + "r"; 1 };
+let _ = left() == right();
+out + "," + order

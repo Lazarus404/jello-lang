@@ -1,7 +1,7 @@
 package backend.jello;
 
 import type { BasicBlock, Function, Instruction, Native, Program, Terminator, ValueType } from ir.Model;
-import { ValueType, argumentCount, argsOf, dstOf, handlerPayload, handlerTarget, immOf, nodeOf, opOf, valueTypeEqual } from ir.Model;
+import { ValueType, argumentCount, comparesByIdentity, argsOf, dstOf, handlerPayload, handlerTarget, immOf, nodeOf, opOf, valueTypeEqual } from ir.Model;
 import { blockId } from ir.Cfg;
 import { internalError } from frontend.Internal;
 import { appendFrom, internIndex } from std.core.Arrays;
@@ -243,7 +243,7 @@ let _instruction = fn(insn: Instruction) {
     BitXor => _insn(_wide(a) ? 52 : 41, dst, a, b, 0),
     Neg => _insn(_numeric(a, 36, 47, -1, 60, 65), dst, a, 0, 0),
     Not => _insn(66, dst, a, 0, 0),
-    Eq => _insn(match (_registerTypes[a]) { Atom => 109, _ => _numeric(a, 67, 71, -1, 73, 75) }, dst, a, b, 0),
+    Eq => _insn(comparesByIdentity(_registerTypes[a]) ? 109 : _numeric(a, 67, 71, -1, 73, 75), dst, a, b, 0),
     Lt => _insn(_numeric(a, 68, 72, -1, 74, 76), dst, a, b, 0),
     Sext => _insn(77, dst, a, 0, 0),
     Trunc => _insn(81, dst, a, 0, 0),

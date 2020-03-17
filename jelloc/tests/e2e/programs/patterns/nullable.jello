@@ -1,0 +1,15 @@
+// expect: 0,5,20,42,3,9,7,30,-2,0,1,0,2,1,2,0,2,3,
+// `null` matches an absent value and `is T` a present T, or a Dynamic that holds a T.
+enum Color { Red; Green; }
+let f = fn(x: ?I32): I32 { match (x) { null => 0, 1 => 5, is I32 as n => n * 10 } };
+let g = fn(d: Dynamic): I32 { match (d) { is I32 as n => n + 1, is Bool as b => b ? 3 : 4, _ => 9 } };
+let h = fn(p: Tuple<?I32, I32>): I32 { match (p) { (null, y) => y, (3, _) => 30, (_, y) => 0 - y } };
+let k = fn(x: ?I32): Bool { match (x) { null => false, _ => true } };
+let c = fn(x: ?Color): I32 { match (x) { null => 0, Red => 1, Green => 2 } };
+// A pin compares as `==` does, so a nullable one matches null; one that cannot be null needs a value.
+let pin = fn(p: Tuple<?I32, I32>, x: ?I32, y: I32): I32 { match (p) { (^x, _) => 1, (^y, _) => 2, _ => 0 } };
+let late = fn(x: ?I32, p: ?I32): I32 { match (x) { is I32 => 1, ^p => 2, null => 3 } };
+let s = fn(n: I32): Bytes { Std.string(n) + "," };
+s(f(null)) + s(f(1)) + s(f(2)) + s(g(41 as Dynamic)) + s(g(true as Dynamic)) + s(g("s" as Dynamic))
+  + s(h((null, 7))) + s(h((3, 1))) + s(h((4, 2))) + s(k(null) ? 1 : 0) + s(k(0) ? 1 : 0) + s(c(null)) + s(c(Color.Green))
+  + s(pin((null, 0), null, 3)) + s(pin((3, 0), 5, 3)) + s(pin((null, 0), 5, 3)) + s(late(null, null)) + s(late(null, 4))

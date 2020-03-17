@@ -1,0 +1,4 @@
+// error: 3:37: a U64 cannot become Dynamic: one above the greatest I64 would read as negative
+let u: U64 = 18446744073709551615;
+let f = fn(i: I32): I32 { with 1 <- u, 2 <- i { 0 } else { _ => 3 } };
+f(1)

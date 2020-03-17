@@ -1,0 +1,57 @@
+// expect: all,int4,float,bool,bytes,atom,int0,-1,10,3,4,9,some-1,null,null,some1,11,short,short,5,20,3,-1,10,2,6,-1,-2,-2,none,3,
+// `with` takes each kind of pattern; a clause that fails gives its value, or the else arms
+// match it.
+enum Shape { Circle(r: I32); Square(s: I32); }
+const LIMIT: I32 = 10;
+let out = "";
+let put = fn(v: Bytes) { out = out + v + ","; null };
+let n = fn(v: I32): Bytes { Std.string(v) };
+// The failing values differ in type, so the else matches a Dynamic; a float's test takes an
+// I32.
+let literals = fn(i: I32, f: F64, b: Bool, w: Bytes, a: Atom, c: I32): Bytes {
+  with 5 <- i, 2.5 <- f, true <- b, "go" <- w, :ok <- a, "g".code <- c { "all" } else {
+    is I32 as v => "int" + n(v), is F64 => "float", is Bool => "bool", is Bytes => "bytes",
+    is Atom => "atom", _ => "?",
+  }
+};
+put(literals(5, 2.5, true, "go", :ok, "g".code)); put(literals(4, 2.5, true, "go", :ok, 0));
+put(literals(5, 0.5, true, "go", :ok, 0)); put(literals(5, 2.5, false, "go", :ok, 0));
+put(literals(5, 2.5, true, "no", :ok, 0)); put(literals(5, 2.5, true, "go", :no, 0));
+put(literals(5, 2.5, true, "go", :ok, 0));
+// Without an else, the value of the clause that failed is the with's.
+let names = fn(v: I32, base: I32): I32 { with LIMIT <- v, ^base <- v { -1 } };
+put(n(names(10, 10))); put(n(names(10, 3))); put(n(names(3, 10)));
+let shapes = fn(s: Shape): Bytes {
+  with Circle(r) <- s { n(r) } else { Square(x) => n(x + 5), Circle(_) => "?" }
+};
+put(shapes(Shape.Circle(4))); put(shapes(Shape.Square(4)));
+let nulls = fn(v: ?I32): Bytes { with is I32 as x <- v { "some" + n(x) } else { _ => "null" } };
+put(nulls(-1)); put(nulls(null));
+let absent = fn(v: ?I32): Bytes {
+  with null <- v { "null" } else { is I32 as x => "some" + n(x), _ => "?" }
+};
+put(absent(null)); put(absent(1));
+// A later clause sees the names that earlier ones bind; a let clause cannot fail.
+let heads = fn(xs: List<I32>): Bytes {
+  with [h | t] <- xs, let k = h + 4, [m | _] <- t { n(k + m) } else { _ => "short" }
+};
+put(heads(List.cons(3, List.cons(4, List.nil())))); put(heads(List.cons(3, List.nil())));
+put(heads(List.nil()));
+let tuples = fn(t: Tuple<I32, I32, I32>): I32 {
+  with (1, ...rest) <- t, let (a, b) = rest { a + b } else { (x, _, _) => x * 10 }
+};
+put(n(tuples((1, 2, 3)))); put(n(tuples((2, 2, 3))));
+let arrays = fn(xs: Array<I32>): I32 { with [a, b] <- xs { a + b } else { _ => -1 } };
+put(n(arrays([1, 2]))); put(n(arrays([1])));
+// A guard fails the clause as its pattern does; the clause's value is still the one given.
+let guarded = fn(v: I32): I32 { with x when (x > 3) <- v { x * 2 } };
+put(n(guarded(5))); put(n(guarded(2)));
+let both = fn(a: ?I32, s: Shape): I32 {
+  with is I32 as x <- a, Circle(r) when (r > x) <- s { x + r } else { is Shape => -2, _ => -1 }
+};
+put(n(both(1, Shape.Circle(5)))); put(n(both(null, Shape.Circle(5))));
+put(n(both(9, Shape.Circle(5)))); put(n(both(1, Shape.Square(5))));
+// Without an else or a context, the with's type joins the body's and the failing values'.
+let either = fn(v: ?I32): Bytes { let r = with is I32 as x <- v { x }; r == null ? "none" : n(r) };
+put(either(null)); put(either(3));
+out

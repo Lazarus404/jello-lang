@@ -5,9 +5,10 @@ import { BinaryOp } from frontend.Ast;
 import frontend.Hir as H;
 import { internalError } from frontend.Internal;
 import { Kind, Op } from frontend.Hir;
-import { boundHint, stringOf, unprintable } from frontend.CheckDerived;
+import { boundHint, expressionOf, i32Of, stringOf, unprintable } from frontend.CheckDerived;
 import { checkNumberCall } from frontend.CheckMath;
 import { checkSystemAssertion } from frontend.CheckTesting;
+import { toDynamic } from frontend.CheckValues;
 import { touch } from frontend.Failures;
 import { appendFrom } from std.core.Arrays;
 import { binaryValues, bufferHint, checkArity, checkInstance, checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, hasSpread, hideValue, isBound, joinArrays, newBinding, one, rejectAt, spreadArray, spreadOperand, syntaxChild, tupleFields, widened } from frontend.TypeCheck;
@@ -62,7 +63,7 @@ let _codePoint = fn(value: Bytes): I32 {
 };
 
 let _builtin = fn(space: Bytes): Bool {
-  match (space) { "Array", "Atom", "Bytes", "Float", "Integer", "List", "Math", "Std", "System" => !isBound(space), _ => false }
+  match (space) { "Array", "Atom", "Bytes", "Float", "Integer", "List", "Math", "Std", "System", "Tuple" => !isBound(space), _ => false }
 };
 
 let _args = fn(): I32 {
@@ -267,17 +268,47 @@ let _stepIndex = fn(base: AstExpr, index: AstExpr, op: IncDecOp, prefix: Bool): 
   _updateIndex(array, checkedIndex, increment ? BinaryOp.Add : BinaryOp.Subtract, one(_elementOf(array)), true, !prefix)
 };
 
-let _string = fn(args: Array<AstExpr>): I32 {
-  checkArity(args, 1, "Std.string");
-  let value = checkOperand(args[0], 1, -1);
+let _printed = fn(value: I32, what: Bytes, at: I32): I32 {
   let ty = H.typeOf(value);
   let bad = unprintable(value);
 
   if (bad >= 0) {
-    enterSyntax(syntaxChild(1));
-    throw "Std.string cannot print " + H.typeName(ty) + (bad == ty ? "" : ", which holds " + H.typeName(bad)) + bufferHint(bad) + boundHint(bad, true);
+    if (at >= 0) { enterSyntax(syntaxChild(at)); }
+    throw what + " cannot print " + H.typeName(ty) + (bad == ty ? "" : ", which holds " + H.typeName(bad)) + bufferHint(bad) + boundHint(bad, true);
   }
   stringOf(value)
+};
+
+let _string = fn(args: Array<AstExpr>): I32 {
+  checkArity(args, 1, "Std.string");
+  _printed(checkOperand(args[0], 1, -1), "Std.string", 1)
+};
+
+let _tupleLength = fn(tuple: I32): I32 {
+  H.node(Op.Block, H.TYPE_I32, 0, 1, [expressionOf(tuple), i32Of(H.typeArgCount(H.typeOf(tuple)))])
+};
+
+let _tupleField = fn(tuple: I32, index: I32): I32 {
+  let statements = Array.new<I32>(0);
+  let fields = tupleFields(tuple, 1, statements);
+  let i = 0;
+
+  while (i < fields.len()) {
+    fields[i] = toDynamic(fields[i]);
+    i++;
+  }
+  let known = match (H.opOf(index)) { I32 => H.valueOf(index), _ => -1 };
+
+  if (fields.len() == 1) {
+    statements.push(expressionOf(index));
+    statements.push(fields[0]);
+  } else if ((known >= 0) && (known < fields.len())) {
+    statements.push(fields[known]);
+  } else {
+    let array = H.node(Op.ArrayLiteral, H.arrayType(H.TYPE_DYNAMIC), 0, 0, fields);
+    statements.push(H.node(Op.ArrayGet, H.TYPE_DYNAMIC, 0, 0, [array, index]));
+  }
+  H.node(Op.Block, H.TYPE_DYNAMIC, 0, 1, statements)
 };
 
 enum Builtin { Builtin(signature: I32, op: Op, container: I32, messages: Array<Bytes>); }
@@ -374,6 +405,15 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
       }
     },
     "Std.string" => _string(args),
+    "Tuple.len" => {
+      checkArity(args, 1, qualified);
+      _tupleLength(_of(args[0], 1, Kind.Tuple, -1, "Tuple.len requires a tuple"))
+    },
+    "Tuple.get" => {
+      checkArity(args, 2, qualified);
+      let tuple = _of(args[0], 1, Kind.Tuple, -1, "Tuple.get requires a tuple");
+      _tupleField(tuple, _i32(args[1], 2, "Tuple.get index"))
+    },
     "System.assert" => checkSystemAssertion("assert", qualified, args),
     "System.assertEq" => checkSystemAssertion("assertEq", qualified, args),
     "System.exit" => {
@@ -400,9 +440,13 @@ let _method = fn(base: AstExpr, name: Bytes, args: Array<AstExpr>, expected: I32
       if (builtin < 0) { throw "unknown array method: " + name; }
       _checkBuiltin(builtin, name, _NO_TYPES, receiver, args, expected)
     },
-    Atom when (name == "toString") => {
+    Atom, Tuple when (name == "toString") => {
       checkArity(args, 0, "toString");
-      stringOf(receiver)
+      _printed(receiver, "toString", -1)
+    },
+    Tuple when (name == "len") => {
+      checkArity(args, 0, "len");
+      _tupleLength(receiver)
     },
     _ => {
       throw "unknown method " + name + " of " + H.typeName(ty);

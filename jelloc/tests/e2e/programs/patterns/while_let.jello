@@ -1,0 +1,72 @@
+// expect: 10,567,6,3,0,2,86,3,2,11112,21/7/1,6,
+// `while (let ...)` tests its pattern again before each pass and binds fresh names each time.
+enum Step { More(n: I32); Done; }
+const STOP: I32 = 0;
+let of = fn(xs: Array<I32>): List<I32> {
+  let out: List<I32> = List.nil(); let i = xs.len() - 1;
+  while (i >= 0) { out = List.cons(xs[i], out); i--; }
+  out
+};
+let out = "";
+let put = fn(v: Bytes) { out = out + v + ","; null };
+let n = fn(v: I32): Bytes { Std.string(v) };
+// A list pattern walks a list.
+let sum = 0; let rest = of([1, 2, 3, 4]);
+while (let [h | t] = rest) { sum = sum + h; rest = t; }
+put(n(sum));
+// An array spread drops the head each pass; a chained test stops early.
+let xs = [5, 6, 7, 8]; let seen = "";
+while (let [h, ...t] = xs && h < 8) { seen = seen + n(h); xs = t; }
+put(seen);
+// An enum constructor, a literal, a constant name, a pin, a tuple, null and `is`.
+let step = Step.More(3); let count = 0;
+while (let More(k) = step) {
+  count = count + k; step = if (k == 1) { Step.Done } else { Step.More(k - 1) };
+}
+put(n(count));
+let flag = true; let flips = 0;
+while (let true = flag) { flips++; flag = flips < 3; }
+put(n(flips));
+let left = 4;
+while (!(let [STOP] = [left])) { left--; }
+put(n(left));
+let target = 2; let climb = 0;
+while (!(let ^target = climb)) { climb++; }
+put(n(climb));
+let pair = (0, 10);
+while (let (lo, hi) = pair && lo < hi) { pair = (lo + 2, hi - 1); }
+put(n(pair.0) + n(pair.1));
+let slots: Array<?I32> = [1, 2, null, 4]; let i = 0; let got = 0;
+while (let is I32 as v = slots[i]) { got = got + v; i++; }
+put(n(got));
+let tail: ?I32 = 3; let waits = 0;
+while (!(let null = tail)) { waits++; tail = if (waits == 2) { null } else { tail }; }
+put(n(waits));
+// Literals of each kind, and tuples nested or spread.
+let k = 3; let ints = 0;
+while (let 3 = k) { ints++; k = 4; }
+let f = 0.5; let floats = 0;
+while (let 0.5 = f) { floats++; f = 1.5; }
+let word = "go"; let words = 0;
+while (let "go" = word) { words++; word = "stop"; }
+let state = :run; let runs = 0;
+while (let :run = state) { runs++; state = :halt; }
+let text = "aab"; let at = 0;
+while (let "a".code = text[at]) { at++; }
+put(n(ints) + n(floats) + n(words) + n(runs) + n(at));
+let nest = (1, (2, 3)); let deep = 0;
+while (let (a, (b, c)) = nest && a < 4) { deep = deep + a + b + c; nest = (a + 1, (b, c)); }
+let trio = (1, 2, 3); let heads = 0;
+while (let (first, ...others) = trio && first < 3) {
+  heads = heads + first + others.0; trio = (first + 1, 2, 3);
+}
+let fixed = [1, 2]; let swaps = 0;
+while (let [x, y] = fixed && x < y) { fixed = [y, x]; swaps++; }
+put(n(deep) + "/" + n(heads) + "/" + n(swaps));
+// `_`, a binding and `..._` match anything, so `break` ends the loop.
+let spins = 0;
+while (let _ = spins) { spins++; if (spins == 2) { break; } }
+while (let x = spins) { if (x > 4) { break; } spins = x + 1; }
+while (let [..._] = xs) { spins++; break; }
+put(n(spins));
+out

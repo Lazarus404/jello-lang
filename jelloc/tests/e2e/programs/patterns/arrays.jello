@@ -1,0 +1,23 @@
+// expect: 0,4,12,104,25,-1,0,5,0,1,4,0,7,3,2,9,
+// Array patterns test the length once and read the elements; only a bound spread copies.
+let f = fn(xs: Array<I32>): I32 {
+  match (xs) {
+    [] => 0,
+    [a] => a,
+    [a, b] => a * 10 + b,
+    [first, ..._, last] => first * 100 + last,
+  }
+};
+let g = fn(xs: Array<I32>): I32 { match (xs) { [_, ...mid, _] => mid.len() * 10 + (mid.len() > 0 ? mid[0] : 0), _ => -1 } };
+let h = fn(xs: Array<I32>): I32 { match (xs) { [h | t] => h + t.len(), [] => 0 } };
+let k = fn(xs: Array<I32>): I32 { match (xs) { [..._, 7] => 1, [1, ...rest] => 2 + rest.len(), _ => 0 } };
+// In a tuple, under a variant, nested, and nullable.
+enum Box { Full(items: Array<Bytes>); Empty; }
+let n = fn(p: Tuple<Array<I32>, I32>): I32 { match (p) { ([a, b | _], c) => a + b + c, (_, c) => c } };
+let b = fn(x: Box): I32 { match (x) { Full(["a", ...more]) => 1 + more.len(), Full(_) => 0, Empty => 9 } };
+let q = fn(xs: Array<Array<I32>>): I32 { match (xs) { [[a], ..._] => a, [[], [b]] => b, _ => 0 } };
+let o = fn(xs: ?Array<I32>): I32 { match (xs) { null => 9, [] => 0, [a, ..._] => a } };
+let s = fn(n: I32): Bytes { Std.string(n) + "," };
+s(f([])) + s(f([4])) + s(f([1, 2])) + s(f([1, 2, 3, 4])) + s(g([1, 5, 6, 9])) + s(g([1])) + s(g([1, 2]))
+  + s(h([3, 4, 5])) + s(h([])) + s(k([0, 7])) + s(k([1, 2, 3])) + s(k([2]))
+  + s(n(([1, 2, 3], 4))) + s(b(Box.Full(["a", "x", "y"]))) + s(q([[2], [5]])) + s(o(null))
