@@ -1,0 +1,109 @@
+package frontend.syntax;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { integerValue, wideIntegerValue } from frontend.syntax.Ast;
+
+import type {
+  BinaryOp,
+  Block,
+  Expr,
+  IntSize,
+  MatchAlternative,
+  MatchArm,
+  Package,
+  Pattern,
+  Program,
+  QuoteBody,
+  QuoteKind,
+  Stmt,
+  Type,
+} from frontend.syntax.Ast;
+
+let testRepresentsRecursiveJelloSyntax = fn(t: Test) {
+  let sum = Expr.Binary(
+    BinaryOp.Add,
+    Expr.Integer("1", IntSize.Infer),
+    Expr.Integer("2", IntSize.I64)
+  );
+  let noGuard: ?Expr = null;
+  let noType: ?Type = null;
+  let noStatements: Array<Stmt> = [];
+  let arms: Array<MatchArm> = [MatchArm.Arm(
+    [MatchAlternative.Alternative(Pattern.BindPattern("n"), noGuard)],
+    noGuard,
+    Block.Block(noStatements, Expr.Variable("n"))
+  )];
+  let packagePath: Array<Bytes> = ["demo", "ast"];
+  let statements: Array<Stmt> = [
+    Stmt.LetStmt(false, false, Pattern.BindPattern("sum"), [], noType, sum, null)
+  ];
+  let tail: ?Expr = Expr.Match(Expr.Variable("sum"), arms);
+  let program = Program.Program(
+    Package.Path(packagePath),
+    statements,
+    tail
+  );
+
+  T.equal(t, program, Program.Program(
+    Package.Path(packagePath),
+    statements,
+    tail
+  ));
+
+  let macroExpr = Expr.Function(
+    [],
+    noType,
+    Block.Block(
+      noStatements,
+      Expr.Quote(
+        QuoteKind.Expression,
+        QuoteBody.Expression(Expr.Unquote(Expr.Variable("x")))
+      )
+    ),
+    true
+  );
+  T.isTrue(t, match (macroExpr) { Function(_, _, _, isMacro) => isMacro, _ => false });
+};
+
+let testPreservesImportedRecursiveEnumPayloadTypes = fn(t: Test) {
+  let named = Type.Named("I32");
+  let function = Type.Function([named], named);
+
+  match (function) {
+    Function(args, result) => {
+      match (args[0]) {
+        Named(name) => T.equal(t, name, "I32"),
+        _ => T.fail(t, "array element lost its recursive enum type"),
+      };
+
+      match (result) {
+        Named(name) => T.equal(t, name, "I32"),
+        _ => T.fail(t, "result lost its recursive enum type"),
+      }
+    },
+    _ => T.fail(t, "function type constructor changed"),
+  };
+};
+
+let rejects = fn(text: Bytes, negative: Bool, wide: Bool): Bytes {
+  try { if (wide) { wideIntegerValue(text, negative); } else { integerValue(text, negative); } "accepted" } catch (e) { Std.string(e) }
+};
+
+let testReadsIntegerLiteralsAtBothWidths = fn(t: Test) {
+  T.equal(t, integerValue("2147483647", false), 2147483647);
+  T.equal(t, integerValue("2147483648", true), -2147483647 - 1);
+  T.equal(t, integerValue("0x7FFF_FFFF", false), 2147483647);
+  T.equal(t, rejects("2147483648", false, false), "integer literal 2147483648 is out of range for I32 (-2147483648 to 2147483647)");
+  T.equal(t, rejects("2147483649", true, false), "integer literal -2147483649 is out of range for I32 (-2147483648 to 2147483647)");
+  T.equal(t, rejects("0xFFFFFFFF", false, false), "integer literal 0xFFFFFFFF is out of range for I32 (-2147483648 to 2147483647)");
+  let max: I64 = 9223372036854775807;
+  T.equal(t, wideIntegerValue("9223372036854775807", false), max);
+  T.equal(t, wideIntegerValue("9223372036854775808", true), -max - 1);
+  T.equal(t, wideIntegerValue("0x7fff_ffff_ffff_ffff", false), max);
+  T.equal(t, wideIntegerValue("0b1_0000_0000_0000_0000_0000_0000_0000_0000", false), max - max + 4294967296);
+  T.equal(t, wideIntegerValue("-1", false), max - max - 1);
+  T.equal(t, rejects("9223372036854775808", false, true), "integer literal 9223372036854775808 is out of range for I64 (-9223372036854775808 to 9223372036854775807)");
+  T.equal(t, rejects("9223372036854775809", true, true), "integer literal -9223372036854775809 is out of range for I64 (-9223372036854775808 to 9223372036854775807)");
+  T.equal(t, rejects("0x1_0000_0000_0000_0000", false, true), "integer literal 0x1_0000_0000_0000_0000 is out of range for I64 (-9223372036854775808 to 9223372036854775807)");
+};

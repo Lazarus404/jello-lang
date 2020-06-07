@@ -1,0 +1,1043 @@
+package frontend.hir;
+
+import type { SourceSpan } from frontend.syntax.Source;
+import { SourceSpan } from frontend.syntax.Source;
+import { internalError } from support.Internal;
+
+export enum Op {
+  Bool; I32; I64; Float; Bytes; Atom; Null; Local; Assign; Global; SetGlobal; InitGlobal; FunctionRef;
+  Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; And; Or; Eq; Lt; Gt; Le; Ge; Convert; Present; IsNull; IsPresent; Unwrap; ToDynamic; FromDynamic; IsKind;
+  ArrayNew; ArrayLiteral; ArrayConcat; ArrayLen; ArrayGet; ArraySet; ArrayPush; ArrayPop; ArrayResize; ListNil; ListCons; ListHead; ListTail; ListIsNil;
+  BytesNew; BytesSet; BitsPack; BitsField; BitsRead; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesConcatMany; BytesEq; Tuple; TupleField; SetField; EnumNew; EnumTag; EnumField;
+  Call; CallIndirect; CallNative; Block; If; Try;
+  Let; Const; Parameter; Capture; Declare; Expression; Return; Throw; Break; Continue; IfStatement; TryStatement; While; Function; Program;
+}
+
+export enum Kind { Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; Dynamic; ByteBuffer; List; Var; Param; Applied; Atom; I8; I16; U8; U16; U32; U64; F16; F32; F64; Optional; Rest; Record; }
+
+export enum Hir {
+  Hir(
+    ops: Array<Op>, nodes: Array<I32>, edges: Array<I32>, bytes: Array<Bytes>,
+    kinds: Array<Kind>, types: Array<I32>, typeEdges: Array<I32>, root: I32, spans: Array<I32>, globals: Array<I32>,
+    natives: Array<I32>, variants: Array<I32>, fields: Array<I32>
+  );
+}
+
+let _NODE_WIDTH = 5;
+let _TYPE_WIDTH = 3;
+let _GLOBAL_WIDTH = 3;
+let _NATIVE_WIDTH = 3;
+let _VARIANT_WIDTH = 3;
+let _FIELD_WIDTH = 2;
+let _SPAN_WIDTH = 3;
+
+export let TYPE_BOOL: I32 = 0;
+export let TYPE_I32: I32 = 1;
+export let TYPE_I64: I32 = 2;
+export let TYPE_BYTES: I32 = 3;
+export let TYPE_NULL: I32 = 4;
+export let TYPE_DYNAMIC: I32 = 5;
+export let TYPE_BYTE_BUFFER: I32 = 6;
+export let TYPE_ATOM: I32 = 7;
+export let TYPE_I8: I32 = 8;
+export let TYPE_I16: I32 = 9;
+export let TYPE_U8: I32 = 10;
+export let TYPE_U16: I32 = 11;
+export let TYPE_U32: I32 = 12;
+export let TYPE_U64: I32 = 13;
+export let TYPE_F16: I32 = 14;
+export let TYPE_F32: I32 = 15;
+export let TYPE_F64: I32 = 16;
+export let isFloatType: (I32) -> Bool = fn(ty) { (ty >= TYPE_F16) && (ty <= TYPE_F64) };
+export let isIntegerType: (I32) -> Bool = fn(ty) { ((ty >= TYPE_I32) && (ty <= TYPE_I64)) || ((ty >= TYPE_I8) && (ty <= TYPE_U64)) };
+
+export let integerBits: (I32) -> I32 = fn(ty) {
+  (ty == TYPE_I8) || (ty == TYPE_U8) ? 8 : (ty == TYPE_I16) || (ty == TYPE_U16) ? 16 : (ty == TYPE_I64) || (ty == TYPE_U64) ? 64 : 32
+};
+export let BITS_BIG = 64;
+export let BITS_FLOAT = 128;
+export let segmentWidth: (I32) -> I32 = fn(code) { code & 63 };
+
+export let segmentType: (I32) -> I32 = fn(code) {
+  (code & BITS_FLOAT) != 0 ? TYPE_F32 : segmentWidth(code) == 0 ? TYPE_BYTES : TYPE_I32
+};
+export let isUnsigned: (I32) -> Bool = fn(ty) { (ty >= TYPE_U8) && (ty <= TYPE_U64) };
+export let isNumberType: (I32) -> Bool = fn(ty) { isIntegerType(ty) || isFloatType(ty) };
+export let leastValue: (I32) -> I64 = fn(ty) { isUnsigned(ty) ? 0 : -((1 as I64) << ((integerBits(ty) - 1) as I64)) };
+export let mostValue: (I32) -> I64 = fn(ty) { ((1 as I64) << ((integerBits(ty) - (isUnsigned(ty) ? 0 : 1)) as I64)) - 1 };
+
+export let KIND_BOOL: I32 = 1;
+export let KIND_I32: I32 = 2;
+export let KIND_ATOM: I32 = 3;
+export let KIND_BYTES: I32 = 4;
+export let KIND_I64: I32 = 7;
+export let KIND_ENUM: I32 = 14;
+export let KIND_F64: I32 = 8;
+export let KIND_F32: I32 = 9;
+export let KIND_F16: I32 = 10;
+export let isFloatKind: (I32) -> Bool = fn(code) { (code >= KIND_F64) && (code <= KIND_F16) };
+
+export let BOUND_EQ: I32 = 1;
+export let BOUND_SHOW: I32 = 2;
+export let BOUND_INTEGER: I32 = 7;
+let _NULLED = 8;
+
+let _ops = Array.new<Op>(0);
+let _nodes = Array.new<I32>(0);
+let _edges = Array.new<I32>(0);
+let _bytes = Array.new<Bytes>(0);
+let _bytesSlots = Array.new<I32>(0);
+let _kinds = Array.new<Kind>(0);
+let _types = Array.new<I32>(0);
+let _typeEdges = Array.new<I32>(0);
+let _typeSlots = Array.new<I32>(0);
+let _open = Array.new<Bool>(0);
+let _parametric = Array.new<Bool>(0);
+let _generic = Array.new<I32>(0);
+let _checking = false;
+let _root = -1;
+let _spans = Array.new<I32>(0);
+let _globals = Array.new<I32>(0);
+let _natives = Array.new<I32>(0);
+let _variants = Array.new<I32>(0);
+let _fields = Array.new<I32>(0);
+let _spanPath = -1;
+let _spanStart = -1;
+let _spanEnd = -1;
+
+export let useHir: (Hir) -> Hir = fn(program) {
+  match (program) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
+    _ops = ops;
+    _nodes = nodes;
+    _edges = edges;
+    _bytes = bytes;
+    _checking = false;
+    _kinds = kinds;
+    _types = types;
+    _typeEdges = typeEdges;
+    _root = root;
+    _spans = spans;
+    _globals = globals;
+    _natives = natives;
+    _variants = variants;
+    _fields = fields;
+  } };
+  program
+};
+
+export let nodeCount: () -> I32 = fn() { _ops.len() as I32 };
+export let rootNode: () -> I32 = fn() { _root };
+export let opOf: (I32) -> Op = fn(id) { _ops[id] };
+export let resolve: (I32) -> I32 = fn(_ty) { -1 };
+let _current = fn(ty: I32): I32 { (_checking && (ty >= 0) && _open[ty]) ? resolve(ty) : ty };
+
+export let typeOf: (I32) -> I32 = fn(id) {
+  let ty = _nodes[id * _NODE_WIDTH];
+  (_checking && (ty >= 0) && _open[ty]) ? resolve(ty) : ty
+};
+export let valueOf: (I32) -> I32 = fn(id) { _nodes[id * _NODE_WIDTH + 1] };
+export let auxOf: (I32) -> I32 = fn(id) { _nodes[id * _NODE_WIDTH + 2] };
+export let childCount: (I32) -> I32 = fn(id) { _nodes[id * _NODE_WIDTH + 4] };
+export let childOf: (I32, I32) -> I32 = fn(id, index) { _edges[_nodes[id * _NODE_WIDTH + 3] + index] };
+export let wideValueOf: (I32) -> I64 = fn(id) { ((auxOf(id) as I64) << 32) | ((valueOf(id) as I64) & 4294967295) };
+export let lastChild: (I32) -> I32 = fn(id) { childOf(id, childCount(id) - 1) };
+
+let _endsPath: (I32) -> Bool = fn(_id) { false };
+_endsPath = fn(id) {
+  match (opOf(id)) {
+    Return, Throw, Break, Continue => true,
+    IfStatement => (childCount(id) == 3) && _endsPath(childOf(id, 1)) && _endsPath(childOf(id, 2)),
+    TryStatement => _endsPath(childOf(id, 0)) && _endsPath(childOf(id, 1)),
+    Block => {
+      let statements = childCount(id) - auxOf(id);
+      (statements > 0) && _endsPath(childOf(id, statements - 1))
+    },
+    _ => false,
+  }
+};
+export let endsPath: (I32) -> Bool = fn(id) { _endsPath(id) };
+
+export let childrenInBounds: (I32) -> Bool = fn(id) {
+  let first = _nodes[id * _NODE_WIDTH + 3];
+  let count = childCount(id);
+  (first >= 0) && (count >= 0) && (first + count <= _edges.len())
+};
+export let bytesOf: (I32) -> Bytes = fn(id) { _bytes[id] };
+export let spanPathOf: (I32) -> I32 = fn(id) { _spans[id * _SPAN_WIDTH] };
+export let spanStartOf: (I32) -> I32 = fn(id) { _spans[id * _SPAN_WIDTH + 1] };
+export let spanEndOf: (I32) -> I32 = fn(id) { _spans[id * _SPAN_WIDTH + 2] };
+export let spanCount: () -> I32 = fn() { (_spans.len() / _SPAN_WIDTH) as I32 };
+export let spanOf: (I32) -> SourceSpan = fn(id) { SourceSpan.Span(_bytes[spanPathOf(id)], spanStartOf(id), spanEndOf(id)) };
+export let bytesCount: () -> I32 = fn() { _bytes.len() as I32 };
+
+export let globalCount: () -> I32 = fn() { (_globals.len() / _GLOBAL_WIDTH) as I32 };
+export let globalTypeOf: (I32) -> I32 = fn(global) { _current(_globals[global * _GLOBAL_WIDTH]) };
+export let globalNameOf: (I32) -> Bytes = fn(global) { _bytes[_globals[global * _GLOBAL_WIDTH + 1]] };
+export let globalIsMutable: (I32) -> Bool = fn(global) { _globals[global * _GLOBAL_WIDTH + 2] == 1 };
+export let nativeCount: () -> I32 = fn() { (_natives.len() / _NATIVE_WIDTH) as I32 };
+export let nativeLibraryOf: (I32) -> Bytes = fn(native) { _bytes[_natives[native * _NATIVE_WIDTH]] };
+export let nativeNameOf: (I32) -> Bytes = fn(native) { _bytes[_natives[native * _NATIVE_WIDTH + 1]] };
+export let nativeTypeOf: (I32) -> I32 = fn(native) { _natives[native * _NATIVE_WIDTH + 2] };
+
+let _kindCode = fn(kind: Kind): I32 {
+  match (kind) { Bool => 0, I32 => 1, I64 => 2, Bytes => 3, Array => 4, Tuple => 5, Null => 6, Function => 7, Enum => 8, Dynamic => 9, ByteBuffer => 10, List => 11, Var => 12, Param => 13, Applied => 14, Atom => 15, I8 => 16, I16 => 17, U8 => 18, U16 => 19, U32 => 20, U64 => 21, F16 => 22, F32 => 23, F64 => 24, Optional => 25, Rest => 26, Record => 27 }
+};
+
+export let typeCount: () -> I32 = fn() { _kinds.len() as I32 };
+export let kindOf: (I32) -> Kind = fn(ty) { _kinds[ty] };
+export let innerOf: (I32) -> I32 = fn(ty) { _types[ty * _TYPE_WIDTH] };
+export let typeArgCount: (I32) -> I32 = fn(ty) { _types[ty * _TYPE_WIDTH + 2] };
+export let typeArg: (I32, I32) -> I32 = fn(ty, index) { _typeEdges[_types[ty * _TYPE_WIDTH + 1] + index] };
+let _shape = fn(ty: I32): I32 { match (_kinds[ty]) { Applied => _types[ty * _TYPE_WIDTH], _ => ty } };
+
+let _variant = fn(ty: I32, tag: I32): I32 {
+  let shape = match (_kinds[ty]) { Applied => _types[ty * _TYPE_WIDTH], _ => ty };
+  (_types[shape * _TYPE_WIDTH + 1] + tag) * _VARIANT_WIDTH
+};
+let _field = fn(ty: I32, tag: I32, field: I32): I32 { (_variants[_variant(ty, tag) + 1] + field) * _FIELD_WIDTH };
+
+export let variantCount: (I32) -> I32 = fn(ty) {
+  let shape = match (_kinds[ty]) { Applied => _types[ty * _TYPE_WIDTH], _ => ty };
+  _types[shape * _TYPE_WIDTH + 2]
+};
+export let variantName: (I32, I32) -> Bytes = fn(ty, tag) { _bytes[_variants[_variant(ty, tag)]] };
+export let fieldCount: (I32, I32) -> I32 = fn(ty, tag) { _variants[_variant(ty, tag) + 2] };
+export let fieldName: (I32, I32, I32) -> Bytes = fn(ty, tag, field) { _bytes[_fields[_field(ty, tag, field)]] };
+let _appliedField: (I32, I32) -> I32 = fn(_ty, _field) { -1 };
+
+export let fieldType: (I32, I32, I32) -> I32 = fn(ty, tag, field) {
+  let declared = _fields[_field(ty, tag, field) + 1];
+  match (_kinds[ty]) { Applied => _appliedField(ty, declared), _ => declared }
+};
+
+export let variantTag: (I32, Bytes) -> I32 = fn(ty, name) {
+  let row = _shape(ty) * _TYPE_WIDTH;
+  let first = _types[row + 1];
+  let count = _types[row + 2];
+  let tag = 0;
+
+  while (tag < count) {
+    if (_bytes[_variants[(first + tag) * _VARIANT_WIDTH]] == name) { return tag; }
+    tag++;
+  }
+  -1
+};
+
+export let isKind: (I32, Kind) -> Bool = fn(ty, kind) { (ty >= 0) && (ty < typeCount()) && (_kinds[ty] == kind) };
+
+let _isNominal = fn(ty: I32, kind: Kind): Bool {
+  if ((ty < 0) || (ty >= typeCount())) { return false; }
+  (_kinds[ty] == kind) || ((_kinds[ty] == Kind.Applied) && (_kinds[_types[ty * _TYPE_WIDTH]] == kind))
+};
+export let isEnum: (I32) -> Bool = fn(ty) { _isNominal(ty, Kind.Enum) };
+export let isRecord: (I32) -> Bool = fn(ty) { _isNominal(ty, Kind.Record) };
+export let memberCount: (I32) -> I32 = fn(ty) { _kinds[ty] == Kind.Tuple ? typeArgCount(ty) : fieldCount(ty, 0) };
+export let memberType: (I32, I32) -> I32 = fn(ty, member) { _kinds[ty] == Kind.Tuple ? typeArg(ty, member) : fieldType(ty, 0, member) };
+
+export let recordField: (I32, Bytes) -> I32 = fn(ty, name) {
+  let field = 0;
+  let count = fieldCount(ty, 0);
+
+  while (field < count) {
+    if (fieldName(ty, 0, field) == name) { return field; }
+    field++;
+  }
+  -1
+};
+
+export let node: (Op, I32, I32, I32, Array<I32>) -> I32 = fn(op, ty, value, aux, children) {
+  let id = _ops.len() as I32;
+  _ops.push(op);
+  _spans.push(_spanPath);
+  _spans.push(_spanStart);
+  _spans.push(_spanEnd);
+  _nodes.push(ty);
+  _nodes.push(value);
+  _nodes.push(aux);
+  _nodes.push(_edges.len() as I32);
+  _nodes.push(children.len() as I32);
+  let i = 0;
+
+  while (i < children.len()) {
+    _edges.push(children[i]);
+    i++;
+  }
+  id
+};
+
+export let setCallee: (I32, I32) -> Bool = fn(id, function) {
+  _nodes[id * _NODE_WIDTH + 1] = function + 1;
+  true
+};
+
+export let retype: (I32, I32) -> Bool = fn(id, ty) {
+  if (!endsPath(id)) { internalError("only a block that ends every path is retyped"); }
+  _nodes[id * _NODE_WIDTH] = ty;
+  true
+};
+export let noValueType: (I32) -> I32 = fn(expected) { expected >= 0 ? resolve(expected) : TYPE_NULL };
+
+export let copyNode: (I32, I32, Array<I32>) -> I32 = fn(id, ty, children) {
+  let path = _spanPath;
+  let start = _spanStart;
+  let end = _spanEnd;
+  _spanPath = spanPathOf(id);
+  _spanStart = spanStartOf(id);
+  _spanEnd = spanEndOf(id);
+  let copy = node(opOf(id), ty, valueOf(id), auxOf(id), children);
+  _spanPath = path;
+  _spanStart = start;
+  _spanEnd = end;
+  copy
+};
+
+let _wideNode = fn(op: Op, ty: I32, value: I64): I32 { node(op, ty, value as I32, (value >> 32) as I32, []) };
+export let wideLiteral: (I64, I32) -> I32 = fn(value, ty) { _wideNode(Op.I64, ty, value) };
+export let floatLiteral: (I64, I32) -> I32 = fn(pattern, ty) { _wideNode(Op.Float, ty, pattern) };
+
+let _mix = fn(hash: I32, word: I32): I32 { (hash ^ word) * 16777619 };
+let _slot = fn(hash: I32, capacity: I32): I32 { (hash & 2147483647) % capacity };
+
+let _emptySlots = fn(capacity: I32): Array<I32> {
+  let slots = Array.new<I32>(capacity);
+  let i = 0;
+
+  while (i < capacity) {
+    slots[i] = -1;
+    i++;
+  }
+  slots
+};
+
+let _bytesHash = fn(value: Bytes): I32 {
+  let hash = -2128831035;
+  let i = 0;
+
+  while (i < value.len()) {
+    hash = _mix(hash, Bytes.get_u8(value, i));
+    i++;
+  }
+  hash
+};
+
+let _growBytes = fn() {
+  let capacity = _bytesSlots.len() * 2;
+  _bytesSlots = _emptySlots(capacity);
+  let i = 0;
+
+  while (i < _bytes.len()) {
+    let slot = _slot(_bytesHash(_bytes[i]), capacity);
+    while (_bytesSlots[slot] >= 0) { slot = (slot + 1) % capacity; }
+    _bytesSlots[slot] = i;
+    i++;
+  }
+  null
+};
+
+let _bytesSlot = fn(value: Bytes): I32 {
+  let capacity = _bytesSlots.len();
+  let slot = _slot(_bytesHash(value), capacity);
+  while ((_bytesSlots[slot] >= 0) && (_bytes[_bytesSlots[slot]] != value)) { slot = (slot + 1) % capacity; }
+  slot
+};
+
+export let bytesId: (Bytes) -> I32 = fn(value) {
+  if ((_bytes.len() + 1) * 2 > _bytesSlots.len()) { _growBytes(); }
+  let slot = _bytesSlot(value);
+
+  if (_bytesSlots[slot] < 0) {
+    _bytesSlots[slot] = _bytes.len() as I32;
+    _bytes.push(value);
+  }
+  _bytesSlots[slot]
+};
+
+export let findBytesId: (Bytes) -> I32 = fn(value) { _bytesSlots[_bytesSlot(value)] };
+
+export let declareGlobal: (Bytes, I32, Bool) -> I32 = fn(name, ty, mutable) {
+  let id = globalCount();
+  _globals.push(ty);
+  _globals.push(bytesId(name));
+  _globals.push(mutable ? 1 : 0);
+  id
+};
+
+export let declareNative: (Bytes, Bytes, I32) -> I32 = fn(library, name, ty) {
+  let i = 0;
+
+  while (i < nativeCount()) {
+    if ((nativeLibraryOf(i) == library) && (nativeNameOf(i) == name)) {
+      if (nativeTypeOf(i) != ty) { throw "native " + library + "." + name + " is declared with two different types"; }
+      return i;
+    }
+    i++;
+  }
+  _natives.push(bytesId(library));
+  _natives.push(bytesId(name));
+  _natives.push(ty);
+  nativeCount() - 1
+};
+
+export let setSpan: (Bytes, I32, I32) -> Bool = fn(path, start, end) {
+  if ((_spanPath < 0) || (_bytes[_spanPath] != path)) { _spanPath = bytesId(path); }
+  _spanStart = start;
+  _spanEnd = end;
+  true
+};
+
+let _typeHash = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
+  let hash = _mix(_mix(-2128831035, _kindCode(kind)), value);
+  let i = 0;
+
+  while (i < args.len()) {
+    hash = _mix(hash, args[i]);
+    i++;
+  }
+  _mix(hash, args.len() as I32)
+};
+
+let _typeArgs = fn(ty: I32): Array<I32> {
+  let args = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < typeArgCount(ty)) {
+    args.push(typeArg(ty, i));
+    i++;
+  }
+  args
+};
+
+let _sameType = fn(ty: I32, kind: Kind, value: I32, args: Array<I32>): Bool {
+  if (!isKind(ty, kind) || (innerOf(ty) != value) || (typeArgCount(ty) != args.len())) { return false; }
+  let i = 0;
+
+  while (i < args.len()) {
+    if (typeArg(ty, i) != args[i]) { return false; }
+    i++;
+  }
+  true
+};
+
+let _growTypes = fn() {
+  let capacity = _typeSlots.len() * 2;
+  _typeSlots = _emptySlots(capacity);
+  let ty = 0;
+
+  while (ty < typeCount()) {
+    match (_kinds[ty]) {
+      Enum, Record, Var, Param => null,
+      _ => {
+        let slot = _slot(_typeHash(_kinds[ty], innerOf(ty), _typeArgs(ty)), capacity);
+        while (_typeSlots[slot] >= 0) { slot = (slot + 1) % capacity; }
+        _typeSlots[slot] = ty;
+        null
+      },
+    };
+    ty++;
+  }
+  null
+};
+
+let _holdsInner = fn(kind: Kind): Bool { match (kind) { Array, List, Null, Function, Optional, Rest => true, _ => false } };
+
+let _addType = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
+  let id = typeCount();
+  _kinds.push(kind);
+  _types.push(value);
+  _types.push(_typeEdges.len() as I32);
+  _types.push(args.len() as I32);
+  let open = match (kind) { Var => true, _ => _holdsInner(kind) && (value >= 0) && _open[value] };
+  let parametric = match (kind) { Param => true, _ => _holdsInner(kind) && (value >= 0) && _parametric[value] };
+  let i = 0;
+
+  while (i < args.len()) {
+    _typeEdges.push(args[i]);
+    open = open || _open[args[i]];
+    parametric = parametric || _parametric[args[i]];
+    i++;
+  }
+  _open.push(open);
+  _parametric.push(parametric);
+  _generic.push(-1);
+  id
+};
+
+let _intern = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
+  if ((typeCount() + 1) * 2 > _typeSlots.len()) { _growTypes(); }
+  let capacity = _typeSlots.len();
+  let slot = _slot(_typeHash(kind, value, args), capacity);
+
+  while (_typeSlots[slot] >= 0) {
+    if (_sameType(_typeSlots[slot], kind, value, args)) { return _typeSlots[slot]; }
+    slot = (slot + 1) % capacity;
+  }
+  let id = _addType(kind, value, args);
+  _typeSlots[slot] = id;
+  id
+};
+
+export let arrayType: (I32) -> I32 = fn(element) { _intern(Kind.Array, element, []) };
+export let listType: (I32) -> I32 = fn(element) { _intern(Kind.List, element, []) };
+
+export let nullType: (I32) -> I32 = fn(ty) {
+  let inner = _current(ty);
+  if (isKind(inner, Kind.Param)) { _types[inner * _TYPE_WIDTH + 1] = _types[inner * _TYPE_WIDTH + 1] | _NULLED; }
+  if (isKind(inner, Kind.List)) { throw "a list cannot be null: its empty value is nil; test it with List.is_nil"; }
+  (isKind(inner, Kind.Null) || isKind(inner, Kind.Dynamic)) ? inner : _intern(Kind.Null, inner, [])
+};
+export let holdsNull: (I32) -> Bool = fn(ty) { isKind(ty, Kind.Null) || isKind(ty, Kind.Dynamic) };
+
+export let isReference: (I32) -> Bool = fn(ty) {
+  match (kindOf(ty)) { Bytes, ByteBuffer, Array, Tuple, Function, Enum, Applied, Record => true, _ => false }
+};
+export let tupleType: (Array<I32>) -> I32 = fn(elements) { _intern(Kind.Tuple, -1, elements) };
+export let functionType: (Array<I32>, I32) -> I32 = fn(params, result) { _intern(Kind.Function, result, params) };
+
+export let optionalType: (I32) -> I32 = fn(ty) {
+  nullType(ty);
+  _intern(Kind.Optional, ty, [])
+};
+
+export let restType: (I32) -> I32 = fn(ty) {
+  arrayType(ty);
+  _intern(Kind.Rest, ty, [])
+};
+
+export let slotType: (I32) -> I32 = fn(ty) {
+  match (_kinds[ty]) { Optional => nullType(innerOf(ty)), Rest => arrayType(innerOf(ty)), _ => ty }
+};
+
+let _NEVER_NULL = 1;
+let _INTEGER = 3;
+
+let _newVar = fn(flags: I32): I32 {
+  let var = _addType(Kind.Var, -1, []);
+  _types[var * _TYPE_WIDTH + 1] = flags;
+  var
+};
+export let newVar: (Bool) -> I32 = fn(neverNull) { _newVar(neverNull ? _NEVER_NULL : 0) };
+export let integerVar: () -> I32 = fn() { _newVar(_INTEGER) };
+let _flags = fn(ty: I32): I32 { _types[ty * _TYPE_WIDTH + 1] };
+
+export let newParam: (Bytes, I32) -> I32 = fn(name, bounds) {
+  let param = _addType(Kind.Param, bytesId(name), []);
+  _types[param * _TYPE_WIDTH + 1] = bounds;
+  param
+};
+export let hasBounds: (I32, I32) -> Bool = fn(ty, bounds) { (_flags(ty) & bounds) == bounds };
+export let isNulled: (I32) -> Bool = fn(ty) { (_flags(ty) & _NULLED) != 0 };
+
+let _follow = fn(ty: I32): I32 {
+  let at = ty;
+  while (isKind(at, Kind.Var) && (innerOf(at) >= 0)) { at = innerOf(at); }
+  at
+};
+
+let _applied: (I32, Array<I32>) -> I32 = fn(_template, _args) { -1 };
+
+let _resolveArgs = fn(ty: I32): Array<I32> {
+  let args = _typeArgs(ty);
+  let i = 0;
+
+  while (i < args.len()) {
+    args[i] = resolve(args[i]);
+    i++;
+  }
+  args
+};
+resolve = fn(ty) {
+  if ((ty < 0) || !_open[ty]) { return ty; }
+
+  match (_kinds[ty]) {
+    Var => innerOf(ty) < 0 ? ty : resolve(innerOf(ty)),
+    Array => arrayType(resolve(innerOf(ty))),
+    List => listType(resolve(innerOf(ty))),
+    Null => nullType(resolve(innerOf(ty))),
+    Optional => optionalType(resolve(innerOf(ty))),
+    Rest => restType(resolve(innerOf(ty))),
+    Tuple => tupleType(_resolveArgs(ty)),
+    Function => functionType(_resolveArgs(ty), resolve(innerOf(ty))),
+    Applied => _applied(innerOf(ty), _resolveArgs(ty)),
+    _ => ty,
+  }
+};
+let _substitute: (I32, Array<I32>, Array<I32>) -> I32 = fn(_ty, _params, _types) { -1 };
+
+let _substituteArgs = fn(ty: I32, params: Array<I32>, types: Array<I32>): Array<I32> {
+  let args = _typeArgs(ty);
+  let i = 0;
+
+  while (i < args.len()) {
+    args[i] = _substitute(args[i], params, types);
+    i++;
+  }
+  args
+};
+
+let _wrapped = fn(kind: Kind, inner: I32): I32 {
+  match (kind) { Array => arrayType(inner), List => listType(inner), Null => nullType(inner), Optional => optionalType(inner), _ => restType(inner) }
+};
+_substitute = fn(ty, params, types) {
+  let at = _follow(ty);
+
+  match (_kinds[at]) {
+    Param => {
+      let i = 0;
+      while ((i < params.len()) && (params[i] != at)) { i++; }
+      i < params.len() ? types[i] : at
+    },
+    Null when (innerOf(at) < 0) => at,
+    Array, List, Null, Optional, Rest => _wrapped(_kinds[at], _substitute(innerOf(at), params, types)),
+    Tuple => tupleType(_substituteArgs(at, params, types)),
+    Function => functionType(_substituteArgs(at, params, types), _substitute(innerOf(at), params, types)),
+    Applied => _applied(innerOf(at), _substituteArgs(at, params, types)),
+    _ => at,
+  }
+};
+export let substitute: (I32, Array<I32>, Array<I32>) -> I32 = fn(ty, params, types) { _substitute(ty, params, types) };
+
+export let isOpen: (I32) -> Bool = fn(ty) { (ty >= 0) && _open[ty] && _open[resolve(ty)] };
+
+let _trail = Array.new<I32>(0);
+
+let _occurs: (I32, I32) -> Bool = fn(_var, _ty) { false };
+_occurs = fn(var, ty) {
+  let at = _follow(ty);
+  if (at == var) { return true; }
+  if ((at < 0) || !_open[at]) { return false; }
+  let found = _holdsInner(_kinds[at]) && _occurs(var, innerOf(at));
+  let i = 0;
+
+  while (!found && (i < typeArgCount(at))) {
+    found = _occurs(var, typeArg(at, i));
+    i++;
+  }
+  found
+};
+
+export let occursWithin: (I32, I32) -> Bool = fn(var, ty) {
+  let unbound = _follow(var);
+  let at = _follow(ty);
+  (at != unbound) && _occurs(unbound, at)
+};
+
+let _bind = fn(var: I32, ty: I32): Bool {
+  if (isKind(ty, Kind.Var) && (_flags(var) > _flags(ty))) {
+    _types[ty * _TYPE_WIDTH] = var;
+    _trail.push(ty);
+    return true;
+  }
+
+  if ((_flags(var) == _INTEGER) && !isKind(ty, Kind.Var) && !isIntegerType(ty) && !(isKind(ty, Kind.Param) && hasBounds(ty, BOUND_INTEGER))) {
+    return false;
+  }
+  let nullable = isKind(ty, Kind.Null) || isKind(ty, Kind.Dynamic) || isKind(ty, Kind.List);
+  if ((ty == TYPE_NULL) || (((_flags(var) & _NEVER_NULL) != 0) && nullable) || _occurs(var, ty)) { return false; }
+  _types[var * _TYPE_WIDTH] = ty;
+  _trail.push(var);
+  true
+};
+
+let _unify: (I32, I32) -> Bool = fn(_a, _b) { false };
+
+let _application = fn(ty: I32): I32 {
+  match (_kinds[ty]) { Applied => ty, Enum, Record when ((_generic[ty] >= 0) && isKind(_generic[ty], Kind.Applied)) => _generic[ty], _ => -1 }
+};
+
+let _unifyApplied = fn(left: I32, right: I32): Bool {
+  let leftArgs = _application(left);
+  let rightArgs = _application(right);
+  if ((leftArgs < 0) || (rightArgs < 0) || (innerOf(leftArgs) != innerOf(rightArgs))) { return false; }
+  let same = true;
+  let i = 0;
+
+  while (same && (i < typeArgCount(leftArgs))) {
+    same = _unify(typeArg(leftArgs, i), typeArg(rightArgs, i));
+    i++;
+  }
+  same
+};
+_unify = fn(a, b) {
+  let left = _follow(a);
+  let right = _follow(b);
+  if (left == right) { return true; }
+  if ((left < 0) || (right < 0)) { return false; }
+  if (isKind(left, Kind.Var)) { return _bind(left, right); }
+  if (isKind(right, Kind.Var)) { return _bind(right, left); }
+  if (!_open[left] && !_open[right]) { return false; }
+  if (isKind(left, Kind.Applied) || isKind(right, Kind.Applied)) { return _unifyApplied(left, right); }
+  if ((_kinds[left] != _kinds[right]) || (typeArgCount(left) != typeArgCount(right))) { return false; }
+  let same = !_holdsInner(_kinds[left]) || _unify(innerOf(left), innerOf(right));
+  let i = 0;
+
+  while (same && (i < typeArgCount(left))) {
+    same = _unify(typeArg(left, i), typeArg(right, i));
+    i++;
+  }
+  same
+};
+
+export let unify: (I32, I32) -> Bool = fn(a, b) {
+  if ((a < 0) || (b < 0) || (!_open[a] && !_open[b])) { return a == b; }
+  let same = _unify(a, b);
+  if (!same) { while (_trail.len() > 0) { _types[_trail.pop() * _TYPE_WIDTH] = -1; } }
+  Array.resize(_trail, 0);
+  same
+};
+
+export let unifyResult: (I32, I32) -> Bool = fn(result, ty) {
+  let at = _follow(result);
+  if ((ty != TYPE_NULL) || !isKind(at, Kind.Var) || (_flags(at) != 0)) { return unify(result, ty); }
+  _types[at * _TYPE_WIDTH] = ty;
+  true
+};
+
+export let nullable: (I32) -> I32 = fn(ty) {
+  let inner = _current(ty);
+  if (!isKind(inner, Kind.Var) || ((_flags(inner) & _NEVER_NULL) != 0)) { return nullType(inner); }
+  let bound = nullType(newVar(true));
+  unify(inner, bound);
+  bound
+};
+
+export let isUnknown: (I32) -> Bool = fn(ty) {
+  let at = _current(ty);
+  isKind(at, Kind.Var) && (_flags(at) != _INTEGER)
+};
+
+export let isInteger: (I32) -> Bool = fn(ty) {
+  if (isIntegerType(ty)) { return true; }
+  let at = _current(ty);
+  isIntegerType(at) || (isKind(at, Kind.Var) && (_flags(at) == _INTEGER)) || (isKind(at, Kind.Param) && hasBounds(at, BOUND_INTEGER))
+};
+export let holdsUnknown: (I32) -> Bool = fn(ty) { (ty >= 0) && _open[ty] && !isInteger(ty) && _open[resolve(ty)] };
+
+let _defaultIntegers: (I32) -> Bool = fn(_ty) { false };
+_defaultIntegers = fn(ty) {
+  let at = _follow(ty);
+  if ((at < 0) || !_open[at]) { return true; }
+
+  if (isKind(at, Kind.Var)) {
+    if (_flags(at) == _INTEGER) { _types[at * _TYPE_WIDTH] = TYPE_I32; }
+    return true;
+  }
+  if (_holdsInner(_kinds[at])) { _defaultIntegers(innerOf(at)); }
+  let i = 0;
+
+  while (i < typeArgCount(at)) {
+    _defaultIntegers(typeArg(at, i));
+    i++;
+  }
+  true
+};
+
+export let defaultIntegers: (I32) -> I32 = fn(ty) {
+  if ((ty < 0) || !_open[ty]) { return ty; }
+  _defaultIntegers(ty);
+  resolve(ty)
+};
+
+export let openLiteral: (I64, I32) -> I32 = fn(value, var) { _wideNode(Op.I32, var, value) };
+export let fitsI32: (I32) -> Bool = fn(id) { auxOf(id) == (valueOf(id) >> 31) };
+
+export let settleLiteral: (I32, I32) -> Bool = fn(id, ty) {
+  let slot = id * _NODE_WIDTH;
+  _nodes[slot] = ty;
+  if ((ty == TYPE_I64) || (ty == TYPE_U64)) { _ops[id] = Op.I64; } else { _nodes[slot + 2] = 0; }
+  true
+};
+
+export let settleConversion: (I32) -> Bool = fn(id) {
+  if (typeOf(childOf(id, 0)) == typeOf(id)) {
+    _ops[id] = Op.Block;
+    _nodes[id * _NODE_WIDTH + 2] = 1;
+  }
+  true
+};
+
+export let resolveTypes: () -> I32 = fn() {
+  let open = -1;
+  let id = 0;
+  let count = nodeCount();
+
+  while (id < count) {
+    let slot = id * _NODE_WIDTH;
+    let ty = _nodes[slot];
+
+    if ((ty >= 0) && _open[ty]) {
+      ty = resolve(ty);
+      _nodes[slot] = ty;
+      if ((open < 0) && _open[ty]) { open = id; }
+    }
+    id++;
+  }
+  let global = 0;
+
+  while (global < globalCount()) {
+    let slot = global * _GLOBAL_WIDTH;
+    _globals[slot] = resolve(_globals[slot]);
+    global++;
+  }
+  open
+};
+
+export let stdNative: (Bytes, Array<I32>, I32) -> I32 = fn(name, params, result) {
+  declareNative("std", name, functionType(params, result))
+};
+
+export let callStd: (Bytes, Array<I32>, I32, Array<I32>) -> I32 = fn(name, params, result, args) {
+  node(Op.CallNative, result, stdNative(name, params, result), 0, args)
+};
+export let declareEnum: (Bytes) -> I32 = fn(name) { _addType(Kind.Enum, bytesId(name), []) };
+export let declareRecord: (Bytes) -> I32 = fn(name) { _addType(Kind.Record, bytesId(name), []) };
+
+let _pending = Array.new<I32>(0);
+let _nesting = 0;
+export let MAX_INSTANCE_DEPTH: I32 = 64;
+export let nestsTooDeep: (Bytes) -> Bytes = fn(name) { "instantiating " + name + " nests more than " + Std.string(MAX_INSTANCE_DEPTH) + " deep" };
+
+let _makeGeneric = fn(ty: I32, params: Array<I32>): I32 {
+  _generic[ty] = tupleType(params);
+  ty
+};
+export let declareGenericEnum: (Bytes, Array<I32>) -> I32 = fn(name, params) { _makeGeneric(declareEnum(name), params) };
+export let declareGenericRecord: (Bytes, Array<I32>) -> I32 = fn(name, params) { _makeGeneric(declareRecord(name), params) };
+let _layouts = Array.new<I32>(0);
+let _layoutCodes = Array.new<Array<I32>>(0);
+let _layoutOffsets = Array.new<Array<I32>>(0);
+let _layoutBytes = Array.new<I32>(0);
+
+export let declareLayout: (Bytes, Array<I32>, Array<I32>, I32) -> I32 = fn(name, codes, offsets, fixed) {
+  let ty = declareRecord(name);
+  while (_layouts.len() <= ty) { _layouts.push(-1); }
+  _layouts[ty] = _layoutCodes.len() as I32;
+  _layoutCodes.push(codes);
+  _layoutOffsets.push(offsets);
+  _layoutBytes.push(fixed);
+  ty
+};
+export let isLayout: (I32) -> Bool = fn(ty) { (ty >= 0) && (ty < _layouts.len()) && (_layouts[ty] >= 0) };
+export let layoutCodes: (I32) -> Array<I32> = fn(ty) { _layoutCodes[_layouts[ty]] };
+export let layoutOffsets: (I32) -> Array<I32> = fn(ty) { _layoutOffsets[_layouts[ty]] };
+export let layoutBytes: (I32) -> I32 = fn(ty) { _layoutBytes[_layouts[ty]] };
+export let isTemplateEnum: (I32) -> Bool = fn(ty) { (ty >= 0) && (ty < _generic.len()) && (_generic[ty] >= 0) && isKind(_generic[ty], Kind.Tuple) };
+export let enumParams: (I32) -> Array<I32> = fn(ty) { isTemplateEnum(ty) ? _typeArgs(_generic[ty]) : Array.new<I32>(0) };
+export let enumParamCount: (I32) -> I32 = fn(ty) { isTemplateEnum(ty) ? typeArgCount(_generic[ty]) : 0 };
+export let enumName: (I32) -> Bytes = fn(ty) { _bytes[innerOf(_shape(ty))] };
+
+export let defineVariants: (I32, Array<Bytes>, Array<Array<Bytes>>, Array<Array<I32>>) -> Bool = fn(_ty, _names, _fieldNames, _fieldTypes) { false };
+
+let _defineInstance = fn(ty: I32, application: I32) {
+  let template = innerOf(application);
+  if (_nesting >= MAX_INSTANCE_DEPTH) { throw nestsTooDeep(enumName(template)); }
+  _nesting++;
+  let params = enumParams(template);
+  let args = _typeArgs(application);
+  let names = Array.new<Bytes>(0);
+  let fieldNames = Array.new<Array<Bytes>>(0);
+  let fieldTypes = Array.new<Array<I32>>(0);
+  let tag = 0;
+
+  while (tag < variantCount(template)) {
+    let variantNames = Array.new<Bytes>(0);
+    let variantTypes = Array.new<I32>(0);
+    let f = 0;
+
+    while (f < fieldCount(template, tag)) {
+      variantNames.push(fieldName(template, tag, f));
+      variantTypes.push(_substitute(fieldType(template, tag, f), params, args));
+      f++;
+    }
+    names.push(variantName(template, tag));
+    fieldNames.push(variantNames);
+    fieldTypes.push(variantTypes);
+    tag++;
+  }
+  defineVariants(ty, names, fieldNames, fieldTypes);
+  _nesting--;
+  null
+};
+_applied = fn(template, args) {
+  let concrete = true;
+  let i = 0;
+
+  while (concrete && (i < args.len())) {
+    concrete = !_open[args[i]] && !_parametric[args[i]];
+    i++;
+  }
+  let application = _intern(Kind.Applied, template, args);
+  if (!concrete) { return application; }
+  if (_generic[application] >= 0) { return _generic[application]; }
+  let ty = _addType(_kinds[template], innerOf(template), []);
+  _generic[application] = ty;
+  _generic[ty] = application;
+  if (variantCount(template) > 0) { _defineInstance(ty, application); } else { _pending.push(ty); }
+  ty
+};
+export let appliedType: (I32, Array<I32>) -> I32 = fn(template, args) { _applied(template, args) };
+_appliedField = fn(ty, declared) { _substitute(declared, enumParams(innerOf(ty)), _typeArgs(ty)) };
+
+defineVariants = fn(ty, names, fieldNames, fieldTypes) {
+  _types[ty * _TYPE_WIDTH + 1] = (_variants.len() / _VARIANT_WIDTH) as I32;
+  _types[ty * _TYPE_WIDTH + 2] = names.len() as I32;
+  let tag = 0;
+
+  while (tag < names.len()) {
+    _variants.push(bytesId(names[tag]));
+    _variants.push((_fields.len() / _FIELD_WIDTH) as I32);
+    _variants.push(fieldNames[tag].len() as I32);
+    let f = 0;
+
+    while (f < fieldNames[tag].len()) {
+      _fields.push(bytesId(fieldNames[tag][f]));
+      _fields.push(fieldTypes[tag][f]);
+      f++;
+    }
+    tag++;
+  }
+
+  if (isTemplateEnum(ty)) {
+    let pending = _pending.len();
+    let i = 0;
+
+    while (i < pending) {
+      let application = _generic[_pending[i]];
+      if (innerOf(application) == ty) { _defineInstance(_pending[i], application); }
+      i++;
+    }
+  }
+  true
+};
+
+export let beginHir: () -> Bool = fn() {
+  _ops = Array.new<Op>(0);
+  _nodes = Array.new<I32>(0);
+  _edges = Array.new<I32>(0);
+  _bytes = Array.new<Bytes>(0);
+  _bytesSlots = _emptySlots(64);
+  _kinds = Array.new<Kind>(0);
+  _types = Array.new<I32>(0);
+  _typeEdges = Array.new<I32>(0);
+  _typeSlots = _emptySlots(64);
+  _open = Array.new<Bool>(0);
+  _checking = true;
+  _trail = Array.new<I32>(0);
+  _root = -1;
+  _spans = Array.new<I32>(0);
+  _globals = Array.new<I32>(0);
+  _natives = Array.new<I32>(0);
+  _variants = Array.new<I32>(0);
+  _fields = Array.new<I32>(0);
+  _spanPath = -1;
+  _spanStart = -1;
+  _spanEnd = -1;
+  _parametric = Array.new<Bool>(0);
+  _generic = Array.new<I32>(0);
+  _pending = Array.new<I32>(0);
+  _nesting = 0;
+  _layouts = Array.new<I32>(0);
+  _layoutCodes = Array.new<Array<I32>>(0);
+  _layoutOffsets = Array.new<Array<I32>>(0);
+  _layoutBytes = Array.new<I32>(0);
+  _intern(Kind.Bool, 0, []);
+  _intern(Kind.I32, 0, []);
+  _intern(Kind.I64, 0, []);
+  _intern(Kind.Bytes, 0, []);
+  _intern(Kind.Null, -1, []);
+  _intern(Kind.Dynamic, -1, []);
+  _intern(Kind.ByteBuffer, 0, []);
+  _intern(Kind.Atom, 0, []);
+  _intern(Kind.I8, 0, []);
+  _intern(Kind.I16, 0, []);
+  _intern(Kind.U8, 0, []);
+  _intern(Kind.U16, 0, []);
+  _intern(Kind.U32, 0, []);
+  _intern(Kind.U64, 0, []);
+  _intern(Kind.F16, 0, []);
+  _intern(Kind.F32, 0, []);
+  _intern(Kind.F64, 0, []);
+  true
+};
+
+export let finishHir: (I32) -> Hir = fn(root) {
+  _root = root;
+  _checking = false;
+  Hir.Hir(_ops, _nodes, _edges, _bytes, _kinds, _types, _typeEdges, root, _spans, _globals, _natives, _variants, _fields)
+};
+
+let _source = true;
+let _typeName: (I32) -> Bytes = fn(_ty) { "" };
+
+let _typeArgNames = fn(ty: I32, params: Bool): Bytes {
+  let output = "";
+  let count = typeArgCount(ty);
+  let i = 0;
+
+  while (i < count) {
+    let arg = typeArg(ty, i);
+    let inner = (params && (_kinds[arg] == Kind.Null)) ? innerOf(arg) : -1;
+    if (i > 0) { output += ", "; }
+    output += inner >= 0 ? (_source ? "Null<" : "null<") + _typeName(inner) + ">" : _typeName(arg);
+    i++;
+  }
+  output
+};
+
+let _nullableName = fn(inner: I32): Bytes {
+  let name = _typeName(inner);
+  (kindOf(inner) == Kind.Function) ? "?(" + name + ")" : "?" + name
+};
+_typeName = fn(ty) {
+  match (kindOf(ty)) {
+    Bool => _source ? "Bool" : "bool",
+    I32 => _source ? "I32" : "i32",
+    I64 => _source ? "I64" : "i64",
+    Bytes => _source ? "Bytes" : "bytes",
+    Atom => _source ? "Atom" : "atom",
+    I8 => _source ? "I8" : "i8",
+    I16 => _source ? "I16" : "i16",
+    U8 => _source ? "U8" : "u8",
+    U16 => _source ? "U16" : "u16",
+    U32 => _source ? "U32" : "u32",
+    U64 => _source ? "U64" : "u64",
+    F16 => _source ? "F16" : "f16",
+    F32 => _source ? "F32" : "f32",
+    F64 => _source ? "F64" : "f64",
+    Array => (_source ? "Array<" : "array<") + _typeName(innerOf(ty)) + ">",
+    List => (_source ? "List<" : "list<") + _typeName(innerOf(ty)) + ">",
+    Null => innerOf(ty) < 0 ? (_source ? "Null" : "null") : _nullableName(innerOf(ty)),
+    Tuple => (_source ? "Tuple<" : "tuple<") + _typeArgNames(ty, false) + ">",
+    Function => "(" + _typeArgNames(ty, true) + ") -> " + _typeName(innerOf(ty)),
+    Optional => _nullableName(innerOf(ty)),
+    Rest => _typeName(innerOf(ty)) + "...",
+    Enum, Applied, Record => {
+      let application = _application(ty);
+      application < 0 ? enumName(ty) : enumName(ty) + "<" + _typeArgNames(application, false) + ">"
+    },
+    Dynamic => _source ? "Dynamic" : "dynamic",
+    ByteBuffer => _source ? "ByteBuffer" : "bytebuffer",
+    Var => innerOf(ty) >= 0 ? _typeName(innerOf(ty)) : _flags(ty) == _INTEGER ? _typeName(TYPE_I32) : _source ? "Unknown" : "unknown",
+    Param => _bytes[innerOf(ty)],
+  }
+};
+
+export let typeName: (I32) -> Bytes = fn(ty) {
+  _source = true;
+  _typeName(ty)
+};
+
+export let hirTypeName: (I32) -> Bytes = fn(ty) {
+  _source = false;
+  _typeName(ty)
+};
+
+export let typeArgNames: (I32) -> Bytes = fn(ty) {
+  _source = true;
+  _typeArgNames(ty, false)
+};
+
+export let local: (I32, I32) -> I32 = fn(binding, ty) { node(Op.Local, ty, binding, 0, []) };
+
+export let declareBinding: (Op, I32, Bytes, I32) -> I32 = fn(op, binding, name, value) {
+  node(Op.Declare, 0, 0, 0, [node(op, typeOf(value), binding, bytesId(name), [value])])
+};

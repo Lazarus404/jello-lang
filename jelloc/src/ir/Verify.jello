@@ -4,8 +4,8 @@ import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, Te
 import { ValueType, argumentCount, comparesByIdentity, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, opOf, valueTypeEqual } from ir.Model;
 import { blockId } from ir.Cfg;
 import { liveness } from ir.Liveness;
-import { internalError } from frontend.Internal;
-import { indexOf } from std.core.Arrays;
+import { internalError } from support.Internal;
+import { indexOf } from support.Arrays;
 
 let _fail = fn(message: Bytes): Bool {
   internalError("invalid IR: " + message);
@@ -64,27 +64,56 @@ let _call = fn(params: Array<ValueType>, result: ValueType, dst: I32, args: Arra
   _expect(dst, result)
 };
 
-let _fields = fn(enumId: I32, tag: I32): Array<ValueType> {
+let _variants = fn(enumId: I32): Array<Array<ValueType>> {
   if ((enumId < 0) || (enumId >= _enums.len())) { _fail("unknown enum type@" + Std.string(enumId)); }
 
-  match (_enums[enumId]) { Enum(variants) => {
-    if ((tag < 0) || (tag >= variants.len())) { _fail("enum tag out of range"); }
-    variants[tag]
-  } }
+  match (_enums[enumId]) {
+    Enum(variants) => variants, Record(_) => {
+      _fail("enum operation on a record@" + Std.string(enumId));
+      []
+    }
+  }
+};
+
+let _fields = fn(enumId: I32, tag: I32): Array<ValueType> {
+  let variants = _variants(enumId);
+  if ((tag < 0) || (tag >= variants.len())) { _fail("enum tag out of range"); }
+  variants[tag]
+};
+
+let _bitField = fn(imm: I32) { if ((imm < 0) || (imm % 16 == 0) || (imm % 16 > 8)) { _fail("bit field out of range"); } null };
+
+let _formatType = fn(format: I32): ValueType {
+  if ((format < 0) || (format > 7)) { _fail("bytes format out of range"); }
+  format >= 6 ? ValueType.F32 : ValueType.I32
+};
+
+let _structFields = fn(ty: ValueType, what: Bytes): ?Array<ValueType> {
+  match (ty) {
+    TupleOf(elements) => elements,
+    Nominal(_) when (!_inProgram) => null,
+    Nominal(id) when ((id >= 0) && (id < _enums.len())) => match (_enums[id]) {
+      Record(fields) => fields, Enum(_) => {
+        _fail(what + " of an enum");
+        null
+      }
+    },
+    _ => {
+      _fail(what + " of a non-struct");
+      null
+    },
+  }
 };
 
 let _hasField = fn(enumId: I32, index: I32, ty: ValueType): Bool {
-  if ((enumId < 0) || (enumId >= _enums.len())) { _fail("unknown enum type@" + Std.string(enumId)); }
+  let variants = _variants(enumId);
+  let i = 0;
 
-  match (_enums[enumId]) { Enum(variants) => {
-    let i = 0;
-
-    while (i < variants.len()) {
-      if ((index < variants[i].len()) && valueTypeEqual(variants[i][index], ty)) { return true; }
-      i++;
-    }
-    false
-  } }
+  while (i < variants.len()) {
+    if ((index < variants[i].len()) && valueTypeEqual(variants[i][index], ty)) { return true; }
+    i++;
+  }
+  false
 };
 
 let _global = fn(index: I32): ValueType {
@@ -93,6 +122,39 @@ let _global = fn(index: I32): ValueType {
 };
 
 let _arity = fn(args: Array<I32>, count: I32) { if (args.len() != count) { _fail("wrong operand count"); } null };
+
+let _bitsOrBytes = fn(instruction: Instruction) {
+  let dst = dstOf(instruction);
+  let args = argsOf(instruction);
+  let imm = immOf(instruction);
+
+  match (opOf(instruction)) {
+    BitsRead => {
+      _arity(args, 1);
+      _bitField(imm);
+      _expect(dst, ValueType.I32);
+      _expect(args[0], ValueType.Bytes)
+    },
+    BitsWrite => {
+      _arity(args, 2);
+      _bitField(imm);
+      _expect(args[0], ValueType.Bytes);
+      _expect(args[1], ValueType.I32)
+    },
+    BytesRead => {
+      _arity(args, 2);
+      _expect(dst, _formatType(imm));
+      _expect(args[0], ValueType.Bytes);
+      _expect(args[1], ValueType.I32)
+    },
+    _ => {
+      _arity(args, 3);
+      _expect(args[0], ValueType.Bytes);
+      _expect(args[1], ValueType.I32);
+      _expect(args[2], _formatType(imm))
+    },
+  }
+};
 
 let _instruction = fn(instruction: Instruction) {
   let dst = dstOf(instruction);
@@ -106,7 +168,7 @@ let _instruction = fn(instruction: Instruction) {
   }
 
   match (opOf(instruction)) {
-    ArraySet, ArrayResize, BytesSet, BytesBlit, StructSet, SpillPush, GlobalSet, NullCheck => { if (dst >= 0) { _fail("store defines a register"); } null },
+    ArraySet, ArrayResize, BytesSet, BytesBlit, BitsWrite, BytesWrite, StructSet, SpillPush, GlobalSet, NullCheck => { if (dst >= 0) { _fail("store defines a register"); } null },
     _ => {
       _type(dst);
       null
@@ -371,6 +433,7 @@ let _instruction = fn(instruction: Instruction) {
       _expect(args[1], ValueType.Bytes);
       _expect(args[2], ValueType.I32)
     },
+    BitsRead, BitsWrite, BytesRead, BytesWrite => _bitsOrBytes(instruction),
     BytesGet => {
       _arity(args, 2);
       _expect(dst, ValueType.I32);
@@ -395,54 +458,51 @@ let _instruction = fn(instruction: Instruction) {
       _expect(args[0], ValueType.Bytes);
       _expect(args[1], ValueType.Bytes)
     },
+    BytesConcatMany => {
+      if (args.len() > 255) { _fail("bytes.concat_many of more than 255 parts"); }
+      _expect(dst, ValueType.Bytes);
+      let i = 0;
+
+      while (i < args.len()) {
+        _expect(args[i], ValueType.Bytes);
+        i++;
+      } null },
     BytesEq => {
       _arity(args, 2);
       _expect(dst, ValueType.Bool);
       _expect(args[0], ValueType.Bytes);
       _expect(args[1], ValueType.Bytes)
     },
-    TupleNew => if (_legalized) {
-      _fail("tuple construction after legalization");
-      null
-    } else { match (_type(dst)) {
-      TupleOf(elements) => {
-        _arity(args, elements.len() as I32);
+    TupleNew => {
+      if (_legalized) { _fail("tuple construction after legalization"); }
+      let fields = _structFields(_type(dst), "tuple construction");
+
+      if (fields != null) {
+        _arity(args, fields.len() as I32);
         let j = 0;
 
-        while (j < elements.len()) {
-          _expect(args[j], elements[j]);
+        while (j < fields.len()) {
+          _expect(args[j], fields[j]);
           j++;
-        } null
-      },
-      _ => {
-        _fail("tuple defines a non-tuple");
-        null
-      },
-    } },
-    StructNew => {
-      _arity(args, 0);
-
-      match (_type(dst)) {
-        TupleOf(_) => null, _ => {
-          _fail("struct.new defines a non-tuple");
-          null
         }
       }
+      null
+    },
+    StructNew => {
+      _arity(args, 0);
+      _structFields(_type(dst), "struct.new");
+      null
     },
     TupleGet, StructSet => {
       let get = match (opOf(instruction)) { TupleGet => true, _ => false };
       _arity(args, get ? 1 : 2);
+      let fields = _structFields(_type(args[0]), "tuple access");
 
-      match (_type(args[0])) {
-        TupleOf(elements) => {
-          if ((imm < 0) || (imm >= elements.len())) { _fail("tuple field index out of range"); }
-          _expect(get ? dst : args[1], elements[imm])
-        },
-        _ => {
-          _fail("tuple access of a non-tuple");
-          null
-        },
+      if (fields != null) {
+        if ((imm < 0) || (imm >= fields.len())) { _fail("tuple field index out of range"); }
+        _expect(get ? dst : args[1], fields[imm]);
       }
+      null
     },
     EnumNew => match (_type(dst)) {
       Nominal(id) => {
@@ -704,7 +764,7 @@ let _signatureOf = fn(function: Function): ValueType {
   } }
 };
 
-let _program = fn(program: Program, legalized: Bool): Bool {
+let _program = fn(program: Program, legalized: Bool, first: I32): Bool {
   _legalized = legalized;
 
   match (program) { Program(functions, pool, wides, floats, atoms, enums, globals, natives) => {
@@ -738,7 +798,7 @@ let _program = fn(program: Program, legalized: Bool): Bool {
     _globals = globals;
     _natives = natives;
     _inProgram = true;
-    i = 0;
+    i = first;
 
     while (i < functions.len()) {
       _function(functions[i]);
@@ -749,8 +809,9 @@ let _program = fn(program: Program, legalized: Bool): Bool {
   true
 };
 
-export let verifyProgram: (Program) -> Bool = fn(program) { _program(program, false) };
-export let verifyLegalizedProgram: (Program) -> Bool = fn(program) { _program(program, true) };
+export let verifyProgram: (Program) -> Bool = fn(program) { _program(program, false, 0) };
+export let verifyLegalizedProgram: (Program) -> Bool = fn(program) { _program(program, true, 0) };
+export let verifyProgramFrom: (Program, Bool, I32) -> Bool = fn(program, legalized, first) { _program(program, legalized, first) };
 
 export let verifyAllocatedProgram: (Program) -> Bool = fn(program) {
   match (program) { Program(functions, _, _, _, _, _, _, natives) => {

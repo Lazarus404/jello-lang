@@ -1,0 +1,260 @@
+package std.core;
+
+import { sort as sortArray } from std.core.Array;
+import { join as joinBytes } from std.core.Bytes;
+
+export let isEmpty<T> = fn(values: List<T>): Bool { List.is_nil(values) };
+
+export let len<T> = fn(values: List<T>): I32 {
+  let n = 0;
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    n++;
+    rest = List.tail(rest);
+  }
+  n
+};
+
+let _reverseOnto<T> = fn(values: List<T>, onto: List<T>): List<T> {
+  let out = onto;
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    out = List.cons(List.head(rest), out);
+    rest = List.tail(rest);
+  }
+  out
+};
+
+export let reverse<T> = fn(values: List<T>): List<T> { _reverseOnto(values, List.nil<T>()) };
+
+export let indexOf<T: Eq> = fn(values: List<T>, value: T): I32 {
+  let i = 0;
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    if (List.head(rest) == value) { return i; }
+    i++;
+    rest = List.tail(rest);
+  }
+  -1
+};
+
+export let contains<T: Eq> = fn(values: List<T>, value: T): Bool { indexOf(values, value) >= 0 };
+
+export let first<T> = fn(values: List<T>, keep: (T) -> Bool): ?T {
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    if (keep(List.head(rest))) { return List.head(rest); }
+    rest = List.tail(rest);
+  }
+  null
+};
+
+export let last<T> = fn(values: List<T>, keep: (T) -> Bool): ?T {
+  let found: ?T = null;
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    if (keep(List.head(rest))) { found = List.head(rest); }
+    rest = List.tail(rest);
+  }
+  found
+};
+
+export let map<T, U> = fn(values: List<T>, f: (T) -> U): List<U> {
+  let out = List.nil<U>();
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    out = List.cons(f(List.head(rest)), out);
+    rest = List.tail(rest);
+  }
+  reverse(out)
+};
+
+export let mapIndexed<T, U> = fn(values: List<T>, f: (T, I32) -> U): List<U> {
+  let out = List.nil<U>();
+  let i = 0;
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    out = List.cons(f(List.head(rest), i), out);
+    i++;
+    rest = List.tail(rest);
+  }
+  reverse(out)
+};
+
+export let filter<T> = fn(values: List<T>, keep: (T) -> Bool): List<T> {
+  let out = List.nil<T>();
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    let item = List.head(rest);
+    if (keep(item)) { out = List.cons(item, out); }
+    rest = List.tail(rest);
+  }
+  reverse(out)
+};
+
+export let filterIndexed<T> = fn(values: List<T>, keep: (T, I32) -> Bool): List<T> {
+  let out = List.nil<T>();
+  let i = 0;
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    let item = List.head(rest);
+    if (keep(item, i)) { out = List.cons(item, out); }
+    i++;
+    rest = List.tail(rest);
+  }
+  reverse(out)
+};
+
+export let reject<T> = fn(values: List<T>, drop: (T) -> Bool): List<T> {
+  let out = List.nil<T>();
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    let item = List.head(rest);
+    if (!drop(item)) { out = List.cons(item, out); }
+    rest = List.tail(rest);
+  }
+  reverse(out)
+};
+
+export let rejectIndexed<T> = fn(values: List<T>, drop: (T, I32) -> Bool): List<T> {
+  let out = List.nil<T>();
+  let i = 0;
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    let item = List.head(rest);
+    if (!drop(item, i)) { out = List.cons(item, out); }
+    i++;
+    rest = List.tail(rest);
+  }
+  reverse(out)
+};
+
+export let reduce<T, U> = fn(values: List<T>, initial: U, f: (U, T) -> U): U {
+  let result = initial;
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    result = f(result, List.head(rest));
+    rest = List.tail(rest);
+  }
+  result
+};
+
+export let reduceIndexed<T, U> = fn(values: List<T>, initial: U, f: (U, T, I32) -> U): U {
+  let result = initial;
+  let i = 0;
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    result = f(result, List.head(rest), i);
+    i++;
+    rest = List.tail(rest);
+  }
+  result
+};
+
+export let forEach<T> = fn(values: List<T>, f: (T) -> Null): List<T> {
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    f(List.head(rest));
+    rest = List.tail(rest);
+  }
+  values
+};
+
+export let forEachIndexed<T> = fn(values: List<T>, f: (T, I32) -> Null): List<T> {
+  let i = 0;
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    f(List.head(rest), i);
+    i++;
+    rest = List.tail(rest);
+  }
+  values
+};
+
+export let toArray<T> = fn(values: List<T>): Array<T> {
+  let out = Array.new<T>(0);
+  let rest = values;
+
+  while (!List.is_nil(rest)) {
+    out.push(List.head(rest));
+    rest = List.tail(rest);
+  }
+  out
+};
+
+export let join = fn(parts: List<Bytes>, separator: Bytes): Bytes { joinBytes(toArray(parts), separator) };
+
+export let concat<T> = fn(values: List<T>, more: List<T>): List<T> {
+  if (List.is_nil(more)) { return values; }
+  _reverseOnto(reverse(values), more)
+};
+
+export let append<T> = fn(values: List<T>, value: T): List<T> { concat(values, List.cons(value, List.nil<T>())) };
+
+export let slice<T> = fn(values: List<T>, start: I32, count: I32): List<T> {
+  if ((start < 0) || (count < 0)) { throw "List.slice index out of range"; }
+  let out = List.nil<T>();
+  let i = 0;
+  let rest = values;
+
+  while (i < start + count) {
+    if (List.is_nil(rest)) { throw "List.slice index out of range"; }
+    if (i >= start) { out = List.cons(List.head(rest), out); }
+    i++;
+    rest = List.tail(rest);
+  }
+  reverse(out)
+};
+
+let _split<T> = fn(values: List<T>, at: I32, what: Bytes): Tuple<List<T>, List<T>> {
+  if (at < 0) { throw what + " index out of range"; }
+  let before = List.nil<T>();
+  let i = 0;
+  let rest = values;
+
+  while (i < at) {
+    if (List.is_nil(rest)) { throw what + " index out of range"; }
+    before = List.cons(List.head(rest), before);
+    i++;
+    rest = List.tail(rest);
+  }
+  (before, rest)
+};
+
+export let insert<T> = fn(values: List<T>, at: I32, value: T): List<T> {
+  let (before, rest) = _split(values, at, "List.insert");
+  _reverseOnto(before, List.cons(value, rest))
+};
+
+export let remove<T> = fn(values: List<T>, at: I32): List<T> {
+  let (before, rest) = _split(values, at, "List.remove");
+  if (List.is_nil(rest)) { throw "List.remove index out of range"; }
+  _reverseOnto(before, List.tail(rest))
+};
+
+export let sort<T> = fn(values: List<T>, compare: (T, T) -> I32): List<T> {
+  let sorted = sortArray(toArray(values), compare);
+  let out = List.nil<T>();
+  let i = sorted.len() - 1;
+
+  while (i >= 0) {
+    out = List.cons(sorted[i], out);
+    i--;
+  }
+  out
+};

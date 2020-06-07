@@ -1,0 +1,6 @@
+// expect: 5 hello
+// An imported layout packs, unpacks and matches as a local one does.
+import type { Frame } from wire.Frame;
+
+let raw = Frame.pack({ kind: 5, body: "hello" });
+match (raw) { Frame(f) => Std.string(f.kind) + " " + f.body, _ => "none" }

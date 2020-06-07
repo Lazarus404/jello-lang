@@ -1,43 +1,47 @@
 // expect: ok
-// pending: lists
-// std List methods: transform, search, mutators, join, toString, sort
-// Plain module tail (no ava): linking ava pushes this file over the 256-reg limit.
+// std List functions, called as methods: transform, search, build, join, sort
 let xs: List<I32> = list[1, 2, 3];
+let show = fn(values: List<I32>): Bytes { Std.string(values) };
 
-let ys = xs.filter(fn(x) { return x != 2; });
-System.assert(ys.join(",") == "1,3");
-
-let zs = xs.map(fn(x) { return x + 10; });
-System.assert(zs.first() == 11);
-
-let ws = xs.remove(2);
-System.assert(ws.join(",") == "1,3");
+System.assert(show(xs.filter(fn(x: I32): Bool { x != 2 })) == "[1, 3]");
+System.assert(show(xs.reject(fn(x: I32): Bool { x != 2 })) == "[2]");
+System.assert(show(xs.map(fn(x: I32): I32 { x + 10 })) == "[11, 12, 13]");
+System.assert(show(xs.mapIndexed(fn(x: I32, i: I32): I32 { x * i })) == "[0, 2, 6]");
+System.assert(xs.first(fn(x: I32): Bool { x > 1 }) == 2);
+System.assert(xs.last(fn(x: I32): Bool { x > 5 }) == null);
 
 System.assert(xs.contains(2));
 System.assert(xs.contains(9) == false);
 System.assert(xs.indexOf(2) == 1);
 System.assert(xs.indexOf(9) == -1);
-System.assert(xs.indexOfFrom(2, 2) == -1);
-System.assert(xs.lastIndexOf(2) == 1);
-System.assert(xs.lastIndexOfFrom(2, 0) == -1);
+System.assert(xs.len() == 3);
+System.assert(!xs.isEmpty());
+System.assert(List.nil<I32>().isEmpty());
 
-let rev = xs.reverse();
-System.assert(rev.join(",") == "3,2,1");
+System.assert(show(xs.reverse()) == "[3, 2, 1]");
+System.assert(show(xs.append(4)) == "[1, 2, 3, 4]");
+System.assert(show(xs.concat(list[8, 9])) == "[1, 2, 3, 8, 9]");
+System.assert(show(xs.insert(0, 0)) == "[0, 1, 2, 3]");
+System.assert(show(xs.insert(3, 4)) == "[1, 2, 3, 4]");
+System.assert(show(xs.remove(1)) == "[1, 3]");
+System.assert(show(xs.slice(1, 2)) == "[2, 3]");
+System.assert(show(xs) == "[1, 2, 3]");
 
-let dup = xs.copy();
-System.assert(dup.join(",") == "1,2,3");
-System.assert(dup.indexOf(2) == 1);
+System.assert(xs.reduce(0, fn(sum: I32, x: I32): I32 { sum + x }) == 6);
+System.assert(xs.reduceIndexed(0, fn(sum: I32, x: I32, i: I32): I32 { sum + x * i }) == 8);
+let seen = Array.new<I32>(0);
+xs.forEach(fn(x: I32) { seen.push(x); null });
+xs.forEachIndexed(fn(x: I32, i: I32) { seen.push(x * i); null });
+System.assert(Std.string(seen) == "[1, 2, 3, 0, 2, 6]");
+System.assert(Std.string(xs.toArray()) == "[1, 2, 3]");
 
-System.assert(xs.join(",") == "1,2,3");
-System.assert(xs.toString() == "{1,2,3}");
-System.assert(xs.pop() == 1);
-System.assert(xs.last() == 3);
+System.assert(xs.head() == 1);
+System.assert(show(xs.tail()) == "[2, 3]");
+System.assert(!xs.is_nil());
+System.assert(list["a", "b", "c"].join(", ") == "a, b, c");
 
-let e = xs.clear();
-System.assert(e.last() == null);
-
-let uns: List<I32> = list[3, 1, 2];
-let sorted = uns.sort(fn(a, b) { return a - b; });
-System.assert(sorted.join(",") == "1,2,3");
+let unsorted: List<I32> = list[3, 1, 2];
+System.assert(show(unsorted.sort(fn(a: I32, b: I32): I32 { a - b })) == "[1, 2, 3]");
+System.assert(show(unsorted) == "[3, 1, 2]");
 
 "ok"

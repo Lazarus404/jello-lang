@@ -1,0 +1,117 @@
+package frontend.semantics;
+
+import type { Expr as AstExpr } from frontend.syntax.Ast;
+import frontend.hir.Hir as H;
+import { Op } from frontend.hir.Hir;
+import { boolOf, bytesOf, i32Of } from frontend.semantics.Derived;
+import { bindOnce, orThrow } from frontend.semantics.Values;
+import { checkArity, checkOperand, enterSyntax, syntaxChild } from frontend.semantics.TypeCheck;
+
+let _number = fn(args: Array<AstExpr>, index: I32, ty: I32, name: Bytes): I32 {
+  let value = checkOperand(args[index], index + 1, ty);
+  let checked = H.typeOf(value);
+  if (checked == ty) { return value; }
+  if ((ty == H.TYPE_F64) && H.isNumberType(checked)) { return H.node(Op.Convert, ty, 0, 0, [value]); }
+  enterSyntax(syntaxChild(index + 1));
+  throw name + " requires " + (ty == H.TYPE_F64 ? "a number" : "an I32") + ", not " + H.typeName(checked);
+  -1
+};
+
+let _arity = fn(name: Bytes): I32 {
+  match (name) {
+    "abs", "ceil", "floor", "trunc", "round", "sqrt", "cbrt", "exp", "expm1", "log", "log10", "log2",
+    "log1p", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh",
+    "atanh", "sign", "fround" => 1,
+    "pow", "atan2" => 2,
+    "min", "max", "hypot" => -1,
+    _ => 0,
+  }
+};
+
+let _math = fn(name: Bytes, qualified: Bytes, args: Array<AstExpr>): I32 {
+  if (name == "random") {
+    checkArity(args, 0, qualified);
+    return H.callStd("math_random", [], H.TYPE_F64, []);
+  }
+
+  if (name == "clz32") {
+    checkArity(args, 1, qualified);
+    return H.callStd("math_clz32", [H.TYPE_I32], H.TYPE_I32, [_number(args, 0, H.TYPE_I32, qualified)]);
+  }
+
+  if (name == "imul") {
+    checkArity(args, 2, qualified);
+    let left = _number(args, 0, H.TYPE_I32, qualified);
+    return H.node(Op.Mul, H.TYPE_I32, 0, 0, [left, _number(args, 1, H.TYPE_I32, qualified)]);
+  }
+  let arity = _arity(name);
+  if (arity == 0) { throw "unknown function " + qualified; }
+  if (arity > 0) { checkArity(args, arity, qualified); } else if (args.len() == 0) { throw qualified + " takes at least 1 argument"; }
+  let value = _number(args, 0, H.TYPE_F64, qualified);
+  if (name == "fround") { return H.node(Op.Convert, H.TYPE_F64, 0, 0, [H.node(Op.Convert, H.TYPE_F32, 0, 0, [value])]); }
+  let native = "math_" + name;
+  if (arity == 1) { return H.callStd(native, [H.TYPE_F64], H.TYPE_F64, [value]); }
+  if ((args.len() == 1) && (name == "hypot")) { return H.callStd("math_abs", [H.TYPE_F64], H.TYPE_F64, [value]); }
+  let pair = H.stdNative(native, [H.TYPE_F64, H.TYPE_F64], H.TYPE_F64);
+  let i = 1;
+
+  while (i < args.len()) {
+    value = H.node(Op.CallNative, H.TYPE_F64, pair, 0, [value, _number(args, i, H.TYPE_F64, qualified)]);
+    i++;
+  }
+  value
+};
+
+let _parse = fn(text: I32, kind: Bytes, extra: Array<I32>, result: I32, message: Bytes): I32 {
+  let statements = Array.new<I32>(0);
+  let binding = bindOnce(statements, "text", text);
+  let args = [H.local(binding, H.TYPE_BYTES)];
+  let params = [H.TYPE_BYTES];
+  let i = 0;
+
+  while (i < extra.len()) {
+    args.push(extra[i]);
+    params.push(H.typeOf(extra[i]));
+    i++;
+  }
+  let valid = H.callStd(kind + "_valid", params, H.TYPE_BOOL, args);
+  statements.push(H.node(Op.Expression, 0, 0, 0, [orThrow(valid, bytesOf(message))]));
+  statements.push(H.callStd(kind + "_parse", [H.TYPE_BYTES], result, [H.local(binding, H.TYPE_BYTES)]));
+  H.node(Op.Block, result, 0, 1, statements)
+};
+
+let _text = fn(args: Array<AstExpr>, name: Bytes): I32 {
+  checkArity(args, 1, name);
+  let text = checkOperand(args[0], 1, H.TYPE_BYTES);
+
+  if (H.typeOf(text) != H.TYPE_BYTES) {
+    enterSyntax(syntaxChild(1));
+    throw name + " requires Bytes, not " + H.typeName(H.typeOf(text));
+  }
+  text
+};
+
+let _integerParse = fn(args: Array<AstExpr>, qualified: Bytes, expected: I32): I32 {
+  let resolved = H.resolve(expected);
+  let ty = H.isIntegerType(resolved) ? resolved : H.TYPE_I32;
+  let text = _text(args, qualified);
+  let value = _parse(text, "integer", [i32Of(H.integerBits(ty)), boolOf(H.isUnsigned(ty))], H.TYPE_I64, qualified + ": not " + H.typeName(ty));
+  ty == H.TYPE_I64 ? value : H.node(Op.Convert, ty, 0, 0, [value])
+};
+
+export let checkNumberCall: (Bytes, Bytes, Array<AstExpr>, I32) -> I32 = fn(space, name, args, expected) {
+  let qualified = space + "." + name;
+
+  match (qualified) {
+    "Float.is_nan", "Float.is_infinite" => {
+      checkArity(args, 1, qualified);
+      H.callStd("float_" + name, [H.TYPE_F64], H.TYPE_BOOL, [_number(args, 0, H.TYPE_F64, qualified)])
+    },
+    "Float.parse" => _parse(_text(args, qualified), "float", [], H.TYPE_F64, "Float.parse: not a number"),
+    "Integer.parse" => _integerParse(args, qualified, expected),
+    _ => {
+      if (space != "Math") { throw "unknown function " + qualified; }
+      _math(name, qualified, args)
+    },
+  }
+};

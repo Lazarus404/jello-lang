@@ -1,0 +1,149 @@
+package frontend.semantics;
+
+import type { BitExprSegment, Endian, Expr as AstExpr, ObjectEntry } from frontend.syntax.Ast;
+import { BitValueKind, wideIntegerValue } from frontend.syntax.Ast;
+import frontend.hir.Hir as H;
+import { BITS_BIG, BITS_FLOAT, Op, segmentType, segmentWidth } from frontend.hir.Hir;
+import { i32Of, lengthTest } from frontend.semantics.Derived;
+import { checkOperand, enterSyntax, syntaxChild, widened } from frontend.semantics.TypeCheck;
+
+export let segmentCode: (I32, Endian, BitValueKind) -> I32 = fn(width, endian, kind) {
+  width + (match (endian) { Big => BITS_BIG, Little => 0 }) + (match (kind) { Float => BITS_FLOAT, _ => 0 })
+};
+
+export let placeSegments: (Array<I32>) -> Tuple<Array<I32>, I32> = fn(codes) {
+  let offsets = Array.new<I32>(0);
+  let bit = 0;
+  let i = 0;
+
+  while (i < codes.len()) {
+    let width = segmentWidth(codes[i]);
+
+    if (width == 0) {
+      let later = i + 1;
+
+      while (later < codes.len()) {
+        if (segmentWidth(codes[later]) == 0) { throw "a bits value has at most one rest segment"; }
+        later++;
+      }
+      if (later > i + 1) { throw "a rest segment must be the last"; }
+    }
+    if (((width == 0) || (width >= 8)) && (bit % 8 != 0)) { throw "a segment of 8 or more bits, or a rest, must start on a byte boundary"; }
+    offsets.push(bit);
+    bit += width;
+    i++;
+  }
+  if (bit % 8 != 0) { throw "the segments of a bits value must fill whole bytes"; }
+  (offsets, bit / 8)
+};
+
+export let checkSegmentLiteral: (I32, Bool, Bytes, Bool) -> Bool = fn(code, signed, digits, negative) {
+  let width = segmentWidth(code);
+  if (signed || (width >= 32) || ((code & BITS_FLOAT) != 0)) { return true; }
+  let value = wideIntegerValue(digits, negative);
+
+  if ((value < 0) || (value >= ((1 as I64) << (width as I64)))) {
+    throw (negative ? "-" : "") + digits + " does not fit in " + Std.string(width) + (width == 1 ? " bit" : " bits");
+  }
+  true
+};
+
+let _fits = fn(code: I32, signed: Bool, value: AstExpr): Bool {
+  match (value) {
+    Integer(digits, _) => checkSegmentLiteral(code, signed, digits, false),
+    Unary(Negate, Integer(digits, _)) => checkSegmentLiteral(code, signed, digits, true),
+    _ => true,
+  }
+};
+
+export let checkLayoutLiterals: (I32, Array<ObjectEntry>) -> Bool = fn(ty, entries) {
+  let codes = H.layoutCodes(ty);
+  let i = 0;
+
+  while (i < entries.len()) {
+    match (entries[i]) {
+      Field(name, value) => {
+        let field = H.recordField(ty, name);
+
+        if (field >= 0) {
+          let outer = enterSyntax(syntaxChild(i));
+          _fits(codes[field], false, value);
+          enterSyntax(outer);
+        }
+      },
+      _ => null,
+    };
+    i++;
+  }
+  true
+};
+
+let _pack = fn(codes: Array<I32>, offsets: Array<I32>, fixed: I32, values: Array<I32>): I32 {
+  let fields = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < codes.len()) {
+    fields.push(H.node(Op.BitsField, segmentType(codes[i]), offsets[i], codes[i], [values[i]]));
+    i++;
+  }
+  H.node(Op.BitsPack, H.TYPE_BYTES, fixed, 0, fields)
+};
+
+export let checkBits: (Array<BitExprSegment>) -> I32 = fn(segments) {
+  let codes = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < segments.len()) {
+    match (segments[i]) { Segment(width, endian, _, kind, _) => codes.push(segmentCode(width, endian, kind)) };
+    i++;
+  }
+  let (offsets, fixed) = placeSegments(codes);
+  let values = Array.new<I32>(0);
+  i = 0;
+
+  while (i < segments.len()) {
+    match (segments[i]) { Segment(_, _, signed, _, value) => {
+      _fits(codes[i], signed, value);
+      let ty = segmentType(codes[i]);
+      let checked = widened(checkOperand(value, i, ty), ty);
+
+      if (H.typeOf(checked) != ty) {
+        enterSyntax(syntaxChild(i));
+        throw "this segment holds " + H.typeName(ty) + ", not " + H.typeName(H.typeOf(checked));
+      }
+      values.push(checked);
+    } };
+    i++;
+  }
+  _pack(codes, offsets, fixed, values)
+};
+
+export let packLayout: (I32, Array<I32>) -> I32 = fn(ty, values) { _pack(H.layoutCodes(ty), H.layoutOffsets(ty), H.layoutBytes(ty), values) };
+
+export let restOf: (I32, I32, I32) -> I32 = fn(bytes, again, fixed) {
+  let length = H.node(Op.Sub, H.TYPE_I32, 0, 0, [H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [again]), i32Of(fixed)]);
+  H.node(Op.BytesSlice, H.TYPE_BYTES, 0, 0, [bytes, i32Of(fixed), length])
+};
+
+export let layoutField: (I32, I32, () -> I32) -> I32 = fn(ty, field, read) {
+  let code = H.layoutCodes(ty)[field];
+  if (segmentWidth(code) == 0) { return restOf(read(), read(), H.layoutBytes(ty)); }
+  H.node(Op.BitsRead, segmentType(code), H.layoutOffsets(ty)[field], code, [read()])
+};
+
+export let layoutRecord: (I32, () -> I32) -> I32 = fn(ty, read) {
+  let values = Array.new<I32>(0);
+  while (values.len() < H.layoutCodes(ty).len()) { values.push(layoutField(ty, values.len() as I32, read)); }
+  H.node(Op.Tuple, ty, 0, 0, values)
+};
+
+export let layoutFits: (I32, I32) -> I32 = fn(ty, length) {
+  let codes = H.layoutCodes(ty);
+  lengthTest(length, H.layoutBytes(ty), (codes.len() > 0) && (segmentWidth(codes[codes.len() - 1]) == 0))
+};
+
+export let unpackLayout: (I32, () -> I32) -> I32 = fn(ty, read) {
+  let result = H.nullType(ty);
+  let record = H.node(Op.Present, result, 0, 0, [layoutRecord(ty, read)]);
+  H.node(Op.If, result, 0, 0, [layoutFits(ty, H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [read()])), record, H.node(Op.Null, result, 0, 0, [])])
+};

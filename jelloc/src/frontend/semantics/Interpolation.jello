@@ -1,0 +1,20 @@
+package frontend.semantics;
+
+import type { Expr as AstExpr } from frontend.syntax.Ast;
+import { bytesOf, joinOf, printed } from frontend.semantics.Derived;
+import { checkOperand } from frontend.semantics.TypeCheck;
+
+export let checkInterpolation: (Array<Bytes>, Array<AstExpr>) -> I32 = fn(texts, holes) {
+  let parts = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < texts.len()) {
+    if (texts[i].len() > 0) { parts.push(bytesOf(texts[i])); }
+
+    if (i < holes.len()) {
+      parts.push(printed(checkOperand(holes[i], i, -1), "a template hole", i));
+    }
+    i++;
+  }
+  joinOf(parts)
+};

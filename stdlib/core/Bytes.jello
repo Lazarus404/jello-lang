@@ -14,39 +14,80 @@ export let utf8CharAt: (Bytes, I32) -> I32 = unicode_get;
 export let utf8FromCodepoint: (I32) -> Bytes = unicode_from_codepoint;
 export let u8: (I32) -> Bytes = bytes_u8;
 
-export let startsWith: (Bytes, Bytes) -> Bool = fn(haystack: Bytes, prefix: Bytes): Bool {
+let _isSpace = fn(byte: I32): Bool { (byte == 32) || ((byte >= 9) && (byte <= 13)) };
+
+let _matchesAt = fn(haystack: Bytes, needle: Bytes, at: I32): Bool {
+  let i = 0;
+  while ((i < Bytes.len(needle)) && (Bytes.get(haystack, at + i) == Bytes.get(needle, i))) { i++; }
+  i == Bytes.len(needle)
+};
+
+export let isEmpty = fn(text: Bytes): Bool { Bytes.len(text) == 0 };
+
+export let concat = fn(first: Bytes, second: Bytes): Bytes { first + second };
+
+export let copy = fn(text: Bytes): ByteBuffer {
+  let buffer = Bytes.new(Bytes.len(text));
+  _put(buffer, 0, text);
+  buffer
+};
+
+export let substring = fn(text: Bytes, start: I32, end: I32): Bytes { Bytes.slice(text, start, end - start) };
+
+export let trim = fn(text: Bytes): Bytes {
+  let start = 0;
+  let end = Bytes.len(text);
+  while ((start < end) && _isSpace(Bytes.get(text, start))) { start++; }
+  while ((end > start) && _isSpace(Bytes.get(text, end - 1))) { end--; }
+  substring(text, start, end)
+};
+
+export let startsWith = fn(haystack: Bytes, prefix: Bytes): Bool {
   let n = Bytes.len(prefix);
   n <= Bytes.len(haystack) && Bytes.slice(haystack, 0, n) == prefix
 };
 
-export let endsWith: (Bytes, Bytes) -> Bool = fn(haystack: Bytes, suffix: Bytes): Bool {
+export let endsWith = fn(haystack: Bytes, suffix: Bytes): Bool {
   let n = Bytes.len(suffix);
   let at = Bytes.len(haystack) - n;
   at >= 0 && Bytes.slice(haystack, at, n) == suffix
 };
 
-export let indexOf: (Bytes, Bytes) -> I32 = fn(haystack: Bytes, needle: Bytes): I32 {
+export let indexOfFrom = fn(haystack: Bytes, needle: Bytes, start: I32): I32 {
   let n = Bytes.len(needle);
   let last = Bytes.len(haystack) - n;
-  let i = 0;
+  let i = start;
 
   while (i <= last) {
-    if (Bytes.slice(haystack, i, n) == needle) { return i; }
+    if (_matchesAt(haystack, needle, i)) { return i; }
     i++;
   }
   -1
 };
 
-export let contains: (Bytes, Bytes) -> Bool = fn(haystack: Bytes, needle: Bytes): Bool { indexOf(haystack, needle) >= 0 };
+export let indexOf = fn(haystack: Bytes, needle: Bytes): I32 { indexOfFrom(haystack, needle, 0) };
 
-export let split: (Bytes, Bytes) -> Array<Bytes> = fn(text: Bytes, separator: Bytes): Array<Bytes> {
+export let lastIndexOf = fn(haystack: Bytes, needle: Bytes): I32 {
+  let i = Bytes.len(haystack) - Bytes.len(needle);
+
+  while (i >= 0) {
+    if (_matchesAt(haystack, needle, i)) { return i; }
+    i--;
+  }
+  -1
+};
+
+export let contains = fn(haystack: Bytes, needle: Bytes): Bool { indexOf(haystack, needle) >= 0 };
+
+export let split = fn(text: Bytes, separator: Bytes): Array<Bytes> {
   let parts = Array.new<Bytes>(0);
   let n = Bytes.len(separator);
+  if (n == 0) { throw "Bytes.split requires a separator"; }
   let start = 0;
   let i = 0;
 
   while (i + n <= Bytes.len(text)) {
-    if ((Bytes.get_u8(text, i) == Bytes.get_u8(separator, 0)) && (Bytes.slice(text, i, n) == separator)) {
+    if (_matchesAt(text, separator, i)) {
       parts.push(Bytes.slice(text, start, i - start));
       i = i + n;
       start = i;
@@ -56,14 +97,110 @@ export let split: (Bytes, Bytes) -> Array<Bytes> = fn(text: Bytes, separator: By
   parts
 };
 
-export let join: (Array<Bytes>, Bytes) -> Bytes = fn(parts: Array<Bytes>, separator: Bytes): Bytes {
+export let join = fn(parts: Array<Bytes>, separator: Bytes): Bytes {
   if (parts.len() == 0) { return ""; }
-  let text = parts[0];
-  let i = 1;
+  let length = Bytes.len(separator) * (parts.len() - 1);
+  let i = 0;
 
   while (i < parts.len()) {
-    text = text + separator + parts[i];
+    length = length + Bytes.len(parts[i]);
     i++;
   }
-  text
+  let buffer = Bytes.new(length);
+  let at = _put(buffer, 0, parts[0]);
+  i = 1;
+
+  while (i < parts.len()) {
+    at = _put(buffer, _put(buffer, at, separator), parts[i]);
+    i++;
+  }
+  Bytes.toString(buffer)
 };
+
+export let replace = fn(text: Bytes, pattern: Bytes, replacement: Bytes): Bytes {
+  let at = indexOf(text, pattern);
+  if (at < 0) { return text; }
+  substring(text, 0, at) + replacement + substring(text, at + Bytes.len(pattern), Bytes.len(text))
+};
+
+export let replaceAll = fn(text: Bytes, pattern: Bytes, replacement: Bytes): Bytes {
+  join(split(text, pattern), replacement)
+};
+
+let _readLe = fn(bytes: Bytes, at: I32, n: I32): I32 {
+  let value = 0;
+  let i = n - 1;
+
+  while (i >= 0) {
+    value = (value << 8) | Bytes.get(bytes, at + i);
+    i--;
+  }
+  value
+};
+
+let _readBe = fn(bytes: Bytes, at: I32, n: I32): I32 {
+  let value = 0;
+  let i = 0;
+
+  while (i < n) {
+    value = (value << 8) | Bytes.get(bytes, at + i);
+    i++;
+  }
+  value
+};
+
+export let readU16Le = fn(bytes: Bytes, at: I32): I32 { _readLe(bytes, at, 2) };
+export let readU16Be = fn(bytes: Bytes, at: I32): I32 { _readBe(bytes, at, 2) };
+export let readU32Le = fn(bytes: Bytes, at: I32): I32 { _readLe(bytes, at, 4) };
+export let readU32Be = fn(bytes: Bytes, at: I32): I32 { _readBe(bytes, at, 4) };
+export let readI32Le = fn(bytes: Bytes, at: I32): I32 { _readLe(bytes, at, 4) };
+export let readI32Be = fn(bytes: Bytes, at: I32): I32 { _readBe(bytes, at, 4) };
+
+export let readF32Le = fn(bytes: Bytes, at: I32): F32 {
+  let bits[f32.le(v)] = Bytes.slice(bytes, at, 4) else { return 0f32; };
+  v
+};
+
+export let readF32Be = fn(bytes: Bytes, at: I32): F32 {
+  let bits[f32.be(v)] = Bytes.slice(bytes, at, 4) else { return 0f32; };
+  v
+};
+
+let _put = fn(buffer: ByteBuffer, at: I32, value: Bytes): I32 {
+  let i = 0;
+
+  while (i < Bytes.len(value)) {
+    Bytes.set(buffer, at + i, Bytes.get(value, i));
+    i++;
+  }
+  at + i
+};
+
+let _writeLe = fn(buffer: ByteBuffer, at: I32, n: I32, value: I32): I32 {
+  let i = 0;
+
+  while (i < n) {
+    Bytes.set(buffer, at + i, (value >> (8 * i)) & 255);
+    i++;
+  }
+  at + n
+};
+
+let _writeBe = fn(buffer: ByteBuffer, at: I32, n: I32, value: I32): I32 {
+  let i = 0;
+
+  while (i < n) {
+    Bytes.set(buffer, at + n - 1 - i, (value >> (8 * i)) & 255);
+    i++;
+  }
+  at + n
+};
+
+export let writeU16Le = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeLe(buffer, at, 2, value) };
+export let writeU16Be = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeBe(buffer, at, 2, value) };
+export let writeU32Le = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeLe(buffer, at, 4, value) };
+export let writeU32Be = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeBe(buffer, at, 4, value) };
+export let writeI32Le = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeLe(buffer, at, 4, value) };
+export let writeI32Be = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeBe(buffer, at, 4, value) };
+export let writeF32Le = fn(buffer: ByteBuffer, at: I32, value: F32): I32 { _put(buffer, at, bits[f32.le(value)]) };
+export let writeF32Be = fn(buffer: ByteBuffer, at: I32, value: F32): I32 { _put(buffer, at, bits[f32.be(value)]) };

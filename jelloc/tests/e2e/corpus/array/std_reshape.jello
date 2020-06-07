@@ -1,0 +1,29 @@
+// expect: ok
+let a = [1, 2, 3, 4, 5];
+let part = a.slice(1, 3);
+System.assert(part == [2, 3, 4]);
+let copied = a.copy();
+copied[0] = 9;
+System.assert(a[0] == 1);
+let removed = a.splice(1, 2, 7, 8, 9);
+System.assert(removed == [2, 3]);
+System.assert(a == [1, 7, 8, 9, 4, 5]);
+System.assert(a.splice(0, 1) == [1]);
+System.assert(a.remove(1) == 8);
+System.assert(a == [7, 9, 4, 5]);
+System.assert(a.insert(4, 6) == 5);
+System.assert(Array.last(a, fn(x) { x < 5 }) == 4);
+System.assert(a.contains(9) && !a.contains(1));
+System.assert(a.indexOf(4) == 2);
+System.assert(["a", "b", "c"].join(", ") == "a, b, c");
+System.assert(Array.join([], "-") == "");
+// The sort is stable: pairs equal by their first field keep their order.
+let pairs = [(2, "a"), (1, "b"), (2, "c"), (1, "d"), (0, "e")];
+pairs.sort(fn(x, y) { x.0 - y.0 });
+System.assert(pairs == [(0, "e"), (1, "b"), (1, "d"), (2, "a"), (2, "c")]);
+let one = [5];
+System.assert(one.sort(fn(x, y) { x - y }) == [5]);
+let many = [9, 3, 7, 1, 8, 2, 6, 4, 5, 0, 11, 10];
+System.assert(many.sort(fn(x, y) { x - y }) == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+System.assert([1, 2, 3].reverse() == [3, 2, 1]);
+"ok"

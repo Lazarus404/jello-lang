@@ -1,0 +1,8 @@
+// error: 6:1: global n is read before it is initialized
+// A function body takes the reference, so an indirect call may reach it whenever it runs.
+let apply = fn(f: (I32) -> I32): I32 { f(1) };
+let reader = fn(x: I32): I32 { n[0] + x };
+let viaReader = fn(): I32 { apply(reader) };
+System.assert(viaReader() == 1);
+let n: Array<I32> = [0];
+"ok"

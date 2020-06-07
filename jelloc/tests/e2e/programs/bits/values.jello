@@ -1,0 +1,37 @@
+// expect: ok
+// Every width and byte order, with bytes that tell the orders apart.
+let packed = bits[16.le(258), 16.be(258), u32.le(16909060), u32.be(16909060), i32.be(-2), f32.le(1.5), f32.be(1.5)];
+let expected = [2, 1, 1, 2, 4, 3, 2, 1, 1, 2, 3, 4, 255, 255, 255, 254, 0, 0, 192, 63, 63, 192, 0, 0];
+System.assert(Bytes.len(packed) == expected.len());
+let i = 0;
+while (i < expected.len()) { System.assert(Bytes.get_u8(packed, i) == expected[i]); i++; }
+
+let unpacked = match (packed) {
+  bits[16.le(a), 16.be(b), u32.le(c), u32.be(d), i32.be(e), f32.le(f), f32.be(g)] => (a, b, c, d, e, f, g),
+  _ => (0, 0, 0, 0, 0, 0f32, 0f32),
+};
+System.assert(unpacked == (258, 258, 16909060, 16909060, -2, 1.5f32, 1.5f32));
+
+// Sub-byte segments pack most significant bit first.
+let header = bits[4(4), 4(5), 8(0)];
+System.assert((Bytes.len(header) == 2) && (Bytes.get_u8(header, 0) == 69));
+let nibble = match (header) { bits[4(4), 4(low), 8(next)] => low + next, _ => -1 };
+System.assert(nibble == 5);
+
+let body = bits[8(99), 8(100)];
+let packet = bits[16.le(1), rest(body)];
+System.assert((Bytes.len(packet) == 4) && (Bytes.get_u8(packet, 3) == 100));
+let tail = match (packet) { bits[16.le(1), rest(r)] => Bytes.len(r) * 1000 + Bytes.get_u8(r, 1), _ => -1 };
+System.assert(tail == 2100);
+
+// The length is tested before a segment is read, so a short value falls to the next arm.
+let short = match ("\x01") { bits[8(1), 8(x)] => x, bits[8(1)] => 7, _ => -1 };
+System.assert(short == 7);
+
+if (let bits[8(first), rest(_)] = "ab") { System.assert(first == 97); } else { System.assert(false); }
+let lowest = fn(raw: Bytes): I32 {
+  let bits[u8(only)] = raw else { return -1; };
+  only
+};
+System.assert((lowest("z") == 122) && (lowest("zz") == -1));
+"ok"

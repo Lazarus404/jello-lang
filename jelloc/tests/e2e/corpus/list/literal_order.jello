@@ -1,0 +1,8 @@
+// expect: [1, 2, 3, 4] abcd
+// Items, tails and spreads run left to right.
+let order = Array.new<Bytes>(0);
+let item = fn(name: Bytes, value: I32): I32 { order.push(name); value };
+let rest = fn(name: Bytes, values: List<I32>): List<I32> { order.push(name); values };
+let xs = list[item("a", 1), ...rest("b", list[2, 3]), item("c", 4)];
+let ys = list[item("d", 0) | List.nil<I32>()];
+Std.string(xs) + " " + Array.join(order, "")

@@ -1,0 +1,6 @@
+// expect: 10 [2, 3]
+// A value named Array hides the type's functions, but not a method's.
+typedef Doubler = { let map: (I32) -> I32; };
+let Array: Doubler = { map: fn(x) { x * 2 } };
+let xs = [1, 2];
+Std.string(Array.map(5)) + " " + Std.string(xs.map(fn(x) { x + 1 }))

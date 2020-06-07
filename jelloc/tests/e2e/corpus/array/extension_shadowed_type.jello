@@ -1,0 +1,6 @@
+// expect: 3 [2, 3]
+// A type named Array hides the type's functions, but not a method's.
+enum Array { Wrap(value: I32); Empty; }
+let n = match (Array.Wrap(3)) { Wrap(v) => v, Empty => 0 };
+let xs = [1, 2];
+Std.string(n) + " " + Std.string(xs.map(fn(x) { x + 1 }))

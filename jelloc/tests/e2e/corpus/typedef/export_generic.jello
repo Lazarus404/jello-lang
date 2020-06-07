@@ -1,6 +1,6 @@
-// error: 3:1: export generic
-// pending: typedefs
+// expect: ok
 export typedef Box<T> = {
   let value: T;
 };
-"fail"
+let b: Box<I32> = { value: 1 };
+b.value == 1 ? "ok" : "bad"

@@ -1,16 +1,16 @@
 package ir;
 
-import type { Hir } from frontend.Hir;
+import type { Hir } from frontend.hir.Hir;
 import {
-  KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_NULL, TYPE_U32, TYPE_U64, TYPE_U8, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits, isFloatKind, isFloatType, isReference, isTemplateEnum, kindOf, lastChild, leastValue, mostValue, opOf, rootNode, slotType, typeArg,
-  typeArgCount, typeCount, globalCount, nodeCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, typeOf, useHir, valueOf, variantCount,
-} from frontend.Hir;
+  BITS_BIG, BITS_FLOAT, KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_NULL, TYPE_U32, TYPE_U64, TYPE_U8, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits, isFloatKind, isFloatType, isRecord, isReference, isTemplateEnum, kindOf, lastChild, leastValue, mostValue, opOf, rootNode, slotType, typeArg,
+  typeArgCount, typeCount, globalCount, nodeCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, segmentWidth, typeOf, useHir, valueOf, variantCount,
+} from frontend.hir.Hir;
 import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { BasicBlock, EnumSchema, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType, handlerTarget, instructionAt } from ir.Model;
+import { BasicBlock, EnumSchema, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType, handlerTarget, instructionAt, internValueType } from ir.Model;
 import { blockMayThrow } from ir.Cfg;
-import { verifyProgram } from ir.Verify;
-import { internalError } from frontend.Internal;
-import { indexOf } from std.core.Arrays;
+import { verifyProgramFrom } from ir.Verify;
+import { internalError } from support.Internal;
+import { indexOf } from support.Arrays;
 
 let _registers = Array.new<ValueType>(0);
 let _instructions = Array.new<Instruction>(0);
@@ -70,7 +70,7 @@ _valueType = fn(ty) {
     Tuple => ValueType.TupleOf(_valueTypes(ty)),
     Function => ValueType.Function(_valueTypes(ty), _valueType(innerOf(ty))),
     Optional, Rest => _valueType(slotType(ty)),
-    Enum => ValueType.Nominal(_enumIndexes[ty]),
+    Enum, Record => ValueType.Nominal(_enumIndexes[ty]),
     Dynamic => ValueType.Dynamic,
     ByteBuffer => ValueType.Bytes,
     Var, Param, Applied => {
@@ -432,6 +432,26 @@ let _nativeIndex = fn(native: I32): I32 {
   _nativeIndexes[native]
 };
 
+let _JOIN_PARTS = 64;
+
+let _joined = fn(id: I32): I32 {
+  let joined = -1;
+  let i = 0;
+
+  while (i < childCount(id)) {
+    let window = Array.new<I32>(0);
+    if (joined >= 0) { window.push(joined); }
+
+    while ((i < childCount(id)) && (window.len() < _JOIN_PARTS)) {
+      window.push(_expr(childOf(id, i)));
+      i++;
+    }
+    joined = _fresh(TYPE_BYTES);
+    _emit(Op.BytesConcatMany, joined, window, 0);
+  }
+  joined
+};
+
 let _i32 = fn(value: I32): I32 {
   let dst = _fresh(TYPE_I32);
   _emit(Op.ConstI32, dst, Array.new<I32>(0), value);
@@ -466,6 +486,12 @@ let _i64 = fn(ty: I32, value: I64): I32 {
 let _length = fn(array: I32): I32 {
   let dst = _fresh(TYPE_I32);
   _emit(Op.ArrayLen, dst, [array], 0);
+  dst
+};
+
+let _bytesLength = fn(bytes: I32): I32 {
+  let dst = _fresh(TYPE_I32);
+  _emit(Op.BytesLen, dst, [bytes], 0);
   dst
 };
 
@@ -713,6 +739,35 @@ let _arrayLiteral = fn(id: I32): I32 {
   array
 };
 
+let _bytesFormat = fn(code: I32): I32 {
+  (segmentWidth(code) == 16 ? 0 : (code & BITS_FLOAT) != 0 ? 6 : 2) + ((code & BITS_BIG) != 0 ? 1 : 0)
+};
+
+let _bitsPack = fn(id: I32): I32 {
+  let values = Array.new<I32>(0);
+  let fixed = valueOf(id);
+  let rest = -1;
+  let i = 0;
+
+  while (i < childCount(id)) {
+    values.push(_expr(childOf(childOf(id, i), 0)));
+    if (segmentWidth(auxOf(childOf(id, i))) == 0) { rest = values[i]; }
+    i++;
+  }
+  let length = rest < 0 ? _i32(fixed) : _arithmetic(Op.Add, _bytesLength(rest), _i32(fixed));
+  let bytes = _fresh(TYPE_BYTES);
+  _emit(Op.BytesNew, bytes, [length], 0);
+  i = 0;
+
+  while (i < values.len()) {
+    let field = childOf(id, i);
+    let width = segmentWidth(auxOf(field));
+    if (width == 0) { _emit(Op.BytesBlit, -1, [bytes, values[i], _i32(fixed)], 0); } else if (width <= 8) { _emit(Op.BitsWrite, -1, [bytes, values[i]], valueOf(field) * 16 + width); } else { _emit(Op.BytesWrite, -1, [bytes, _i32(valueOf(field) / 8), values[i]], _bytesFormat(auxOf(field))); }
+    i++;
+  }
+  bytes
+};
+
 let _push = fn(id: I32): I32 {
   let operands = _values(id, 0);
   let array = operands[0];
@@ -820,10 +875,23 @@ _exprAt = fn(id) {
       _emit(Op.ArraySet, -1, operands, 0);
       operands[2]
     },
+    SetField => {
+      let operands = _values(id, 0);
+      _emit(Op.StructSet, -1, operands, valueOf(id));
+      operands[1]
+    },
     BytesSet => {
       let operands = _values(id, 0);
       _emit(Op.BytesSet, -1, operands, 0);
       operands[2]
+    },
+    BitsPack => _bitsPack(id),
+    BitsRead => {
+      let bytes = _expr(childOf(id, 0));
+      let width = segmentWidth(auxOf(id));
+      let dst = _fresh(typeOf(id));
+      if (width <= 8) { _emit(Op.BitsRead, dst, [bytes], valueOf(id) * 16 + width); } else { _emit(Op.BytesRead, dst, [bytes, _i32(valueOf(id) / 8)], _bytesFormat(auxOf(id))); }
+      dst
     },
     BytesSlice when (typeOf(childOf(id, 0)) == TYPE_BYTE_BUFFER) => {
       let operands = _values(id, 0);
@@ -906,6 +974,7 @@ _exprAt = fn(id) {
     Shr when (_wideUnsigned(typeOf(id))) => _logicalShift(id),
     Eq, Lt, Gt, Le, Ge when (isFloatType(typeOf(childOf(id, 0)))) => _float(id),
     Neg when (typeOf(id) == TYPE_F16) => _float(id),
+    BytesConcatMany => _joined(id),
     _ => {
       let operands = _values(id, 0);
       let op = _operation(id);
@@ -1205,20 +1274,61 @@ let _function = fn(id: I32, functionId: I32): IrFunction {
   IrFunction.Function(functionId, params, captures, _registers, _valueType(innerOf(typeOf(id))), _blocks, 0)
 };
 
+let _reachableFunctions = fn(): Array<Bool> {
+  let root = rootNode();
+  let reached = [true];
+  while (reached.len() < childCount(root)) { reached.push(false); }
+  let pending = [lastChild(root)];
+
+  while (pending.len() > 0) {
+    let id = pending.pop();
+    let names = match (opOf(id)) { Call, FunctionRef => valueOf(id) > 0, _ => false };
+
+    if (names && !reached[valueOf(id)]) {
+      reached[valueOf(id)] = true;
+      pending.push(lastChild(childOf(root, valueOf(id) - 1)));
+    }
+    let i = 0;
+
+    while (i < childCount(id)) {
+      pending.push(childOf(id, i));
+      i++;
+    }
+  }
+  reached
+};
+
+let _partStarts = Array.new<I32>(0);
+
 export let functionNode: (I32) -> I32 = fn(functionId) {
   let root = rootNode();
   let first = childCount(root);
-  if (functionId >= first) { return childOf(lastChild(root), functionId - first); }
+  if (functionId >= first) { return childOf(lastChild(root), _partStarts[functionId - first]); }
   functionId == 0 ? lastChild(root) : childOf(root, functionId - 1)
 };
 
-let _part = fn(statement: I32, functionId: I32): IrFunction {
-  _begin(statement, functionId);
-  _statement(statement);
+let _PART_TYPES = 128;
+
+let _part = fn(body: I32, start: I32, functionId: I32): Tuple<IrFunction, I32> {
+  _begin(childOf(body, start), functionId);
+  let types = Array.new<ValueType>(0);
+  let counted = 0;
+  let next = start;
+
+  while ((next < childCount(body) - 1) && (types.len() < _PART_TYPES)) {
+    if (next > start) { _markUses(childOf(body, next), -1); }
+    _statement(childOf(body, next));
+    next++;
+
+    while (counted < _registers.len()) {
+      internValueType(types, _registers[counted]);
+      counted++;
+    }
+  }
   let result = _fresh(TYPE_NULL);
   _emit(Op.ConstNull, result, [], 0);
   _exit(Terminator.ReturnValue(result));
-  IrFunction.Function(functionId, [], 0, _registers, _valueType(TYPE_NULL), _blocks, 0)
+  (IrFunction.Function(functionId, [], 0, _registers, _valueType(TYPE_NULL), _blocks, 0), next)
 };
 
 let _findCells = fn() {
@@ -1291,7 +1401,62 @@ let _findCells = fn() {
   null
 };
 
-let _lowerProgram = fn(program: Hir, inParts: Bool): IrProgram {
+let _poolSizes = Array.new<I32>(0);
+
+let _forgetIndexes = fn(indexes: Array<I32>, size: I32) {
+  let i = 0;
+
+  while (i < indexes.len()) {
+    if (indexes[i] >= size) { indexes[i] = -1; }
+    i++;
+  }
+  null
+};
+
+let _lowerBody = fn(functions: Array<IrFunction>, enums: Array<EnumSchema>, inParts: Bool, verified: I32): IrProgram {
+  let root = rootNode();
+  let body = lastChild(root);
+  let first = childCount(root);
+  let result = -1;
+
+  if (!inParts) {
+    _begin(body, -1);
+    result = _lowerBlock(body);
+  } else {
+    let statements = childCount(body) - 1;
+    let next = 0;
+    _partStarts = [];
+
+    while (next < statements) {
+      _partStarts.push(next);
+      let (part, after) = _part(body, next, first + (_partStarts.len() as I32) - 1);
+      functions.push(part);
+      next = after;
+    }
+    _begin(lastChild(body), -1);
+    let part = 0;
+
+    while (part < _partStarts.len()) {
+      _emit(Op.Call, _fresh(TYPE_NULL), [], first + (part as I32));
+      part++;
+    }
+    result = _expr(lastChild(body));
+  }
+  _end(Terminator.ReturnValue(result), -1);
+  functions.push(IrFunction.Function(0, [], 0, _registers, _valueType(typeOf(body)), _blocks, 0));
+  let globals = Array.new<ValueType>(0);
+  let i = 0;
+
+  while (i < globalCount()) {
+    globals.push(_valueType(globalTypeOf(i)));
+    i++;
+  }
+  let lowered = IrProgram.Program(functions, _pool, _wides, _floats, _atoms, enums, globals, _natives);
+  verifyProgramFrom(lowered, false, verified);
+  lowered
+};
+
+export let lowerProgram: (Hir) -> IrProgram = fn(program) {
   useHir(program);
   _pool = Array.new<Bytes>(0);
   _poolIndexes = Array.new<I32>(0);
@@ -1308,7 +1473,7 @@ let _lowerProgram = fn(program: Hir, inParts: Bool): IrProgram {
 
   while (ty < typeCount()) {
     _enumIndexes.push(match (kindOf(ty)) {
-      Enum when (!isTemplateEnum(ty)) => {
+      Enum, Record when (!isTemplateEnum(ty)) => {
         enumTypes.push(ty);
         (enumTypes.len() - 1) as I32
       }, _ => -1
@@ -1333,55 +1498,38 @@ let _lowerProgram = fn(program: Hir, inParts: Bool): IrProgram {
       variants.push(fields);
       tag++;
     }
-    enums.push(EnumSchema.Enum(variants));
+    enums.push(isRecord(enumTypes[e]) ? EnumSchema.Record(variants[0]) : EnumSchema.Enum(variants));
     e++;
   }
   _findCells();
   let root = rootNode();
   let functions = Array.new<IrFunction>(0);
+  let reached = _reachableFunctions();
   let i = 0;
 
   while (i < childCount(root) - 1) {
-    functions.push(_function(childOf(root, i), i + 1));
+    if (reached[i + 1]) { functions.push(_function(childOf(root, i), i + 1)); }
     i++;
   }
-  let body = lastChild(root);
-  let first = childCount(root);
-  let result = -1;
-
-  if (!inParts) {
-    _begin(body, -1);
-    result = _lowerBlock(body);
-  } else {
-    let parts = childCount(body) - 1;
-    let part = 0;
-
-    while (part < parts) {
-      functions.push(_part(childOf(body, part), first + part));
-      part++;
-    }
-    _begin(lastChild(body), -1);
-    part = 0;
-
-    while (part < parts) {
-      _emit(Op.Call, _fresh(TYPE_NULL), [], first + part);
-      part++;
-    }
-    result = _expr(lastChild(body));
-  }
-  _end(Terminator.ReturnValue(result), -1);
-  functions.push(IrFunction.Function(0, [], 0, _registers, _valueType(typeOf(body)), _blocks, 0));
-  let globals = Array.new<ValueType>(0);
-  i = 0;
-
-  while (i < globalCount()) {
-    globals.push(_valueType(globalTypeOf(i)));
-    i++;
-  }
-  let lowered = IrProgram.Program(functions, _pool, _wides, _floats, _atoms, enums, globals, _natives);
-  verifyProgram(lowered);
-  lowered
+  _poolSizes = [_pool.len() as I32, _wides.len() as I32, _floats.len() as I32, _atoms.len() as I32, _natives.len() as I32];
+  _lowerBody(functions, enums, false, 0)
 };
 
-export let lowerProgram: (Hir) -> IrProgram = fn(program) { _lowerProgram(program, false) };
-export let lowerProgramInParts: (Hir) -> IrProgram = fn(program) { _lowerProgram(program, true) };
+export let relowerBodyInParts: (IrProgram) -> IrProgram = fn(earlier) {
+  if (_poolSizes.len() == 0) { throw "no program body to lower again"; }
+  Array.resize(_pool, _poolSizes[0]);
+  Array.resize(_wides, _poolSizes[1]);
+  Array.resize(_floats, _poolSizes[2]);
+  Array.resize(_atoms, _poolSizes[3]);
+  Array.resize(_natives, _poolSizes[4]);
+  _forgetIndexes(_poolIndexes, _poolSizes[0]);
+  _forgetIndexes(_atomIndexes, _poolSizes[3]);
+  _forgetIndexes(_nativeIndexes, _poolSizes[4]);
+  _poolSizes = [];
+
+  match (earlier) { Program(functions, _, _, _, _, enums, _, _) => {
+    let kept = Array.new<IrFunction>(0);
+    while (kept.len() < functions.len() - 1) { kept.push(functions[kept.len()]); }
+    _lowerBody(kept, enums, true, kept.len() as I32)
+  } }
+};

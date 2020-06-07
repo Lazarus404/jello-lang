@@ -3,16 +3,17 @@ package compiler;
 // The compiler's stages run in order on one source, or on a program's
 // files, for the pipeline tests.
 
-import type { Hir } from frontend.Hir;
+import type { Hir } from frontend.hir.Hir;
 import type { Program } from ir.Model;
-import { lexFile } from frontend.Lexer;
-import { parseProgram } from frontend.Parser;
-import { typeCheckModules, typeCheckProgram } from frontend.CheckModules;
+import { lexFile } from frontend.syntax.Lexer;
+import { parseProgram } from frontend.syntax.Parser;
+import { checkProgram, typeCheckProgram } from frontend.semantics.Modules;
 import { lowerProgram } from ir.Lower;
 import { legalizeJlo } from backend.jello.Legalize;
 import { allocateProgram } from backend.jello.Allocate;
 import { emitAllocated, noSource } from backend.jello.Emit;
-import { loadModules, loadTests } from frontend.Modules;
+import type { Module } from frontend.Loader;
+import { loadModules, loadTests } from frontend.Loader;
 import { printIr } from ir.Print;
 
 // SOURCE lexed, parsed and checked.
@@ -31,9 +32,9 @@ let _STD = "../stdlib";
 
 // The program at PATH, with its imports under ROOTS after its directory,
 // checked.
-export let checkedFile = fn(path: Bytes, roots: Array<Bytes>): Hir { typeCheckModules(loadModules(path, _STD, roots)) };
+export let checkedFile = fn(path: Bytes, roots: Array<Bytes>): Hir { checkProgram(fn(types: Array<Bytes>): Array<Module> { loadModules(path, _STD, roots, types) }) };
 // The program at PATH allocated; and as --jlo prints it.
 export let allocatedFile = fn(path: Bytes, roots: Array<Bytes>): Program { allocateProgram(legalizeJlo(lowerProgram(checkedFile(path, roots)))) };
 export let jloOf = fn(path: Bytes, roots: Array<Bytes>): Bytes { printIr(allocatedFile(path, roots)) };
 // The test binary of FILES, each under one of ROOTS, checked.
-export let checkedTests = fn(files: Array<Bytes>, roots: Array<Bytes>): Hir { typeCheckModules(loadTests(files, _STD, roots)) };
+export let checkedTests = fn(files: Array<Bytes>, roots: Array<Bytes>): Hir { checkProgram(fn(types: Array<Bytes>): Array<Module> { loadTests(files, _STD, roots, types) }) };

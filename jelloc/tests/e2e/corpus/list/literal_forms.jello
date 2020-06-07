@@ -1,0 +1,9 @@
+// expect: [] [0, -1, 1, 2, 3] [9, 1, 2, 3] [7, 1, 2, 3, 8, 10] [1, 2, 3]
+// Elements cons onto nil or a tail; a spread with items after it copies the
+// spread list, which keeps its own items.
+let xs: List<I32> = list[1, 2, 3];
+let empty: List<I32> = list[];
+let consed = list[0, -1 | xs];
+let spread = list[9, ...xs];
+let around = list[7, ...xs, 8, 10];
+Std.string(empty) + " " + Std.string(consed) + " " + Std.string(spread) + " " + Std.string(around) + " " + Std.string(xs)

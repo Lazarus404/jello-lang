@@ -1,0 +1,9 @@
+// expect: ["` $ ${n} $ {} $n A☺", "6 {braces}"] 11 10
+// The text takes a bytes literal's escapes and \$; a $ without a { is itself,
+// and the text may span lines, keeping its line breaks. A hole may hold a
+// block, and braces in the text are text.
+let n = 1;
+let lines = `two
+lines ${n}`;
+let texts = [`\` \$ \${n} $ {} $n \x41\u{263A}`, `${ { let y = 3; y * 2 } } {braces}`];
+Std.string(texts) + " " + Std.string(lines.len()) + " " + Std.string(Bytes.get_u8(lines, 3))

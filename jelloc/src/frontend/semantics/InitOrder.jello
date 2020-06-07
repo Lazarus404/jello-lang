@@ -1,0 +1,160 @@
+package frontend.semantics;
+
+import { Op, childCount, childOf, globalCount, lastChild, opOf, rootNode, valueOf } from frontend.hir.Hir;
+import { bitsAdd, bitsHas, bitsMembers, bitsNew, bitsUnion } from frontend.BitSets;
+
+let _scan: (I32, Array<I32>, Array<I32>, Array<I32>) -> Bool = fn(_id, _reads, _calls, _refs) { false };
+_scan = fn(id, reads, calls, refs) {
+  let indirect = match (opOf(id)) {
+    Global => {
+      bitsAdd(reads, valueOf(id));
+      false
+    },
+    Call => {
+      bitsAdd(calls, valueOf(id));
+      false
+    },
+    FunctionRef => {
+      bitsAdd(refs, valueOf(id));
+      false
+    },
+    CallIndirect => true,
+    _ => false,
+  };
+  let i = 0;
+
+  while (i < childCount(id)) {
+    if (_scan(childOf(id, i), reads, calls, refs)) { indirect = true; }
+    i++;
+  }
+  indirect
+};
+
+let _reach = Array.new<Array<I32>>(0);
+let _callers = Array.new<Array<I32>>(0);
+let _queued = Array.new<Bool>(0);
+let _offered = Array.new<I32>(0);
+
+let _propagate = fn(nodes: Array<I32>) {
+  let pending = Array.new<I32>(0);
+  let n = 0;
+
+  while (n < nodes.len()) {
+    if (!_queued[nodes[n]]) {
+      _queued[nodes[n]] = true;
+      pending.push(nodes[n]);
+    }
+    n++;
+  }
+
+  while (pending.len() > 0) {
+    let next = pending.pop();
+    let c = 0;
+    _queued[next] = false;
+
+    while (c < _callers[next].len()) {
+      let caller = _callers[next][c];
+
+      if (bitsUnion(_reach[caller], _reach[next]) && !_queued[caller]) {
+        _queued[caller] = true;
+        pending.push(caller);
+      }
+      c++;
+    }
+  }
+  null
+};
+
+let _offerAll = fn(functions: Array<I32>, sink: I32) {
+  let grew = false;
+  let f = 0;
+
+  while (f < functions.len()) {
+    let function = functions[f];
+
+    if (!bitsHas(_offered, function)) {
+      bitsAdd(_offered, function);
+      _callers[function].push(sink);
+      if (bitsUnion(_reach[sink], _reach[function])) { grew = true; }
+    }
+    f++;
+  }
+  if (grew) { _propagate([sink]); }
+  null
+};
+
+export let firstUninitializedRead: () -> Tuple<I32, I32> = fn() {
+  let root = rootNode();
+  let functions = childCount(root) - 1;
+  let sink = functions + 1;
+  let nodes = sink + 1;
+  _reach = Array.new<Array<I32>>(0);
+  _callers = Array.new<Array<I32>>(0);
+  _queued = Array.new<Bool>(0);
+  _offered = bitsNew(nodes);
+  let all = Array.new<I32>(0);
+  let f = 0;
+
+  while (f < nodes) {
+    _reach.push(bitsNew(globalCount()));
+    _callers.push(Array.new<I32>(0));
+    _queued.push(false);
+    all.push(f);
+    f++;
+  }
+  let refs = bitsNew(nodes);
+  f = 1;
+
+  while (f <= functions) {
+    let calls = bitsNew(nodes);
+    if (_scan(childOf(root, f - 1), _reach[f], calls, refs)) { bitsAdd(calls, sink); }
+    let callees = bitsMembers(calls);
+    let c = 0;
+
+    while (c < callees.len()) {
+      _callers[callees[c]].push(f);
+      c++;
+    }
+    f++;
+  }
+  _offerAll(bitsMembers(refs), sink);
+  _propagate(all);
+  let body = lastChild(root);
+  let initialized = bitsNew(globalCount());
+  let i = 0;
+
+  while (i < childCount(body)) {
+    let binding = childOf(body, i);
+    let reads = bitsNew(globalCount());
+    let calls = bitsNew(nodes);
+    let taken = bitsNew(nodes);
+    if (_scan(binding, reads, calls, taken)) { bitsAdd(calls, sink); }
+    _offerAll(bitsMembers(taken), sink);
+    let called = bitsMembers(calls);
+    let c = 0;
+
+    while (c < called.len()) {
+      bitsUnion(reads, _reach[called[c]]);
+      c++;
+    }
+    let members = bitsMembers(reads);
+    let m = 0;
+
+    while (m < members.len()) {
+      if (!bitsHas(initialized, members[m])) { return (binding, members[m]); }
+      m++;
+    }
+
+    if (opOf(binding) == Op.Declare) {
+      let d = 0;
+
+      while (d < childCount(binding)) {
+        let child = childOf(binding, d);
+        if (opOf(child) == Op.InitGlobal) { bitsAdd(initialized, valueOf(child)); }
+        d++;
+      }
+    }
+    i++;
+  }
+  (-1, -1)
+};

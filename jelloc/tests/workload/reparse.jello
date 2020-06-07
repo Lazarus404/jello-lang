@@ -11,9 +11,9 @@ let _input = fn(path: Bytes): Tuple<Bytes, Bytes> { (readText(path), path) };
 let inputs = [
   ("let y = %;", "topic.jello"),
   ("let x = 1 |> (% + ;", "pipe.jello"),
-  _input("src/frontend/Parser.jello"),
+  _input("src/frontend/syntax/Parser.jello"),
   _input("itests/prototype/missing_brace.jello"),
-  _input("src/frontend/Lexer.jello")
+  _input("src/frontend/syntax/Lexer.jello")
 ];
 let _report = fn(i: I32): Bytes { let (source, path) = inputs[i]; parseReport(source, path) };
 let first = Array.new<Bytes>(0); let i = 0;

@@ -1,0 +1,36 @@
+// expect: ok
+// A layout's fields pack as bits segments do, in order.
+typedef Header = bytes-layout {
+  let version: bits(4);
+  let flags: bits(4);
+  let kind: u8;
+  let length: u16.be;
+  let id: u32.le;
+  let ratio: f32.be;
+  let payload: rest;
+};
+
+let raw = Header.pack({ version: 2, flags: 5, kind: 7, length: 513, id: 16909060, ratio: 1.5f32, payload: "hi" });
+let expected = [37, 7, 2, 1, 4, 3, 2, 1, 63, 192, 0, 0, 104, 105];
+System.assert(Bytes.len(raw) == expected.len());
+let i = 0;
+while (i < expected.len()) { System.assert(Bytes.get_u8(raw, i) == expected[i]); i++; }
+
+// A record that is no literal is read field by field, and its fields may come in any order.
+let header = match (Header.unpack(raw)) { null => Header.pack({ payload: "", ratio: 0f32, id: 0, length: 0, kind: 0, flags: 0, version: 0 }), h => Header.pack(h) };
+System.assert(Bytes.eq(header, raw));
+let fields = match (Header.unpack(raw)) { null => (0, 0, 0, 0, 0, 0f32, ""), h => (h.version, h.flags, h.kind, h.length, h.id, h.ratio, h.payload) };
+System.assert(fields == (2, 5, 7, 513, 16909060, 1.5f32, "hi"));
+
+// Bytes too short for the fixed fields hold no header; a rest takes any further length.
+System.assert(Header.unpack(Bytes.slice(raw, 0, 11)) == null);
+System.assert(Header.unpack(Bytes.slice(raw, 0, 12)) != null);
+
+// Without a rest, the length must be exact.
+typedef Pair = bytes-layout { let a: u8; let b: i32.be; };
+let pair = Pair.pack({ a: 255, b: -2 });
+System.assert(Bytes.len(pair) == 5);
+System.assert(Pair.unpack(bits[8(1), rest(pair)]) == null);
+let b = match (Pair.unpack(pair)) { null => 0, p => p.b };
+System.assert(b == -2);
+"ok"

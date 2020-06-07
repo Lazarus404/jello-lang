@@ -1,0 +1,6 @@
+// expect: Shape.Circle(3) Shape.Dot 1 0 Box.Full("x") 1
+enum Shape { Dot; Circle(r: I32); }
+enum Box<T> { Empty; Full(value: T); }
+let s = Shape.Circle(3);
+let b = Box.Full("x");
+s.toString() + " " + Shape.Dot.toString() + " " + Std.string(s.tag()) + " " + Std.string(Shape.Dot.tag()) + " " + b.toString() + " " + Std.string(b.tag())

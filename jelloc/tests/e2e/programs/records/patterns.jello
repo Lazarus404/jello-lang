@@ -1,0 +1,27 @@
+// expect: ok
+typedef Pt = { let x: I32; let y: I32; };
+typedef Node = { let v: I32; let next: ?Node; };
+enum Shape { Dot(at: Pt); Empty; }
+
+let p: Pt = { x: 1, y: 2 };
+let { x: a, y } = p;
+let named = match (p) { { x: 0 } => "x0", { y: 2, x } => "y2 x" + Std.string(x), _ => "other" };
+
+let n: Node = { v: 1, next: { v: 2, next: null } };
+let second = match (n) { { next: { v } } => v, { next: null } => -1 };
+
+let shape = Shape.Dot(p);
+let nested = match (shape) { Dot({ x: 1, y: at }) => at, Dot(_) => 0, Empty => -1 };
+
+let tested = if (let { x: 1, y: q } = p) { q } else { 0 };
+
+let total = 0;
+let cur: ?Node = n;
+while (let { v, next } = cur) { total += v; cur = next; }
+
+let maybe: ?Pt = p;
+let present = match (maybe) { { x } => x, null => 0 };
+
+System.assert((a == 1) && (y == 2) && (named == "y2 x1") && (second == 2) && (nested == 2));
+System.assert((tested == 2) && (total == 3) && (present == 1));
+"ok"

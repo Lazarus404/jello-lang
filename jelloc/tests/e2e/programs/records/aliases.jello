@@ -1,0 +1,20 @@
+// expect: ok
+typedef Later = Earlier;
+typedef Earlier = I32;
+typedef Ints = Array<I32>;
+typedef Many<T> = Array<T>;
+typedef Two<A, B> = Tuple<A, B>;
+typedef Points = Many<Point>;
+typedef Point = { let x: I32; };
+enum Shape { Dot; Line(length: Later); };
+
+let a: Ints = [1, 2];
+let b: Many<Bytes> = ["b"];
+let pair: Two<I32, Bool> = (1, true);
+let points: Points = [{ x: 4 }];
+let later: Later = 5;
+let line = Shape.Line(later);
+let first<T> = fn(items: Many<T>): T { items[0] };
+let length = match (line) { Line(n) => n, Dot => 0 };
+System.assert((first(a) == 1) && (first(b) == "b") && pair.1 && (points[0].x == 4) && (length == 5));
+"ok"

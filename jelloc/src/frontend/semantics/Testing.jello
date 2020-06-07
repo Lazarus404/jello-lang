@@ -1,0 +1,115 @@
+package frontend.semantics;
+
+import type { Expr as AstExpr } from frontend.syntax.Ast;
+import { BinaryOp } from frontend.syntax.Ast;
+import frontend.hir.Hir as H;
+import { Kind, Op } from frontend.hir.Hir;
+import { bytesOf, joinOf, literalOf } from frontend.semantics.Derived;
+import { bindOnce, equalBindings, equalityOperands, orThrow } from frontend.semantics.Values;
+import { Binding, declareScoped, exportScoped, exportedType, namespaceMember } from frontend.semantics.ModuleScope;
+import type { SourceSpan } from frontend.syntax.Source;
+import { locate } from frontend.syntax.Locations;
+import { callFunction, checkArity, checkOperand, currentSpan, enterSyntax, rejectAt, syntaxChild, widened } from frontend.semantics.TypeCheck;
+
+let _ASSERTIONS = ["equal", "notEqual", "isTrue", "isNull", "throws"];
+
+export let declareAssertions: (I32) -> Bool = fn(module) {
+  let i = 0;
+
+  while (i < _ASSERTIONS.len()) {
+    declareScoped(_ASSERTIONS[i], Binding.Intrinsic(module, _ASSERTIONS[i]));
+    exportScoped(module, _ASSERTIONS[i], true);
+    i++;
+  }
+  true
+};
+
+let _located = fn(span: SourceSpan): Bytes {
+  match (span) { Span(path, start, _) => {
+    let (line, column) = locate(path, start);
+    path + ":" + Std.string(line) + ":" + Std.string(column)
+  } }
+};
+
+let _location = fn(): Bytes {
+  let span = currentSpan();
+  span == null ? "" : _located(span)
+};
+
+let _argument = fn(args: Array<AstExpr>, index: I32, ty: I32, name: Bytes, what: Bytes): I32 {
+  let value = widened(checkOperand(args[index], index + 1, ty), ty);
+  if (!H.unify(H.typeOf(value), ty)) { rejectAt(index + 1, name + " takes " + what + " of type " + H.typeName(ty) + ", not " + H.typeName(H.typeOf(value))); }
+  value
+};
+
+let _shown = fn(binding: I32, value: I32): I32 { literalOf(binding < 0 ? value : H.local(binding, H.typeOf(value))) };
+
+let _report = fn(module: I32, reporter: Bytes, args: Array<I32>): I32 {
+  callFunction(namespaceMember(module, "std.testing", reporter), "std.testing." + reporter, args)
+};
+
+let _unless = fn(condition: I32, failure: I32): I32 { H.node(Op.If, H.TYPE_NULL, 0, 0, [condition, H.node(Op.Null, H.TYPE_NULL, 0, 0, []), failure]) };
+
+export let checkSystemAssertion: (Bytes, Bytes, Array<AstExpr>) -> I32 = fn(assertion, name, args) {
+  let at = _location() + ": ";
+
+  if (assertion == "assert") {
+    checkArity(args, 1, name);
+    return orThrow(_argument(args, 0, H.TYPE_BOOL, name, "a condition"), bytesOf(at + "assertion failed"));
+  }
+  if ((args.len() < 2) || (args.len() > 3)) { throw name + " takes 2 or 3 arguments"; }
+  let statements = Array.new<I32>(0);
+  let (got, want) = equalityOperands(args[0], args[1], 1);
+  let g = bindOnce(statements, "got", got);
+  let w = bindOnce(statements, "want", want);
+  let message = [bytesOf(at + "assertEq failed: "), _shown(g, got), bytesOf(" != "), _shown(w, want)];
+
+  if (args.len() == 3) {
+    let context = bindOnce(statements, "message", _argument(args, 2, H.TYPE_BYTES, name, "a message"));
+    message.push(bytesOf(": "));
+    message.push(H.local(context, H.TYPE_BYTES));
+  }
+  let same = equalBindings(BinaryOp.Equal, g, got, w, want);
+  statements.push(orThrow(same, joinOf(message)));
+  H.node(Op.Block, H.TYPE_NULL, 0, 1, statements)
+};
+
+export let checkAssertion: (I32, Bytes, Bytes, Array<AstExpr>) -> I32 = fn(module, assertion, name, args) {
+  checkArity(args, (assertion == "equal") || (assertion == "notEqual") ? 3 : 2, name);
+  let testType = exportedType(module, "Test");
+  let at = bytesOf(_location());
+  let test = _argument(args, 0, testType, name, "a test");
+
+  if (assertion == "throws") {
+    return _report(module, "throwsAt", [test, at, _argument(args, 1, H.functionType(Array.new<I32>(0), H.TYPE_NULL), name, "a function")]);
+  }
+  let statements = Array.new<I32>(0);
+  let t = H.opOf(test) == Op.Local ? H.valueOf(test) : bindOnce(statements, "t", test);
+
+  let check = match (assertion) {
+    "isTrue" => _unless(_argument(args, 1, H.TYPE_BOOL, name, "a condition"), _report(module, "failFalse", [H.local(t, testType), at])),
+    "isNull" => {
+      let value = checkOperand(args[1], 2, -1);
+      let ty = H.typeOf(value);
+
+      if (!H.isKind(ty, Kind.Null)) {
+        enterSyntax(syntaxChild(2));
+        throw name + " takes a nullable value, not " + H.typeName(ty);
+      }
+      let v = bindOnce(statements, "value", value);
+      _unless(H.node(Op.IsNull, H.TYPE_BOOL, 0, 0, [H.local(v, ty)]), _report(module, "failNotNull", [H.local(t, testType), at, _shown(v, value)]))
+    },
+    _ => {
+      let (got, want) = equalityOperands(args[1], args[2], 2);
+      let g = bindOnce(statements, "got", got);
+      let w = bindOnce(statements, "want", want);
+      let same = equalBindings(BinaryOp.Equal, g, got, w, want);
+      let shownGot = _shown(g, got);
+      assertion == "equal"
+        ? _unless(same, _report(module, "failEqual", [H.local(t, testType), at, shownGot, _shown(w, want)]))
+        : _unless(H.node(Op.Not, H.TYPE_BOOL, 0, 0, [same]), _report(module, "failNotEqual", [H.local(t, testType), at, shownGot]))
+    },
+  };
+  statements.push(check);
+  H.node(Op.Block, H.TYPE_NULL, 0, 1, statements)
+};

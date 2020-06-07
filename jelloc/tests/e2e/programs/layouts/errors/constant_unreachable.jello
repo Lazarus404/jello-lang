@@ -1,0 +1,5 @@
+// error: 4:102: unreachable match arm: earlier arms already match (…)
+// A constant on Bytes is no layout pattern, and its arms are checked as before.
+const GREETING = "hi";
+let f = fn(s: Bytes, m: Bool): I32 { match ((s, m)) { (GREETING, true) => 1, (GREETING, false) => 2, (GREETING, _) => 4, (_, _) => 3 } };
+"ok"

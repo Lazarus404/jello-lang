@@ -1,0 +1,7 @@
+// expect: ok
+// An empty separator throws, and so does replacing an empty pattern everywhere.
+let thrown = 0;
+try { "ab".split(""); } catch (e) { thrown++; }
+try { "ab".replaceAll("", "-"); } catch (e) { thrown++; }
+System.assert(thrown == 2);
+"ok"

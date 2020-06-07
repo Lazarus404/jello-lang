@@ -1,0 +1,431 @@
+package frontend.syntax;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { lexFile } from frontend.syntax.Lexer;
+import { parseProgram } from frontend.syntax.Parser;
+import type {
+  AssignOp,
+  BinaryOp,
+  Block,
+  Expr,
+  FloatSize,
+  ImportItem,
+  ImportKind,
+  IntSize,
+  ListLiteral,
+  MatchAlternative,
+  MatchArm,
+  ObjectEntry,
+  Package,
+  Parameter,
+  ParameterKind,
+  Pattern,
+  Program,
+  QuoteBody,
+  QuoteKind,
+  Stmt,
+  StructField,
+  Type,
+  TypedefBody,
+} from frontend.syntax.Ast;
+
+let parse = fn(source: Bytes): Program { parseProgram(lexFile(source, "<input>")) };
+
+let testParsesPackageDeclarationsPrecedenceAndProgramTail = fn(t: Test) {
+  let program = parse("package demo.core; import type {Box as B} from lib.types; let x: I32 = 1 + 2 * 3; x");
+  T.equal(t, program, Program.Program(
+    Package.Path(["demo", "core"]),
+    [
+      Stmt.ImportFrom(
+        ImportKind.TypeOnly,
+        [ImportItem.Item("Box", "B")],
+        ["lib", "types"]
+      ),
+      Stmt.LetStmt(
+        false,
+        false,
+        Pattern.BindPattern("x"),
+        [],
+        Type.Named("I32"),
+        Expr.Binary(
+          BinaryOp.Add,
+          Expr.Integer("1", IntSize.Infer),
+          Expr.Binary(
+            BinaryOp.Multiply,
+            Expr.Integer("2", IntSize.Infer),
+            Expr.Integer("3", IntSize.Infer)
+          )
+        ),
+        null
+      )
+    ],
+    Expr.Variable("x")
+  ));
+};
+
+let testParsesFunctionBlockTailsAndControlStatements = fn(t: Test) {
+  let program = parse("let f = fn(x: I32): I32 { while (x) { break; } return x; };");
+  let expected: ?Expr = null;
+
+  match (program) {
+    Program(_, statements, tail) => {
+      T.equal(t, statements.len(), 1);
+      T.equal(t, tail, expected);
+    }
+  };
+};
+
+let testParsesRepresentativePatternsAndNestedGenericTypes = fn(t: Test) {
+  let program = parse("let [head, ...tail]: Box<Array<I32>> = value; match (value) { Pair(a, b) => a, is Box<Array<I32>> as boxed => boxed }");
+
+  match (program) {
+    Program(_, statements, tail) => {
+      T.equal(t, statements.len(), 1);
+      T.notEqual(t, tail, null);
+    }
+  };
+};
+
+let testRejectsMalformedSyntaxAndMissingSemicolons = fn(t: Test) {
+  T.throws(t, fn() { parse("let x = 1 let y = 2"); });
+  T.throws(t, fn() { parse("while x {}"); });
+  T.throws(t, fn() { parse("package demo let x = 1;"); });
+};
+
+let testParsesKeywordMembersSpreadsVarargsAndGenericNew = fn(t: Test) {
+  parse("let f: (I32...) -> I32 = fn(...xs) { 0 }; let x = new Box<I32>(1); Array.new(...xs); t.0;");
+};
+
+let testValidatesPipelineTopics = fn(t: Test) {
+  parse("value |> %.field;");
+  T.throws(t, fn() { parse("%;"); });
+};
+
+let testParsesMatchRegexpFallthroughAndEnumPayloadPatterns = fn(t: Test) {
+  let program = parse("match (x) { A, B(v) => v, when ~r/a+/ as m => m, _ => 0 }");
+
+  match (program) {
+    Program(_, _, tail) => T.equal(t, tail, Expr.Match(Expr.Variable("x"), [
+      MatchArm.Arm([
+        MatchAlternative.Alternative(Pattern.Enum("A", []), null),
+        MatchAlternative.Alternative(Pattern.Enum("B", [Pattern.BindPattern("v")]), null)
+      ], null, Block.Block([], Expr.Variable("v"))),
+      MatchArm.Arm([MatchAlternative.Alternative(Pattern.RegExp("a+", "", "m"), null)], null, Block.Block([], Expr.Variable("m"))),
+      MatchArm.Arm([MatchAlternative.Alternative(Pattern.Wildcard, null)], null, Block.Block([], Expr.Integer("0", IntSize.Infer)))
+    ]))
+  };
+};
+
+let testKeepsEachAlternativesGuardApartFromTheArms = fn(t: Test) {
+  let program = parse("match (x) { A when (a), B, C when (c) => value }");
+
+  match (program) {
+    Program(_, _, tail) => T.equal(t, tail, Expr.Match(Expr.Variable("x"), [
+      MatchArm.Arm([
+        MatchAlternative.Alternative(Pattern.Enum("A", []), Expr.Variable("a")),
+        MatchAlternative.Alternative(Pattern.Enum("B", []), null),
+        MatchAlternative.Alternative(Pattern.Enum("C", []), null)
+      ], Expr.Variable("c"), Block.Block([], Expr.Variable("value")))
+    ]))
+  };
+};
+
+let testBuildsExactASTsForNamesSpreadsNewListsAndVarargs = fn(t: Test) {
+  let program = parse("let f: (I32...) -> I32 = fn(...xs) { 0 }; new Box<I32>(...xs); { type: t }; (...xs, x); list[head | tail]; list[a, ...rest, b]; Array.new(...xs); [x, ...xs]; t.0; list[head, | tail]");
+
+  match (program) {
+    Program(_, statements, tail) => {
+      T.equal(t, statements[0], Stmt.LetStmt(false, false, Pattern.BindPattern("f"), [],
+        Type.Function([Type.VarargsArg(Type.Named("I32"))], Type.Named("I32")),
+        Expr.Function([Parameter.Parameter("xs", null, ParameterKind.Varargs)], null,
+          Block.Block([], Expr.Integer("0", IntSize.Infer)), false), null));
+      T.equal(t, statements[1], Stmt.Expression(Expr.New(
+        Expr.TypeApply(Expr.Variable("Box"), [Type.Named("I32")]),
+        [Expr.Spread(Expr.Variable("xs"))]
+      )));
+      T.equal(t, statements[2], Stmt.Expression(Expr.Object([
+        ObjectEntry.Field("type", Expr.Variable("t"))
+      ])));
+      T.equal(t, statements[3], Stmt.Expression(Expr.Tuple([
+        Expr.Spread(Expr.Variable("xs")), Expr.Variable("x")
+      ])));
+      T.equal(t, statements[4], Stmt.Expression(Expr.List(
+        ListLiteral.Cons([Expr.Variable("head")], Expr.Variable("tail")))));
+      T.equal(t, statements[5], Stmt.Expression(Expr.List(ListLiteral.Spread(
+        [Expr.Variable("a")], Expr.Variable("rest"), [Expr.Variable("b")]
+      ))));
+      T.equal(t, statements[6], Stmt.Expression(Expr.Call(
+        Expr.Member(Expr.Variable("Array"), "new"), [],
+        [Expr.Spread(Expr.Variable("xs"))]
+      )));
+      T.equal(t, statements[7], Stmt.Expression(Expr.Array([
+        Expr.Variable("x"), Expr.Spread(Expr.Variable("xs"))
+      ])));
+      T.equal(t, statements[8], Stmt.Expression(
+        Expr.Member(Expr.Variable("t"), "0")));
+      T.equal(t, tail, Expr.List(ListLiteral.Cons([Expr.Variable("head")], Expr.Variable("tail"))));
+    }
+  };
+};
+
+// A list element is any expression; a `|` outside brackets ends it.
+let testParsesListElementsUpToATopLevelPipe = fn(t: Test) {
+  let program = parse("list[a && b | t]; list[c ? x : y]; list[(a | b)]; t.1.0");
+  let a = Expr.Variable("a");
+  let b = Expr.Variable("b");
+
+  match (program) {
+    Program(_, statements, tail) => {
+      T.equal(t, statements[0], Stmt.Expression(Expr.List(
+        ListLiteral.Cons([Expr.Binary(BinaryOp.And, a, b)], Expr.Variable("t")))));
+      T.equal(t, statements[1], Stmt.Expression(Expr.List(ListLiteral.Elements([
+        Expr.Conditional(Expr.Variable("c"), Expr.Variable("x"), Expr.Variable("y"))]))));
+      T.equal(t, statements[2], Stmt.Expression(Expr.List(ListLiteral.Elements([Expr.Binary(BinaryOp.BitOr, a, b)]))));
+      T.equal(t, tail, Expr.Member(Expr.Member(Expr.Variable("t"), "1"), "0"));
+    }
+  };
+};
+
+let testBuildsExactPatternAndControlStatementASTs = fn(t: Test) {
+  let program = parse("let f = fn() { if (x) { 1 } let y = 2; }; match (x) { is fn as f => f, \"#\".code => 1, -2 => 2, -1.5 => 3, null => 4 }");
+
+  match (program) {
+    Program(_, statements, tail) => {
+      match (statements[0]) {
+        LetStmt(_, _, _, _, _, value, _) => match (value) { Function(_, _, Block(body, _), _) => {
+          T.equal(t, body[0], Stmt.Expression(Expr.If(
+            Expr.Variable("x"),
+            Expr.BlockExpr(Block.Block([], Expr.Integer("1", IntSize.Infer))),
+            Expr.Null
+          )));
+        }, _ => T.fail(t, "expected function expression") },
+        _ => T.fail(t, "expected function declaration"),
+      };
+      T.equal(t, tail, Expr.Match(Expr.Variable("x"), [
+        MatchArm.Arm([MatchAlternative.Alternative(Pattern.IsType(Type.Named("__fn__"), "f"), null)], null,
+          Block.Block([], Expr.Variable("f"))),
+        MatchArm.Arm([MatchAlternative.Alternative(Pattern.Integer("35", IntSize.Infer), null)], null,
+          Block.Block([], Expr.Integer("1", IntSize.Infer))),
+        MatchArm.Arm([MatchAlternative.Alternative(Pattern.Integer("-2", IntSize.Infer), null)], null,
+          Block.Block([], Expr.Integer("2", IntSize.Infer))),
+        MatchArm.Arm([MatchAlternative.Alternative(Pattern.Float("-1.5", FloatSize.Infer), null)], null,
+          Block.Block([], Expr.Integer("3", IntSize.Infer))),
+        MatchArm.Arm([MatchAlternative.Alternative(Pattern.Null, null)], null,
+          Block.Block([], Expr.Integer("4", IntSize.Infer)))
+      ]));
+    }
+  };
+};
+
+let testParsesSpreadsAnywhereInArrayAndTuplePatterns = fn(t: Test) {
+  let program = parse("match (x) { [a, ...m, b] => 1, [h, i | t] => 2, (p, ..._) => 3 }");
+
+  let arm = fn(pattern: Pattern, value: Bytes): MatchArm {
+    MatchArm.Arm([MatchAlternative.Alternative(pattern, null)], null, Block.Block([], Expr.Integer(value, IntSize.Infer)))
+  };
+
+  match (program) {
+    Program(_, _, tail) => T.equal(t, tail, Expr.Match(Expr.Variable("x"), [
+      arm(Pattern.Array([Pattern.BindPattern("a"), Pattern.Spread("m"), Pattern.BindPattern("b")]), "1"),
+      arm(Pattern.Array([Pattern.BindPattern("h"), Pattern.BindPattern("i"), Pattern.Spread("t")]), "2"),
+      arm(Pattern.Tuple([Pattern.BindPattern("p"), Pattern.Spread(null)]), "3")
+    ])),
+  };
+};
+
+let testParsesElseIfChainsAndKeywordLedBlocks = fn(t: Test) {
+  let program = parse("if (a) { 1 } else if (b) { 2 } else { 3 }; { null }; { null: value }");
+
+  match (program) {
+    Program(_, statements, tail) => {
+      T.equal(t, statements[0], Stmt.Expression(Expr.If(
+        Expr.Variable("a"),
+        Expr.BlockExpr(Block.Block([], Expr.Integer("1", IntSize.Infer))),
+        Expr.If(
+          Expr.Variable("b"),
+          Expr.BlockExpr(Block.Block([], Expr.Integer("2", IntSize.Infer))),
+          Expr.BlockExpr(Block.Block([], Expr.Integer("3", IntSize.Infer)))
+        )
+      )));
+      T.equal(t, statements[1], Stmt.Expression(
+        Expr.BlockExpr(Block.Block([], Expr.Null))));
+      T.equal(t, tail, Expr.Object([
+        ObjectEntry.Field("null", Expr.Variable("value"))
+      ]));
+    }
+  };
+};
+
+let testParsesMacroAndQuoteControlExpressionStatements = fn(t: Test) {
+  let program = parse("macro m() { if (x) { 1 } value; } quote.stmts { if (x) { 1 } value; }; quote.stmt { value; }");
+
+  match (program) {
+    Program(_, statements, tail) => {
+      T.equal(t, statements[0], Stmt.Macro(false, "m", [], [
+        Stmt.Expression(Expr.If(Expr.Variable("x"),
+          Expr.BlockExpr(Block.Block([], Expr.Integer("1", IntSize.Infer))), Expr.Null)),
+        Stmt.Expression(Expr.Variable("value"))
+      ]));
+      T.equal(t, statements[1], Stmt.Expression(Expr.Quote(QuoteKind.Statements,
+        QuoteBody.Statements([
+          Stmt.Expression(Expr.If(Expr.Variable("x"),
+            Expr.BlockExpr(Block.Block([], Expr.Integer("1", IntSize.Infer))), Expr.Null)),
+          Stmt.Expression(Expr.Variable("value"))
+      ]))));
+      T.equal(t, tail, Expr.Quote(QuoteKind.Statement,
+        QuoteBody.Statement(Stmt.Expression(Expr.Variable("value")))));
+    }
+  };
+};
+
+/* A `while`, `enum` or `macro` may end with a `;` that adds nothing; a
+ * second one is still an error. */
+let testTakesOneSemicolonAfterABlockEndingStatement = fn(t: Test) {
+  T.equal(t, parse("macro m() { value; }; while (x) { y; }; enum E { A; }; 1"), parse("macro m() { value; } while (x) { y; } enum E { A; } 1"));
+  T.throws(t, fn() { parse("while (x) { y; };;"); });
+};
+
+let testAutoDetectsQuoteBodiesAndRejectsEmptyStatementQuotes = fn(t: Test) {
+  let program = parse("quote { value }; quote { let x = 1; }; quote { let x = 1; return x; }");
+
+  match (program) {
+    Program(_, statements, tail) => {
+      T.equal(t, statements[0], Stmt.Expression(Expr.Quote(QuoteKind.Auto,
+        QuoteBody.Expression(Expr.Variable("value")))));
+      T.equal(t, statements[1], Stmt.Expression(Expr.Quote(QuoteKind.Auto,
+        QuoteBody.Statement(Stmt.LetStmt(false, false, Pattern.BindPattern("x"), [], null,
+          Expr.Integer("1", IntSize.Infer), null)))));
+      T.equal(t, tail, Expr.Quote(QuoteKind.Auto, QuoteBody.Statements([
+        Stmt.LetStmt(false, false, Pattern.BindPattern("x"), [], null,
+          Expr.Integer("1", IntSize.Infer), null),
+        Stmt.Return(Expr.Variable("x"))
+      ])));
+    }
+  };
+  T.throws(t, fn() { parse("quote.stmts {}"); });
+  T.throws(t, fn() { parse("quote.stmt {}"); });
+  T.throws(t, fn() { parse("quote {}"); });
+};
+
+let testChainsLetTestsOnlyInConditions = fn(t: Test) {
+  let test = Expr.LetExpr(Pattern.Array([Pattern.BindPattern("h")]), [], null, Expr.Variable("xs"));
+  let positive = Expr.Binary(BinaryOp.Greater, Expr.Variable("h"), Expr.Integer("0", IntSize.Infer));
+  let chained = Expr.Binary(BinaryOp.And, test, positive);
+  let both = Expr.Binary(BinaryOp.And, Expr.Variable("a"), Expr.Variable("b"));
+  let inner = Block.Block([Stmt.LetStmt(false, false, Pattern.BindPattern("y"), [], null, both, null)], Expr.Variable("y"));
+  let program = parse("if (let [h] = xs && h > 0) { h }; while (let [h] = xs && h > 0) { }; if (g({ let y = a && b; y })) { }; let x = a && b; x");
+
+  match (program) {
+    Program(_, statements, tail) => {
+      T.equal(t, statements[0], Stmt.Expression(Expr.If(chained, Expr.BlockExpr(Block.Block([], Expr.Variable("h"))), Expr.Null)));
+      T.equal(t, statements[1], Stmt.While(chained, []));
+      // A block in a condition, and a statement, take the whole `&&` as the value.
+      T.equal(t, statements[2], Stmt.Expression(Expr.If(Expr.Call(Expr.Variable("g"), [], [Expr.BlockExpr(inner)]),
+        Expr.BlockExpr(Block.Block([], null)), Expr.Null)));
+      T.equal(t, statements[3], Stmt.LetStmt(false, false, Pattern.BindPattern("x"), [], null, both, null));
+      T.equal(t, tail, Expr.Variable("x"));
+    }
+  };
+};
+
+let testClassifiesLetByTerminatorAndParsesStructuralFunctionFields = fn(t: Test) {
+  let expression = parse("let x = 1");
+  T.equal(t, expression, Program.Program(Package.None, [], Expr.LetExpr(
+    Pattern.BindPattern("x"), [], null, Expr.Integer("1", IntSize.Infer))));
+
+  let declaration = parse("let x = 1; x");
+  T.equal(t, declaration, Program.Program(Package.None, [
+    Stmt.LetStmt(false, false, Pattern.BindPattern("x"), [], null,
+      Expr.Integer("1", IntSize.Infer), null)
+  ], Expr.Variable("x")));
+
+  let typedefProgram = parse("typedef Box = { let f: (I32) -> I32; };");
+
+  match (typedefProgram) {
+    Program(_, statements, _) => T.equal(t, statements[0], Stmt.Typedef(false, "Box", [],
+      TypedefBody.Struct([StructField.Field("f",
+        Type.Function([Type.Named("I32")], Type.Named("I32")))])))
+  };
+  T.throws(t, fn() { parse("typedef Box = { f: (I32) -> I32; };"); });
+};
+
+let testDefinesAssignmentAndShiftPrecedence = fn(t: Test) {
+  let program = parse("a = b + c << d; a << b + c; a + b << c; value |> %.field");
+
+  match (program) {
+    Program(_, statements, tail) => {
+      T.equal(t, statements[0], Stmt.Expression(Expr.Assign(AssignOp.Assign,
+        Expr.Variable("a"), Expr.Binary(BinaryOp.Add, Expr.Variable("b"),
+          Expr.Binary(BinaryOp.ShiftLeft, Expr.Variable("c"), Expr.Variable("d"))))));
+      T.equal(t, statements[1], Stmt.Expression(Expr.Binary(BinaryOp.Add,
+        Expr.Binary(BinaryOp.ShiftLeft, Expr.Variable("a"), Expr.Variable("b")),
+        Expr.Variable("c"))));
+      T.equal(t, statements[2], Stmt.Expression(Expr.Binary(BinaryOp.Add, Expr.Variable("a"),
+        Expr.Binary(BinaryOp.ShiftLeft, Expr.Variable("b"), Expr.Variable("c")))));
+      T.equal(t, tail, Expr.Pipe(Expr.Variable("value"),
+        Expr.Member(Expr.Topic, "field"), true));
+    }
+  };
+  T.throws(t, fn() { parse("a = b = c"); });
+  T.throws(t, fn() { parse("a += b = c"); });
+};
+
+let testDefinesComparisonTernaryAndAwaitAssociativity = fn(t: Test) {
+  let program = parse("a < b > c; f<T>(x); a ? b : c ? d : e; a ? b; await f(x)");
+
+  match (program) {
+    Program(_, statements, tail) => {
+      T.equal(t, statements[0], Stmt.Expression(Expr.Binary(BinaryOp.Greater,
+        Expr.Binary(BinaryOp.Less, Expr.Variable("a"), Expr.Variable("b")),
+        Expr.Variable("c"))));
+      T.equal(t, statements[1], Stmt.Expression(Expr.Call(Expr.Variable("f"),
+        [Type.Named("T")], [Expr.Variable("x")])));
+      T.equal(t, statements[2], Stmt.Expression(Expr.Conditional(Expr.Variable("a"),
+        Expr.Variable("b"), Expr.Conditional(Expr.Variable("c"), Expr.Variable("d"), Expr.Variable("e")))));
+      T.equal(t, statements[3], Stmt.Expression(Expr.Conditional(
+        Expr.Variable("a"), Expr.Variable("b"), Expr.Null)));
+      T.equal(t, tail, Expr.Call(Expr.Await(Expr.Variable("f")), [], [Expr.Variable("x")]));
+    }
+  };
+};
+
+let testValidatesGrammarOnlyRestrictionsAndResetsParserState = fn(t: Test) {
+  T.throws(t, fn() { parse("let f = fn(...xs, y) { y };"); });
+  T.throws(t, fn() { parse("let f = fn(...?xs) { 0 };"); });
+  T.throws(t, fn() { parse("let f = fn(...xs = value) { 0 };"); });
+  T.throws(t, fn() { parse("let f = fn(if) { 0 };"); });
+  T.throws(t, fn() { parse("let f: (I32..., I32) -> I32 = value;"); });
+  T.throws(t, fn() { parse("typedef T = I32...;"); });
+  T.throws(t, fn() { parse("typedef T = ...I32;"); });
+  T.throws(t, fn() { parse("let (x) = value;"); });
+  parse("let () = value; let (x,) = value; value is fn;");
+  T.throws(t, fn() { parse("list[for x <- xs: x]"); });
+  T.throws(t, fn() { parse("let ~r/a/ = value;"); });
+  T.throws(t, fn() { parse("with ~r/a/ <- value { 1 }"); });
+  T.throws(t, fn() { parse("(a + b) = c;"); });
+  T.throws(t, fn() { parse("++(a + b);"); });
+  T.throws(t, fn() { parse("(a + b)++;"); });
+  parse("a = b; a.x += b; a[0] = b;");
+  T.throws(t, fn() { parse("bits[9(x)]"); });
+  T.throws(t, fn() { parse("bits[999999999999999999999(x)]"); });
+  T.throws(t, fn() { parse("bits[]"); });
+  T.throws(t, fn() { parse("bits[u8.be(x)]"); });
+  T.throws(t, fn() { parse("bits[rest.le(x)]"); });
+  parse("bits[u16.be(x), rest(y)]");
+  T.throws(t, fn() { parse("f(x,)"); });
+  T.throws(t, fn() { parse("[x,]"); });
+  T.throws(t, fn() { parse("fn(x,) { x }"); });
+  T.throws(t, fn() { parse("let f: (I32,) -> I32 = value;"); });
+  T.throws(t, fn() { parse("typedef B = bytes-layout { let x: bits(0); };"); });
+  T.throws(t, fn() { parse("typedef B = bytes-layout { let x: bits(8); };"); });
+  T.throws(t, fn() { parse("typedef B = bytes-layout { let x: bits(999999999999999999999); };"); });
+  T.throws(t, fn() { parse("prototype P { x: 1; }"); });
+  parse("enum E { A; } let x = 1;");
+  T.throws(t, fn() { parse("x is fn is fn"); });
+  T.throws(t, fn() { parse("match (x) { \"ab\".code => 1 }"); });
+  parse("match (x) { \"é\".code => 1 }");
+  T.throws(t, fn() { parse("{ x: 1 } let y = 2;"); });
+  T.throws(t, fn() { parse("x |> ;"); });
+  T.throws(t, fn() { parse("%;"); });
+};

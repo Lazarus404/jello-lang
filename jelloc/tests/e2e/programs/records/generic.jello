@@ -1,0 +1,14 @@
+// expect: 3 hi [1, 2]
+typedef Box<T> = { let value: T; };
+typedef Pair<A, B> = { let first: A; let second: B; };
+
+let box<T> = fn(value: T): Box<T> { { value: value } };
+let swap<A, B> = fn(p: Pair<A, B>): Pair<B, A> { { first: p.second, second: p.first } };
+
+let n = box(3);
+let s: Box<Bytes> = { value: "hi" };
+let a: Box<Array<I32>> = { value: [1, 2] };
+let pair: Pair<I32, Bytes> = { first: 1, second: "two" };
+let p = swap(pair);
+System.assert((p.first == "two") && (p.second == 1));
+Std.string(n.value) + " " + s.value + " " + Std.string(a.value)

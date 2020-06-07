@@ -1,0 +1,9 @@
+// expect: [10, 20, 30, 60] [1, 10, 2, 20] [3, 7]
+// Each generator loops inside the one before; a later source and guard see
+// the names bound before them, and an item a pattern does not match is
+// skipped.
+let xs: List<I32> = list[1, 2, 3];
+let products = list[for x <- xs when (x != 2), y <- list[10, 20], do: x * y];
+let scaled = list[for x <- list[1, 2], y <- list[x, x * 10], do: y];
+let sums = list[for (a, b) <- list[(1, 2), (3, 4)], do: a + b];
+Std.string(products) + " " + Std.string(scaled) + " " + Std.string(sums)

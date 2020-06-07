@@ -1,0 +1,13 @@
+// expect: {x: 1, name: "a"} ({x: 1, name: "a"}, 2)
+typedef Named = { let x: I32; let name: Bytes; };
+typedef Tree = { let label: Bytes; let kids: Array<Tree>; };
+
+let a: Named = { x: 1, name: "a" };
+let b: Named = { x: 1, name: "a" };
+let c: Named = { x: 2, name: "a" };
+let t: Tree = { label: "root", kids: [{ label: "leaf", kids: [] }] };
+let u: Tree = { label: "root", kids: [{ label: "leaf", kids: [] }] };
+System.assert((a == b) && (a != c) && (t == u));
+b.x = 3;
+System.assert(a != b);
+Std.string(a) + " " + Std.string((a, 2))

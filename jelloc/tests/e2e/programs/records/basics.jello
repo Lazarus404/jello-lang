@@ -1,0 +1,32 @@
+// expect: ok
+typedef Point = { let x: I32; let y: I32; };
+typedef Counter = { let label: Bytes; let count: I64; };
+typedef Handler = { let run: (I32) -> I32; };
+
+let x = 1;
+let y = 2;
+let p: Point = { x, y };
+p.x = 5;
+p.y += 3;
+p.x++;
+let alias = p;
+alias.y = 9;
+
+let c: Counter = { label: "c", count: 1 };
+let old = c.count++;
+c.count *= 10;
+
+let h: Handler = { run: fn(v: I32) { v * 2 } };
+let run = h.run;
+
+// Fields are evaluated in source order, whatever the record's order.
+let order = Array.new<Bytes>(0);
+let at = fn(name: Bytes, value: I32): I32 { order.push(name); value };
+let q: Point = { y: at("y", 20), x: at("x", 10) };
+
+let moved: Point = { ...q, y: 7 };
+System.assert((p.x == 6) && (p.y == 9) && (old == 1) && (c.count == 20));
+System.assert((h.run(21) == 42) && (run(1) == 2));
+System.assert((order[0] == "y") && (order[1] == "x") && (q.x == 10) && (q.y == 20));
+System.assert((moved.x == 10) && (moved.y == 7) && (q.y == 20));
+"ok"

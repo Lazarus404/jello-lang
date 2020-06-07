@@ -1,0 +1,16 @@
+// expect: ok
+// A buffer's type is written ByteBuffer, so a function can take one.
+let fill = fn(buffer: ByteBuffer, byte: I32): ByteBuffer {
+  let i = 0;
+  while (i < buffer.len()) { buffer.set(i, byte); i++; }
+  buffer
+};
+let buffer = fill(Bytes.new(3), 120);
+System.assert(Bytes.toString(buffer) == "xxx");
+System.assert(buffer.get(1) == 120);
+System.assert(Bytes.get(buffer, 2) == 120);
+System.assert(buffer.slice(1, 2) == "xx");
+let next = Bytes.writeU16Be(buffer, 1, 24930);
+System.assert((next == 3) && (buffer.toString() == "xab"));
+System.assert("ab".copy().toString() == "ab");
+"ok"

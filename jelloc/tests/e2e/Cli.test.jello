@@ -103,6 +103,29 @@ let testDumps = fn(t: Test) {
   has(t, _dump(t, [_P + "/bytes/escapes.jello", "--ir"]), escapes);
 };
 
+// A function of a type's extension module is one direct call however it is
+// named: as a method, through the type, or imported. The first two load
+// std.core.Array, or std.core.List, only once checking needs it, and the IR
+// is the same.
+let testCallsAnExtensionFunctionEachWay = fn(t: Test) {
+  let dir = _CLI + "/extension";
+  let called = _dump(t, withStd([dir + "/method.jello", "--ir"]));
+  has(t, called, "= call @");
+  T.equal(t, _dump(t, withStd([dir + "/static.jello", "--ir"])), called);
+  T.equal(t, _dump(t, withStd([dir + "/imported.jello", "--ir"])), called);
+  let listed = _dump(t, withStd([dir + "/list_method.jello", "--ir"]));
+  has(t, listed, "= call @");
+  T.equal(t, _dump(t, withStd([dir + "/list_static.jello", "--ir"])), listed);
+};
+
+// An extension module may not export a name its type's intrinsics have; the
+// error is in the module, which loads once a method call needs it.
+let testRejectsAnExportAnIntrinsicHides = fn(t: Test) {
+  let dir = _CLI + "/extension/clash";
+  _rejects(t, [dir + "/main.jello", "--std", dir + "/std"], NONE,
+    dir + "/std/core/Array.jello:4:1: Array.len is intrinsic, so std.core.Array cannot export len");
+};
+
 // Every dump stops at a lex error with the diagnostic a compile gives.
 let testDumpsStopAtALexError = fn(t: Test) {
   let source = _P + "/bytes/bad_hex.jello";

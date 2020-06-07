@@ -1,0 +1,15 @@
+// expect: ok
+// An index past a list's items throws.
+let xs: List<I32> = list[1, 2];
+let throws = fn(f: () -> List<I32>): Bool {
+  let thrown = false;
+  try { f(); } catch (e) { thrown = true; }
+  thrown
+};
+System.assert(throws(fn(): List<I32> { xs.insert(3, 0) }));
+System.assert(throws(fn(): List<I32> { xs.insert(-1, 0) }));
+System.assert(throws(fn(): List<I32> { xs.remove(2) }));
+System.assert(throws(fn(): List<I32> { xs.slice(1, 2) }));
+System.assert(Std.string(xs.insert(2, 0)) == "[1, 2, 0]");
+System.assert(Std.string(xs.slice(2, 0)) == "[]");
+"ok"

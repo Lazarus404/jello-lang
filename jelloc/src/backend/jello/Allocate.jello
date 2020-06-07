@@ -1,29 +1,18 @@
 package backend.jello;
 
 import type { BasicBlock, Function, Instruction, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { BasicBlock, Function, Op, Program, Terminator, ThrowHandler, argsOf, dstOf, handlerPayload, handlerTarget, immOf, instructionAt, nodeOf, opOf, valueTypeEqual } from ir.Model;
+import { BasicBlock, Function, Op, Program, Terminator, ThrowHandler, argsOf, dstOf, handlerPayload, handlerTarget, immOf, instructionAt, internValueType, nodeOf, opOf } from ir.Model;
 import { blockCatch, blockIndexes, terminatorRead } from ir.Cfg;
 import { liveness } from ir.Liveness;
 import { verifyAllocatedProgram } from ir.Verify;
-import { internalError } from frontend.Internal;
+import { internalError } from support.Internal;
 
 let _REGISTER_LIMIT = 256;
 
 let _keyTypes = Array.new<ValueType>(0);
 let _keys = Array.new<I32>(0);
 
-let _key = fn(ty: ValueType): I32 {
-  let i = 0;
-
-  while (i < _keyTypes.len()) {
-    if (valueTypeEqual(_keyTypes[i], ty)) { return i; }
-    i++;
-  }
-  _keyTypes.push(ty);
-  (_keyTypes.len() - 1) as I32
-};
-
-let _windowStart = fn(op: Op): I32 { match (op) { Call, CallNative, EnumNew, ConstFunction => 0, CallIndirect, BytesSlice => 1, _ => -1 } };
+let _windowStart = fn(op: Op): I32 { match (op) { Call, CallNative, EnumNew, ConstFunction, BytesConcatMany => 0, CallIndirect, BytesSlice => 1, _ => -1 } };
 
 let _live = Array.new<I32>(0);
 let _places = Array.new<I32>(0);
@@ -558,7 +547,7 @@ let _allocate = fn(function: Function): Function {
 
     while (i < registers.len()) {
       _registers.push(registers[i]);
-      _keys.push(_key(registers[i]));
+      _keys.push(internValueType(_keyTypes, registers[i]));
       _slotOf.push(-1);
       i++;
     }
@@ -718,16 +707,22 @@ export let allocateProgram: (Program) -> Program = fn(program) {
   _failed = -1;
 
   let allocated = match (program) { Program(functions, pool, wides, floats, atoms, enums, globals, natives) => {
+    let allocate = fn(f: Function): Function {
+      try { _allocate(f) } catch (e) {
+        _failed = match (f) { Function(id, _, _, _, _, _, _) => id };
+        throw Std.string(e);
+      }
+    };
+    let last = functions.len() - 1;
+    let body = allocate(functions[last]);
     let out = Array.new<Function>(0);
     let i = 0;
 
-    while (i < functions.len()) {
-      try { out.push(_allocate(functions[i])); } catch (e) {
-        _failed = match (functions[i]) { Function(id, _, _, _, _, _, _) => id };
-        throw Std.string(e);
-      }
+    while (i < last) {
+      out.push(allocate(functions[i]));
       i++;
     }
+    out.push(body);
     Program.Program(out, pool, wides, floats, atoms, enums, globals, natives)
   } };
   verifyAllocatedProgram(allocated);

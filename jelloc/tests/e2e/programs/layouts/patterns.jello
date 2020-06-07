@@ -1,0 +1,23 @@
+// expect: ok
+typedef Message = bytes-layout { let kind: u8; let length: u16.le; let body: rest; };
+typedef Ping = bytes-layout { let kind: u8; let stamp: u32.be; };
+
+// A layout pattern matches bytes that hold its record, and the record's pattern its fields.
+let describe = fn(raw: Bytes): Bytes {
+  match (raw) {
+    Ping({ kind: 1, stamp }) => "ping " + Std.string(stamp),
+    Message({ kind: 2, body }) => "message " + body,
+    Message(m) => "kind " + Std.string(m.kind),
+    _ => "none",
+  }
+};
+System.assert(describe(Ping.pack({ kind: 1, stamp: 7 })) == "ping 7");
+System.assert(describe(Message.pack({ kind: 2, length: 2, body: "hi" })) == "message hi");
+System.assert(describe(Ping.pack({ kind: 9, stamp: 7 })) == "kind 9");
+System.assert(describe("ab") == "none");
+
+// A nullable subject is tested for presence first.
+let maybe: ?Bytes = Ping.pack({ kind: 1, stamp: 3 });
+let stamp = match (maybe) { Ping(p) => p.stamp, _ => 0 };
+System.assert(stamp == 3);
+"ok"

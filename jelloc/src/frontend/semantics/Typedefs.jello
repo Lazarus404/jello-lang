@@ -1,0 +1,187 @@
+package frontend.semantics;
+
+import type { BytesLayoutField, BytesLayoutType, Stmt, StructField } from frontend.syntax.Ast;
+import { BitValueKind } from frontend.syntax.Ast;
+import { placeSegments, segmentCode } from frontend.semantics.Bits;
+import { indexOf } from support.Arrays;
+import { checkFields, defineEnums } from frontend.semantics.Enums;
+import { declareEnum, declareGenericEnum, declareGenericRecord, declareLayout, declareRecord, defineVariants, enumParams, layoutCodes, segmentType } from frontend.hir.Hir;
+import { declareScopedType, exportScopedType, scopedType } from frontend.semantics.ModuleScope;
+import type { Syntax } from frontend.syntax.Source;
+import { checkType, checkTypeParams, declareGenericAlias, enterSyntax, paramNames, syntaxChild, useTypeParams, useTypedefs } from frontend.semantics.TypeCheck;
+
+let _statements = Array.new<Stmt>(0);
+let _module = -1;
+let _opened = false;
+let _aliases = Array.new<I32>(0);
+let _syntaxes = Array.new<Syntax>(0);
+let _states = Array.new<I32>(0);
+
+let _declare = fn(name: Bytes, exported: Bool, ty: I32) {
+  declareScopedType(name, ty);
+  if (exported || _opened) { exportScopedType(_module, name, exported); }
+  null
+};
+
+let _declareAlias = fn(alias: I32) {
+  if (_states[alias] == 2) { return null; }
+
+  match (_statements[_aliases[alias]]) {
+    Typedef(exported, name, typeParams, Alias(body)) => {
+      if (_states[alias] == 1) { throw "typedef " + name + " refers to itself"; }
+      _states[alias] = 1;
+      let parent = enterSyntax(_syntaxes[alias]);
+      let params = checkTypeParams(typeParams, false);
+      let (outerNames, outerTypes) = useTypeParams(paramNames(params), params);
+      let ty = checkType(body);
+      useTypeParams(outerNames, outerTypes);
+      _declare(name, exported, params.len() == 0 ? ty : declareGenericAlias(name, params, ty));
+      _states[alias] = 2;
+      enterSyntax(parent);
+    },
+    _ => null,
+  };
+  null
+};
+
+let _later = fn(name: Bytes): I32 {
+  let alias = 0;
+
+  while (alias < _aliases.len()) {
+    match (_statements[_aliases[alias]]) {
+      Typedef(_, declared, _, _) when ((declared == name) && (_states[alias] != 2)) => {
+        _declareAlias(alias);
+        return scopedType(name);
+      },
+      _ => null,
+    };
+    alias++;
+  }
+  -1
+};
+
+let _defineRecord = fn(name: Bytes, names: Array<Bytes>, types: Array<I32>) {
+  let f = 0;
+
+  while (f < names.len()) {
+    if (indexOf(names, names[f]) < f) { throw "duplicate field " + names[f] + " of " + name; }
+    f++;
+  }
+  defineVariants(scopedType(name), [name], [names], [types]);
+  null
+};
+
+let _layoutCode = fn(ty: BytesLayoutType): I32 {
+  match (ty) {
+    U8 => 8,
+    U16(endian) => segmentCode(16, endian, BitValueKind.Integer),
+    U32(endian), I32(endian) => segmentCode(32, endian, BitValueKind.Integer),
+    F32(endian) => segmentCode(32, endian, BitValueKind.Float),
+    Bits(width) => width,
+    Rest => 0,
+  }
+};
+
+let _declareLayout = fn(name: Bytes, fields: Array<BytesLayoutField>): I32 {
+  let codes = Array.new<I32>(0);
+  let f = 0;
+
+  while (f < fields.len()) {
+    match (fields[f]) { Field(_, ty) => codes.push(_layoutCode(ty)) };
+    f++;
+  }
+  let (offsets, fixed) = placeSegments(codes);
+  declareLayout(name, codes, offsets, fixed)
+};
+
+let _defineStruct = fn(name: Bytes, fields: Array<StructField>) {
+  let params = enumParams(scopedType(name));
+  let (outerNames, outerTypes) = useTypeParams(paramNames(params), params);
+  let (names, types) = checkFields(fields);
+  useTypeParams(outerNames, outerTypes);
+  _defineRecord(name, names, types)
+};
+
+let _defineLayout = fn(name: Bytes, fields: Array<BytesLayoutField>) {
+  let codes = layoutCodes(scopedType(name));
+  let names = Array.new<Bytes>(0);
+  let types = Array.new<I32>(0);
+  let f = 0;
+
+  while (f < fields.len()) {
+    match (fields[f]) {
+      Field(field, _) => {
+        names.push(field);
+        types.push(segmentType(codes[f]));
+      }
+    };
+    f++;
+  }
+  _defineRecord(name, names, types)
+};
+
+export let declareTypes: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, module, opened) {
+  _statements = statements;
+  _module = module;
+  _opened = opened;
+  _aliases = Array.new<I32>(0);
+  _syntaxes = Array.new<Syntax>(0);
+  _states = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < statements.len()) {
+    match (statements[i]) {
+      Enum(exported, name, typeParams, _) => {
+        let parent = enterSyntax(syntaxChild(i));
+        _declare(name, exported, typeParams.len() == 0 ? declareEnum(name) : declareGenericEnum(name, checkTypeParams(typeParams, false)));
+        enterSyntax(parent);
+      },
+      Typedef(_, _, _, Alias(_)) => {
+        _aliases.push(i as I32);
+        _syntaxes.push(syntaxChild(i));
+        _states.push(0);
+      },
+      Typedef(exported, name, typeParams, Struct(_)) => {
+        let parent = enterSyntax(syntaxChild(i));
+        _declare(name, exported, typeParams.len() == 0 ? declareRecord(name) : declareGenericRecord(name, checkTypeParams(typeParams, false)));
+        enterSyntax(parent);
+      },
+      Typedef(exported, name, typeParams, BytesLayout(fields)) => {
+        let parent = enterSyntax(syntaxChild(i));
+        if (typeParams.len() != 0) { throw "a bytes layout takes no type parameters"; }
+        _declare(name, exported, _declareLayout(name, fields));
+        enterSyntax(parent);
+      },
+      _ => null,
+    };
+    i++;
+  }
+  useTypedefs(_later);
+  defineEnums(statements);
+  let alias = 0;
+
+  while (alias < _aliases.len()) {
+    _declareAlias(alias);
+    alias++;
+  }
+  useTypedefs(fn(_name: Bytes): I32 { -1 });
+  i = 0;
+
+  while (i < statements.len()) {
+    match (statements[i]) {
+      Typedef(_, name, _, Struct(fields)) => {
+        let parent = enterSyntax(syntaxChild(i));
+        _defineStruct(name, fields);
+        enterSyntax(parent);
+      },
+      Typedef(_, name, _, BytesLayout(fields)) => {
+        let parent = enterSyntax(syntaxChild(i));
+        _defineLayout(name, fields);
+        enterSyntax(parent);
+      },
+      _ => null,
+    };
+    i++;
+  }
+  true
+};

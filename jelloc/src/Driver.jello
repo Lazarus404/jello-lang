@@ -1,28 +1,29 @@
-import { lexFile } from frontend.Lexer;
-import { parseFailureSpan, parseProgram, programSyntax, takeSyntaxErrors } from frontend.Parser;
-import { locate } from frontend.Locations;
-import { sourceDiagnostic } from frontend.Source;
-import type { SourceSpan } from frontend.Source;
-import { printTokens } from frontend.Tokens;
-import { typeCheckModules } from frontend.CheckModules;
-import { currentSpan } from frontend.TypeCheck;
-import { loadFailureSpan, loadModules, loadTests } from frontend.Modules;
-import { MAX_FAILURES, noteFailure, pendingNote, recordFailure, resetFailures, takeFailures, takeWarnings } from frontend.Failures;
-import { takeInternalError } from frontend.Internal;
-import { verifyFailureSpan } from frontend.VerifyHir;
-import { printHir, printHirWithSpans } from frontend.PrintHir;
-import { functionNode, lowerProgram, lowerProgramInParts } from ir.Lower;
+import { lexFile } from frontend.syntax.Lexer;
+import { parseFailureSpan, parseProgram, programSyntax, takeSyntaxErrors } from frontend.syntax.Parser;
+import { locate } from frontend.syntax.Locations;
+import { sourceDiagnostic } from frontend.syntax.Source;
+import type { SourceSpan } from frontend.syntax.Source;
+import { printTokens } from frontend.syntax.Tokens;
+import { checkProgram } from frontend.semantics.Modules;
+import { currentSpan } from frontend.semantics.TypeCheck;
+import type { Module } from frontend.Loader;
+import { loadFailureSpan, loadModules, loadTests } from frontend.Loader;
+import { MAX_FAILURES, noteFailure, pendingNote, recordFailure, takeFailures, takeWarnings } from frontend.semantics.Failures;
+import { takeInternalError } from support.Internal;
+import { verifyFailureSpan } from frontend.hir.Verify;
+import { printHir, printHirWithSpans } from frontend.hir.Print;
+import { functionNode, lowerProgram, relowerBodyInParts } from ir.Lower;
 import { printIr } from ir.Print;
-import { legalizeJlo } from backend.jello.Legalize;
+import { legalizeJlo, relegalizeJlo } from backend.jello.Legalize;
 import { allocateProgram, allocationFailure } from backend.jello.Allocate;
 import { emitAllocated } from backend.jello.Emit;
 import { exists, readText, writeText } from std.io.File;
 import { getEnv } from std.io.Env;
-import { startsWith } from std.core.Bytes;
+import { startsWith } from support.Text;
 
 import type { Program } from ir.Model;
-import type { Hir } from frontend.Hir;
-import { spanOf, spanPathOf } from frontend.Hir;
+import type { Hir } from frontend.hir.Hir;
+import { spanOf, spanPathOf } from frontend.hir.Hir;
 
 enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; Help; }
 
@@ -126,16 +127,16 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Array<Bytes>, Mode, Bytes> {
 };
 
 let _checked = fn(inputs: Array<Bytes>): Hir {
-  resetFailures();
-  typeCheckModules(_testing ? loadTests(inputs, _std, _roots) : loadModules(inputs[0], _std, _roots))
+  checkProgram(fn(types: Array<Bytes>): Array<Module> { _testing ? loadTests(inputs, _std, _roots, types) : loadModules(inputs[0], _std, _roots, types) })
 };
 
 let _allocated = fn(inputs: Array<Bytes>): Program {
   let hir = _checked(inputs);
+  let legalized = legalizeJlo(lowerProgram(hir));
 
-  try { allocateProgram(legalizeJlo(lowerProgram(hir))) } catch (e) {
+  try { allocateProgram(legalized) } catch (e) {
     if (allocationFailure() != 0) { throw e; }
-    allocateProgram(legalizeJlo(lowerProgramInParts(hir)))
+    allocateProgram(relegalizeJlo(relowerBodyInParts(legalized), legalized))
   }
 };
 

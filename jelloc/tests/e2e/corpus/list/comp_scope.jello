@@ -1,0 +1,7 @@
+// expect: [1, 2] 5 123
+// A generator's names are its own; each closure captures its own item.
+let x = 5;
+let ys = list[for x <- list[1, 2], do: x];
+let fs = list[for item <- list[1, 2, 3], do: fn(): I32 { item }];
+let digits = fs.reduce(0, fn(sum: I32, f: () -> I32): I32 { sum * 10 + f() });
+Std.string(ys) + " " + Std.string(x) + " " + Std.string(digits)

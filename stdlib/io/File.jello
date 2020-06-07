@@ -1,7 +1,5 @@
 package std.io;
 
-import { split } from std.core.Bytes;
-
 load { file_exists, file_read, file_write, file_remove, dir_list, dir_make } from std;
 
 export let exists: (Bytes) -> Bool = file_exists;
@@ -13,7 +11,17 @@ export let makeDirs: (Bytes) -> Bool = dir_make;
 let _entries: (Bytes) -> Bytes = dir_list;
 
 export let listDir = fn(dir: Bytes): Array<Bytes> {
-  let names = split(_entries(dir), "\0");
-  names.pop();
+  let text = _entries(dir);
+  let names = Array.new<Bytes>(0);
+  let start = 0;
+  let i = 0;
+
+  while (i < Bytes.len(text)) {
+    if (Bytes.get_u8(text, i) == 0) {
+      names.push(Bytes.slice(text, start, i - start));
+      start = i + 1;
+    }
+    i++;
+  }
   names
 };

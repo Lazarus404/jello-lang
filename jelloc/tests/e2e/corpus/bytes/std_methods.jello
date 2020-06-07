@@ -1,5 +1,4 @@
 // expect: ok
-// pending: Bytes methods
 let b = "hello";
 System.assert(b.len() == 5);
 System.assert(b.get(0) == 104);
@@ -15,9 +14,9 @@ System.assert(c.eq("ell"));
 System.assert(b.concat(", world").indexOf(",") == 5);
 System.assert(b.isEmpty() == false);
 let d = b.copy();
-System.assert(d.eq(b));
+System.assert(d.toString().eq(b));
 d.set(0, 72);
-System.assert(!d.eq(b));
+System.assert(!d.toString().eq(b));
 let buf = Bytes.new(2);
 buf.set(0, 97);
 buf.set(1, 98);
@@ -28,12 +27,9 @@ System.assert("hello".substring(1, 4).eq("ell"));
 System.assert("a-b-c".replace("-", "+").eq("a+b-c"));
 System.assert("a-b-c".replaceAll("-", "+").eq("a+b+c"));
 let parts = "a,b,c".split(",");
-let p1 = List.head(parts);
-let rest1 = List.tail(parts);
-let p2 = List.head(rest1);
-let rest2 = List.tail(rest1);
-let p3 = List.head(rest2);
-System.assert(p1.eq("a"));
-System.assert(p2.eq("b"));
-System.assert(p3.eq("c"));
+System.assert(parts.len() == 3);
+System.assert(parts[0].eq("a"));
+System.assert(parts[1].eq("b"));
+System.assert(parts[2].eq("c"));
+System.assert(parts.join("+").eq("a+b+c"));
 "ok"

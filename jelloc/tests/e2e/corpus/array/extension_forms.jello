@@ -1,0 +1,8 @@
+// expect: [2, 3, 4] [2, 3, 4] [2] true false 1
+// A function of std.core.Array is called on the array or through the type.
+let xs = [1, 2, 3];
+let a = xs.map(fn(x) { x + 1 });
+let b = Array.map(xs, fn(x) { x + 1 });
+let evens = xs.filter(fn(x) { x % 2 == 0 });
+let words: Array<Bytes> = ["a", "b"];
+Std.string(a) + " " + Std.string(b) + " " + Std.string(evens) + " " + Std.string(words.contains("a")) + " " + Std.string(Array.contains(xs, 7)) + " " + Std.string(words.indexOf("b"))

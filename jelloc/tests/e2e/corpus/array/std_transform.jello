@@ -1,5 +1,4 @@
 // expect: ok
-// pending: unknown array method: filter
 let empty: Array<I32> = [];
 let filtered = empty.filter(fn(x) { x == 1 });
 System.assert(filtered.len() == 0);
@@ -25,14 +24,14 @@ System.assert(odds.len() == 2);
 let doubled = a.map(fn(x) { x * 2.0 });
 System.assert(doubled[3] == 8.0);
 let idxs = [10, 20, 30];
-let indexedMap = idxs.map(fn(x, i) { x + i });
+let indexedMap = idxs.mapIndexed(fn(x, i) { x + i });
 System.assert(indexedMap[0] == 10);
 System.assert(indexedMap[1] == 21);
 System.assert(indexedMap[2] == 32);
-let kept = idxs.filter(fn(x, i) { i == 1 });
+let kept = idxs.filterIndexed(fn(x, i) { i == 1 });
 System.assert(kept.len() == 1);
 System.assert(kept[0] == 20);
-let dropped = idxs.reject(fn(x, i) { i == 0 });
+let dropped = idxs.rejectIndexed(fn(x, i) { i == 0 });
 System.assert(dropped.len() == 2);
 System.assert(dropped[0] == 20);
 let ints = [3, 1, 2];

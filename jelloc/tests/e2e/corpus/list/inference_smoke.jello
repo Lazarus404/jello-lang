@@ -1,7 +1,7 @@
 // expect: ok
 // pending: parameter types inferred from use
 let xs = list[1, 2, 3];
-System.assert(xs.join(",") == "1,2,3");
+System.assert(Std.string(xs) == "[1, 2, 3]");
 System.assert(List.head(xs) + List.head(List.tail(List.tail(xs))) == 4);
 
 let xs2 = list[1.0, 2.5];
@@ -32,6 +32,6 @@ let make = fn() {
 System.assert(make() == 42);
 
 let doubled = list[for x <- list[1, 2, 3], do: x + x];
-System.assert(doubled.join(",") == "2,4,6");
+System.assert(Std.string(doubled) == "[2, 4, 6]");
 
 "ok"

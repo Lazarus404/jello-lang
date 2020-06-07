@@ -1,0 +1,114 @@
+package support;
+
+load { unicode_validate, unicode_length, unicode_get, unicode_from_codepoint, bytes_u8 } from std;
+
+export let utf8Validate: (Bytes) -> Bool = unicode_validate;
+export let utf8Length: (Bytes) -> I32 = unicode_length;
+export let utf8CharAt: (Bytes, I32) -> I32 = unicode_get;
+export let utf8FromCodepoint: (I32) -> Bytes = unicode_from_codepoint;
+export let u8: (I32) -> Bytes = bytes_u8;
+
+export let startsWith = fn(text: Bytes, prefix: Bytes): Bool {
+  let n = Bytes.len(prefix);
+  n <= Bytes.len(text) && Bytes.slice(text, 0, n) == prefix
+};
+
+let _concat: (Array<Bytes>, I32, I32) -> Bytes = fn(parts, lo, hi) {
+  if (hi - lo == 1) {
+    parts[lo]
+  } else if (hi <= lo) {
+    ""
+  } else {
+    let mid = lo + (hi - lo) / 2;
+    _concat(parts, lo, mid) + _concat(parts, mid, hi)
+  }
+};
+
+export let concatAll: (Array<Bytes>) -> Bytes = fn(parts) { _concat(parts, 0, parts.len()) };
+
+export let bytesLiteral: (Bytes) -> Bytes = fn(value) {
+  let out = Array.new<Bytes>(0);
+  out.push("\"");
+  let i = 0;
+
+  while (i < value.len()) {
+    let c = Bytes.get_u8(value, i);
+    out.push(match (c) {
+      "\n".code => "\\n",
+      "\r".code => "\\r",
+      "\t".code => "\\t",
+      "\"".code => "\\\"",
+      "\\".code => "\\\\",
+      _ => ((c >= 32) && (c <= 126))
+        ? Bytes.slice(value, i, 1)
+        : "\\x" + Bytes.slice("0123456789abcdef", c / 16, 1) + Bytes.slice("0123456789abcdef", c % 16, 1),
+    });
+    i++;
+  }
+  out.push("\"");
+  concatAll(out)
+};
+
+export let joined = fn(parts: Array<Bytes>, separator: Bytes): Bytes {
+  let pieces = Array.new<Bytes>(0);
+  let i = 0;
+
+  while (i < parts.len()) {
+    if (i > 0) { pieces.push(separator); }
+    pieces.push(parts[i]);
+    i++;
+  }
+  concatAll(pieces)
+};
+
+let _editDistance = fn(a: Bytes, b: Bytes): I32 {
+  let previous = Array.new<I32>(0);
+  let j = 0;
+
+  while (j <= b.len()) {
+    previous.push(j);
+    j++;
+  }
+  let i = 1;
+
+  while (i <= a.len()) {
+    let row = [i];
+    j = 1;
+
+    while (j <= b.len()) {
+      let cost = Bytes.get_u8(a, i - 1) == Bytes.get_u8(b, j - 1) ? 0 : 1;
+      let best = previous[j - 1] + cost;
+      if (previous[j] + 1 < best) { best = previous[j] + 1; }
+      if (row[j - 1] + 1 < best) { best = row[j - 1] + 1; }
+      row.push(best);
+      j++;
+    }
+    previous = row;
+    i++;
+  }
+  previous[b.len()]
+};
+
+export let closestNames = fn(names: Array<Bytes>, name: Bytes): Array<Bytes> {
+  let limit = name.len() / 3 > 2 ? name.len() / 3 : 2;
+  let distances = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < names.len()) {
+    distances.push(_editDistance(names[i], name));
+    i++;
+  }
+  let found = Array.new<Bytes>(0);
+  let distance = 0;
+
+  while ((distance <= limit) && (found.len() < 3)) {
+    i = 0;
+
+    while ((i < names.len()) && (found.len() < 3)) {
+      if (distances[i] == distance) { found.push(names[i]); }
+      i++;
+    }
+    distance++;
+  }
+  found
+};

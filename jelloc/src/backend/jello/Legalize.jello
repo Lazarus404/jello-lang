@@ -3,7 +3,7 @@ package backend.jello;
 import type { BasicBlock, Function, Instruction, Program, ValueType } from ir.Model;
 import { BasicBlock, Function, Op, Program, Terminator, ValueType, argsOf, dstOf, handlerPayload, immOf, instructionAt, nodeOf, opOf } from ir.Model;
 import { terminatorRead } from ir.Cfg;
-import { verifyLegalizedProgram } from ir.Verify;
+import { verifyProgramFrom } from ir.Verify;
 
 let _registers = Array.new<ValueType>(0);
 let _out = Array.new<Instruction>(0);
@@ -247,10 +247,15 @@ let _function = fn(function: Function): Function {
   } }
 };
 
-export let legalizeJlo: (Program) -> Program = fn(program) {
+let _legalize = fn(program: Program, kept: I32): Program {
   let legalized = match (program) { Program(functions, pool, wides, floats, atoms, enums, globals, natives) => {
     let selected = Array.new<Function>(0);
     let i = 0;
+
+    while (i < kept) {
+      selected.push(functions[i]);
+      i++;
+    }
 
     while (i < functions.len()) {
       selected.push(_function(functions[i]));
@@ -258,6 +263,12 @@ export let legalizeJlo: (Program) -> Program = fn(program) {
     }
     Program.Program(selected, pool, wides, floats, atoms, enums, globals, natives)
   } };
-  verifyLegalizedProgram(legalized);
+  verifyProgramFrom(legalized, true, kept);
   legalized
+};
+
+export let legalizeJlo: (Program) -> Program = fn(program) { _legalize(program, 0) };
+
+export let relegalizeJlo: (Program, Program) -> Program = fn(program, earlier) {
+  match (earlier) { Program(functions, _, _, _, _, _, _, _) => _legalize(program, (functions.len() - 1) as I32) }
 };

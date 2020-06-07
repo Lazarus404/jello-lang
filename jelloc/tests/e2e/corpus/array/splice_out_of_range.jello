@@ -1,0 +1,9 @@
+// expect: ok
+// A start past the end throws rather than padding the array.
+let a = [1, 2];
+let thrown = false;
+try { a.splice(3, 0, 9); } catch (e) { thrown = true; }
+System.assert(thrown && (a.len() == 2));
+System.assert(a.splice(2, 0, 9) == []);
+System.assert(a == [1, 2, 9]);
+"ok"

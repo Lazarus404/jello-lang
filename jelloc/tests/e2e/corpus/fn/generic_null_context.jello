@@ -1,0 +1,22 @@
+// expect: ok
+// A generic call whose result the context takes as Null<X> gets T from its arguments where a
+// parameter holds T, as Array<T> does, and from the context where a parameter is T itself or a
+// function, whose lambda then returns Null<X>.
+let id<T> = fn(xs: Array<T>): T { xs[0] };
+let same<T> = fn(x: T): T { x };
+let head<T> = fn(xs: Array<T>): ?T { if (xs.len() == 0) { return null; } id(xs) };
+let apply<U> = fn(f: () -> U): U { f() };
+let pick = fn(b: Bool): ?I32 { apply(fn() { if (b) { return null; } 3 }) };
+let headI32 = fn(xs: Array<I32>): ?I32 { id(xs) };
+System.assert(head([4]) == 4);
+System.assert(head(Array.new<I32>(0)) == null);
+System.assert(headI32([5]) == 5);
+System.assert((pick(true) == null) && (pick(false) == 3));
+let n: ?I32 = same(null);
+System.assert(n == null);
+let m: ?I32 = same(3);
+System.assert(m == 3);
+let popped: ?I32 = [6].pop();
+System.assert(popped == 6);
+System.assert([7, 8].shift() == 7);
+"ok"

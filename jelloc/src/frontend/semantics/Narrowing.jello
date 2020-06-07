@@ -1,0 +1,96 @@
+package frontend.semantics;
+
+import { appendFrom, indexOf } from support.Arrays;
+
+let _known = Array.new<I32>(0);
+let _assigned = Array.new<I32>(0);
+
+let _index = fn(binding: I32): I32 {
+  let i = 0;
+
+  while (i < _known.len()) {
+    if (_known[i] / 2 == binding) { return i as I32; }
+    i++;
+  }
+  -1
+};
+
+let _copy = fn(items: Array<I32>): Array<I32> {
+  appendFrom(Array.new<I32>(0), items, 0)
+};
+
+export let resetNarrowing: () -> Bool = fn() {
+  _known = Array.new<I32>(0);
+  _assigned = Array.new<I32>(0);
+  true
+};
+
+export let isNarrowed: (I32) -> Bool = fn(binding) { _index(binding) >= 0 };
+
+export let narrow: (I32, Bool) -> Bool = fn(binding, mutable) {
+  if (_index(binding) < 0) { _known.push(binding * 2 + (mutable ? 1 : 0)); }
+  true
+};
+
+export let assignLocal: (I32, Bool) -> Bool = fn(binding, present) {
+  _assigned.push(binding);
+  let found = _index(binding);
+
+  if (present) { narrow(binding, true); } else if (found >= 0) {
+    _known[found] = _known[_known.len() - 1];
+    _known.pop();
+  }
+  true
+};
+
+export let narrowings: () -> Array<I32> = fn() { _copy(_known) };
+
+export let setNarrowings: (Array<I32>) -> Bool = fn(known) {
+  _known = _copy(known);
+  true
+};
+
+export let keepNarrowings: (Array<I32>) -> Bool = fn(before) {
+  let kept = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < _known.len()) {
+    if (indexOf(before, _known[i]) >= 0) { kept.push(_known[i]); }
+    i++;
+  }
+  _known = kept;
+  true
+};
+
+export let assignmentMark: () -> I32 = fn() { _assigned.len() as I32 };
+
+export let enterLoop: () -> Bool = fn() {
+  let kept = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < _known.len()) {
+    if (_known[i] % 2 == 0) { kept.push(_known[i]); }
+    i++;
+  }
+  _known = kept;
+  true
+};
+
+export let leaveLoop: (Array<I32>, I32) -> Bool = fn(before, mark) {
+  let kept = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < before.len()) {
+    let changed = false;
+    let j = mark;
+
+    while (j < _assigned.len()) {
+      if (_assigned[j] == before[i] / 2) { changed = true; }
+      j++;
+    }
+    if (!changed) { kept.push(before[i]); }
+    i++;
+  }
+  _known = kept;
+  true
+};

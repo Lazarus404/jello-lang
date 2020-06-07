@@ -20,7 +20,7 @@ export enum ValueType {
 export enum Op {
   ConstBool; ConstI32; ConstI64; ConstFloat; ConstBytes; ConstAtom; ConstNull; ConstFunction; Move;
   Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; Eq; Lt; Sext; Trunc; DivU; RemU; LtU; Zext; Convert; Box; Unbox; KindOf; IsEnum; IsNull; NullCheck;
-  ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; ArrayConcat; ListNil; ListCons; ListHead; ListTail; ListIsNil; BytesNew; BytesSet; BytesBlit; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesEq;
+  ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; ArrayConcat; ListNil; ListCons; ListHead; ListTail; ListIsNil; BytesNew; BytesSet; BytesBlit; BitsRead; BitsWrite; BytesRead; BytesWrite; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesConcatMany; BytesEq;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
   Call; CallIndirect; CallNative; GlobalGet; GlobalSet;
   StructNew; StructSet; AddImm; SubImm; MulImm; EqImm; LtImm; SpillPush; SpillPop;
@@ -79,7 +79,7 @@ export enum Function {
   );
 }
 
-export enum EnumSchema { Enum(variants: Array<Array<ValueType>>); }
+export enum EnumSchema { Enum(variants: Array<Array<ValueType>>); Record(fields: Array<ValueType>); }
 
 export enum Native { Native(library: Bytes, name: Bytes, params: Array<ValueType>, result: ValueType); }
 
@@ -123,6 +123,17 @@ valueTypeEqual = fn(left, right) {
       _valueTypesEqual(leftArgs, rightArgs) && valueTypeEqual(leftResult, rightResult),
     _ => false,
   }
+};
+
+export let internValueType = fn(types: Array<ValueType>, ty: ValueType): I32 {
+  let i = 0;
+
+  while (i < types.len()) {
+    if (valueTypeEqual(types[i], ty)) { return i; }
+    i++;
+  }
+  types.push(ty);
+  (types.len() - 1) as I32
 };
 
 export let canBeNull: (ValueType) -> Bool = fn(ty) { match (ty) { Bool, I32, I64, F16, F32, F64, Atom, ListOf(_) => false, _ => true } };

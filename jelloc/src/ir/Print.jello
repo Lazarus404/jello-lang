@@ -1,7 +1,6 @@
 package ir;
 
-import { bytesLiteral } from frontend.Tokens;
-import { concatAll } from frontend.Text;
+import { bytesLiteral, concatAll } from support.Text;
 import type { BasicBlock, Function, Instruction, Native, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
 import { ValueType, argumentCount, argsOf, dstOf, immOf, opOf } from ir.Model;
 
@@ -57,6 +56,10 @@ let _qualified = fn(registers: Array<ValueType>, register: I32, integer: Bytes, 
   let name = match (registers[register]) { F16, F32, F64 => float, _ => integer };
   name + _type(registers[register])
 };
+
+let _FORMATS = ["u16.le", "u16.be", "u32.le", "u32.be", "i32.le", "i32.be", "f32.le", "f32.be"];
+let _format = fn(format: I32): Bytes { _FORMATS[format] };
+let _bitField = fn(imm: I32): Bytes { ", " + Std.string(imm / 16) + ", " + Std.string(imm % 16) };
 
 let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, pool: Array<Bytes>): Bytes {
   let args = argsOf(instruction);
@@ -114,10 +117,15 @@ let _instruction = fn(instruction: Instruction, registers: Array<ValueType>, poo
     BytesNew => "bytes.new " + operands,
     BytesSet => "bytes.set_u8 " + operands,
     BytesBlit => "bytes.blit " + operands,
+    BitsRead => "bits.read " + operands + _bitField(immOf(instruction)),
+    BitsWrite => "bits.write " + operands + _bitField(immOf(instruction)),
+    BytesRead => "bytes.read." + _format(immOf(instruction)) + " " + operands,
+    BytesWrite => "bytes.write." + _format(immOf(instruction)) + " " + operands,
     BytesLen => "bytes.len " + operands,
     BytesGet => "bytes.get_u8 " + operands,
     BytesSlice => "bytes.slice " + operands,
     BytesConcat => "bytes.concat " + operands,
+    BytesConcatMany => "bytes.concat_many " + operands,
     BytesEq => "bytes.eq " + operands,
     TupleNew => "tuple " + operands,
     TupleGet => "tuple.get " + operands + ", " + imm,

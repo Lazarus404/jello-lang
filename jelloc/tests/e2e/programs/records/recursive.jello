@@ -1,0 +1,10 @@
+// expect: 6 {value: 1, next: {value: 2, next: {value: 3, next: null}}}
+typedef Node = { let value: I32; let next: ?Node; };
+
+let list: Node = { value: 1, next: { value: 2, next: { value: 3, next: null } } };
+let sum = fn(node: ?Node): I32 {
+  let total = 0; let at = node;
+  while (at != null) { total += at.value; at = at.next; }
+  total
+};
+Std.string(sum(list)) + " " + Std.string(list)

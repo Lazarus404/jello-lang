@@ -1,0 +1,1382 @@
+package frontend.semantics;
+
+import type { Block as AstBlock, Expr as AstExpr, MatchArm, MatchArms, Pattern, Type as AstType, TypeParam, WithClause } from frontend.syntax.Ast;
+import { warn } from frontend.semantics.Failures;
+import { BinaryOp, Pattern, unsignedWideValue, wideIntegerValue } from frontend.syntax.Ast;
+import { appendFrom, indexOf } from support.Arrays;
+import {
+  Kind, Op, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, declareBinding, endsPath, fieldCount, fieldType, innerOf, isEnum, isFloatType, isInteger,
+  isKind, isLayout, isRecord, local, memberCount, memberType, node, noValueType, nullable, nullType, opOf, recordField, resolve, segmentType, segmentWidth, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, unify, variantCount,
+  variantName, variantTag,
+} from frontend.hir.Hir;
+import type { Syntax } from frontend.syntax.Source;
+import { checkSegmentLiteral, layoutField, layoutFits, layoutRecord, placeSegments, restOf, segmentCode } from frontend.semantics.Bits;
+import { scopedType } from frontend.semantics.ModuleScope;
+import { expressionOf, i32Of, lengthTest } from frontend.semantics.Derived;
+import { equalValues, kindTest, toDynamic } from frontend.semantics.Values;
+import {
+  branchMismatch, bufferHint, checkArm, joinBranches, checkKnown, checkOperand, checkPatternName, checkPresent, checkType, coerceTail, enterSyntax, floatLiteral, integerLiteral, joinTypes, newBinding, regexpGlobal, sizedType,
+  checkAnnotated, coerceAt, currentSpan, declareGlobal, declareLocal, declareNames, endNames, present, presentAt, requireBool, subPattern, syntaxChild, syntaxPattern, testsPattern,
+} from frontend.semantics.TypeCheck;
+
+enum Subject { Subject(roots: Array<I32>, types: Array<I32>, tuple: I32, tag: I32); }
+
+let _UNWRAP = -2;
+let _FROM_DYNAMIC = -3;
+let _ELEMENT = -4;
+let _SLICE = -5;
+let _SEGMENT = -6;
+let _REST = -7;
+let _LAYOUT = -8;
+
+let _step = fn(path: Array<I32>, tag: I32, index: I32): Array<I32> {
+  if (path[0] < 0) { return [index]; }
+  let out = appendFrom(Array.new<I32>(0), path, 0);
+  out.push(tag);
+  out.push(index);
+  out
+};
+
+let _nullInner = fn(ty: I32): I32 {
+  let t = resolve(ty);
+  isKind(t, Kind.Null) ? innerOf(t) : -1
+};
+
+let _slice = fn(array: I32, before: I32, after: I32): I32 {
+  let ty = typeOf(array);
+  let element = innerOf(resolve(ty));
+  let source = newBinding();
+  let count = newBinding();
+  let out = newBinding();
+  let index = newBinding();
+  let skipped = node(Op.Add, TYPE_I32, 0, 0, [local(index, TYPE_I32), i32Of(before)]);
+  let copy = node(Op.ArraySet, element, 0, 0, [local(out, ty), local(index, TYPE_I32), node(Op.ArrayGet, element, 0, 0, [local(source, ty), skipped])]);
+  let next = node(Op.Assign, TYPE_I32, index, 0, [node(Op.Add, TYPE_I32, 0, 0, [local(index, TYPE_I32), i32Of(1)])]);
+  let more = node(Op.Lt, TYPE_BOOL, 0, 0, [local(index, TYPE_I32), local(count, TYPE_I32)]);
+  node(Op.Block, ty, 0, 1, [
+    declareBinding(Op.Const, source, "array", array),
+    declareBinding(Op.Const, count, "count", node(Op.Sub, TYPE_I32, 0, 0, [node(Op.ArrayLen, TYPE_I32, 0, 0, [local(source, ty)]), i32Of(before + after)])),
+    declareBinding(Op.Const, out, "spread", node(Op.ArrayNew, ty, 0, 0, [local(count, TYPE_I32)])),
+    declareBinding(Op.Let, index, "index", i32Of(0)),
+    node(Op.While, 0, 0, 0, [more, node(Op.Block, 0, 0, 0, [expressionOf(copy), expressionOf(next)])]),
+    local(out, ty)
+  ])
+};
+
+let _drop = fn(value: I32, ty: I32, count: I32): I32 {
+  let out = value;
+  let i = 0;
+
+  while (i < count) {
+    out = node(Op.ListTail, ty, 0, 0, [out]);
+    i++;
+  }
+  out
+};
+
+let _prefix<T> = fn(items: Array<T>, count: I32): Array<T> {
+  let out = Array.new<T>(0);
+  while (out.len() < count) { out.push(items[out.len()]); }
+  out
+};
+
+let _read: (Subject, Array<I32>) -> I32 = fn(_s, _path) { 0 };
+_read = fn(subject, path) {
+  match (subject) { Subject(roots, types, _, _) => {
+    let ty = types[path[0]];
+    let value = local(roots[path[0]], ty);
+    let i = 1;
+
+    while (i < path.len()) {
+      let tag = path[i];
+      let index = path[i + 1];
+
+      if (tag == _UNWRAP) {
+        ty = _nullInner(ty);
+        value = node(Op.Unwrap, ty, 0, 0, [value]);
+      } else if (tag == _FROM_DYNAMIC) {
+        ty = index;
+        value = node(Op.FromDynamic, ty, 0, 0, [value]);
+      } else if ((tag == _ELEMENT) && isKind(resolve(ty), Kind.List)) {
+        value = _drop(value, ty, index);
+        ty = innerOf(resolve(ty));
+        value = node(Op.ListHead, ty, 0, 0, [value]);
+      } else if (tag == _ELEMENT) {
+        let at = i32Of(index);
+
+        if (index < 0) {
+          at = node(Op.Add, TYPE_I32, 0, 0, [node(Op.ArrayLen, TYPE_I32, 0, 0, [_read(subject, _prefix(path, i))]), at]);
+        }
+        ty = innerOf(resolve(ty));
+        value = node(Op.ArrayGet, ty, 0, 0, [value, at]);
+      } else if ((tag == _SLICE) && isKind(ty, Kind.Tuple)) {
+        let items = Array.new<I32>(0);
+        let types = Array.new<I32>(0);
+        let item = index;
+
+        while (item < typeArgCount(ty) - path[i + 3]) {
+          types.push(typeArg(ty, item));
+          items.push(node(Op.TupleField, typeArg(ty, item), item, 0, [_read(subject, _prefix(path, i))]));
+          item++;
+        }
+        ty = tupleType(types);
+        value = node(Op.Tuple, ty, 0, 0, items);
+        i += 2;
+      } else if ((tag == _SLICE) && isKind(resolve(ty), Kind.List)) {
+        value = _drop(value, ty, index);
+        i += 2;
+      } else if (tag == _SLICE) {
+        value = _slice(value, index, path[i + 3]);
+        i += 2;
+      } else if (tag == _SEGMENT) {
+        ty = segmentType(index % 256);
+        value = node(Op.BitsRead, ty, index / 256, index % 256, [value]);
+      } else if (tag == _REST) { value = restOf(value, _read(subject, _prefix(path, i)), index); } else if (tag == _LAYOUT) {
+        let bytes = _prefix(path, i);
+        let read = fn(): I32 { _read(subject, bytes) };
+
+        if ((i + 2 < path.len()) && (path[i + 2] == -1)) {
+          ty = memberType(index, path[i + 3]);
+          value = layoutField(index, path[i + 3], read);
+          i += 2;
+        } else {
+          ty = index;
+          value = layoutRecord(index, read);
+        }
+      } else if (tag < 0) {
+        ty = memberType(ty, index);
+        value = node(Op.TupleField, ty, index, 0, [value]);
+      } else {
+        ty = fieldType(ty, tag, index);
+        value = node(Op.EnumField, ty, index, tag, [value]);
+      }
+      i += 2;
+    }
+    value
+  } }
+};
+
+let _reads = fn(subject: Subject, paths: Array<Array<I32>>, places: Array<Syntax>): Array<I32> {
+  let out = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < paths.len()) {
+    let outer = enterSyntax(places[i]);
+    out.push(_read(subject, paths[i]));
+    enterSyntax(outer);
+    i++;
+  }
+  out
+};
+
+let _mismatch = fn(what: Bytes, ty: I32): Bool {
+  throw what + " pattern cannot match " + typeName(ty) + bufferHint(ty);
+  false
+};
+
+let _tagOf = fn(ty: I32, name: Bytes): I32 {
+  if (!isEnum(ty)) { _mismatch("a variant", ty); }
+  let tag = variantTag(ty, name);
+  if (tag < 0) { throw "unknown variant " + name + " of " + typeName(ty); }
+  tag
+};
+
+let _spreadIndex = fn(items: Array<Pattern>, start: I32): I32 {
+  let i = start;
+
+  while (i < items.len()) {
+    if (match (items[i]) { Spread(_) => true, _ => false }) { return i; }
+    i++;
+  }
+  -1
+};
+let _isNull = fn(pattern: Pattern): Bool { match (pattern) { Null => true, _ => false } };
+
+let _present = fn(pattern: Pattern): Pattern {
+  match (pattern) { IsType(_, binding) => binding != null ? Pattern.BindPattern(binding) : Pattern.Wildcard, _ => pattern }
+};
+
+let _takesNull = fn(pattern: Pattern, inner: I32): Bool {
+  match (pattern) {
+    Wildcard, BindPattern(_), Null, Pin(_) => true,
+    Enum(name, args) => (args.len() == 0) && !(isEnum(inner) && (variantTag(inner, name) >= 0)),
+    _ => false,
+  }
+};
+let _tail<T> = fn(row: Array<T>): Array<T> { appendFrom(Array.new<T>(0), row, 1) };
+
+let _equalTo = fn(subject: Subject, path: Array<I32>, ty: I32, value: I32, what: Bytes, tests: Array<I32>) {
+  let inner = _nullInner(ty);
+  let at = path;
+  let against = ty;
+
+  if ((inner >= 0) && (_nullInner(typeOf(value)) < 0)) {
+    tests.push(node(Op.IsPresent, TYPE_BOOL, 0, 0, [_read(subject, path)]));
+    at = _step(path, _UNWRAP, 0);
+    against = inner;
+  }
+  if (!unify(typeOf(value), against)) { throw what + " is " + typeName(typeOf(value)) + ", but the value it matches is " + typeName(against); }
+  tests.push(equalValues(BinaryOp.Equal, _read(subject, at), value));
+  null
+};
+
+enum Bound { Bound(names: Array<Bytes>, paths: Array<Array<I32>>, places: Array<Syntax>, pins: Array<Bytes>); }
+
+let _noBound = fn(): Bound { Bound.Bound(Array.new<Bytes>(0), Array.new<Array<I32>>(0), Array.new<Syntax>(0), Array.new<Bytes>(0)) };
+let _names = fn(bound: Bound): Array<Bytes> { match (bound) { Bound(names, _, _, _) => names } };
+let _pins = fn(bound: Bound): Array<Bytes> { match (bound) { Bound(_, _, _, pins) => pins } };
+
+let _bind = fn(bound: Bound, name: Bytes, path: Array<I32>, place: Syntax) {
+  match (bound) { Bound(names, paths, places, pins) => {
+    if (indexOf(pins, name) >= 0) { throw "cannot pin " + name + ": this pattern binds it"; }
+
+    if (indexOf(names, name) >= 0) {
+      enterSyntax(place);
+      throw name + " is bound more than once in this pattern";
+    }
+    names.push(name);
+    paths.push(path);
+    places.push(place);
+    null
+  } }
+};
+let _boundReads = fn(subject: Subject, bound: Bound): Array<I32> { match (bound) { Bound(_, paths, places, _) => _reads(subject, paths, places) } };
+
+let _test: (Subject, Pattern, Syntax, Array<I32>, I32, Array<I32>, Bound) -> Bool = fn(_s, _p, _syntax, _path, _ty, _tests, _bound) { false };
+
+let _spreadOf = fn(items: Array<Pattern>, syntax: Syntax): I32 {
+  let spread = _spreadIndex(items, 0);
+  let again = spread < 0 ? -1 : _spreadIndex(items, spread + 1);
+
+  if (again >= 0) {
+    enterSyntax(subPattern(syntax, again));
+    throw "a pattern may spread only once";
+  }
+  spread
+};
+
+let _items = fn(subject: Subject, items: Array<Pattern>, syntax: Syntax, path: Array<I32>, ty: I32, spread: I32, tests: Array<I32>, bound: Bound) {
+  let tuple = isKind(ty, Kind.Tuple);
+  let i = 0;
+
+  while (i < items.len()) {
+    let item = subPattern(syntax, i);
+    let at = (spread < 0) || (i < spread) ? i : (tuple ? typeArgCount(ty) : 0) + i - items.len();
+
+    match (items[i]) {
+      Spread(binding) => { if (binding != null) { _bind(bound, binding, _step(_step(path, _SLICE, spread), _SLICE, items.len() - 1 - spread), item); } null },
+      _ => {
+        _test(subject, items[i], item, _step(path, tuple ? -1 : _ELEMENT, at), tuple ? typeArg(ty, at) : innerOf(resolve(ty)), tests, bound);
+        null
+      },
+    };
+    i++;
+  }
+  null
+};
+
+_test = fn(subject, pattern, syntax, path, ty, tests, bound) {
+  let outer = enterSyntax(syntax);
+  let present = _nullInner(ty);
+  let inner = (present >= 0) && !_takesNull(pattern, present) ? present : -1;
+
+  if (inner >= 0) {
+    match (pattern) {
+      IsType(written, _) => {
+        let target = checkType(written);
+        if (!unify(target, inner)) { throw "is " + typeName(target) + " cannot match a value of type " + typeName(ty); }
+        null
+      },
+      _ => null,
+    };
+    tests.push(node(Op.IsPresent, TYPE_BOOL, 0, 0, [_read(subject, path)]));
+    enterSyntax(outer);
+    return _test(subject, _present(pattern), syntax, _step(path, _UNWRAP, 0), inner, tests, bound);
+  }
+
+  match (pattern) {
+    Wildcard => null,
+    BindPattern(name) => _bind(bound, name, path, syntax),
+    Enum(name, args) when ((resolve(ty) == TYPE_BYTES) && isLayout(scopedType(name))) => {
+      let layout = scopedType(name);
+      if (args.len() != 1) { throw "the bytes layout pattern " + name + "(…) takes one pattern, for the record"; }
+      tests.push(layoutFits(layout, node(Op.BytesLen, TYPE_I32, 0, 0, [_read(subject, path)])));
+      _test(subject, args[0], subPattern(syntax, 0), _step(path, _LAYOUT, layout), layout, tests, bound)
+    },
+    Enum(name, args) => {
+      let known = isEnum(ty) ? variantTag(ty, name) : -1;
+      let constant = ((known < 0) && (args.len() == 0)) ? checkPatternName(name, true) : -1;
+
+      if (constant >= 0) { _equalTo(subject, path, ty, constant, name, tests); } else {
+        let tag = known >= 0 ? known : _tagOf(present >= 0 ? present : ty, name);
+        if (args.len() != fieldCount(ty, tag)) { throw "wrong payload count for enum variant pattern " + name; }
+
+        if (variantCount(ty) > 1) {
+          let read = match (subject) { Subject(_, _, _, tagBinding) => (path.len() == 1) && (tagBinding >= 0) ? local(tagBinding, TYPE_I32) : node(Op.EnumTag, TYPE_I32, 0, 0, [_read(subject, path)]) };
+          tests.push(node(Op.Eq, TYPE_BOOL, 0, 0, [read, i32Of(tag)]));
+        }
+        let f = 0;
+
+        while (f < args.len()) {
+          _test(subject, args[f], subPattern(syntax, f), _step(path, tag, f), fieldType(ty, tag, f), tests, bound);
+          f++;
+        }
+      }
+      null
+    },
+    Tuple(items) => {
+      let spread = _spreadOf(items, syntax);
+      let count = spread < 0 ? items.len() : items.len() - 1;
+      if (!isKind(ty, Kind.Tuple) || ((spread < 0) && (typeArgCount(ty) != count))) { _mismatch("a " + Std.string(count) + "-item tuple", ty); }
+      if (typeArgCount(ty) < count) { throw "a tuple pattern of " + Std.string(count) + " or more items cannot match " + typeName(ty); }
+      _items(subject, items, syntax, path, ty, spread, tests, bound)
+    },
+    Bool(value) => {
+      if (ty != TYPE_BOOL) { _mismatch("a Bool", ty); }
+      tests.push(value ? _read(subject, path) : node(Op.Not, TYPE_BOOL, 0, 0, [_read(subject, path)]));
+      null
+    },
+    Integer(digits, size) => {
+      if (!isInteger(ty) || !unify(sizedType(size, ty), ty)) { _mismatch("an integer", ty); }
+      let literal = integerLiteral(digits, false, ty);
+      tests.push(node(Op.Eq, TYPE_BOOL, 0, 0, [_read(subject, path), literal]));
+      null
+    },
+    Bytes(value) => {
+      if (ty != TYPE_BYTES) { _mismatch("a string", ty); }
+      tests.push(node(Op.BytesEq, TYPE_BOOL, 0, 0, [_read(subject, path), node(Op.Bytes, TYPE_BYTES, bytesId(value), 0, [])]));
+      null
+    },
+    RegExp(source, flags, binding) => {
+      if (ty != TYPE_BYTES) { _mismatch("a regexp", ty); }
+      let regexp = node(Op.Global, TYPE_DYNAMIC, regexpGlobal(source, flags), 0, []);
+      let matchPrefix = stdNative("regexp_match_prefix", [TYPE_BYTES, TYPE_DYNAMIC], TYPE_DYNAMIC);
+      let found = node(Op.CallNative, TYPE_DYNAMIC, matchPrefix, 0, [_read(subject, path), regexp]);
+
+      if (binding != null) {
+        let roots = match (subject) {
+          Subject(roots, types, _, _) => {
+            types.push(TYPE_DYNAMIC);
+            roots
+          }
+        };
+        roots.push(newBinding());
+        found = node(Op.Assign, TYPE_DYNAMIC, roots[roots.len() - 1], 0, [found]);
+        _bind(bound, binding, [(roots.len() - 1) as I32], syntax);
+      }
+      tests.push(node(Op.IsPresent, TYPE_BOOL, 0, 0, [found]));
+      null
+    },
+    Float(literal, size) => {
+      if (!isFloatType(resolve(ty))) { _mismatch("a float", ty); }
+      _equalTo(subject, path, ty, floatLiteral(literal, size, false, ty), literal, tests)
+    },
+    Atom(name) => {
+      if (resolve(ty) != TYPE_ATOM) { _mismatch("an atom", ty); }
+      _equalTo(subject, path, ty, node(Op.Atom, TYPE_ATOM, bytesId(name), 0, []), ":" + name, tests)
+    },
+    Pin(name) => {
+      if (indexOf(_names(bound), name) >= 0) { throw "cannot pin " + name + ": this pattern binds it"; }
+      _pins(bound).push(name);
+      _equalTo(subject, path, ty, checkPatternName(name, false), "^" + name, tests)
+    },
+    Null => {
+      if (_nullInner(ty) < 0) { _mismatch("a null", ty); }
+      tests.push(node(Op.IsNull, TYPE_BOOL, 0, 0, [_read(subject, path)]));
+      null
+    },
+    IsType(written, binding) => {
+      if (resolve(ty) != TYPE_DYNAMIC) { throw "is tests a Dynamic or nullable value, not " + typeName(ty); }
+      let target = checkType(written);
+      tests.push(kindTest(_read(subject, path), target));
+      if (binding != null) { _bind(bound, binding, _step(path, _FROM_DYNAMIC, target), syntax); }
+      null
+    },
+    Array(items) => {
+      let linked = isKind(resolve(ty), Kind.List);
+      if (!linked && !isKind(resolve(ty), Kind.Array)) { _mismatch("an array", ty); }
+      let spread = _spreadOf(items, syntax);
+      let count = spread < 0 ? items.len() : items.len() - 1;
+
+      if (linked && (spread >= 0) && (spread < count)) {
+        enterSyntax(subPattern(syntax, spread));
+        throw "a list pattern may spread only at its end";
+      }
+
+      if (linked) {
+        let cell = 0;
+
+        while (cell < count) {
+          tests.push(node(Op.Not, TYPE_BOOL, 0, 0, [node(Op.ListIsNil, TYPE_BOOL, 0, 0, [_drop(_read(subject, path), ty, cell)])]));
+          cell++;
+        }
+        if (spread < 0) { tests.push(node(Op.ListIsNil, TYPE_BOOL, 0, 0, [_drop(_read(subject, path), ty, count)])); }
+      } else if ((spread < 0) || (count > 0)) {
+        let length = node(Op.ArrayLen, TYPE_I32, 0, 0, [_read(subject, path)]);
+        tests.push(lengthTest(length, count, spread >= 0));
+      }
+      _items(subject, items, syntax, path, ty, spread, tests, bound)
+    },
+    Spread(_) => null,
+    Object(fields) => {
+      if (!isRecord(ty)) { _mismatch("a record", ty); }
+      let matched = Array.new<Bool>(0);
+      let f = 0;
+      while (matched.len() < memberCount(ty)) { matched.push(false); }
+
+      while (f < fields.len()) {
+        let (name, field) = fields[f];
+        let index = recordField(ty, name);
+
+        if (index < 0) {
+          enterSyntax(subPattern(syntax, f));
+          throw typeName(ty) + " has no field " + name;
+        }
+
+        if (matched[index]) {
+          enterSyntax(subPattern(syntax, f));
+          throw "field " + name + " is matched twice";
+        }
+        matched[index] = true;
+        _test(subject, field, subPattern(syntax, f), _step(path, -1, index), memberType(ty, index), tests, bound);
+        f++;
+      }
+      null
+    },
+    Bits(segments) => {
+      if (resolve(ty) != TYPE_BYTES) { _mismatch("a bits", ty); }
+      let codes = Array.new<I32>(0);
+      let s = 0;
+
+      while (s < segments.len()) {
+        match (segments[s]) { Segment(width, endian, _, kind, _) => codes.push(segmentCode(width, endian, kind)) };
+        s++;
+      }
+      let (offsets, fixed) = placeSegments(codes);
+      let rest = (codes.len() > 0) && (segmentWidth(codes[codes.len() - 1]) == 0);
+      tests.push(lengthTest(node(Op.BytesLen, TYPE_I32, 0, 0, [_read(subject, path)]), fixed, rest));
+      s = 0;
+
+      while (s < segments.len()) {
+        match (segments[s]) { Segment(_, _, signed, _, segment) => {
+          let at = subPattern(syntax, s);
+
+          match (segment) {
+            Integer(digits, _) => {
+              enterSyntax(at);
+              checkSegmentLiteral(codes[s], signed, digits, false);
+              enterSyntax(syntax)
+            },
+            _ => true,
+          };
+          let step = segmentWidth(codes[s]) == 0 ? _step(path, _REST, fixed) : _step(path, _SEGMENT, offsets[s] * 256 + codes[s]);
+          _test(subject, segment, at, step, segmentType(codes[s]), tests, bound);
+        } };
+        s++;
+      }
+      null
+    },
+  };
+  enterSyntax(outer);
+  true
+};
+
+let _describe: (Pattern) -> Bytes = fn(_p) { "" };
+_describe = fn(pattern) {
+  match (pattern) {
+    Wildcard => "_",
+    BindPattern(name) => name,
+    Enum(name, args) => args.len() == 0 ? name : name + "(…)",
+    Tuple(_) => "(…)",
+    Object(_) => "{…}",
+    Bits(_) => "bits[…]",
+    Array(items) => {
+      let out = "[";
+      let i = 0;
+
+      while (i < items.len()) {
+        out = out + (i > 0 ? ", " : "") + _describe(items[i]);
+        i++;
+      }
+      out + "]"
+    },
+    Spread(binding) => "..." + (binding == null ? "_" : binding),
+    Bool(value) => value ? "true" : "false",
+    Integer(digits, _) => digits,
+    Float(literal, _) => literal,
+    Atom(name) => ":" + name,
+    Pin(name) => "^" + name,
+    Null => "null",
+    IsType(written, _) => "is " + typeName(checkType(written)),
+    Bytes(value) => "\"" + value + "\"",
+    RegExp(source, flags, _) => "~r/" + source + "/" + flags,
+  }
+};
+
+let _wild = fn(pattern: Pattern): Bool { match (pattern) { Wildcard => true, BindPattern(_) => true, _ => false } };
+
+let _bits = fn(text: Bytes): I64 {
+  Bytes.get_u8(text, 0) == "-".code ? wideIntegerValue(text, false) : unsignedWideValue(text, false)
+};
+
+let _same = fn(a: Pattern, b: Pattern): Bool {
+  match ((a, b)) {
+    (Enum(x, _), Enum(y, _)) => x == y,
+    (Bool(x), Bool(y)) => x == y,
+    (Integer(x, _), Integer(y, _)) => _bits(x) == _bits(y),
+    (Float(x, _), Float(y, _)) => x == y,
+    (Bytes(x), Bytes(y)) => x == y,
+    (Atom(x), Atom(y)) => x == y,
+    (IsType(x, _), IsType(y, _)) => checkType(x) == checkType(y),
+    (Null, Null), (Tuple(_), Tuple(_)) => true,
+    _ => false,
+  }
+};
+
+let _args = fn(head: Pattern): Array<Pattern> {
+  match (head) { Enum(_, args) => args, Tuple(items), Array(items) => items, _ => Array.new<Pattern>(0) }
+};
+
+let _arity = fn(head: Pattern): I32 {
+  match (head) { Array(items) => items.len() - (_spreadIndex(items, 0) >= 0 ? 1 : 0), _ => _args(head).len() }
+};
+
+let _argTypes = fn(head: Pattern, ty: I32): Array<I32> {
+  match (head) { Enum(name, _) when ((resolve(ty) == TYPE_BYTES) && isLayout(scopedType(name))) => { return [scopedType(name)]; }, _ => null };
+  let out = Array.new<I32>(0);
+  let i = 0;
+  let count = _arity(head);
+
+  while (i < count) {
+    out.push(match (head) { Enum(name, _) => fieldType(ty, variantTag(ty, name), i), Array(_) => innerOf(resolve(ty)), _ => memberType(ty, i) });
+    i++;
+  }
+  out
+};
+
+let _wilds = fn(count: I32): Array<Pattern> {
+  let out = Array.new<Pattern>(0);
+  while (out.len() < count) { out.push(Pattern.Wildcard); }
+  out
+};
+
+let _join<T> = fn(front: Array<T>, row: Array<T>): Array<T> { appendFrom(appendFrom(Array.new<T>(0), front, 0), row, 1) };
+
+let _cut = fn(pattern: Pattern, head: Pattern): ?Array<Pattern> {
+  if (_wild(pattern)) { return _wilds(_arity(head)); }
+
+  match ((pattern, head)) {
+    (Array(items), Array(cells)), (Tuple(items), Tuple(cells)) => {
+      let width = _arity(head);
+      let open = width < cells.len();
+      let spread = _spreadIndex(items, 0);
+      if (spread < 0) { return !open && (items.len() == width) ? items : null; }
+      if (!open && (items.len() - 1 > width)) { return null; }
+      appendFrom(appendFrom(_prefix(items, spread), _wilds(width - items.len() + 1), 0), items, spread + 1)
+    },
+    _ => _same(pattern, head) ? _args(pattern) : null,
+  }
+};
+
+let _specialize = fn(rows: Array<Array<Pattern>>, head: Pattern): Array<Array<Pattern>> {
+  let out = Array.new<Array<Pattern>>(0);
+  let i = 0;
+
+  while (i < rows.len()) {
+    let cut = _cut(rows[i][0], head);
+    if (cut != null) { out.push(_join(cut, rows[i])); }
+    i++;
+  }
+  out
+};
+
+let _max = fn(a: I32, b: I32): I32 { a > b ? a : b };
+
+let _column = fn(rows: Array<Array<Pattern>>): Array<Pattern> {
+  let out = Array.new<Pattern>(0);
+  while (out.len() < rows.len()) { out.push(rows[out.len()][0]); }
+  out
+};
+
+let _sequence = fn(ty: I32): Bool {
+  let t = resolve(ty);
+  isKind(t, Kind.Array) || isKind(t, Kind.List)
+};
+
+let _lengths = fn(column: Array<Pattern>): Array<Pattern> {
+  let fixed = -1;
+  let before = 0;
+  let after = 0;
+  let i = 0;
+
+  while (i < column.len()) {
+    match (column[i]) {
+      Array(items) => {
+        let spread = _spreadIndex(items, 0);
+
+        if (spread < 0) { fixed = _max(fixed, items.len()); } else {
+          before = _max(before, spread);
+          after = _max(after, items.len() - 1 - spread);
+        }
+        null
+      },
+      _ => null,
+    };
+    i++;
+  }
+  let longest = _max(fixed + 1, before + after);
+  let out = Array.new<Pattern>(0);
+  while (out.len() < longest) { out.push(Pattern.Array(_wilds(out.len() as I32))); }
+  let spread = _wilds(longest - after);
+  spread.push(Pattern.Spread(null));
+  out.push(Pattern.Array(appendFrom(spread, _wilds(after), 0)));
+  out
+};
+
+let _constructors = fn(rows: Array<Array<Pattern>>, ty: I32): Array<Pattern> {
+  if (ty == TYPE_BOOL) { return [Pattern.Bool(false), Pattern.Bool(true)]; }
+  if (isKind(ty, Kind.Tuple) || isRecord(ty)) { return [Pattern.Tuple(_wilds(memberCount(ty)))]; }
+  if (_sequence(ty)) { return _lengths(_column(rows)); }
+  let all = Array.new<Pattern>(0);
+  let tag = 0;
+
+  while (isEnum(ty) && (tag < variantCount(ty))) {
+    all.push(Pattern.Enum(variantName(ty, tag), _wilds(fieldCount(ty, tag))));
+    tag++;
+  }
+  all
+};
+
+let _signature = fn(rows: Array<Array<Pattern>>, ty: I32): Array<Pattern> {
+  let all = _constructors(rows, ty);
+  if (_sequence(ty)) { return all; }
+  let i = 0;
+
+  while (i < all.len()) {
+    let r = 0;
+    let seen = false;
+
+    while (!seen && (r < rows.len())) {
+      seen = !_wild(rows[r][0]) && _same(rows[r][0], all[i]);
+      r++;
+    }
+    if (!seen) { return Array.new<Pattern>(0); }
+    i++;
+  }
+  all
+};
+
+let _fieldItems = fn(pattern: Pattern, ty: I32): Pattern {
+  match (pattern) {
+    Object(fields) => {
+      let items = _wilds(memberCount(ty));
+      let f = 0;
+
+      while (f < fields.len()) {
+        let (name, field) = fields[f];
+        items[recordField(ty, name)] = field;
+        f++;
+      }
+      Pattern.Tuple(items)
+    },
+    _ => pattern,
+  }
+};
+
+let _recordRows = fn(rows: Array<Array<Pattern>>, ty: I32): Array<Array<Pattern>> {
+  if (!isRecord(ty)) { return rows; }
+  let out = Array.new<Array<Pattern>>(0);
+  let i = 0;
+
+  while (i < rows.len()) {
+    out.push(_join([_fieldItems(rows[i][0], ty)], rows[i]));
+    i++;
+  }
+  out
+};
+
+let _usefulNullable: (Array<Array<Pattern>>, Array<Pattern>, Array<I32>) -> Bool = fn(_rows, _q, _types) { false };
+
+let _useful: (Array<Array<Pattern>>, Array<Pattern>, Array<I32>) -> Bool = fn(_rows, _q, _types) { false };
+_useful = fn(given, row, types) {
+  if (row.len() == 0) { return given.len() == 0; }
+  let ty = types[0];
+  if (_nullInner(ty) >= 0) { return _usefulNullable(given, row, types); }
+  let rows = _recordRows(given, ty);
+  let q = isRecord(ty) ? _recordRows([row], ty)[0] : row;
+  let spreads = match (q[0]) { Array(items), Tuple(items) => _spreadIndex(items, 0) >= 0, _ => false };
+  if (!_wild(q[0]) && !spreads) { return _useful(_specialize(rows, q[0]), _join(_args(q[0]), q), _join(_argTypes(q[0], ty), types)); }
+  let heads = _signature(rows, ty);
+
+  if (spreads && _sequence(ty)) {
+    let column = _column(rows);
+    column.push(q[0]);
+    heads = _lengths(column);
+  }
+  let i = 0;
+
+  while (i < heads.len()) {
+    let cut = _cut(q[0], heads[i]);
+    if ((cut != null) && _useful(_specialize(rows, heads[i]), _join(cut, q), _join(_argTypes(heads[i], ty), types))) { return true; }
+    i++;
+  }
+  if (heads.len() > 0) { return false; }
+  let rest = Array.new<Array<Pattern>>(0);
+  i = 0;
+
+  while (i < rows.len()) {
+    if (_wild(rows[i][0])) { rest.push(_tail(rows[i])); }
+    i++;
+  }
+  _useful(rest, _tail(q), _tail(types))
+};
+
+_usefulNullable = fn(rows, q, types) {
+  if (!_isNull(q[0])) {
+    let presents = Array.new<Array<Pattern>>(0);
+    let i = 0;
+
+    while (i < rows.len()) {
+      if (!_isNull(rows[i][0])) { presents.push(_join([_present(rows[i][0])], rows[i])); }
+      i++;
+    }
+    if (_useful(presents, _join([_present(q[0])], q), _join([_nullInner(types[0])], types))) { return true; }
+  }
+  _takesNull(q[0], _nullInner(types[0])) && _useful(_specialize(rows, Pattern.Null), _tail(q), _tail(types))
+};
+
+let _missing = fn(rows: Array<Array<Pattern>>, ty: I32): Bytes {
+  let inner = _nullInner(ty);
+  let base = inner >= 0 ? inner : ty;
+  let cases = inner >= 0 ? [Pattern.Null] : Array.new<Pattern>(0);
+  if (!isKind(base, Kind.Tuple) && !isRecord(base)) { appendFrom(cases, _constructors(rows, base), 0); }
+  let c = 0;
+
+  while (c < cases.len()) {
+    if (_useful(rows, [cases[c]], [ty])) { return _describe(cases[c]); }
+    c++;
+  }
+  "_"
+};
+
+let _notExhaustive = fn(rows: Array<Array<Pattern>>, ty: I32): Bool {
+  let missing = _missing(rows, ty);
+  throw "match is not exhaustive: " + (missing == "_" ? "add a `_` arm" : "missing " + missing);
+  false
+};
+
+let _fold = fn(op: Op, tests: Array<I32>, value: Bool): I32 {
+  if (tests.len() == 0) { return node(Op.Bool, TYPE_BOOL, value ? 1 : 0, 0, []); }
+  let out = tests[0];
+  let i = 1;
+
+  while (i < tests.len()) {
+    out = node(op, TYPE_BOOL, 0, 0, [out, tests[i]]);
+    i++;
+  }
+  out
+};
+
+let _unlift = fn(block: I32): I32 {
+  let last = childCount(block) - 1;
+  if ((auxOf(block) == 0) || !match (opOf(childOf(block, last))) { Present => true, _ => false }) { return block; }
+  let children = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < last) {
+    children.push(childOf(block, i));
+    i++;
+  }
+  let value = childOf(childOf(block, last), 0);
+  children.push(value);
+  node(Op.Block, typeOf(value), 0, 1, children)
+};
+
+let _valueSubject = fn(value: I32, arms: I32, children: Array<I32>): Subject {
+  let ty = typeOf(value);
+  let binding = newBinding();
+  children.push(declareBinding(Op.Const, binding, "match", value));
+  let tag = -1;
+
+  if (isEnum(ty) && (variantCount(ty) > 1) && (arms > 1)) {
+    tag = newBinding();
+    children.push(declareBinding(Op.Const, tag, "match.tag", node(Op.EnumTag, TYPE_I32, 0, 0, [local(binding, ty)])));
+  }
+  Subject.Subject([binding], [ty], -1, tag)
+};
+
+let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>): Subject {
+  let items = match (subject) { Tuple(items) => items, _ => Array.new<AstExpr>(0) };
+  let fits = items.len() > 0;
+  let aware = false;
+  let a = 0;
+
+  while (a < arms.len()) {
+    let alternatives = match (arms[a]) { Arm(alternatives, _, _) => alternatives };
+    let j = 0;
+
+    while (j < alternatives.len()) {
+      let pattern = match (alternatives[j]) { Alternative(pattern, _) => pattern };
+      fits = fits && match (pattern) { Tuple(patterns) => (patterns.len() == items.len()) && (_spreadIndex(patterns, 0) < 0), Wildcard => true, _ => false };
+      aware = aware || match (pattern) { Null, IsType(_, _) => true, _ => false };
+      j++;
+    }
+    a++;
+  }
+  let roots = Array.new<I32>(0);
+  let types = Array.new<I32>(0);
+
+  if (fits) {
+    let outer = enterSyntax(syntaxChild(0));
+    let i = 0;
+
+    while (i < items.len()) {
+      let value = checkOperand(items[i], i, -1);
+      let binding = newBinding();
+      children.push(declareBinding(Op.Const, binding, "match", value));
+      roots.push(binding);
+      types.push(typeOf(value));
+      i++;
+    }
+    enterSyntax(outer);
+    return Subject.Subject(roots, types, tupleType(types), -1);
+  }
+  _valueSubject(aware ? checkKnown(subject, 0) : checkPresent(subject, 0), arms.len(), children)
+};
+
+let _rootCount = fn(subject: Subject): I32 { match (subject) { Subject(roots, _, _, _) => roots.len() as I32 } };
+
+let _declareMatches = fn(subject: Subject, first: I32, children: Array<I32>) {
+  match (subject) { Subject(roots, types, _, _) => {
+    let r = first;
+
+    while (r < roots.len()) {
+      let empty = node(isKind(types[r], Kind.List) ? Op.ListNil : Op.Null, types[r], 0, 0, []);
+      children.push(declareBinding(Op.Let, roots[r], "match.bound", empty));
+      r++;
+    }
+  } };
+  null
+};
+
+let _rootType = fn(ty: I32): I32 { isKind(ty, Kind.List) ? ty : nullType(ty) };
+
+let _alternativeRoots = fn(subject: Subject, values: Array<I32>): Array<I32> {
+  let out = Array.new<I32>(0);
+
+  match (subject) { Subject(roots, types, _, _) => {
+    let i = 0;
+
+    while (i < values.len()) {
+      out.push(roots.len() as I32);
+      roots.push(newBinding());
+      types.push(_rootType(typeOf(values[i])));
+      i++;
+    }
+  } };
+  out
+};
+
+enum Group { Group(names: Array<Bytes>, types: Array<I32>, roots: Array<I32>); }
+
+let _noGroup = fn(): Group { Group.Group(Array.new<Bytes>(0), Array.new<I32>(0), Array.new<I32>(0)) };
+
+let _store = fn(subject: Subject, root: I32, value: I32): I32 {
+  let ty = match (subject) { Subject(_, types, _, _) => types[root] };
+  let stored = typeOf(value) == ty ? value : node(Op.Present, ty, 0, 0, [value]);
+  let binding = match (subject) { Subject(roots, _, _, _) => roots[root] };
+  let assign = expressionOf(node(Op.Assign, ty, binding, 0, [stored]));
+  node(Op.Block, TYPE_BOOL, 0, 1, [assign, node(Op.Bool, TYPE_BOOL, 1, 0, [])])
+};
+
+let _bindAlternative = fn(subject: Subject, current: Group, first: Bool, bound: Bound, tests: Array<I32>): Group {
+  let names = _names(bound);
+  let values = _boundReads(subject, bound);
+  let group = current;
+
+  if (first) {
+    let types = Array.new<I32>(0);
+    let v = 0;
+
+    while (v < values.len()) {
+      types.push(typeOf(values[v]));
+      v++;
+    }
+    group = Group.Group(names, types, _alternativeRoots(subject, values));
+  }
+
+  match (group) { Group(groupNames, types, roots) => {
+    let n = 0;
+
+    while (n < names.len()) {
+      if (indexOf(groupNames, names[n]) < 0) { throw names[n] + " must be bound by every alternative"; }
+      n++;
+    }
+    let g = 0;
+
+    while (g < groupNames.len()) {
+      let k = indexOf(names, groupNames[g]);
+      if (k < 0) { throw groupNames[g] + " must be bound by every alternative"; }
+      if (!unify(typeOf(values[k]), types[g])) { throw groupNames[g] + " has a different type in each alternative: " + typeName(types[g]) + " and " + typeName(typeOf(values[k])); }
+      tests.push(_store(subject, roots[g], values[k]));
+      g++;
+    }
+  } };
+  group
+};
+
+let _stored = fn(subject: Subject, group: Group): Array<I32> {
+  let out = Array.new<I32>(0);
+
+  match (group) { Group(_, types, roots) => {
+    let g = 0;
+
+    while (g < roots.len()) {
+      let value = _read(subject, [roots[g]]);
+      out.push(typeOf(value) == types[g] ? value : node(Op.Unwrap, types[g], 0, 0, [value]));
+      g++;
+    }
+  } };
+  out
+};
+
+let _armPattern = fn(subject: Subject, pattern: Pattern, syntax: Syntax, path: Array<I32>, ty: I32, rows: Array<Array<Pattern>>, tests: Array<I32>, bound: Bound) {
+  _test(subject, pattern, syntax, path, ty, tests, bound);
+  if (!_useful(rows, [pattern], [ty])) { throw "unreachable match arm: earlier arms already match " + _describe(pattern); }
+  null
+};
+
+let _armBody = fn(names: Array<Bytes>, values: Array<I32>, body: AstBlock, index: I32, expected: I32, resultType: I32, statement: Bool): I32 {
+  match (body) { Block(statements, tail) => {
+    let context = (expected < 0) && (resultType >= 0) && !statement && !isKind(resultType, Kind.List) ? nullable(resultType) : expected;
+    let block = checkArm(names, values, statements, tail, index, context, statement);
+    if (context != expected) { block = _unlift(block); }
+    if (!statement && (auxOf(block) == 0) && !endsPath(block)) { throw "match arm requires a trailing expression"; }
+    block
+  } }
+};
+
+let _armReads = fn(subject: Subject, shared: Bool, group: Group, bound: Bound): Array<I32> {
+  shared ? _stored(subject, group) : _boundReads(subject, bound)
+};
+
+let _guard = fn(names: Array<Bytes>, values: Array<I32>, guard: ?AstExpr, index: I32): I32 {
+  let block = checkArm(names, values, [], guard, index, TYPE_BOOL, false);
+
+  if (typeOf(block) != TYPE_BOOL) {
+    enterSyntax(syntaxChild(index));
+    throw "match guard must be a Bool";
+  }
+  block
+};
+
+let _matchArms = fn(checked: Subject, arms: Array<MatchArm>, first: I32, firstPattern: I32, expected: I32, statement: Bool, children: Array<I32>): I32 {
+  let subjectRoots = _rootCount(checked);
+  let ty = match (checked) { Subject(_, types, tuple, _) => tuple >= 0 ? tuple : types[0] };
+  let top = match (checked) { Subject(_, _, tuple, _) => tuple >= 0 ? [-1] : [0] };
+  let rows = Array.new<Array<Pattern>>(0);
+  let conditions = Array.new<I32>(0);
+  let bodies = Array.new<I32>(0);
+  let tails = Array.new<I32>(0);
+  let effects = false;
+  let resultType = -1;
+  let index = first;
+  let patternIndex = firstPattern;
+  let a = 0;
+
+  while (a < arms.len()) { match (arms[a]) { Arm(alternatives, guard, body) => {
+    let shared = alternatives.len() > 1;
+    let group = _noGroup();
+    let bound = _noBound();
+    let firstRow = rows.len();
+    let tested = Array.new<I32>(0);
+    let last = Array.new<I32>(0);
+    let ownGuard = false;
+    let j = 0;
+
+    while (j < alternatives.len()) { match (alternatives[j]) { Alternative(pattern, own) => {
+      let place = syntaxPattern(patternIndex);
+      let outer = enterSyntax(place);
+      patternIndex++;
+      let tests = Array.new<I32>(0);
+      bound = _noBound();
+      _armPattern(checked, pattern, place, top, ty, rows, tests, bound);
+      if (shared) { group = _bindAlternative(checked, group, j == 0, bound, tests); }
+      enterSyntax(outer);
+
+      if (own == null) { rows.push([pattern]); } else {
+        ownGuard = true;
+        tests.push(_guard(_names(bound), _boundReads(checked, bound), own, index));
+        index++;
+      }
+      if (shared) { tested.push(_fold(Op.And, tests, true)); }
+      last = tests;
+    } };
+      j++;
+    }
+    let names = _names(bound);
+    let tests = last;
+
+    if (shared) {
+      names = match (group) { Group(groupNames, _, _) => groupNames };
+      tests = [_fold(Op.Or, tested, false)];
+    }
+
+    if (guard != null) {
+      Array.resize(rows, firstRow);
+      tests.push(_guard(names, _armReads(checked, shared, group, bound), guard, index));
+      index++;
+    }
+    conditions.push(_fold(Op.And, tests, true));
+    let block = _armBody(names, _armReads(checked, shared, group, bound), body, index, expected, resultType, statement);
+
+    match (body) { Block(statements, tail) => {
+      let count = (statements.len() as I32) + (tail == null ? 0 : 1);
+
+      if (!statement && !endsPath(block)) {
+        let joined = resultType < 0 ? typeOf(block) : joinTypes(resultType, typeOf(block));
+        if (joined < 0) { throw branchMismatch("match arms", resultType, typeOf(block), count == 0 ? -1 : index + count - 1); }
+        resultType = joined;
+      }
+      tails.push(index + (statements.len() as I32));
+      index += count;
+      bodies.push(block);
+    } };
+    effects = ownGuard || (guard != null) || (shared && (names.len() > 0));
+  } };
+    a++;
+  }
+  _declareMatches(checked, subjectRoots, children);
+  if (_useful(rows, [Pattern.Wildcard], [ty])) { _notExhaustive(rows, ty); }
+  if (!statement && (resultType < 0)) { resultType = noValueType(expected); }
+
+  if (!statement) {
+    let b = 0;
+
+    while (b < bodies.len()) {
+      bodies[b] = coerceTail(bodies[b], resultType, tails[b]);
+      b++;
+    }
+  }
+  let last = bodies.len() - 1;
+  let result = bodies[last];
+
+  if (effects) {
+    let discard = expressionOf(conditions[last]);
+    result = statement ? node(Op.Block, 0, 0, 0, [discard, result]) : node(Op.Block, resultType, 0, 1, [discard, result]);
+  }
+  let i = last - 1;
+
+  while (i >= 0) {
+    result = node(statement ? Op.IfStatement : Op.If, statement ? 0 : resultType, 0, 0, [conditions[i], bodies[i], result]);
+    i--;
+  }
+  children.push(result);
+  statement ? node(Op.Block, 0, 0, 0, children) : node(Op.Block, resultType, 0, 1, children)
+};
+
+export let checkMatch: (AstExpr, Array<MatchArm>, I32, Bool) -> I32 = fn(subject, arms, expected, statement) {
+  if (arms.len() == 0) { throw "match requires at least one arm"; }
+  let children = Array.new<I32>(0);
+  _matchArms(_subject(subject, arms, children), arms, 1, 0, expected, statement, children)
+};
+
+let _canFail = fn(pattern: Pattern, tests: Array<I32>, ty: I32): Bool {
+  (tests.len() > 0) && _useful([[pattern]], [Pattern.Wildcard], [ty])
+};
+
+let _bindLet = fn(pattern: Pattern, syntax: Syntax, mutable: Bool, value: I32, leave: I32, global: Bool): I32 {
+  let ty = typeOf(value);
+  let roots = [newBinding()];
+  let subject = Subject.Subject(roots, [ty], -1, -1);
+  let tests = Array.new<I32>(0);
+  let bound = _noBound();
+  _test(subject, pattern, syntax, [0], ty, tests, bound);
+
+  if ((leave < 0) && _canFail(pattern, tests, ty)) {
+    let missing = _missing([[pattern]], ty);
+    enterSyntax(syntax);
+    throw "this pattern can fail" + (missing == "_" ? "" : ", as on " + missing) + ": use `if (let ...)` or `let ... else`";
+  }
+  let children = Array.new<I32>(0);
+  _declareMatches(subject, 1, children);
+  let initial = value;
+
+  if ((leave >= 0) && (tests.len() > 0)) {
+    let check = node(Op.IfStatement, 0, 0, 0, [node(Op.Not, TYPE_BOOL, 0, 0, [_fold(Op.And, tests, true)]), leave]);
+    initial = node(Op.Block, ty, 0, 1, [declareBinding(Op.Const, roots[0], "let", value), check, local(roots[0], ty)]);
+    roots[0] = newBinding();
+  }
+  children.push(node(Op.Const, ty, roots[0], bytesId("let"), [initial]));
+  let reads = _boundReads(subject, bound);
+
+  match (bound) { Bound(names, _, places, _) => {
+    let declare = global ? declareGlobal : declareLocal;
+    let i = 0;
+
+    while (i < names.len()) {
+      let at = enterSyntax(places[i]);
+      children.push(declare(names[i], reads[i], mutable));
+      enterSyntax(at);
+      i++;
+    }
+    null
+  } };
+  node(Op.Declare, 0, 0, 0, children)
+};
+
+export let checkLet: (Pattern, Bool, I32, Null<AstBlock>, Bool) -> I32 = fn(pattern, mutable, value, otherwise, global) {
+  let leave = -1;
+
+  if (otherwise != null) {
+    leave = match (otherwise) { Block(statements, tail) => checkArm([], [], statements, tail, 1, -1, false) };
+    if (!endsPath(leave)) { throw "the else of a let must leave, by return, throw, break or continue"; }
+  }
+  _bindLet(pattern, syntaxPattern(0), mutable, value, leave, global)
+};
+
+export let bindGenerator: (Pattern, I32, I32) -> I32 = fn(pattern, index, value) {
+  let skip = node(Op.Block, 0, 0, 0, [node(Op.Continue, 0, 0, 0, [])]);
+  _bindLet(pattern, syntaxPattern(index), false, value, skip, false)
+};
+
+enum Chain { Chain(subject: Subject, group: Group, what: Bytes); }
+
+let _conditionTest = fn(test: AstExpr, index: I32, chain: Chain): I32 {
+  match (chain) { Chain(subject, group, what) => {
+    let names = match (group) { Group(names, _, _) => names };
+    let checked = names.len() == 0 ? presentAt(checkOperand(test, index, -1), index) : present(checkArm(names, _stored(subject, group), [], test, index, -1, false));
+    requireBool(what, checked, index);
+    checked
+  } }
+};
+
+let _chainBound = fn(subject: Subject, group: Group, tested: Subject, bound: Bound, tests: Array<I32>, what: Bytes): Group {
+  match (group) { Group(chained, types, roots) => match (bound) { Bound(names, _, places, _) => {
+    let values = _boundReads(tested, bound);
+    let stored = _alternativeRoots(subject, values);
+    let added = Group.Group(names, Array.new<I32>(0), stored);
+    let i = 0;
+
+    while (i < names.len()) {
+      if (indexOf(chained, names[i]) >= 0) {
+        enterSyntax(places[i]);
+        throw names[i] + " is bound more than once in " + what;
+      }
+      tests.push(_store(subject, stored[i], values[i]));
+      chained.push(names[i]);
+      types.push(typeOf(values[i]));
+      roots.push(stored[i]);
+      match (added) { Group(_, addedTypes, _) => addedTypes.push(typeOf(values[i])) };
+      i++;
+    }
+    added
+  } } }
+};
+
+let _letTest = fn(pattern: Pattern, typeParams: Array<TypeParam>, annotation: ?AstType, value: AstExpr, binds: Bool, chain: Chain): I32 {
+  if (typeParams.len() != 0) { throw "a `let` test does not take type parameters"; }
+
+  match (chain) { Chain(subject, group, _) => match (group) { Group(chained, types, roots) => {
+    let (mark, children) = declareNames(chained, _stored(subject, group));
+    let checked = checkAnnotated(annotation, value);
+    let ty = typeOf(checked);
+    let root = newBinding();
+    let tested = Subject.Subject([root], [ty], -1, -1);
+    let tests = Array.new<I32>(0);
+    let bound = _noBound();
+    _test(tested, pattern, syntaxPattern(0), [0], ty, tests, bound);
+    endNames(mark);
+    children.push(declareBinding(Op.Const, root, "let", checked));
+    _declareMatches(tested, 1, children);
+    if (binds) { _chainBound(subject, group, tested, bound, tests, "this condition"); }
+    children.push(_fold(Op.And, tests, true));
+    node(Op.Block, TYPE_BOOL, 0, 1, children)
+  } } }
+};
+
+let _conditionPart: (AstExpr, I32, Bool, Chain) -> I32 = fn(_part, _index, _binds, _chain) { -1 };
+_conditionPart = fn(part, index, binds, chain) {
+  if (!testsPattern(part)) { return _conditionTest(part, index, chain); }
+  let outer = enterSyntax(syntaxChild(index));
+
+  let checked = match (part) {
+    Binary(And, left, right) => node(Op.And, TYPE_BOOL, 0, 0, [_conditionPart(left, 0, binds, chain), _conditionPart(right, 1, binds, chain)]),
+    Binary(_, left, right) => node(Op.Or, TYPE_BOOL, 0, 0, [_conditionPart(left, 0, false, chain), _conditionPart(right, 1, false, chain)]),
+    Unary(_, inner) => node(Op.Not, TYPE_BOOL, 0, 0, [_conditionPart(inner, 0, false, chain)]),
+    LetExpr(pattern, typeParams, annotation, value) => _letTest(pattern, typeParams, annotation, value, binds, chain),
+    _ => -1,
+  };
+  enterSyntax(outer);
+  checked
+};
+
+export let checkCondition: (AstExpr, Bytes) -> Tuple<Array<I32>, I32, Array<Bytes>, () -> Array<I32>> = fn(condition, what) {
+  let subject = Subject.Subject(Array.new<I32>(0), Array.new<I32>(0), -1, -1);
+  let group = Group.Group(Array.new<Bytes>(0), Array.new<I32>(0), Array.new<I32>(0));
+  let checked = _conditionPart(condition, 0, true, Chain.Chain(subject, group, what));
+  let declarations = Array.new<I32>(0);
+  _declareMatches(subject, 0, declarations);
+  (declarations, checked, match (group) { Group(names, _, _) => names }, fn(): Array<I32> { _stored(subject, group) })
+};
+
+export let checkWith: (Array<WithClause>, AstBlock, MatchArms, I32) -> I32 = fn(clauses, body, elseArms, expected) {
+  let subject = Subject.Subject(Array.new<I32>(0), Array.new<I32>(0), -1, -1);
+  let chained = Array.new<Bytes>(0);
+  let group = Group.Group(chained, Array.new<I32>(0), Array.new<I32>(0));
+  let blocks = Array.new<Array<I32>>(0);
+  let tested = Array.new<Array<I32>>(0);
+  let valueRoots = Array.new<I32>(0);
+  let valueTypes = Array.new<I32>(0);
+  let valueIndexes = Array.new<I32>(0);
+  let failing = Array.new<I32>(0);
+  let arrows = Array.new<I32>(0);
+  let index = 0;
+  let c = 0;
+
+  while (c < clauses.len()) {
+    let (pattern, value) = match (clauses[c]) { Clause(p, _, v) => (p, v), Let(p, v) => (p, v) };
+    let guard = match (clauses[c]) { Clause(_, g, _) => g, Let(_, _) => null };
+    let bound = match (clauses[c]) { Let(_, _) => true, _ => false };
+    let valueIndex = guard == null ? index : index + 1;
+    let (mark, children) = declareNames(chained, _stored(subject, group));
+    let checked = checkOperand(value, valueIndex, -1);
+    let ty = typeOf(checked);
+    let root = newBinding();
+    let own = Subject.Subject([root], [ty], -1, -1);
+    let tests = Array.new<I32>(0);
+    let found = _noBound();
+    let place = syntaxPattern(c);
+    _test(own, pattern, place, [0], ty, tests, found);
+    let fails = _canFail(pattern, tests, ty);
+
+    if (bound && fails) {
+      let missing = _missing([[pattern]], ty);
+      enterSyntax(place);
+      throw "this pattern can fail" + (missing == "_" ? "" : ", as on " + missing) + ": use `<-`";
+    }
+
+    if (!bound && !fails && (guard == null)) {
+      let outer = enterSyntax(place);
+      warn(currentSpan(), "this clause cannot fail: use `let`");
+      enterSyntax(outer);
+    }
+    children.push(declareBinding(Op.Const, root, "with", checked));
+    _declareMatches(own, 1, children);
+    let added = _chainBound(subject, group, own, found, tests, "this `with`");
+
+    if (guard != null) {
+      let names = match (added) { Group(names, _, _) => names };
+      let checkedGuard = checkArm(names, _stored(subject, added), [], guard, index, TYPE_BOOL, false);
+
+      if (typeOf(checkedGuard) != TYPE_BOOL) {
+        enterSyntax(syntaxChild(index));
+        throw "a `with` guard must be a Bool";
+      }
+      tests.push(checkedGuard);
+    }
+    endNames(mark);
+    blocks.push(children);
+    tested.push(tests);
+    valueRoots.push(root);
+    valueTypes.push(ty);
+    valueIndexes.push(valueIndex);
+    if (fails || (guard != null)) { failing.push(c); }
+    if (!bound) { arrows.push(c); }
+    index = valueIndex + 1;
+    c++;
+  }
+  let (statements, tail) = match (body) { Block(statements, tail) => (statements, tail) };
+  let checkedBody = checkArm(chained, _stored(subject, group), statements, tail, index, expected, false);
+  let tailIndex = index + (statements.len() as I32);
+
+  if ((tail == null) && !endsPath(checkedBody)) {
+    enterSyntax(syntaxChild(tailIndex - 1));
+    throw "a `with` body requires a trailing expression";
+  }
+  index = tailIndex + (tail == null ? 0 : 1);
+  let (arms, otherwise) = match (elseArms) { Some(arms) => (arms, true), None => (Array.new<MatchArm>(0), false) };
+  if (otherwise && (arms.len() == 0)) { throw "a `with` else requires at least one arm"; }
+
+  if (otherwise && (failing.len() == 0)) {
+    if (arrows.len() == 0) { throw "a `with` of `let` clauses cannot fail, so its else never runs"; }
+    failing = arrows;
+  }
+  let children = Array.new<I32>(0);
+  let conditions = Array.new<I32>(0);
+
+  if (failing.len() == 0) {
+    c = 0;
+
+    while (c < blocks.len()) {
+      blocks[c].push(_fold(Op.And, tested[c], true));
+      conditions.push(node(Op.Block, TYPE_BOOL, 0, 1, blocks[c]));
+      c++;
+    }
+    _declareMatches(subject, 0, children);
+    children.push(expressionOf(_fold(Op.And, conditions, true)));
+    children.push(checkedBody);
+    return node(Op.Block, typeOf(checkedBody), 0, 1, children);
+  }
+  let target = otherwise || (expected < 0) ? -1 : expected;
+  if (!otherwise && (target < 0) && !endsPath(checkedBody)) { target = typeOf(checkedBody); }
+  let f = 0;
+
+  while ((f < failing.len()) && (otherwise || (expected < 0))) {
+    let ty = valueTypes[failing[f]];
+    let joined = target < 0 ? ty : joinTypes(target, ty);
+
+    if (joined < 0) {
+      if (!otherwise) {
+        enterSyntax(syntaxChild(valueIndexes[failing[f]]));
+        throw "a clause that fails gives its value, of type " + typeName(ty) + ", but the `with` gives " + typeName(target) + "; add an else to give another";
+      }
+      joined = TYPE_DYNAMIC;
+    }
+    target = joined;
+    f++;
+  }
+  let failedRoot = _rootCount(subject);
+
+  match (subject) {
+    Subject(roots, types, _, _) => {
+      roots.push(newBinding());
+      types.push(_rootType(target));
+    }
+  };
+  c = 0;
+
+  while (c < blocks.len()) {
+    let condition = _fold(Op.And, tested[c], true);
+
+    if (indexOf(failing, c) >= 0) {
+      let ty = valueTypes[c];
+      let outer = enterSyntax(syntaxChild(valueIndexes[c]));
+      let read = local(valueRoots[c], ty);
+      if ((target == TYPE_DYNAMIC) && (ty != TYPE_DYNAMIC)) { read = toDynamic(read); }
+      enterSyntax(outer);
+      let converted = coerceAt(read, target, valueIndexes[c]);
+
+      if (!unify(typeOf(converted), target)) {
+        enterSyntax(syntaxChild(valueIndexes[c]));
+        throw "a clause that fails gives its value, of type " + typeName(ty) + ", but the `with` gives " + typeName(target) + "; add an else to give another";
+      }
+      condition = node(Op.Or, TYPE_BOOL, 0, 0, [condition, node(Op.Not, TYPE_BOOL, 0, 0, [_store(subject, failedRoot, converted)])]);
+    }
+    blocks[c].push(condition);
+    conditions.push(node(Op.Block, TYPE_BOOL, 0, 1, blocks[c]));
+    c++;
+  }
+  _declareMatches(subject, 0, children);
+  let otherValue = _stored(subject, Group.Group(["with"], [target], [failedRoot]))[0];
+
+  if (otherwise) {
+    let armChildren = Array.new<I32>(0);
+    otherValue = _matchArms(_valueSubject(otherValue, arms.len() as I32, armChildren), arms, index, clauses.len() as I32, expected, false, armChildren);
+  }
+  let result = expected >= 0 ? expected : joinBranches(checkedBody, otherValue);
+  if (result < 0) { throw branchMismatch("with body and else", typeOf(checkedBody), typeOf(otherValue), tail == null ? -1 : tailIndex); }
+  let otherIndex = otherwise ? index : valueIndexes[failing[0]];
+  children.push(node(Op.If, result, 0, 0, [_fold(Op.And, conditions, true), coerceTail(checkedBody, result, tailIndex), coerceAt(otherValue, result, otherIndex)]));
+  node(Op.Block, result, 0, 1, children)
+};

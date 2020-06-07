@@ -7,20 +7,20 @@ import { verifyProgram } from ir.Verify;
 import { blockCatch } from ir.Cfg;
 import { Op, instruction, opOf } from ir.Model;
 import { printIr } from ir.Print;
-import { printHir } from frontend.PrintHir;
-import { lexFile } from frontend.Lexer;
-import { takeInternalError } from frontend.Internal;
-import { parseProgram, programSyntax } from frontend.Parser;
+import { printHir } from frontend.hir.Print;
+import { lexFile } from frontend.syntax.Lexer;
+import { takeInternalError } from support.Internal;
+import { parseProgram, programSyntax } from frontend.syntax.Parser;
 import { lowerProgram } from ir.Lower;
 import { legalizeJlo } from backend.jello.Legalize;
 import { allocateProgram } from backend.jello.Allocate;
-import { typeCheckModules, typeCheckProgramWithSyntax } from frontend.CheckModules;
-import type { Module } from frontend.Modules;
-import { loadModules, modulePath } from frontend.Modules;
-import type { SourceSpan } from frontend.Source;
-import { spanEnd, spanPath, spanStart } from frontend.Source;
-import type { Hir } from frontend.Hir;
-import { nodeCount, spanOf, useHir } from frontend.Hir;
+import { typeCheckModules, typeCheckProgramWithSyntax } from frontend.semantics.Modules;
+import type { Module } from frontend.Loader;
+import { loadModules, modulePath } from frontend.Loader;
+import type { SourceSpan } from frontend.syntax.Source;
+import { spanEnd, spanPath, spanStart } from frontend.syntax.Source;
+import type { Hir } from frontend.hir.Hir;
+import { nodeCount, spanOf, useHir } from frontend.hir.Hir;
 import type {
   BasicBlock,
   EnumSchema,
@@ -63,7 +63,7 @@ let spillCount = fn(function: Function, push: Bool): I32 {
   } }
 };
 
-let modulesOf = fn(path: Bytes): Array<Module> { loadModules(path, "", Array.new<Bytes>(0)) };
+let modulesOf = fn(path: Bytes): Array<Module> { loadModules(path, "", Array.new<Bytes>(0), Array.new<Bytes>(0)) };
 let checkFile = fn(path: Bytes): Hir { checkedFile(path, Array.new<Bytes>(0)) };
 
 // The paths of MODULES, in initialization order.

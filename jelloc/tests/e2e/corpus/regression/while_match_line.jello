@@ -1,23 +1,22 @@
 // expect: ok
-// pending: std.core.Bytes.trim
-import { trim, slice, len, get } from std.core.Bytes;
+import { trim } from std.core.Bytes;
 
 let _stripHeadingMark: (Bytes) -> Bytes = fn(text: Bytes) {
   let t = trim(text);
-  if (len(t) > 0 && get(t, 0) == 35) {
-    trim(slice(t, 1, len(t) - 1))
+  if (Bytes.len(t) > 0 && Bytes.get(t, 0) == 35) {
+    trim(Bytes.slice(t, 1, Bytes.len(t) - 1))
   } else {
     t
   }
 };
 
 export let titleFromFirstLineBytes: (Bytes) -> Bytes = fn(text: Bytes) {
-  let n = len(text);
+  let n = Bytes.len(text);
   let i = 0;
   while (i < n) {
-    if (get(text, i) == 10) {
-      let lineText = _stripHeadingMark(trim(slice(text, 0, i)));
-      if (len(lineText) == 0) {
+    if (Bytes.get(text, i) == 10) {
+      let lineText = _stripHeadingMark(trim(Bytes.slice(text, 0, i)));
+      if (Bytes.len(lineText) == 0) {
         "Untitled"
       } else {
         lineText
@@ -26,7 +25,7 @@ export let titleFromFirstLineBytes: (Bytes) -> Bytes = fn(text: Bytes) {
     i += 1;
   }
   let lineText = _stripHeadingMark(trim(text));
-  if (len(lineText) == 0) {
+  if (Bytes.len(lineText) == 0) {
     "Untitled"
   } else {
     lineText

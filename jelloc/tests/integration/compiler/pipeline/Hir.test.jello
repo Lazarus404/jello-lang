@@ -2,21 +2,21 @@ package compiler.pipeline;
 
 import type { Test } from std.testing;
 import std.testing as T;
-import type { Hir, Kind } from frontend.Hir;
-import frontend.Hir as H;
+import type { Hir, Kind } from frontend.hir.Hir;
+import frontend.hir.Hir as H;
 import {
   Hir, Op, arrayType, beginHir, bytesId, declareEnum, functionType, hirTypeName, nullType, opOf, tupleType,
   typeName, useHir,
-} from frontend.Hir;
-import { takeInternalError } from frontend.Internal;
-import type { SyntaxMark } from frontend.Source;
-import { sourceDiagnostic, spanEnd, spanPath, spanStart } from frontend.Source;
+} from frontend.hir.Hir;
+import { takeInternalError } from support.Internal;
+import type { SyntaxMark } from frontend.syntax.Source;
+import { sourceDiagnostic, spanEnd, spanPath, spanStart } from frontend.syntax.Source;
 import { readText } from std.io.File;
 import { failure } from Driver;
-import { lexFile } from frontend.Lexer;
-import { parseProgram } from frontend.Parser;
-import { syntaxTree } from frontend.SyntaxTree;
-import { verifyFailureSpan, verifyHir } from frontend.VerifyHir;
+import { lexFile } from frontend.syntax.Lexer;
+import { parseProgram } from frontend.syntax.Parser;
+import { syntaxTree } from frontend.syntax.SyntaxTree;
+import { verifyFailureSpan, verifyHir } from frontend.hir.Verify;
 import { checked, checkedFile } from compiler.Pipeline;
 
 let opName = fn(op: Op): Bytes {

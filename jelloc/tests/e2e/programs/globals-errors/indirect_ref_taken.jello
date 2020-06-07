@@ -1,0 +1,7 @@
+// error: 5:1: global n is read before it is initialized
+// The call passes a function that reads n, so the indirect call in apply may read it.
+let apply = fn(f: (I32) -> I32): I32 { f(1) };
+let reader = fn(x: I32): I32 { n[0] + x };
+System.assert(apply(reader) == 1);
+let n: Array<I32> = [0];
+"ok"
