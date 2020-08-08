@@ -168,7 +168,7 @@ let _instruction = fn(instruction: Instruction) {
   }
 
   match (opOf(instruction)) {
-    ArraySet, ArrayResize, BytesSet, BytesBlit, BitsWrite, BytesWrite, StructSet, SpillPush, GlobalSet, NullCheck => { if (dst >= 0) { _fail("store defines a register"); } null },
+    ArraySet, ArrayResize, BytesSet, BytesBlit, BitsWrite, BytesWrite, StructSet, ObjectSet, ObjectClear, SpillPush, GlobalSet, NullCheck => { if (dst >= 0) { _fail("store defines a register"); } null },
     _ => {
       _type(dst);
       null
@@ -545,6 +545,38 @@ let _instruction = fn(instruction: Instruction) {
           null
         },
       }
+    },
+    ObjectNew => {
+      _arity(args, 0);
+      _expect(dst, ValueType.Object)
+    },
+    ObjectGet, ObjectSet, ObjectHas => {
+      let keyed = imm < 0;
+      let set = match (opOf(instruction)) { ObjectSet => true, _ => false };
+      _arity(args, (keyed ? 2 : 1) + (set ? 1 : 0));
+      _expect(args[0], ValueType.Object);
+      if (keyed) { _expect(args[1], ValueType.Atom); } else if (_inProgram && (imm >= _atomCount)) { _fail("object key out of range"); }
+      match (opOf(instruction)) { ObjectHas => _expect(dst, ValueType.Bool), _ => null }
+    },
+    ObjectRemove => {
+      _arity(args, 2);
+      _expect(dst, ValueType.Bool);
+      _expect(args[0], ValueType.Object);
+      _expect(args[1], ValueType.Atom)
+    },
+    ObjectClear => {
+      _arity(args, 1);
+      _expect(args[0], ValueType.Object)
+    },
+    ObjectCopy => {
+      _arity(args, 1);
+      _expect(dst, ValueType.Object);
+      _expect(args[0], ValueType.Object)
+    },
+    ObjectKeys => {
+      _arity(args, 1);
+      _expect(dst, ValueType.ArrayOf(ValueType.Atom));
+      _expect(args[0], ValueType.Object)
     },
     Call => {
       if (_inProgram) {

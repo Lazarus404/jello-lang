@@ -1,0 +1,35 @@
+// expect: ok
+// Methods are checked on demand, so one may call another declared after it, or itself; a value
+// of a prototype's type is an Object wherever one is expected.
+prototype Node {
+  init(value: I32, ?next: Node) { this.v = value; this.next = next; };
+  sum(): I32 { this.value() + this.rest() };
+  value(): I32 { this.get<I32>(:v) };
+  // A field reads as a Dynamic, which `as Node` checks delegates to Node.
+  rest(): I32 { this.next == null ? 0 : (this.next as Node).sum() };
+  scaled(by: I32 = 2): I32 { this.value() * by };
+  // A method can make values of its own prototype.
+  copy(): Node { new Node(this.value()) };
+};
+
+let one = new Node(1);
+System.assert(one.sum() == 1);
+System.assert(new Node(1, new Node(2, new Node(3))).sum() == 6);
+System.assert(one.scaled() == 2);
+System.assert(one.scaled(5) == 5);
+System.assert(one.copy().value() == 1);
+System.assert(!(one.copy() == one));
+
+// An instance's own function of the method's type is called in its place.
+let twice = fn(self: Node, by: I32): I32 { 2 * by };
+one.scaled = twice;
+System.assert(one.scaled(4) == 8);
+
+let nodes: Array<Node> = [new Node(3), new Node(4)];
+System.assert(nodes[1].value() == 4);
+let keys = fn(o: Object): I32 { o.keys().len() };
+System.assert(keys(nodes[0]) == 2);
+System.assert(Object.keys(nodes[0]).len() == 2);
+System.assert(nodes[0].exists(:sum));
+System.assert(!nodes[0].keys().contains(:sum));
+"ok"

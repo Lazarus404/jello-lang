@@ -1,6 +1,7 @@
-// error: 3:1: exported generic prototype desugars to unsupported exported templated let
-// pending: prototypes
+// expect: ok
 export prototype Box<T> {
   tag: 1;
 };
+let b = new Box<I32>();
+System.assert((b.tag as I32) == 1);
 "ok"

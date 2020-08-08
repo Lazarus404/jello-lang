@@ -1,0 +1,25 @@
+// expect: ok
+// Object's intrinsics and std.core.Object's functions, as methods and as statics.
+let o = { b: 1, a: 2 };
+System.assert(o.keys() == [:b, :a]);
+System.assert(Object.keys(o) == o.keys());
+System.assert((o.set(:c, 3) == 3) && (Object.set(o, "d", 4) == 4));
+System.assert(o.exists(:c) && !Object.exists(o, :zz));
+System.assert(o.remove(:c) && !o.remove(:c) && !o.exists(:c));
+System.assert(Object.get<I32>(o, :d) == 4);
+System.assert((o.len() == 3) && (Object.len(o) == 3) && !o.isEmpty());
+System.assert(Std.string(o.values()) == "[1, 2, 4]");
+let other = { a: 9, e: 5 };
+System.assert(o.merge(other) == o);
+System.assert(o.toString() == "{b: 1, a: 9, d: 4, e: 5}");
+let copy = o.copy();
+System.assert(o.clear() == o);
+System.assert(o.isEmpty() && Object.isEmpty({}) && (copy.len() == 4));
+System.assert(Object.toString(copy) == Std.string(copy));
+// Any other name calls the function in that field, the Object first.
+let counter = { count: 0 };
+counter.step = fn(self: Object, by: I32): I32 { let next = self.get<I32>(:count) + by; self.count = next; next };
+let first: I32 = counter.step(2);
+let second: I32 = counter.step(3);
+System.assert((first == 2) && (second == 5) && (counter.count as I32 == 5));
+"ok"

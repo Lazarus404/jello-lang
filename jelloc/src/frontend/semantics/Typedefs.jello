@@ -1,11 +1,11 @@
 package frontend.semantics;
 
-import type { BytesLayoutField, BytesLayoutType, Stmt, StructField } from frontend.syntax.Ast;
+import type { BytesLayoutField, BytesLayoutType, Stmt, StructField, TypeParam } from frontend.syntax.Ast;
 import { BitValueKind } from frontend.syntax.Ast;
 import { placeSegments, segmentCode } from frontend.semantics.Bits;
 import { indexOf } from support.Arrays;
 import { checkFields, defineEnums } from frontend.semantics.Enums;
-import { declareEnum, declareGenericEnum, declareGenericRecord, declareLayout, declareRecord, defineVariants, enumParams, layoutCodes, segmentType } from frontend.hir.Hir;
+import { declareEnum, declareGenericEnum, declareGenericPrototype, declareGenericRecord, declareLayout, declarePrototype, declareRecord, defineVariants, enumParams, isParametric, isPrototype, layoutCodes, readsTyped, segmentType, typeName } from frontend.hir.Hir;
 import { declareScopedType, exportScopedType, scopedType } from frontend.semantics.ModuleScope;
 import type { Syntax } from frontend.syntax.Source;
 import { checkType, checkTypeParams, declareGenericAlias, enterSyntax, paramNames, syntaxChild, useTypeParams, useTypedefs } from frontend.semantics.TypeCheck;
@@ -14,6 +14,7 @@ let _statements = Array.new<Stmt>(0);
 let _module = -1;
 let _opened = false;
 let _aliases = Array.new<I32>(0);
+let _prototypeNames = Array.new<Bytes>(0);
 let _syntaxes = Array.new<Syntax>(0);
 let _states = Array.new<I32>(0);
 
@@ -99,6 +100,12 @@ let _defineStruct = fn(name: Bytes, fields: Array<StructField>) {
   let (outerNames, outerTypes) = useTypeParams(paramNames(params), params);
   let (names, types) = checkFields(fields);
   useTypeParams(outerNames, outerTypes);
+  let f = isPrototype(scopedType(name)) ? 0 : types.len();
+
+  while (f < types.len()) {
+    if (!isParametric(types[f]) && !readsTyped(types[f])) { throw "field " + names[f] + " of typedef " + name + " is " + typeName(types[f]) + ", which a prototype's Object cannot hold as itself"; }
+    f++;
+  }
   _defineRecord(name, names, types)
 };
 
@@ -120,6 +127,37 @@ let _defineLayout = fn(name: Bytes, fields: Array<BytesLayoutField>) {
   _defineRecord(name, names, types)
 };
 
+let _paramKey = fn(params: Array<TypeParam>): Bytes {
+  let names = "";
+  let i = 0;
+
+  while (i < params.len()) {
+    match (params[i]) { TypeParam(param, _, _, _) => { names = names + param + ","; } };
+    i++;
+  }
+  names
+};
+
+let _linksPrototype = fn(statement: I32, name: Bytes, exported: Bool, params: Array<TypeParam>): Bool {
+  if (indexOf(_prototypeNames, name) < 0) { return false; }
+  let i = 0;
+  let linked = false;
+
+  while (i < _statements.len()) {
+    match (_statements[i]) {
+      Typedef(_, declared, _, Struct(_)) when ((declared == name) && ((i as I32) < statement)) => { return false; },
+      Prototype(other, declared, typeParams, _) when (declared == name) => {
+        if (other != exported) { throw "typedef " + name + " and prototype " + name + " are linked, so both or neither must be exported"; }
+        if (_paramKey(typeParams) != _paramKey(params)) { throw "typedef " + name + " and prototype " + name + " are linked, so they must take the same type parameters"; }
+        linked = true;
+      },
+      _ => null,
+    };
+    i++;
+  }
+  linked
+};
+
 export let declareTypes: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, module, opened) {
   _statements = statements;
   _module = module;
@@ -127,7 +165,19 @@ export let declareTypes: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, modul
   _aliases = Array.new<I32>(0);
   _syntaxes = Array.new<Syntax>(0);
   _states = Array.new<I32>(0);
+  _prototypeNames = Array.new<Bytes>(0);
   let i = 0;
+
+  while (i < statements.len()) {
+    match (statements[i]) {
+      Prototype(_, name, _, _) => {
+        _prototypeNames.push(name);
+        null
+      }, _ => null
+    };
+    i++;
+  }
+  i = 0;
 
   while (i < statements.len()) {
     match (statements[i]) {
@@ -141,9 +191,17 @@ export let declareTypes: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, modul
         _syntaxes.push(syntaxChild(i));
         _states.push(0);
       },
+      Prototype(exported, name, typeParams, _) => {
+        let parent = enterSyntax(syntaxChild(i));
+        _declare(name, exported, typeParams.len() == 0 ? declarePrototype(name) : declareGenericPrototype(name, checkTypeParams(typeParams, false)));
+        enterSyntax(parent);
+      },
       Typedef(exported, name, typeParams, Struct(_)) => {
         let parent = enterSyntax(syntaxChild(i));
-        _declare(name, exported, typeParams.len() == 0 ? declareRecord(name) : declareGenericRecord(name, checkTypeParams(typeParams, false)));
+
+        if (!_linksPrototype(i as I32, name, exported, typeParams)) {
+          _declare(name, exported, typeParams.len() == 0 ? declareRecord(name) : declareGenericRecord(name, checkTypeParams(typeParams, false)));
+        }
         enterSyntax(parent);
       },
       Typedef(exported, name, typeParams, BytesLayout(fields)) => {

@@ -1,0 +1,13 @@
+// expect: ok
+// A generic prototype is imported as one name, its types and the values of its instances, and
+// through a namespace import too.
+import { Pair } from shape;
+import shape as S;
+let p = new Pair("one", 1);
+let q: Pair<I32, Bytes> = p.swap();
+System.assert(q.key == 1);
+System.assert((q as Dynamic) is Pair<I32, Bytes>);
+let r = new S.Pair<Bool, I32>(true, 2);
+let s = new S.Pair(false, "b");
+System.assert(r.key && (s.value == "b"));
+"ok"

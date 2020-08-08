@@ -3,7 +3,7 @@ package ir;
 import type { Hir } from frontend.hir.Hir;
 import {
   BITS_BIG, BITS_FLOAT, KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_NULL, TYPE_U32, TYPE_U64, TYPE_U8, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits, isFloatKind, isFloatType, isRecord, isReference, isTemplateEnum, kindOf, lastChild, leastValue, mostValue, opOf, rootNode, slotType, typeArg,
-  typeArgCount, typeCount, globalCount, nodeCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, segmentWidth, typeOf, useHir, valueOf, variantCount,
+  typeArgCount, typeCount, findBytesId, globalCount, isObject, nodeCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, segmentWidth, typeOf, useHir, valueOf, variantCount,
 } from frontend.hir.Hir;
 import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
 import { BasicBlock, EnumSchema, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType, handlerTarget, instructionAt, internValueType } from ir.Model;
@@ -72,6 +72,7 @@ _valueType = fn(ty) {
     Optional, Rest => _valueType(slotType(ty)),
     Enum, Record => ValueType.Nominal(_enumIndexes[ty]),
     Dynamic => ValueType.Dynamic,
+    Object => ValueType.Object,
     ByteBuffer => ValueType.Bytes,
     Var, Param, Applied => {
       internalError("an inferred type reached lowering");
@@ -106,6 +107,7 @@ let _internAt = fn(indexes: Array<I32>, table: Array<Bytes>, id: I32): I32 {
   }
   indexes[id]
 };
+let _objectKey = fn(id: I32): I32 { valueOf(id) < 0 ? -1 : _internAt(_atomIndexes, _atoms, valueOf(id)) };
 
 let _target = fn(block: I32) {
   while (_targeted.len() <= block) { _targeted.push(false); }
@@ -416,6 +418,8 @@ let _operation = fn(id: I32): Op {
     BytesNew => Op.BytesNew, BytesLen => Op.BytesLen, BytesGet => Op.BytesGet, BytesSlice => Op.BytesSlice, BytesConcat => Op.BytesConcat, BytesEq => Op.BytesEq,
     Tuple => Op.TupleNew, TupleField => Op.TupleGet, Call => Op.Call, CallIndirect => Op.CallIndirect, CallNative => Op.CallNative,
     EnumNew => Op.EnumNew, EnumTag => Op.EnumTag, EnumField => Op.EnumGet, Atom => Op.ConstAtom,
+    ObjectNew => Op.ObjectNew, ObjectGet => Op.ObjectGet, ObjectHas => Op.ObjectHas, ObjectRemove => Op.ObjectRemove,
+    ObjectCopy => Op.ObjectCopy, ObjectKeys => Op.ObjectKeys,
     _ => {
       internalError("invalid HIR expression op");
       Op.Move
@@ -667,6 +671,8 @@ let _convert = fn(id: I32): I32 {
   let source = typeOf(childOf(id, 0));
   let target = typeOf(id);
   let value = _expr(childOf(id, 0));
+  let nullable = match (kindOf(target)) { Null => isObject(innerOf(target)), _ => false };
+  if (isObject(target) || nullable) { return value; }
   if (isFloatType(source) || isFloatType(target)) { return _floatConvert(source, target, value); }
   let wideSource = integerBits(source) == 64;
   let wide = integerBits(target) == 64;
@@ -885,6 +891,22 @@ _exprAt = fn(id) {
       _emit(Op.BytesSet, -1, operands, 0);
       operands[2]
     },
+    ObjectSet => {
+      let operands = _values(id, 0);
+      _emit(Op.ObjectSet, -1, operands, _objectKey(id));
+      operands[operands.len() - 1]
+    },
+    ObjectClear => {
+      let object = _expr(childOf(id, 0));
+      _emit(Op.ObjectClear, -1, [object], 0);
+      object
+    },
+    ObjectGet when (isReference(typeOf(id))) => {
+      let dst = _fresh(typeOf(id));
+      _emit(Op.ObjectGet, dst, _values(id, 0), _objectKey(id));
+      _emit(Op.NullCheck, -1, [dst], 0);
+      dst
+    },
     BitsPack => _bitsPack(id),
     BitsRead => {
       let bytes = _expr(childOf(id, 0));
@@ -994,6 +1016,7 @@ _exprAt = fn(id) {
           } else { valueOf(id) }
         },
         Atom => _internAt(_atomIndexes, _atoms, valueOf(id)),
+        ObjectGet, ObjectHas => _objectKey(id),
         _ => 0,
       };
 
@@ -1360,7 +1383,7 @@ let _findCells = fn() {
         assigned[find(valueOf(id))] = true;
         null
       },
-      FunctionRef => {
+      FunctionRef when (valueOf(id) > 0) => {
         let function = functionNode(valueOf(id));
         let first = typeArgCount(typeOf(function));
         let i = 0;
@@ -1464,6 +1487,8 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
   _floats = Array.new<I64>(0);
   _atoms = Array.new<Bytes>(0);
   _atomIndexes = Array.new<I32>(0);
+  let proto = findBytesId("__proto__");
+  if (proto >= 0) { _internAt(_atomIndexes, _atoms, proto); }
   _natives = Array.new<Native>(0);
   _nativeIndexes = Array.new<I32>(0);
   while (_nativeIndexes.len() < nativeCount()) { _nativeIndexes.push(-1); }

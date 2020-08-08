@@ -1,0 +1,12 @@
+// expect: ok
+// An exported prototype is a type and a value, through a named or a namespace import.
+import { Factory } from factory;
+import factory as F;
+let f = new Factory(5);
+System.assert(f.get() == 5);
+System.assert(f.tag as I32 == 42);
+let g = new F.Factory(7);
+System.assert(g.get() == 7);
+let h: Factory = g;
+System.assert(h == g);
+"ok"

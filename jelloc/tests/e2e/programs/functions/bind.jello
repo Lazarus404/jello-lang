@@ -1,0 +1,35 @@
+// expect: ok
+// A function's `this` is its first parameter: `bind` fixes it and the arguments after it, and
+// `callWith` passes them.
+prototype Counter {
+  init(n: I32) { this.n = n; };
+  get(): I32 { this.n as I32 };
+  add(k: I32): I32 { (this.n as I32) + k };
+};
+let c = new Counter(3);
+let d = new Counter(10);
+// An extracted method takes its `this` first, as in JavaScript.
+let get = c.get;
+System.assert(get(d) == 10);
+let bound = Function.bind(c.get, c);
+System.assert(bound() == 3);
+System.assert(c.get.bind(d)() == 10);
+System.assert(Function.callWith(c.add, d, 5) == 15);
+System.assert(c.add.callWith(c, 1) == 4);
+let add5 = Function.bind(Counter.add, c, 5);
+System.assert(add5() == 8);
+let plus = fn(a: I32, b: I32, c: I32): I32 { a * 100 + b * 10 + c };
+let p = Function.bind(plus, 1);
+System.assert(p(2, 3) == 123);
+System.assert(Function.bind(p, 4)(5) == 145);
+// The bound values are evaluated once, when bound.
+let x = 1;
+let q = Function.bind(plus, x, x);
+x = 9;
+System.assert(q(0) == 110);
+let sum = fn(first: I32, ...rest: I32): I32 { let t = first; let i = 0; while (i < rest.len()) { t += rest[i]; i++; } t };
+let s = Function.bind(sum, 1);
+System.assert(s(2, 3) == 6);
+System.assert(s() == 1);
+System.assert(Function.callWith(sum, 1, 2) == 3);
+"ok"

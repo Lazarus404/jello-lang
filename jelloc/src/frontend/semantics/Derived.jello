@@ -359,6 +359,7 @@ _shown = fn(value, quoted) {
     Bool, I32, I64, Atom, I8, I16, U8, U16, U32, F64, F32, F16, Var => H.callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [value])]),
     U64 => H.callStd("u64_string", [H.TYPE_U64], H.TYPE_BYTES, [value]),
     Dynamic => H.callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [value]),
+    Object => H.callStd("object_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [value])]),
     Null when (H.innerOf(ty) < 0) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("null")]),
     _ when (inTemplate()) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("")]),
     _ => callFunction(Binding.Function(_derived(_stringTypes, _stringFunctions, "string", ["value"], ty, H.TYPE_BYTES, _stringBody)), "string", [value]),

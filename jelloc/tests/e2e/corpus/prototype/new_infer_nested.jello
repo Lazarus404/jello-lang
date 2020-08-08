@@ -1,15 +1,13 @@
-// error: 3:1: cannot infer nested nominal type arg for new Holder(...)
-// pending: generic prototypes
-let init<T>: (Object, T) -> Object = fn(self, v) {
-  self.v = v;
-  return self;
-};
+// expect: ok
+typedef Box<T> = { let v: T; };
 prototype Box<T> {
-  init: init<T>;
+  init(v: T) { this.v = v; };
 };
+typedef Holder<T> = { let v: T; };
 prototype Holder<T> {
-  init: init<T>;
+  init(v: T) { this.v = v; };
 };
 let inner = new Box(7);
-let _ = new Holder(inner);
+let outer = new Holder(inner);
+System.assert(outer.v.v == 7);
 "ok"

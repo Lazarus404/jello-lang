@@ -10,6 +10,7 @@ export enum ValueType {
   Bytes;
   Atom;
   Dynamic;
+  Object;
   ArrayOf(element: ValueType);
   ListOf(element: ValueType);
   TupleOf(elements: Array<ValueType>);
@@ -22,6 +23,7 @@ export enum Op {
   Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; Eq; Lt; Sext; Trunc; DivU; RemU; LtU; Zext; Convert; Box; Unbox; KindOf; IsEnum; IsNull; NullCheck;
   ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; ArrayConcat; ListNil; ListCons; ListHead; ListTail; ListIsNil; BytesNew; BytesSet; BytesBlit; BitsRead; BitsWrite; BytesRead; BytesWrite; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesConcatMany; BytesEq;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
+  ObjectNew; ObjectGet; ObjectSet; ObjectHas; ObjectRemove; ObjectClear; ObjectCopy; ObjectKeys;
   Call; CallIndirect; CallNative; GlobalGet; GlobalSet;
   StructNew; StructSet; AddImm; SubImm; MulImm; EqImm; LtImm; SpillPush; SpillPop;
 }
@@ -98,7 +100,7 @@ export let instructionMayThrow: (Instruction) -> Bool = fn(instruction) {
   match (opOf(instruction)) { Call, CallIndirect => true, _ => false }
 };
 
-export let comparesByIdentity = fn(ty: ValueType): Bool { match (ty) { Atom, Function(_, _) => true, _ => false } };
+export let comparesByIdentity = fn(ty: ValueType): Bool { match (ty) { Atom, Object, Function(_, _) => true, _ => false } };
 
 export let valueTypeEqual: (ValueType, ValueType) -> Bool = fn(_left, _right) { false };
 
@@ -115,7 +117,7 @@ let _valueTypesEqual = fn(left: Array<ValueType>, right: Array<ValueType>): Bool
 
 valueTypeEqual = fn(left, right) {
   match ((left, right)) {
-    (Bool, Bool), (I32, I32), (I64, I64), (Bytes, Bytes), (Atom, Atom), (Dynamic, Dynamic), (F16, F16), (F32, F32), (F64, F64) => true,
+    (Bool, Bool), (I32, I32), (I64, I64), (Bytes, Bytes), (Atom, Atom), (Dynamic, Dynamic), (Object, Object), (F16, F16), (F32, F32), (F64, F64) => true,
     (Nominal(a), Nominal(b)) => a == b,
     (ArrayOf(a), ArrayOf(b)), (ListOf(a), ListOf(b)) => valueTypeEqual(a, b),
     (TupleOf(a), TupleOf(b)) => _valueTypesEqual(a, b),

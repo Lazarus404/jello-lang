@@ -1,0 +1,9 @@
+// expect: ok
+// An Object that holds itself shows as {...} there; one held twice shows twice.
+let o = {};
+o.a = o;
+o.b = { c: o };
+let shared = { x: 1 };
+System.assert(Std.string(o) == "{a: {...}, b: {c: {...}}}");
+System.assert(Std.string({ p: shared, q: shared }) == "{p: {x: 1}, q: {x: 1}}");
+"ok"

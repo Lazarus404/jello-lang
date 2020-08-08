@@ -644,6 +644,10 @@ _patternInner = fn() {
       let fields = Array.new<Tuple<Bytes, Pattern>>(0);
 
       while (peek() != Token.RBrace) {
+        if (peek() == Token.DotDotDot) {
+          fields.push(("...", _spreadPattern()));
+          break;
+        }
         let start = pos;
         let name = _name();
 
@@ -1885,7 +1889,7 @@ _parseStmtInner = fn() {
 
         let value = if (peek() == Token.LParen) {
           let methodStart = pos;
-          _markExpr(_parseFunction(false), methodStart)
+          _markExpr(_parseFunction(true), methodStart)
         } else {
           expect(Token.Colon);
           _parseExpr(0)

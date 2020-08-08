@@ -1,0 +1,14 @@
+// expect: ok
+// A value of a prototype's type widens to a nullable Object or parent, as a nullable one does.
+prototype Q { a: 1; };
+prototype P { __proto__: Q; };
+let find = fn(b: Bool): ?P { b ? new P() : null };
+let o: ?Object = new P();
+let q: ?Q = new P();
+let r: ?Object = find(true);
+let s: ?Q = find(false);
+System.assert(o != null);
+System.assert(q != null);
+System.assert(r != null);
+System.assert(s == null);
+"ok"

@@ -1,0 +1,59 @@
+// expect: ok
+// A prototype's methods see their receiver as `this`, of the prototype's type, so a call is
+// checked against the method; `method fn` keeps the `this` of the method around it.
+prototype Counter {
+  n: 0;
+  init(n: I32) { this.n = n; };
+  inc(): Counter { this.n = this.get() + 1; this };
+  get(): I32 { this.n as I32 };
+  bump(): I32 {
+    let step = method fn(): I32 { this.get() + 1 };
+    step()
+  };
+};
+
+let c = new Counter(0);
+c.inc();
+System.assert(c.get() == 1);
+System.assert(c.inc().inc().get() == 3);
+System.assert(c.bump() == 4);
+
+prototype HasId {
+  id: 0;
+  setId(n: I32) { this.id = n; };
+};
+
+prototype User {
+  __proto__: HasId;
+  name: "";
+  // An override that calls the method it overrides.
+  setId(n: I32) { super.setId(n * 10); };
+  setup(n: I32): User {
+    super.setId(n);
+    this.name = "user";
+    this
+  };
+};
+
+let u = new User();
+u.setup(7);
+System.assert(u.id as I32 == 7);
+System.assert(u.name as Bytes == "user");
+System.assert(Std.string(u) == "{id: 7, name: \"user\"}");
+u.setId(2);
+System.assert(u.id as I32 == 20);
+// A User is a HasId, which delegates to it.
+let h: HasId = u;
+h.setId(3);
+System.assert(u.id as I32 == 30);
+
+// A `__proto__` that is no prototype gives `super` its functions as an Object's.
+let tag = fn(self: Object, t: Bytes): I32 { self.tag = t; 1 };
+prototype Tagged {
+  __proto__: { tag: tag };
+  mark(): I32 { super.tag("x") };
+};
+let t = new Tagged();
+System.assert(t.mark() == 1);
+System.assert(t.tag as Bytes == "x");
+"ok"

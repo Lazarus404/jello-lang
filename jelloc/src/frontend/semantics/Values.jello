@@ -5,7 +5,7 @@ import { BinaryOp } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { internalError } from support.Internal;
 import { Kind, Op } from frontend.hir.Hir;
-import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, hideValue, integerConversion, isNullaryVariant, presentAt, presentKnown, syntaxChild } from frontend.semantics.TypeCheck;
+import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, hideValue, integerConversion, isNullaryVariant, presentAt, presentKnown, prototypeValue, syntaxChild, upcasts } from frontend.semantics.TypeCheck;
 
 let _bool = fn(op: Op, children: Array<I32>): I32 { H.node(op, H.TYPE_BOOL, 0, 0, children) };
 
@@ -40,8 +40,8 @@ let _dynamicPresentEqual = fn(d: I32, ty: I32, value: I32): I32 {
   if (ty == H.TYPE_DYNAMIC) { throw "two Dynamic values cannot be compared; extract one with `as T`"; }
   if (ty == H.TYPE_U64) { throw "a Dynamic cannot be compared with a U64, which it never holds"; }
 
-  if (!H.isIntegerType(ty) && (_checkedKind(ty) < 0)) {
-    throw "a Dynamic compares only with null or a value `is` can test, not " + H.typeName(ty) + _UNCHECKED;
+  if (!H.isIntegerType(ty) && (checkedKind(ty) < 0)) {
+    throw "a Dynamic compares only with null or a value `is` can test, not " + H.typeName(ty) + UNCHECKED_KINDS;
   }
   let held = H.isIntegerType(ty) ? H.TYPE_I64 : ty;
   let compared = (ty == held) ? value : H.node(Op.Convert, held, 0, 0, [value]);
@@ -89,23 +89,48 @@ let _equality = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 {
   equalValues(op, left, right)
 };
 
-let _checkedKind = fn(ty: I32): I32 {
+export let checkedKind: (I32) -> I32 = fn(ty) {
   match (H.kindOf(ty)) {
     Bool => H.KIND_BOOL, I32 => H.KIND_I32, Bytes => H.KIND_BYTES, I64 => H.KIND_I64, Atom => H.KIND_ATOM, Enum => H.KIND_ENUM,
-    F64 => H.KIND_F64, F32 => H.KIND_F32, F16 => H.KIND_F16,
+    F64 => H.KIND_F64, F32 => H.KIND_F32, F16 => H.KIND_F16, Object => ty == H.TYPE_OBJECT ? H.KIND_OBJECT : -1,
     _ => -1,
   }
 };
-let _UNCHECKED: Bytes = ": only Bool, I32, I64, F16, F32, F64, Atom, Bytes and enums are checked";
 
-export let toDynamic: (I32) -> I32 = fn(operand) {
+export let UNCHECKED_KINDS: Bytes = ": only Bool, I32, I64, F16, F32, F64, Atom, Bytes, enums and Object are checked";
+
+let _boxable = fn(operand: I32) {
   let ty = H.typeOf(operand);
   if (ty == H.TYPE_BYTE_BUFFER) { throw "a buffer from Bytes.new cannot become Dynamic" + bufferHint(ty); }
   if (H.isKind(ty, Kind.List)) { throw "a list cannot become Dynamic: its nil would read as null"; }
   let held = (H.isKind(ty, Kind.Null) && (H.innerOf(ty) >= 0)) ? H.resolve(H.innerOf(ty)) : ty;
   if (held == H.TYPE_U64) { throw "a " + H.typeName(ty) + " cannot become Dynamic: one above the greatest I64 would read as negative"; }
   if ((held == H.TYPE_U32) && (held != ty)) { throw "a " + H.typeName(ty) + " cannot become Dynamic: one above the greatest I32 would read as negative"; }
+  null
+};
+
+export let toDynamic: (I32) -> I32 = fn(operand) {
+  _boxable(operand);
   H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [operand])
+};
+
+let _delegatesTo = fn(operand: I32, ty: I32): I32 {
+  H.callStd("object_delegates", [H.TYPE_DYNAMIC, H.TYPE_DYNAMIC], H.TYPE_BOOL, [operand, toDynamic(prototypeValue(ty))])
+};
+
+let _asPrototype = fn(operand: I32, ty: I32): I32 {
+  let statements = Array.new<I32>(0);
+  let held = hideValue(statements, "value", H.typeOf(operand) == H.TYPE_DYNAMIC ? operand : toDynamic(operand));
+  let failed = toDynamic(H.node(Op.Bool, H.TYPE_BOOL, 0, 0, []));
+  let checked = H.node(Op.If, H.TYPE_DYNAMIC, 0, 0, [_delegatesTo(H.local(held, H.TYPE_DYNAMIC), ty), H.local(held, H.TYPE_DYNAMIC), failed]);
+  statements.push(H.node(Op.FromDynamic, ty, 0, 0, [checked]));
+  H.node(Op.Block, ty, 0, 1, statements)
+};
+
+export let storable: (I32) -> I32 = fn(operand) {
+  if (H.typeOf(operand) == H.TYPE_U32) { return toDynamic(operand); }
+  _boxable(operand);
+  operand
 };
 
 let _cast = fn(value: AstExpr, targetType: AstType): I32 {
@@ -115,9 +140,11 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   if (ty == target) { return operand; }
   if (ty == H.TYPE_BYTE_BUFFER) { throw "`as` cannot convert a buffer from Bytes.new" + bufferHint(ty); }
   if (target == H.TYPE_DYNAMIC) { return toDynamic(operand); }
+  if (upcasts(ty, target)) { return H.node(Op.Convert, target, 0, 0, [operand]); }
+  if (H.isPrototype(target) && (H.isObject(ty) || (ty == H.TYPE_DYNAMIC))) { return _asPrototype(operand, target); }
 
   if (ty == H.TYPE_DYNAMIC) {
-    if (_checkedKind(target) < 0) { throw "cannot extract " + H.typeName(target) + " from Dynamic" + _UNCHECKED; }
+    if (checkedKind(target) < 0) { throw "cannot extract " + H.typeName(target) + " from Dynamic" + UNCHECKED_KINDS; }
     return H.node(Op.FromDynamic, target, 0, 0, [operand]);
   }
   let present = presentAt(operand, 0);
@@ -138,8 +165,9 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
 };
 
 export let kindTest: (I32, I32) -> I32 = fn(operand, target) {
-  let code = _checkedKind(target);
-  if (code < 0) { throw "is cannot test for " + H.typeName(target) + _UNCHECKED; }
+  if (H.isPrototype(target)) { return _delegatesTo(operand, target); }
+  let code = checkedKind(target);
+  if (code < 0) { throw "is cannot test for " + H.typeName(target) + UNCHECKED_KINDS; }
   H.node(Op.IsKind, H.TYPE_BOOL, code, code == H.KIND_ENUM ? target : 0, [operand])
 };
 

@@ -1,0 +1,51 @@
+// expect: ok
+// A typedef and a prototype of one name are linked: the typedef gives the fields of the
+// prototype's values, read and written as their types, and the prototype makes them.
+prototype Node {
+  next: null;
+  init(value: I32) { this.value = value; this.tags = ["a"]; this.scale = fn(k: I32): I32 { k * value }; };
+  length(): I32 { this.next == null ? 1 : 1 + this.next.length() };
+  bump() { this.value += 10; this.value++; };
+};
+typedef Node = { let value: I32; let next: ?Node; let age: ?I32; let tags: Array<Bytes>; let scale: (I32) -> I32; };
+// A typedef may come first, and a prototype that delegates has its parent's fields too.
+typedef Leaf = { let weight: F64; };
+prototype Leaf { __proto__: Node; weight: 1.5; };
+
+let a = new Node(1);
+let b = new Node(2);
+b.next = a;
+System.assert(b.length() == 2);
+let sum: I32 = a.value + b.value;
+System.assert(sum == 3);
+// A nullable scalar field is null until it is set.
+System.assert(a.age == null);
+a.age = 40;
+System.assert((a.age as I32) == 40);
+System.assert(b.tags[0] == "a");
+// A field that holds a function is called as itself, without a `this`.
+System.assert(b.scale(21) == 42);
+a.bump();
+System.assert(a.value == 12);
+let { value: v, next: n } = b;
+let w: I32 = v;
+System.assert((w == 2) && (n != null));
+// A pattern that only binds a linked value's fields matches it, so it ends a match.
+let described = match (b) { { value: 1 } => "one", { value: bv, age: ba } => ba == null ? Std.string(bv) : "aged" };
+System.assert(described == "2");
+let leaf = new Leaf(7);
+let heavy: F64 = leaf.weight * 2.0;
+System.assert((heavy == 3.0) && (leaf.value == 7));
+// A linked prototype that delegates to one without a typedef has the fields that one sets too,
+// read as Dynamic, and its `__proto__` reads as any Object's does.
+prototype Base { y: 9; };
+typedef Open = { let x: I32; };
+prototype Open { __proto__: Base; x: 1; };
+let open = new Open();
+let { x: ox } = open;
+let up = open.__proto__;
+System.assert((open.y as I32 == 9) && (ox + 1 == 2) && (up != null));
+// A linked value is still an Object, whose fields read as Dynamic.
+let o: Object = a;
+System.assert(o.value as I32 == 12);
+"ok"

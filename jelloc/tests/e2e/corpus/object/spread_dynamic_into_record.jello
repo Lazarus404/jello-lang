@@ -1,10 +1,9 @@
-// expect:
-// pending: objects
+// error: 8:31: cannot spread Dynamic into a record literal of MemoSlot
 typedef MemoSlot = {
   let query: I32;
   let hit: I32;
 };
 
-let prev_dyn: Dynamic = { query: 2, hit: 0 };
+let prev_dyn: Dynamic = { query: 2, hit: 0 } as Dynamic;
 let next_dyn: MemoSlot = { ...prev_dyn, hit: 2 };
 System.assert(next_dyn.query == 2 && next_dyn.hit == 2);

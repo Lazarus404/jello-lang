@@ -1,0 +1,7 @@
+// error: 7:21: p is annotated Box<Bytes>, but its value is Box<I32>
+typedef Box<T> = { let value: T; };
+prototype Box<T> {
+  init(value: T) { this.value = value; };
+};
+let o = new Box(1);
+let p: Box<Bytes> = o;

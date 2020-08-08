@@ -1,0 +1,7 @@
+// error: 3:1: instantiating Box nests more than 64 deep
+typedef Box<T> = { let value: T; };
+prototype Box<T> {
+  init(value: T) { this.value = value; };
+  grow(): Box<Box<T>> { new Box(this) };
+};
+let o = new Box(1);

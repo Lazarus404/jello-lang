@@ -9,11 +9,12 @@ export enum Op {
   Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; And; Or; Eq; Lt; Gt; Le; Ge; Convert; Present; IsNull; IsPresent; Unwrap; ToDynamic; FromDynamic; IsKind;
   ArrayNew; ArrayLiteral; ArrayConcat; ArrayLen; ArrayGet; ArraySet; ArrayPush; ArrayPop; ArrayResize; ListNil; ListCons; ListHead; ListTail; ListIsNil;
   BytesNew; BytesSet; BitsPack; BitsField; BitsRead; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesConcatMany; BytesEq; Tuple; TupleField; SetField; EnumNew; EnumTag; EnumField;
+  ObjectNew; ObjectGet; ObjectSet; ObjectHas; ObjectRemove; ObjectClear; ObjectCopy; ObjectKeys;
   Call; CallIndirect; CallNative; Block; If; Try;
   Let; Const; Parameter; Capture; Declare; Expression; Return; Throw; Break; Continue; IfStatement; TryStatement; While; Function; Program;
 }
 
-export enum Kind { Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; Dynamic; ByteBuffer; List; Var; Param; Applied; Atom; I8; I16; U8; U16; U32; U64; F16; F32; F64; Optional; Rest; Record; }
+export enum Kind { Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; Dynamic; ByteBuffer; List; Var; Param; Applied; Atom; I8; I16; U8; U16; U32; U64; F16; F32; F64; Optional; Rest; Record; Object; }
 
 export enum Hir {
   Hir(
@@ -48,6 +49,7 @@ export let TYPE_U64: I32 = 13;
 export let TYPE_F16: I32 = 14;
 export let TYPE_F32: I32 = 15;
 export let TYPE_F64: I32 = 16;
+export let TYPE_OBJECT: I32 = 17;
 export let isFloatType: (I32) -> Bool = fn(ty) { (ty >= TYPE_F16) && (ty <= TYPE_F64) };
 export let isIntegerType: (I32) -> Bool = fn(ty) { ((ty >= TYPE_I32) && (ty <= TYPE_I64)) || ((ty >= TYPE_I8) && (ty <= TYPE_U64)) };
 
@@ -70,6 +72,7 @@ export let KIND_BOOL: I32 = 1;
 export let KIND_I32: I32 = 2;
 export let KIND_ATOM: I32 = 3;
 export let KIND_BYTES: I32 = 4;
+export let KIND_OBJECT: I32 = 6;
 export let KIND_I64: I32 = 7;
 export let KIND_ENUM: I32 = 14;
 export let KIND_F64: I32 = 8;
@@ -180,7 +183,7 @@ export let nativeNameOf: (I32) -> Bytes = fn(native) { _bytes[_natives[native * 
 export let nativeTypeOf: (I32) -> I32 = fn(native) { _natives[native * _NATIVE_WIDTH + 2] };
 
 let _kindCode = fn(kind: Kind): I32 {
-  match (kind) { Bool => 0, I32 => 1, I64 => 2, Bytes => 3, Array => 4, Tuple => 5, Null => 6, Function => 7, Enum => 8, Dynamic => 9, ByteBuffer => 10, List => 11, Var => 12, Param => 13, Applied => 14, Atom => 15, I8 => 16, I16 => 17, U8 => 18, U16 => 19, U32 => 20, U64 => 21, F16 => 22, F32 => 23, F64 => 24, Optional => 25, Rest => 26, Record => 27 }
+  match (kind) { Bool => 0, I32 => 1, I64 => 2, Bytes => 3, Array => 4, Tuple => 5, Null => 6, Function => 7, Enum => 8, Dynamic => 9, ByteBuffer => 10, List => 11, Var => 12, Param => 13, Applied => 14, Atom => 15, I8 => 16, I16 => 17, U8 => 18, U16 => 19, U32 => 20, U64 => 21, F16 => 22, F32 => 23, F64 => 24, Optional => 25, Rest => 26, Record => 27, Object => 28 }
 };
 
 export let typeCount: () -> I32 = fn() { _kinds.len() as I32 };
@@ -231,6 +234,9 @@ let _isNominal = fn(ty: I32, kind: Kind): Bool {
 };
 export let isEnum: (I32) -> Bool = fn(ty) { _isNominal(ty, Kind.Enum) };
 export let isRecord: (I32) -> Bool = fn(ty) { _isNominal(ty, Kind.Record) };
+export let isObject: (I32) -> Bool = fn(ty) { _isNominal(ty, Kind.Object) };
+export let isPrototype: (I32) -> Bool = fn(ty) { isObject(ty) && (ty != TYPE_OBJECT) };
+export let isLinked: (I32) -> Bool = fn(ty) { isPrototype(ty) && (variantCount(ty) > 0) };
 export let memberCount: (I32) -> I32 = fn(ty) { _kinds[ty] == Kind.Tuple ? typeArgCount(ty) : fieldCount(ty, 0) };
 export let memberType: (I32, I32) -> I32 = fn(ty, member) { _kinds[ty] == Kind.Tuple ? typeArg(ty, member) : fieldType(ty, 0, member) };
 
@@ -267,6 +273,11 @@ export let node: (Op, I32, I32, I32, Array<I32>) -> I32 = fn(op, ty, value, aux,
 
 export let setCallee: (I32, I32) -> Bool = fn(id, function) {
   _nodes[id * _NODE_WIDTH + 1] = function + 1;
+  true
+};
+
+export let setGlobal: (I32, I32) -> Bool = fn(id, global) {
+  _nodes[id * _NODE_WIDTH + 1] = global;
   true
 };
 
@@ -488,7 +499,17 @@ export let nullType: (I32) -> I32 = fn(ty) {
 export let holdsNull: (I32) -> Bool = fn(ty) { isKind(ty, Kind.Null) || isKind(ty, Kind.Dynamic) };
 
 export let isReference: (I32) -> Bool = fn(ty) {
-  match (kindOf(ty)) { Bytes, ByteBuffer, Array, Tuple, Function, Enum, Applied, Record => true, _ => false }
+  match (kindOf(ty)) { Bytes, ByteBuffer, Array, Tuple, Function, Enum, Applied, Record, Object => true, _ => false }
+};
+
+export let readsExactly: (I32) -> Bool = fn(ty) {
+  let inner = isKind(ty, Kind.Null) ? innerOf(ty) : ty;
+  let scalar = match (kindOf(ty)) { Bool, Atom, I32, I64, F16, F32, F64 => true, _ => false };
+  scalar || ((inner >= 0) && isReference(inner) && !isKind(inner, Kind.ByteBuffer))
+};
+
+export let readsTyped: (I32) -> Bool = fn(ty) {
+  (ty == TYPE_DYNAMIC) || readsExactly(ty) || (isKind(ty, Kind.Null) && (innerOf(ty) >= 0) && readsExactly(innerOf(ty)))
 };
 export let tupleType: (Array<I32>) -> I32 = fn(elements) { _intern(Kind.Tuple, -1, elements) };
 export let functionType: (Array<I32>, I32) -> I32 = fn(params, result) { _intern(Kind.Function, result, params) };
@@ -597,6 +618,7 @@ _substitute = fn(ty, params, types) {
 export let substitute: (I32, Array<I32>, Array<I32>) -> I32 = fn(ty, params, types) { _substitute(ty, params, types) };
 
 export let isOpen: (I32) -> Bool = fn(ty) { (ty >= 0) && _open[ty] && _open[resolve(ty)] };
+export let isParametric: (I32) -> Bool = fn(ty) { (ty >= 0) && _parametric[ty] };
 
 let _trail = Array.new<I32>(0);
 
@@ -641,8 +663,14 @@ let _bind = fn(var: I32, ty: I32): Bool {
 let _unify: (I32, I32) -> Bool = fn(_a, _b) { false };
 
 let _application = fn(ty: I32): I32 {
-  match (_kinds[ty]) { Applied => ty, Enum, Record when ((_generic[ty] >= 0) && isKind(_generic[ty], Kind.Applied)) => _generic[ty], _ => -1 }
+  match (_kinds[ty]) { Applied => ty, Enum, Record, Object when ((_generic[ty] >= 0) && isKind(_generic[ty], Kind.Applied)) => _generic[ty], _ => -1 }
 };
+
+export let templateOf: (I32) -> I32 = fn(ty) {
+  let application = _application(ty);
+  application < 0 ? -1 : innerOf(application)
+};
+export let templateArgs: (I32) -> Array<I32> = fn(ty) { _typeArgs(_application(ty)) };
 
 let _unifyApplied = fn(left: I32, right: I32): Bool {
   let leftArgs = _application(left);
@@ -790,6 +818,7 @@ export let callStd: (Bytes, Array<I32>, I32, Array<I32>) -> I32 = fn(name, param
 };
 export let declareEnum: (Bytes) -> I32 = fn(name) { _addType(Kind.Enum, bytesId(name), []) };
 export let declareRecord: (Bytes) -> I32 = fn(name) { _addType(Kind.Record, bytesId(name), []) };
+export let declarePrototype: (Bytes) -> I32 = fn(name) { _addType(Kind.Object, bytesId(name), []) };
 
 let _pending = Array.new<I32>(0);
 let _nesting = 0;
@@ -802,6 +831,7 @@ let _makeGeneric = fn(ty: I32, params: Array<I32>): I32 {
 };
 export let declareGenericEnum: (Bytes, Array<I32>) -> I32 = fn(name, params) { _makeGeneric(declareEnum(name), params) };
 export let declareGenericRecord: (Bytes, Array<I32>) -> I32 = fn(name, params) { _makeGeneric(declareRecord(name), params) };
+export let declareGenericPrototype: (Bytes, Array<I32>) -> I32 = fn(name, params) { _makeGeneric(declarePrototype(name), params) };
 let _layouts = Array.new<I32>(0);
 let _layoutCodes = Array.new<Array<I32>>(0);
 let _layoutOffsets = Array.new<Array<I32>>(0);
@@ -956,6 +986,7 @@ export let beginHir: () -> Bool = fn() {
   _intern(Kind.F16, 0, []);
   _intern(Kind.F32, 0, []);
   _intern(Kind.F64, 0, []);
+  _intern(Kind.Object, 0, []);
   true
 };
 
@@ -1016,6 +1047,8 @@ _typeName = fn(ty) {
     },
     Dynamic => _source ? "Dynamic" : "dynamic",
     ByteBuffer => _source ? "ByteBuffer" : "bytebuffer",
+    Object when (_application(ty) >= 0) => _bytes[_types[ty * _TYPE_WIDTH]] + "<" + _typeArgNames(_application(ty), false) + ">",
+    Object => ty != TYPE_OBJECT ? _bytes[_types[ty * _TYPE_WIDTH]] : _source ? "Object" : "object",
     Var => innerOf(ty) >= 0 ? _typeName(innerOf(ty)) : _flags(ty) == _INTEGER ? _typeName(TYPE_I32) : _source ? "Unknown" : "unknown",
     Param => _bytes[innerOf(ty)],
   }

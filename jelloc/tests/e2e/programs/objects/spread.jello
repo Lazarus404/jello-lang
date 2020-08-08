@@ -1,0 +1,11 @@
+// expect: ok
+// A spread copies every field of its Object into the literal, in source order.
+let base = { a: 1, b: 2 };
+let copied = { ...base, b: 3, c: 4 };
+let later = { z: 0, ...base, a: 5 };
+System.assert(Std.string(copied) == "{a: 1, b: 3, c: 4}");
+System.assert(Std.string(later) == "{a: 5, b: 2, z: 0}");
+copied.a = 9;
+System.assert(base.a as I32 == 1);
+System.assert(Std.string({ ...{}, ...base }) == "{a: 1, b: 2}");
+"ok"

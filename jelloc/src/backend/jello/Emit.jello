@@ -91,7 +91,7 @@ _hash = fn(ty) {
   };
 
   match (ty) {
-    Bool => 1, I32 => 2, I64 => 3, Bytes => 4, Dynamic => 5, Atom => 9, F16 => 12, F32 => 13, F64 => 14,
+    Bool => 1, I32 => 2, I64 => 3, Bytes => 4, Dynamic => 5, Atom => 9, F16 => 12, F32 => 13, F64 => 14, Object => 15,
     ArrayOf(element) => 6 * 31 + _hash(element),
     ListOf(element) => 11 * 31 + _hash(element),
     TupleOf(elements) => combine(7, elements),
@@ -137,6 +137,7 @@ _typeIndex = fn(ty) {
     Bytes => _add(ty, 11, 0),
     Atom => _add(ty, 3, 0),
     Dynamic => _add(ty, 18, 0),
+    Object => _add(ty, 15, 0),
     ArrayOf(element) => _add(ty, 13, _typeIndex(element)),
     ListOf(element) => _add(ty, 12, _typeIndex(element)),
     TupleOf(elements) => {
@@ -295,6 +296,14 @@ let _instruction = fn(insn: Instruction) {
     EnumNew => _insn(164, dst, _window(args, 0), args.len() as I32, imm),
     EnumTag => _insn(165, dst, a, 0, 0),
     EnumGet => _insn(166, dst, a, b, 0),
+    ObjectNew => _insn(153, dst, 0, 0, 0),
+    ObjectHas => imm < 0 ? _insn(159, dst, a, b, 0) : _insn(154, dst, a, 0, imm),
+    ObjectGet => imm < 0 ? _insn(157, dst, a, b, 0) : _insn(155, dst, a, 0, imm),
+    ObjectSet => imm < 0 ? _insn(158, args[2], a, b, 0) : _insn(156, b, a, 0, imm),
+    ObjectRemove => _insn(160, dst, a, b, 0),
+    ObjectClear => _insn(161, 0, a, 0, 0),
+    ObjectCopy => _insn(162, dst, a, 0, 0),
+    ObjectKeys => _insn(163, dst, a, 0, 0),
     AddImm => _insn(33, dst, a, 0, imm),
     SubImm => _insn(34, dst, a, 0, imm),
     MulImm => _insn(35, dst, a, 0, imm),

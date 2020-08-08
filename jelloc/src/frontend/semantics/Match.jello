@@ -5,8 +5,8 @@ import { warn } from frontend.semantics.Failures;
 import { BinaryOp, Pattern, unsignedWideValue, wideIntegerValue } from frontend.syntax.Ast;
 import { appendFrom, indexOf } from support.Arrays;
 import {
-  Kind, Op, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, auxOf, bytesId, childCount, childOf, declareBinding, endsPath, fieldCount, fieldType, innerOf, isEnum, isFloatType, isInteger,
-  isKind, isLayout, isRecord, local, memberCount, memberType, node, noValueType, nullable, nullType, opOf, recordField, resolve, segmentType, segmentWidth, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, unify, variantCount,
+  Kind, Op, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, TYPE_OBJECT, auxOf, bytesId, bytesOf, childCount, childOf, declareBinding, endsPath, fieldCount, fieldType, innerOf, isEnum, isFloatType, isInteger,
+  isKind, isLayout, isLinked, isObject, isRecord, local, memberCount, memberType, node, noValueType, nullable, nullType, opOf, recordField, resolve, segmentType, segmentWidth, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, unify, variantCount,
   variantName, variantTag,
 } from frontend.hir.Hir;
 import type { Syntax } from frontend.syntax.Source;
@@ -14,9 +14,10 @@ import { checkSegmentLiteral, layoutField, layoutFits, layoutRecord, placeSegmen
 import { scopedType } from frontend.semantics.ModuleScope;
 import { expressionOf, i32Of, lengthTest } from frontend.semantics.Derived;
 import { equalValues, kindTest, toDynamic } from frontend.semantics.Values;
+import { namedKey, readTyped } from frontend.semantics.Objects;
 import {
   branchMismatch, bufferHint, checkArm, joinBranches, checkKnown, checkOperand, checkPatternName, checkPresent, checkType, coerceTail, enterSyntax, floatLiteral, integerLiteral, joinTypes, newBinding, regexpGlobal, sizedType,
-  checkAnnotated, coerceAt, currentSpan, declareGlobal, declareLocal, declareNames, endNames, present, presentAt, requireBool, subPattern, syntaxChild, syntaxPattern, testsPattern,
+  checkAnnotated, coerceAt, currentSpan, declareGlobal, declareLocal, declareNames, endNames, linkedMember, objectValue, present, prototypeField, presentAt, requireBool, subPattern, syntaxChild, syntaxPattern, testsPattern,
 } from frontend.semantics.TypeCheck;
 
 enum Subject { Subject(roots: Array<I32>, types: Array<I32>, tuple: I32, tag: I32); }
@@ -28,6 +29,10 @@ let _SLICE = -5;
 let _SEGMENT = -6;
 let _REST = -7;
 let _LAYOUT = -8;
+let _KEY = -9;
+let _WITHOUT = -10;
+let _LINKED = -11;
+let _named = Array.new<Array<I32>>(0);
 
 let _step = fn(path: Array<I32>, tag: I32, index: I32): Array<I32> {
   if (path[0] < 0) { return [index]; }
@@ -78,6 +83,20 @@ let _prefix<T> = fn(items: Array<T>, count: I32): Array<T> {
   let out = Array.new<T>(0);
   while (out.len() < count) { out.push(items[out.len()]); }
   out
+};
+
+let _without = fn(object: I32, names: Array<I32>): I32 {
+  let copy = newBinding();
+  let statements = [declareBinding(Op.Const, copy, "rest", node(Op.ObjectCopy, TYPE_OBJECT, 0, 0, [object]))];
+  let i = 0;
+
+  while (i < names.len()) {
+    let key = node(Op.Atom, TYPE_ATOM, names[i], 0, []);
+    statements.push(expressionOf(node(Op.ObjectRemove, TYPE_BOOL, 0, 0, [local(copy, TYPE_OBJECT), key])));
+    i++;
+  }
+  statements.push(local(copy, TYPE_OBJECT));
+  node(Op.Block, TYPE_OBJECT, 0, 1, statements)
 };
 
 let _read: (Subject, Array<I32>) -> I32 = fn(_s, _path) { 0 };
@@ -143,7 +162,14 @@ _read = fn(subject, path) {
           ty = index;
           value = layoutRecord(index, read);
         }
-      } else if (tag < 0) {
+      } else if (tag == _KEY) {
+        ty = TYPE_DYNAMIC;
+        value = node(Op.ObjectGet, ty, index, 0, [value]);
+      } else if (tag == _LINKED) {
+        let name = bytesOf(index);
+        ty = prototypeField(resolve(ty), name);
+        value = readTyped(objectValue(value), namedKey(name), ty);
+      } else if (tag == _WITHOUT) { value = _without(value, _named[index]); } else if (tag < 0) {
         ty = memberType(ty, index);
         value = node(Op.TupleField, ty, index, 0, [value]);
       } else {
@@ -418,8 +444,45 @@ _test = fn(subject, pattern, syntax, path, ty, tests, bound) {
       _items(subject, items, syntax, path, ty, spread, tests, bound)
     },
     Spread(_) => null,
+    Object(fields) when (isObject(resolve(ty))) => {
+      let names = Array.new<I32>(0);
+      let f = 0;
+
+      while (f < fields.len()) {
+        let (name, field) = fields[f];
+        let at = subPattern(syntax, f);
+
+        match (field) {
+          Spread(binding) => {
+            if (binding != null) {
+              _named.push(names);
+              _bind(bound, binding, _step(path, _WITHOUT, _named.len() - 1), at);
+            } null
+          },
+          _ => {
+            let id = bytesId(name);
+
+            if (indexOf(names, id) >= 0) {
+              enterSyntax(at);
+              throw "field " + name + " is matched twice";
+            }
+            names.push(id);
+            let outer = enterSyntax(at);
+            let linked = prototypeField(resolve(ty), name);
+            enterSyntax(outer);
+
+            if (linked >= 0) { _test(subject, field, at, _step(path, _LINKED, id), linked, tests, bound); } else {
+              tests.push(node(Op.ObjectHas, TYPE_BOOL, id, 0, [_read(subject, path)]));
+              _test(subject, field, at, _step(path, _KEY, id), TYPE_DYNAMIC, tests, bound);
+            }
+          },
+        };
+        f++;
+      }
+      null
+    },
     Object(fields) => {
-      if (!isRecord(ty)) { _mismatch("a record", ty); }
+      if (!isRecord(ty)) { _mismatch("an object", ty); }
       let matched = Array.new<Bool>(0);
       let f = 0;
       while (matched.len() < memberCount(ty)) { matched.push(false); }
@@ -427,6 +490,11 @@ _test = fn(subject, pattern, syntax, path, ty, tests, bound) {
       while (f < fields.len()) {
         let (name, field) = fields[f];
         let index = recordField(ty, name);
+
+        if (name == "...") {
+          enterSyntax(subPattern(syntax, f));
+          throw "a record pattern names its fields; " + typeName(ty) + " has no rest";
+        }
 
         if (index < 0) {
           enterSyntax(subPattern(syntax, f));
@@ -513,7 +581,9 @@ _describe = fn(pattern) {
   }
 };
 
-let _wild = fn(pattern: Pattern): Bool { match (pattern) { Wildcard => true, BindPattern(_) => true, _ => false } };
+let _wild = fn(pattern: Pattern): Bool {
+  match (pattern) { Wildcard, BindPattern(_) => true, Object(fields) => (fields.len() == 0) || ((fields.len() == 1) && (fields[0].0 == "...")), _ => false }
+};
 
 let _bits = fn(text: Bytes): I64 {
   Bytes.get_u8(text, 0) == "-".code ? wideIntegerValue(text, false) : unsignedWideValue(text, false)
@@ -683,13 +753,30 @@ let _fieldItems = fn(pattern: Pattern, ty: I32): Pattern {
   }
 };
 
+let _linkedItems = fn(pattern: Pattern, ty: I32): Pattern {
+  match (pattern) {
+    Object(fields) => {
+      let f = 0;
+
+      while (f < fields.len()) {
+        let (name, field) = fields[f];
+        let tested = match (field) { Spread(_) => false, _ => !_wild(field) || (linkedMember(ty, name).0 < 0) };
+        if (tested) { return pattern; }
+        f++;
+      }
+      Pattern.Wildcard
+    },
+    _ => pattern,
+  }
+};
+
 let _recordRows = fn(rows: Array<Array<Pattern>>, ty: I32): Array<Array<Pattern>> {
-  if (!isRecord(ty)) { return rows; }
+  if (!isRecord(ty) && !isLinked(ty)) { return rows; }
   let out = Array.new<Array<Pattern>>(0);
   let i = 0;
 
   while (i < rows.len()) {
-    out.push(_join([_fieldItems(rows[i][0], ty)], rows[i]));
+    out.push(_join([isRecord(ty) ? _fieldItems(rows[i][0], ty) : _linkedItems(rows[i][0], ty)], rows[i]));
     i++;
   }
   out
@@ -703,7 +790,7 @@ _useful = fn(given, row, types) {
   let ty = types[0];
   if (_nullInner(ty) >= 0) { return _usefulNullable(given, row, types); }
   let rows = _recordRows(given, ty);
-  let q = isRecord(ty) ? _recordRows([row], ty)[0] : row;
+  let q = _recordRows([row], ty)[0];
   let spreads = match (q[0]) { Array(items), Tuple(items) => _spreadIndex(items, 0) >= 0, _ => false };
   if (!_wild(q[0]) && !spreads) { return _useful(_specialize(rows, q[0]), _join(_args(q[0]), q), _join(_argTypes(q[0], ty), types)); }
   let heads = _signature(rows, ty);

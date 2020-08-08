@@ -23,9 +23,10 @@ import type { Syntax } from frontend.syntax.Source;
 import { Syntax } from frontend.syntax.Source;
 import {
   annotatedGlobal, beginCheck, checkAnnotation, bindingType, checkDestructure, checkDirect, checkEffect, checkLiteralRanges, checkOperand, currentSpan, declareFunctions, declareGlobal, enterNode, enterSpan, enterSyntax,
-  finishProgram, checkGlobalInitializer, checkTemplate, checkThrow, checkDoWhile, checkWhile, instantiateTemplates, isDirectFunction, isLoaded, isTemplate, patternNames, poisonDeclared, recoverTopLevel, syntaxChild, takeRegexpInits,
+  finishProgram, checkGlobalInitializer, checkTemplate, checkThrow, checkDoWhile, checkWhile, instantiateTemplates, isDirectFunction, withInstances, isLoaded, isTemplate, patternNames, poisonDeclared, recoverTopLevel, syntaxChild, takeRegexpInits,
   unsupportedStatement, useAggregateChecks, useAssertionChecks, useConditionChecks, useEnumChecks, useLetChecks, useStructuralEquality, useUnsupported, useValueChecks,
 } from frontend.semantics.TypeCheck;
+import { checkPrototype, instantiatePrototypes } from frontend.semantics.Prototypes;
 import { verifyHir } from frontend.hir.Verify;
 
 let _initializers = Array.new<I32>(0);
@@ -236,6 +237,10 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
             _initializers.push(checkThrow(value));
             null
           },
+          Prototype(_, name, _, fields) => {
+            _initializers.push(checkPrototype(name, fields));
+            null
+          },
           Enum(_, _, _, _), Typedef(_, _, _, _) => null,
           _ => {
             throw unsupportedStatement(statements[i]);
@@ -368,6 +373,8 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
 
     if (failureCount() == 0) {
       instantiateTemplates();
+      while (instantiatePrototypes()) { instantiateTemplates(); }
+      _initializers = withInstances(_initializers);
       _initializeFirst(0, takeRegexpInits());
       match (modules[entry]) { Module(_, _, _, syntax, _, _) => enterSyntax(syntax) };
       if (tail < 0) { tail = node(Op.Null, TYPE_NULL, 0, 0, []); }

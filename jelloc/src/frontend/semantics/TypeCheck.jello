@@ -1,9 +1,9 @@
 package frontend.semantics;
 
 import type {
-  AssignOp, BinaryOp, Block as AstBlock, Expr as AstExpr, FloatSize, IncDecOp, IntSize, Parameter, ParameterKind, Pattern, Stmt, Type as AstType, TypeParam, UnaryOp,
+  AssignOp, BinaryOp, Block as AstBlock, Expr as AstExpr, FloatSize, IncDecOp, IntSize, Parameter, ParameterKind, Pattern, PrototypeField, Stmt, Type as AstType, TypeParam, UnaryOp,
 } from frontend.syntax.Ast;
-import { Block as AstBlock, Expr as AstExpr, bindPatternName, integerIn, integerValue, isBindPattern, unsignedWideValue, wideIntegerValue } from frontend.syntax.Ast;
+import { Block as AstBlock, Expr as AstExpr, Type as AstType, bindPatternName, integerIn, integerValue, isBindPattern, unsignedWideValue, wideIntegerValue } from frontend.syntax.Ast;
 import { appendFrom, indexOf } from support.Arrays;
 import type { Hir } from frontend.hir.Hir;
 import frontend.hir.Hir as H;
@@ -13,7 +13,7 @@ import {
 } from frontend.semantics.Failures;
 import { internalError } from support.Internal;
 import type { Binding } from frontend.semantics.ModuleScope;
-import { Binding, currentModule, declareScoped, isImported, namespaceMember, scoped, scopedType, useModuleScope } from frontend.semantics.ModuleScope;
+import { Binding, currentModule, declareScoped, exportedType, isImported, namespaceMember, scoped, scopedType, useModuleScope } from frontend.semantics.ModuleScope;
 import {
   assignLocal, assignmentMark, enterLoop, isNarrowed, keepNarrowings, leaveLoop, narrow, narrowings, resetNarrowing, setNarrowings,
 } from frontend.semantics.Narrowing;
@@ -80,6 +80,26 @@ let _aliasParams = Array.new<Array<I32>>(0);
 let _aliasBodies = Array.new<I32>(0);
 let _templateBody = false;
 let _dropped = Array.new<Bool>(0);
+let _methodKinds = Array.new<I32>(0);
+let _methodIndexes = Array.new<I32>(0);
+let _methodNames = Array.new<Bytes>(0);
+let _methods = Array.new<I32>(0);
+let _prototypes = Array.new<I32>(0);
+let _prototypeGlobals = Array.new<I32>(0);
+let _prototypeParents = Array.new<I32>(0);
+let _initFields = Array.new<I32>(0);
+let _generics = Array.new<I32>(0);
+let _genericModules = Array.new<I32>(0);
+let _genericStatements = Array.new<Stmt>(0);
+let _genericSyntaxes = Array.new<Syntax>(0);
+let _genericPlaceholders = Array.new<I32>(0);
+let _instances = Array.new<I32>(0);
+let _instanceGlobals = Array.new<I32>(0);
+let _instanceInits = Array.new<I32>(0);
+let _instanceNesting = Array.new<I32>(0);
+let _built = 0;
+let _openReads = Array.new<Tuple<I32, I32>>(0);
+let _directFields = Array.new<I32>(0);
 let _captureFloor = 0;
 let _pending = Array.new<Tuple<I32, I32, Array<I32>, I32>>(0);
 let _instanceDepth = 0;
@@ -110,8 +130,16 @@ export let recover: (Dynamic) -> Bool = fn(error) {
 
 let _spanSyntax = fn(path: Bytes, start: I32, end: I32): Syntax { Syntax.Node(path, start, end, Array.new<Syntax>(0), Array.new<Syntax>(0)) };
 
+let _withChildren = fn(syntax: Syntax, children: Array<Syntax>): Syntax {
+  match (syntax) { Node(path, start, end, _, patterns) => Syntax.Node(path, start, end, children, patterns) }
+};
+
 let _childOf = fn(syntax: Syntax, index: I32): Syntax { match (syntax) { Node(_, _, _, children, _) => children[index] } };
 export let syntaxChild: (I32) -> Syntax = fn(index) { _childOf(_syntax, index) };
+
+export let withoutCallee: () -> Syntax = fn() {
+  match (_syntax) { Node(_, _, _, children, _) => _withChildren(_syntax, appendFrom(Array.new<Syntax>(0), children, 1)) }
+};
 
 let _rejectAt = fn(index: I32, failure: Bytes) {
   let outer = enterSyntax(syntaxChild(index));
@@ -267,6 +295,18 @@ let _envType = fn(name: Bytes): I32 {
 let _resultType = fn(ty: AstType): I32 {
   match (ty) { Named(name) when ((name == "Void") && (scopedType(name) < 0)) => H.TYPE_NULL, _ => checkType(ty) }
 };
+
+let _heldFields = fn(ty: I32): I32 {
+  let count = H.isLinked(ty) ? H.fieldCount(ty, 0) : 0;
+  let f = 0;
+
+  while (f < count) {
+    let field = H.fieldType(ty, 0, f);
+    if (!H.isOpen(field) && !H.isParametric(field) && !H.readsTyped(field)) { throw "field " + H.fieldName(ty, 0, f) + " of " + H.typeName(ty) + " is " + H.typeName(field) + ", which a prototype's Object cannot hold as itself"; }
+    f++;
+  }
+  ty
+};
 checkType = fn(ty) { match (ty) {
   Named(name) => match (name) {
     "I32" => H.TYPE_I32,
@@ -292,6 +332,8 @@ checkType = fn(ty) { match (ty) {
 
         if ((named < 0) && (name == "Atom")) {
           named = H.TYPE_ATOM;
+        } else if ((named < 0) && (name == "Object")) {
+          named = H.TYPE_OBJECT;
         } else if ((named < 0) && (name == "ByteBuffer")) {
           named = H.TYPE_BYTE_BUFFER;
         } else {
@@ -317,7 +359,7 @@ checkType = fn(ty) { match (ty) {
       if (named < 0) { throw "unsupported generic type: " + name; }
       checkTypeArgCount(name, named, args.len());
       let alias = _aliasIndex(named);
-      alias >= 0 ? H.substitute(_aliasBodies[alias], _aliasParams[alias], _checkTypes(args)) : H.appliedType(named, _checkTypes(args))
+      alias >= 0 ? H.substitute(_aliasBodies[alias], _aliasParams[alias], _checkTypes(args)) : _heldFields(H.appliedType(named, _checkTypes(args)))
     },
   },
   Function(args, result) => H.functionType(_checkParamTypes(args), _resultType(result)),
@@ -377,6 +419,47 @@ export let useValueChecks: ((AstExpr, I32) -> I32) -> Bool = fn(check) {
 };
 let _checkAggregate: (AstExpr, I32) -> I32 = fn(_expr, _expected) { -1 };
 
+let _prototypeOf = fn(ty: I32): I32 {
+  let template = ty >= 0 ? H.templateOf(ty) : -1;
+  template >= 0 ? template : ty
+};
+
+export let prototypeParent: (I32) -> I32 = fn(ty) {
+  let at = indexOf(_prototypes, _prototypeOf(ty));
+  at < 0 ? -2 : _prototypeParents[at]
+};
+
+export let delegates: (I32, I32) -> Bool = fn(source, target) {
+  let at = prototypeParent(source);
+  let steps = 0;
+
+  while ((at >= 0) && (at != target) && (steps < _prototypes.len())) {
+    at = prototypeParent(at);
+    steps++;
+  }
+  (target >= 0) && (at == target)
+};
+export let hasInitField: (I32) -> Bool = fn(ty) { indexOf(_initFields, _prototypeOf(ty)) >= 0 };
+
+export let upcasts: (I32, I32) -> Bool = fn(source, target) {
+  H.isPrototype(source) && ((target == H.TYPE_OBJECT) || delegates(source, target))
+};
+
+let _methodContext = fn(): I32 {
+  let i = _methods.len() - 1;
+  while ((i >= 0) && (_methods[i] == -2)) { i--; }
+  i >= 0 ? _methods[i] : -1
+};
+
+export let requireThis: (Bytes) -> I32 = fn(what) {
+  let ty = _methodContext();
+  if (ty >= 0) { return ty; }
+  let i = _methods.len() - 1;
+  while ((i >= 0) && (_methods[i] < 0)) { i--; }
+  throw i >= 0 ? what + " is the `this` of the method around this `fn`, which does not see it; write `method fn`" : what + " is only inside a prototype's method";
+  -1
+};
+
 export let useAggregateChecks: ((AstExpr, I32) -> I32) -> Bool = fn(check) {
   _checkAggregate = check;
   true
@@ -435,9 +518,13 @@ let _coerce = fn(id: I32, context: I32): I32 {
     return id;
   }
   if (H.unify(ty, expected) || H.isUnknown(expected)) { return id; }
+  if (upcasts(ty, expected)) { return _unary(Op.Convert, expected, id); }
 
   if (H.holdsNull(expected)) {
     if (H.unify(ty, H.innerOf(expected))) { return _unary(Op.Present, H.resolve(expected), id); }
+    let inner = H.isKind(expected, Kind.Null) ? H.resolve(H.innerOf(expected)) : -1;
+    if (upcasts(ty, inner)) { return _unary(Op.Present, expected, _unary(Op.Convert, inner, id)); }
+    if (H.isKind(ty, Kind.Null) && (H.innerOf(ty) >= 0) && upcasts(H.resolve(H.innerOf(ty)), inner)) { return _unary(Op.Convert, expected, id); }
 
     if (ty == H.TYPE_NULL) {
       let typed = _leaf(Op.Null, expected, 0);
@@ -448,6 +535,10 @@ let _coerce = fn(id: I32, context: I32): I32 {
   if (ty == H.TYPE_BYTE_BUFFER) { throw "a buffer from Bytes.new is not " + H.typeName(expected) + bufferHint(ty); }
   if ((expected == H.TYPE_DYNAMIC) && (ty != H.TYPE_NULL)) { throw "a value becomes Dynamic only with `as Dynamic`"; }
   id
+};
+
+export let objectValue: (I32) -> I32 = fn(value) {
+  H.isPrototype(H.typeOf(value)) ? _unary(Op.Convert, H.TYPE_OBJECT, value) : value
 };
 
 let _widens = fn(source: I32, target: I32): Bool {
@@ -469,6 +560,10 @@ export let widened: (I32, I32) -> I32 = fn(value, declared) {
   if (!_widens(H.resolve(H.typeOf(value)), number)) { return value; }
   let converted = _unary(Op.Convert, number, value);
   nullable ? _coerce(converted, target) : converted
+};
+
+export let fieldMismatch: (I32, Bytes, I32, I32) -> Bytes = fn(owner, name, ty, value) {
+  "field " + name + " of " + H.typeName(owner) + " is " + H.typeName(ty) + ", but this value is " + H.typeName(H.typeOf(value))
 };
 
 let _presentAt = fn(id: I32, index: I32): I32 {
@@ -735,7 +830,10 @@ let _floatBinary = fn(op: BinaryOp, ty: I32, left: I32, right: I32): I32 {
   _compare(comparison, left, right, match (op) { NotEqual => true, _ => false })
 };
 
-export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
+export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, leftValue, rightValue) {
+  let objects = H.isObject(H.typeOf(leftValue)) && H.isObject(H.typeOf(rightValue));
+  let left = objects ? objectValue(leftValue) : leftValue;
+  let right = objects ? objectValue(rightValue) : rightValue;
   let leftType = H.typeOf(left);
   let rightType = H.typeOf(right);
 
@@ -775,14 +873,14 @@ export let binaryValues: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
   if (same && equality && structural) { return _structuralEquality(op, left, right); }
   let bools = (leftType == H.TYPE_BOOL) && (rightType == H.TYPE_BOOL);
   let atoms = (leftType == H.TYPE_ATOM) && (rightType == H.TYPE_ATOM);
-  let functions = same && H.isKind(leftType, Kind.Function);
+  let identity = same && match (H.kindOf(leftType)) { Function, Object => true, _ => false };
 
   match (op) {
     And, Or => {
       if (!bools) { throw "&& and || require Bool operands"; }
       return _binary(match (op) { And => Op.And, _ => Op.Or }, H.TYPE_BOOL, left, right);
     },
-    Equal, NotEqual when (bools || atoms || functions) => { return _compare(Op.Eq, left, right, match (op) { NotEqual => true, _ => false }); },
+    Equal, NotEqual when (bools || atoms || identity) => { return _compare(Op.Eq, left, right, match (op) { NotEqual => true, _ => false }); },
     _ when (atoms) => {
       throw "atoms support only == and !=";
       null
@@ -868,6 +966,63 @@ let _functionType = fn(index: I32): I32 {
   _functionTypes[index]
 };
 
+let _receivers = fn(index: I32): I32 { _methodKinds[index] >= 0 ? 1 : 0 };
+
+let ownMethod: (I32, Bytes) -> I32 = fn(ty, name) {
+  let declaring = _prototypeOf(ty);
+  let i = 0;
+
+  while (i < _methodIndexes.len()) {
+    if ((_methodKinds[_methodIndexes[i]] == declaring) &&(_methodNames[i] == name)) { return _methodIndexes[i]; }
+    i++;
+  }
+  -1
+};
+
+export let findMethod: (I32, Bytes) -> I32 = fn(ty, name) {
+  let at = ty;
+  let steps = 0;
+
+  while ((at >= 0) && (steps <= _prototypes.len())) {
+    let found = ownMethod(at, name);
+    if (found >= 0) { return found; }
+    at = prototypeParent(at);
+    steps++;
+  }
+  -1
+};
+
+export let prototypeMethod: (I32, Bytes) -> I32 = fn(value, name) {
+  H.isPrototype(H.typeOf(value)) ? findMethod(H.typeOf(value), name) : -1
+};
+
+export let linkedMember: (I32, Bytes) -> Tuple<I32, Bool> = fn(ty, name) {
+  let at = H.isPrototype(ty) ? ty : -1;
+  let steps = 0;
+  let closed = at >= 0;
+
+  while ((at >= 0) && (steps <= _prototypes.len())) {
+    let field = H.isLinked(at) ? H.recordField(at, name) : -1;
+    if (field >= 0) { return (H.fieldType(at, 0, field), true); }
+    closed = closed && H.isLinked(at);
+    at = prototypeParent(at);
+    steps++;
+  }
+  (-1, closed && (at == -2))
+};
+
+export let prototypeField: (I32, Bytes) -> I32 = fn(ty, name) {
+  if (name == "__proto__") { return -1; }
+  let (field, closed) = linkedMember(ty, name);
+  if ((field < 0) && closed) { throw H.typeName(ty) + " has no field " + name; }
+  field
+};
+
+export let receiverMethodType: (I32, I32) -> I32 = fn(index, ty) {
+  let template = H.templateOf(ty);
+  (template >= 0) && (template == _methodKinds[index]) ? H.substitute(_functionType(index), H.enumParams(template), H.templateArgs(ty)) : _functionType(index)
+};
+
 let _globalType = fn(id: I32): I32 {
   touch(H.globalNameOf(id));
   H.globalTypeOf(id)
@@ -922,9 +1077,45 @@ let _capture = fn(name: Bytes): I32 {
 
 let _aheadBinding: (Bytes, Bytes) -> Binding = fn(_name, _use) { Binding.Unbound };
 
+let _instanceGlobal = fn(ty: I32, depth: I32): I32 {
+  let at = indexOf(_instances, ty);
+  if (at >= 0) { return _instanceGlobals[at]; }
+  let global = H.declareGlobal(H.typeName(ty), ty, false);
+  _instances.push(_heldFields(ty));
+  _instanceGlobals.push(global);
+  _instanceInits.push(-1);
+  _instanceNesting.push(depth + 1);
+  global
+};
+
+export let prototypeGlobal: (I32) -> I32 = fn(ty) {
+  let at = indexOf(_prototypes, ty);
+  at >= 0 ? _prototypeGlobals[at] : _instanceGlobal(ty, _instanceDepth)
+};
+
+export let prototypeValue: (I32) -> I32 = fn(ty) {
+  if (_templateBody) { return H.node(Op.ObjectNew, ty, 0, 0, []); }
+  if (!H.isOpen(ty)) { return _leaf(Op.Global, ty, prototypeGlobal(ty)); }
+  let read = _leaf(Op.Global, ty, -1);
+  _openReads.push((read, _instanceDepth));
+  read
+};
+
+let _prototypeBinding = fn(at: I32, name: Bytes): Binding {
+  if (_prototypeGlobals[at] < 0) { throw name + " is generic, so as a value it takes type arguments, as " + name + "<...>"; }
+  Binding.Global(_prototypeGlobals[at])
+};
+
 let _scoped = fn(name: Bytes, use: Bytes): Binding {
   let binding = scoped(name);
-  match (binding) { Unbound => _aheadBinding(name, use), _ => binding }
+
+  match (binding) {
+    Unbound => {
+      let at = indexOf(_prototypes, scopedType(name));
+      at >= 0 ? _prototypeBinding(at, name) : _aheadBinding(name, use)
+    },
+    _ => binding,
+  }
 };
 let _moduleBinding = fn(name: Bytes): Binding { _isLocal(name) ? Binding.Unbound : scoped(name) };
 
@@ -935,7 +1126,13 @@ export let isBound: (Bytes) -> Bool = fn(name) {
 let _isNamespace = fn(name: Bytes): Bool { match (_moduleBinding(name)) { Namespace(_, _) => true, _ => false } };
 
 let _inNamespace = fn(space: Bytes, name: Bytes): Binding {
-  match (scoped(space)) { Namespace(module, path) => namespaceMember(module, path, name), _ => Binding.Unbound }
+  match (scoped(space)) {
+    Namespace(module, path) => {
+      let at = indexOf(_prototypes, exportedType(module, name));
+      at >= 0 ? _prototypeBinding(at, name) : namespaceMember(module, path, name)
+    },
+    _ => Binding.Unbound,
+  }
 };
 
 export let callFunction: (Binding, Bytes, Array<I32>) -> I32 = fn(binding, name, args) {
@@ -945,6 +1142,24 @@ export let callFunction: (Binding, Bytes, Array<I32>) -> I32 = fn(binding, name,
       -1
     }
   }
+};
+
+export let paramNames: (Array<I32>) -> Array<Bytes> = fn(params) {
+  let names = Array.new<Bytes>(0);
+  let i = 0;
+
+  while (i < params.len()) {
+    names.push(H.typeName(params[i]));
+    i++;
+  }
+  names
+};
+
+export let useTypeParams: (Array<Bytes>, Array<I32>) -> Tuple<Array<Bytes>, Array<I32>> = fn(names, types) {
+  let outer = (_envNames, _envTypes);
+  _envNames = names;
+  _envTypes = types;
+  outer
 };
 
 export let generateFunction: (Bytes, Array<Bytes>, I32) -> I32 = fn(name, params, ty) {
@@ -963,7 +1178,14 @@ export let generateFunction: (Bytes, Array<Bytes>, I32) -> I32 = fn(name, params
   _functionDefaults.push(_NO_TYPES);
   _functionNodes.push(-1);
   _dropped.push(false);
+  _methodKinds.push(-1);
   (_functionNames.len() - 1) as I32
+};
+
+export let generateClosure: (Bytes, Array<Bytes>, I32) -> I32 = fn(name, params, ty) {
+  let index = generateFunction(name, params, ty);
+  _dropped[index] = _templateBody;
+  index
 };
 
 export let defineFunction: (I32, I32) -> Bool = fn(index, function) {
@@ -1278,6 +1500,10 @@ let _arguments = fn(function: I32, args: Array<AstExpr>, children: Array<I32>, n
   children
 };
 
+export let checkArguments: (I32, Array<AstExpr>, Bytes) -> Array<I32> = fn(function, args, name) {
+  _arguments(function, args, Array.new<I32>(0), name, -1, -1)
+};
+
 let _call = fn(op: Op, value: I32, ty: I32, args: Array<AstExpr>, children: Array<I32>, name: Bytes, index: I32, receiver: I32): I32 {
   if (!hasSpread(args)) { return H.node(op, H.innerOf(ty), value, 0, _arguments(ty, args, children, name, index, receiver)); }
   let statements = Array.new<I32>(0);
@@ -1287,14 +1513,19 @@ let _call = fn(op: Op, value: I32, ty: I32, args: Array<AstExpr>, children: Arra
 
 let _argumentMismatch = fn(message: Bytes, index: I32, i: I32, expected: I32, actual: I32): Bytes {
   let declared: ?SourceSpan = null;
-  if (index >= 0) { match (_functionSyntaxes[index]) { Node(_, _, _, children, _) => { if (i < children.len()) { declared = _spanOf(children[i]); } } }; }
+  let at = index >= 0 ? i - _receivers(index) : -1;
+  if (at >= 0) { match (_functionSyntaxes[index]) { Node(_, _, _, children, _) => { if (at < children.len()) { declared = _spanOf(children[at]); } } }; }
   noteFailure(declared, "the parameter is declared here", message + ": the parameter is " + H.typeName(expected) + ", but this argument is " + H.typeName(actual))
 };
 
-export let checkIndirectCall: (I32, Array<AstExpr>) -> I32 = fn(callee, args) {
+export let checkIndirectCall: (I32, I32, Array<AstExpr>) -> I32 = fn(callee, receiver, args) {
   let ty = H.typeOf(callee);
   if (!H.isKind(ty, Kind.Function)) { throw "call target is not a function"; }
-  _call(Op.CallIndirect, 0, ty, args, [callee], "", -1, -1)
+  _call(Op.CallIndirect, 0, ty, args, [callee], "", -1, receiver)
+};
+
+export let checkMethodCall: (I32, I32, I32, Array<AstExpr>) -> I32 = fn(callee, index, receiver, args) {
+  _call(Op.CallIndirect, 0, H.typeOf(callee), args, [callee], _functionNames[index], index, receiver)
 };
 
 let _checkDirectCall = fn(index: I32, args: Array<AstExpr>, receiver: I32): I32 {
@@ -1443,7 +1674,7 @@ let _checkBindingCall = fn(binding: Binding, name: Bytes, callee: AstExpr, typeA
     },
     _ => {
       _plainCall(typeArgs);
-      checkIndirectCall(_value(callee, 0, -1), args)
+      checkIndirectCall(_value(callee, 0, -1), -1, args)
     },
   }
 };
@@ -1649,6 +1880,15 @@ let _checkIncDec = fn(op: IncDecOp, prefix: Bool, target: AstExpr, discarded: Bo
   _binary(increment ? Op.Sub : Op.Add, ty, updated, one(ty))
 };
 
+export let prototypeNamed: (AstExpr) -> I32 = fn(expr) {
+  let ty = match (expr) {
+    Variable(name) => _isLocal(name) ? -1 : scopedType(name),
+    Member(Variable(space), name) when (_isNamespace(space)) => match (scoped(space)) { Namespace(module, _) => exportedType(module, name), _ => -1 },
+    _ => -1,
+  };
+  H.isPrototype(ty) ? ty : -1
+};
+
 let _unsupportedExpr = fn(expr: AstExpr): Bytes {
   let feature = match (expr) {
     LetExpr(_, _, _, _) => {
@@ -1656,13 +1896,8 @@ let _unsupportedExpr = fn(expr: AstExpr): Bytes {
       ""
     },
     RegExp(_, _) => "regexp values outside a match pattern are",
-    This => "`this` is",
-    Super => "`super` is",
-    Object(_) => "objects are",
     Spread(_) => "a spread here is",
     TypeApply(_, _) => "type application outside a call is",
-    New(_, _) => "`new` is",
-    Function(_, _, _, _) => "methods are",
     With(_, _, _) => "`with` expressions are",
     Await(_) => "`await` is",
     Quote(_, _), Unquote(_) => "macros are",
@@ -1673,7 +1908,7 @@ let _unsupportedExpr = fn(expr: AstExpr): Bytes {
 
 export let unsupportedStatement: (Stmt) -> Bytes = fn(statement) {
   let feature = match (statement) {
-    Prototype(_, _, _, _) => "prototypes are",
+    Prototype(_, _, _, _) => "prototypes declared inside a function are",
     Typedef(_, _, _, _) => "typedefs declared inside a function are",
     Macro(_, _, _, _) => "macros are",
     ImportModule(_, _, _), ImportFrom(_, _, _) => "imports inside a function are",
@@ -1693,7 +1928,7 @@ export let unsupportedStatement: (Stmt) -> Bytes = fn(statement) {
   feature + " not supported yet"
 };
 
-let _checkFunctionLiteral: (Array<Parameter>, Null<AstType>, AstBlock, I32) -> I32 = fn(_params, _result, _body, _expected) { -1 };
+let _checkFunctionLiteral: (Array<Parameter>, Null<AstType>, AstBlock, I32, Bool) -> I32 = fn(_params, _result, _body, _expected, _isMethod) { -1 };
 
 let _checkPipe = fn(value: AstExpr, body: AstExpr, topic: Bool, expected: I32): I32 {
   let checked = checkOperand(value, 0, -1);
@@ -1708,10 +1943,10 @@ let _checkPipe = fn(value: AstExpr, body: AstExpr, topic: Bool, expected: I32): 
         let withTopic = [AstExpr.Topic];
         appendFrom(withTopic, args, 0);
         piped = AstExpr.Call(callee, typeArgs, withTopic);
-        syntax = match (syntax) { Node(path, start, end, children, patterns) => {
+        syntax = match (syntax) { Node(path, start, end, children, _) => {
           let shifted = [children[0], _spanSyntax(path, start, end)];
           appendFrom(shifted, children, 1);
-          Syntax.Node(path, start, end, shifted, patterns)
+          _withChildren(syntax, shifted)
         } };
       },
       _ => {
@@ -1741,6 +1976,11 @@ _checkExpr = fn(expr, syntax, expected) {
     Binary(op, left, right) => _checkBinary(op, left, right, literal),
     Cast(_, _), Is(_, _) => _checkValue(expr, expected),
     Variable(name) => _checkVariable(name),
+    TypeApply(base, types) when (prototypeNamed(base) >= 0) => {
+      let named = prototypeNamed(base);
+      checkTypeArgCount(H.typeName(named), named, types.len() as I32);
+      prototypeValue(_heldFields(H.appliedType(named, _checkTypes(types))))
+    },
     Topic => _checkVariable("%"),
     Pipe(value, body, topic) => _checkPipe(value, body, topic, expected),
     Member(Variable(space), name) when (_isNamespace(space)) => _bindingValue(_inNamespace(space, name), space + "." + name),
@@ -1748,7 +1988,7 @@ _checkExpr = fn(expr, syntax, expected) {
     Call(callee, typeArgs, args) when (match (callee) { Member(Variable(space), _) => _isNamespace(space), _ => false }) => _checkCall(callee, typeArgs, args, expected),
     Call(callee, _, _) when (match (callee) { Member(_, _), TypeApply(_, _) => true, _ => false }) => _checkAggregate(expr, literal),
     Call(callee, typeArgs, args) => _checkCall(callee, typeArgs, args, expected),
-    Object(_) when (H.isRecord(H.resolve(literal))) => _checkAggregate(expr, H.resolve(literal)),
+    Object(_) => _checkAggregate(expr, H.isRecord(H.resolve(literal)) ? H.resolve(literal) : -1),
     If(_, _, elseBranch) when (_isNull(elseBranch)) => {
       throw "an if used as a value needs an else branch";
       -1
@@ -1762,7 +2002,12 @@ _checkExpr = fn(expr, syntax, expected) {
       checked
     } },
     Assign(op, target, value) => _checkAssignment(expr, op, target, value),
-    Function(params, result, body, isMethod) when (!isMethod) => _checkFunctionLiteral(params, result, body, expected),
+    Function(params, result, body, isMethod) => _checkFunctionLiteral(params, result, body, expected, isMethod),
+    This => {
+      requireThis("`this`");
+      _checkVariable("this")
+    },
+    New(_, _), Super => _checkAggregate(expr, expected),
     Atom(name) => _leaf(Op.Atom, H.TYPE_ATOM, H.bytesId(name)),
     _ => {
       throw _unsupportedExpr(expr);
@@ -1893,7 +2138,7 @@ let _withDefault = fn(defaults: Array<I32>, value: I32): Array<I32> {
   table
 };
 
-let _addFunction = fn(name: Bytes, params: Array<Parameter>, result: ?AstType, expected: I32, syntax: Syntax): I32 {
+let _addFunction = fn(name: Bytes, params: Array<Parameter>, result: ?AstType, expected: I32, syntax: Syntax, kind: I32): I32 {
   let fits = _fitsParams(params, expected);
   let names = Array.new<Bytes>(0);
   let types = Array.new<I32>(0);
@@ -1901,6 +2146,11 @@ let _addFunction = fn(name: Bytes, params: Array<Parameter>, result: ?AstType, e
   let rank = 0;
   let i = 0;
   let outer = _syntax;
+
+  if (kind >= 0) {
+    names.push("this");
+    types.push(H.isTemplateEnum(kind) ? H.appliedType(kind, H.enumParams(kind)) : kind);
+  }
 
   while (i < params.len()) {
     enterSyntax(_childOf(syntax, i));
@@ -1933,14 +2183,63 @@ let _addFunction = fn(name: Bytes, params: Array<Parameter>, result: ?AstType, e
   _functionDefaults.push(defaults);
   _functionNodes.push(-1);
   _dropped.push(_templateBody);
+  _methodKinds.push(kind);
   (_functionNames.len() - 1) as I32
 };
 
 let _declareFunction = fn(name: Bytes, value: AstExpr) {
   match (value) {
-    Function(params, result, _, _) => declareScoped(name, Binding.Function(_addFunction(name, params, result, -1, syntaxChild(0)))),
+    Function(params, result, _, _) => declareScoped(name, Binding.Function(_addFunction(name, params, result, -1, syntaxChild(0), -1))),
     _ => true,
   };
+  null
+};
+
+let _declarePrototype = fn(statement: I32, name: Bytes, ty: I32, fields: Array<PrototypeField>) {
+  let parent = -2;
+  let f = 0;
+  let typeParams = H.enumParams(ty);
+  let generic = typeParams.len() > 0;
+  _prototypes.push(ty);
+  _prototypeGlobals.push(generic ? -1 : declareStatementGlobal(name, ty, false));
+
+  if (generic) {
+    _generics.push(ty);
+    _genericModules.push(currentModule());
+    _genericStatements.push(_statements[statement]);
+    _genericSyntaxes.push(_syntax);
+    _genericPlaceholders.push(-1);
+  }
+  let (outerNames, outerTypes) = useTypeParams(paramNames(typeParams), typeParams);
+  let failure: ?Bytes = null;
+
+  try {
+    while (f < fields.len()) {
+      match (fields[f]) {
+        Field(field, Function(params, result, _, true)) => {
+          let index = _addFunction(name + "." + field, params, result, -1, syntaxChild(f), ty);
+          _dropped[index] = generic;
+          _methodIndexes.push(index);
+          _methodNames.push(field);
+          _directStatements.push(statement);
+          _directFields.push(f);
+        },
+        Field("__proto__", value) => {
+          let other = match (value) { Variable(proto) => scopedType(proto), _ => -1 };
+          parent = H.isPrototype(other) && !H.isTemplateEnum(other) ? other : -1;
+        },
+        Field("init", _) => {
+          _initFields.push(ty);
+          null
+        },
+        _ => null,
+      };
+      f++;
+    }
+  } catch (e) { failure = Std.string(e); }
+  useTypeParams(outerNames, outerTypes);
+  _prototypeParents.push(parent);
+  if (failure != null) { throw failure; }
   null
 };
 
@@ -1989,24 +2288,6 @@ export let checkTypeParams: (Array<TypeParam>, Bool) -> Array<I32> = fn(typePara
   params
 };
 
-export let paramNames: (Array<I32>) -> Array<Bytes> = fn(params) {
-  let names = Array.new<Bytes>(0);
-  let i = 0;
-
-  while (i < params.len()) {
-    names.push(H.typeName(params[i]));
-    i++;
-  }
-  names
-};
-
-export let useTypeParams: (Array<Bytes>, Array<I32>) -> Tuple<Array<Bytes>, Array<I32>> = fn(names, types) {
-  let outer = (_envNames, _envTypes);
-  _envNames = names;
-  _envTypes = types;
-  outer
-};
-
 let _newTemplate = fn(name: Bytes, typeParams: Array<TypeParam>, value: AstExpr, syntax: Syntax, bodyName: Bytes): I32 {
   let params = checkTypeParams(typeParams, true);
   let names = paramNames(params);
@@ -2018,6 +2299,13 @@ let _newTemplate = fn(name: Bytes, typeParams: Array<TypeParam>, value: AstExpr,
   (_templates.len() - 1) as I32
 };
 
+export let declareStatementGlobal = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
+  let global = H.declareGlobal(name, ty, mutable);
+  while (_globalDeclarations.len() <= global) { _globalDeclarations.push(_noSyntax()); }
+  _globalDeclarations[global] = _syntax;
+  global
+};
+
 export let declareFunctions: (Array<Stmt>) -> I32 = fn(statements) {
   let first = _functionNames.len() as I32;
   let i = 0;
@@ -2025,6 +2313,7 @@ export let declareFunctions: (Array<Stmt>) -> I32 = fn(statements) {
   _statements = statements;
   _directStatements = Array.new<I32>(0);
   _firstDirect = first;
+  _directFields = Array.new<I32>(0);
   _globals = Array.new<I32>(0);
 
   while (i < statements.len()) {
@@ -2034,6 +2323,7 @@ export let declareFunctions: (Array<Stmt>) -> I32 = fn(statements) {
       LetStmt(_, _, pattern, _, _, value, _) when (isDirectFunction(statements[i])) => {
         _declareFunction(bindPatternName(pattern), value);
         _directStatements.push(i);
+        _directFields.push(-1);
       },
       LetStmt(_, _, pattern, typeParams, _, value, _) when (isTemplate(statements[i])) => {
         let name = bindPatternName(pattern);
@@ -2045,18 +2335,24 @@ export let declareFunctions: (Array<Stmt>) -> I32 = fn(statements) {
     enterSyntax(outer);
     i++;
   }
+  i = 0;
+
+  while (i < statements.len()) {
+    match (statements[i]) {
+      Prototype(_, name, _, fields) when (H.isPrototype(scopedType(name))) => {
+        let outer = enterSyntax(syntaxChild(i));
+        _declarePrototype(i, name, scopedType(name), fields);
+        enterSyntax(outer);
+      },
+      _ => null,
+    };
+    i++;
+  }
   first
 };
 
 export let isLoaded: (AstExpr) -> Bool = fn(value) {
   match (value) { Variable(name) => match (scoped(name)) { Loaded(_, _) => true, _ => false }, _ => false }
-};
-
-export let declareStatementGlobal = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
-  let global = H.declareGlobal(name, ty, mutable);
-  while (_globalDeclarations.len() <= global) { _globalDeclarations.push(_noSyntax()); }
-  _globalDeclarations[global] = _syntax;
-  global
 };
 
 export let annotatedGlobal: (I32) -> I32 = fn(statement) {
@@ -2092,6 +2388,11 @@ _aheadBinding = fn(name, use) {
 };
 
 let _inferred = Array.new<Tuple<Bytes, Syntax, I32>>(0);
+
+export let inferLater: (Bytes, I32) -> Bool = fn(what, ty) {
+  _inferred.push((what, _syntax, ty));
+  true
+};
 
 let _annotationMismatch = fn(name: Bytes, annotated: I32, actual: I32): Bytes {
   name + " is annotated " + H.typeName(annotated) + ", but its value is " + H.typeName(actual)
@@ -2630,6 +2931,8 @@ let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> 
   let paramNames = _functionParams[index];
   let paramTypes = _functionParamTypes[index];
   let inferred = ty < 0;
+  let receivers = _receivers(index);
+  _methods.push(_methodKinds[index]);
 
   if (inferred) {
     ty = H.functionType(paramTypes, H.newVar(false));
@@ -2654,12 +2957,12 @@ let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> 
 
     while (i < paramNames.len()) {
       let paramType = H.slotType(paramTypes[i]);
-      let parent = enterSyntax(syntaxChild(i));
+      let parent = enterSyntax(i < receivers ? syntax : syntaxChild(i - receivers));
       children.push(H.node(Op.Parameter, paramType, _declare(paramNames[i], paramType, false), H.bytesId(paramNames[i]), []));
       enterSyntax(parent);
       i++;
     }
-    let first = paramNames.len() as I32;
+    let first = (paramNames.len() - receivers) as I32;
 
     match (body) { Block(statements, tail) => {
       let checked = _checkBlockBody([], statements, tail, first, -1, _RESULT_TAIL);
@@ -2695,6 +2998,7 @@ let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> 
   _frames.pop();
   _captures.pop();
   _sources.pop();
+  _methods.pop();
   _nameIds = outerNameIds;
   _ids = outerIds;
   _hidden = outerHidden;
@@ -2745,7 +3049,10 @@ let _checkIsolated = fn(index: I32, body: AstBlock, syntax: Syntax, name: Bytes,
     _declareTemplate(locals[i]);
     i++;
   }
+  let outerMethods = _methods;
+  _methods = Array.new<I32>(0);
   try { _checkFunction(index, body, syntax); } catch (e) { failure = Std.string(e); }
+  _methods = outerMethods;
   _popTo(0);
   _frames = outerFrames;
   _captures = outerCaptures;
@@ -2774,6 +3081,15 @@ checkDirect = fn(index) {
     match (_statements[statement]) {
       LetStmt(_, _, _, _, _, Function(_, _, body, _), _) =>
         _checkIsolated(index, body, _childOf(_childOf(_moduleSyntax, statement), 0), _functionNames[index], _NO_NAMES, _NO_TYPES, false, _NO_TYPES),
+      Prototype(_, name, _, fields) => {
+        let field = _directFields[index - _firstDirect];
+        let params = H.enumParams(_methodKinds[index]);
+
+        match (fields[field]) {
+          Field(_, Function(_, _, body, _)) => _checkIsolated(index, body, _childOf(_childOf(_moduleSyntax, statement), field), name, paramNames(params), params, params.len() > 0, _NO_TYPES),
+          _ => internalError("a method expected"),
+        }
+      },
       _ => internalError("a direct function expected"),
     };
   } catch (e) {
@@ -2807,7 +3123,7 @@ _checkTemplate = fn(t, local) {
       let failure: ?Bytes = null;
 
       try {
-        let index = _addFunction(name, fnParams, result, -1, syntax);
+        let index = _addFunction(name, fnParams, result, -1, syntax, -1);
         _templateFunctions[t] = index;
 
         if (local) {
@@ -2871,6 +3187,17 @@ let _instance = fn(t: I32, types: Array<I32>, depth: I32): I32 {
   } }
 };
 
+let _settleTypeArgs = fn(types: Array<I32>, params: Array<I32>, name: Bytes) {
+  let j = 0;
+
+  while (j < types.len()) {
+    types[j] = H.defaultIntegers(types[j]);
+    if (H.isOpen(types[j])) { throw "cannot infer " + H.typeName(params[j]) + " of " + name + " here; annotate it"; }
+    j++;
+  }
+  null
+};
+
 export let instantiateTemplates: () -> Bool = fn() {
   let i = 0;
 
@@ -2879,13 +3206,7 @@ export let instantiateTemplates: () -> Bool = fn() {
     let outer = enterNode(call);
 
     match (_templates[t]) { Template(name, params, _, _, _, _, _, _, _, _, _) => {
-      let j = 0;
-
-      while (j < types.len()) {
-        types[j] = H.defaultIntegers(types[j]);
-        if (H.isOpen(types[j])) { throw "cannot infer " + H.typeName(params[j]) + " of " + name + " here; annotate it"; }
-        j++;
-      }
+      _settleTypeArgs(types, params, name);
       _checkTypeArgs(t, name, types);
     } };
     H.setCallee(call, _instance(t, types, depth));
@@ -2896,8 +3217,110 @@ export let instantiateTemplates: () -> Bool = fn() {
   true
 };
 
-_checkFunctionLiteral = fn(params, result, body, expected) {
-  let index = _addFunction("fn", params, result, expected, _syntax);
+export let checkGenericPrototype: (I32, () -> I32) -> I32 = fn(ty, check) {
+  let params = H.enumParams(ty);
+  let outerTemplate = _templateBody;
+  let failure: ?Bytes = null;
+  let (outerNames, outerTypes) = useTypeParams(paramNames(params), params);
+  _templateBody = true;
+  try { check(); } catch (e) { failure = Std.string(e); }
+  useTypeParams(outerNames, outerTypes);
+  _templateBody = outerTemplate;
+  if (failure != null) { throw failure; }
+  let placeholder = H.node(Op.Block, 0, 0, 0, []);
+  _genericPlaceholders[indexOf(_generics, ty)] = placeholder;
+  placeholder
+};
+
+export let methodValue: (I32, Bytes, I32, AstBlock) -> I32 = fn(ty, name, f, body) {
+  let found = ownMethod(ty, name);
+  let index = found;
+  let generic = H.templateOf(ty) >= 0;
+  if (!generic) { checkDirect(found); }
+  let outer = enterSyntax(syntaxChild(f));
+
+  if (generic) {
+    index = generateFunction(H.typeName(ty) + "." + name, _functionParams[found], receiverMethodType(found, ty));
+    _methodKinds[index] = ty;
+    _checkIsolated(index, body, _syntax, "", _envNames, _envTypes, false, _NO_TYPES);
+  }
+  let ref = H.node(Op.FunctionRef, _functionType(index), index + 1, 0, []);
+  enterSyntax(outer);
+  ref
+};
+
+export let resolveInstanceReads: () -> Bool = fn() {
+  let i = 0;
+  let any = _openReads.len() > 0;
+
+  while (i < _openReads.len()) {
+    let (read, depth) = _openReads[i];
+    let outer = enterNode(read);
+    let template = H.templateOf(H.typeOf(read));
+    let args = H.templateArgs(H.typeOf(read));
+    _settleTypeArgs(args, H.enumParams(template), H.typeName(template));
+    H.setGlobal(read, _instanceGlobal(H.appliedType(template, args), depth));
+    enterSyntax(outer);
+    i++;
+  }
+  _openReads = Array.new<Tuple<I32, I32>>(0);
+  any
+};
+
+export let buildInstances: ((I32, Bytes, Array<PrototypeField>) -> I32) -> Bool = fn(build) {
+  let any = _built < _instances.len();
+
+  while (_built < _instances.len()) {
+    let at = _built;
+    let ty = _instances[at];
+    let template = H.templateOf(ty);
+    let g = indexOf(_generics, template);
+    let outerScope = useModuleScope(_genericModules[g]);
+    let outer = enterSyntax(_genericSyntaxes[g]);
+    if (_instanceNesting[at] > H.MAX_INSTANCE_DEPTH) { throw H.nestsTooDeep(H.typeName(template)); }
+    let (outerNames, outerTypes) = useTypeParams(paramNames(H.enumParams(template)), H.templateArgs(ty));
+    let outerDepth = _instanceDepth;
+    let failure: ?Bytes = null;
+    _instanceDepth = _instanceNesting[at];
+    _built++;
+
+    try {
+      match (_genericStatements[g]) {
+        Prototype(_, name, _, fields) => { _instanceInits[at] = build(ty, name, fields); },
+        _ => internalError("a prototype expected"),
+      };
+    } catch (e) { failure = Std.string(e); }
+    useTypeParams(outerNames, outerTypes);
+    _instanceDepth = outerDepth;
+    useModuleScope(outerScope);
+    if (failure != null) { throw failure; }
+    enterSyntax(outer);
+  }
+  any
+};
+
+export let withInstances: (Array<I32>) -> Array<I32> = fn(statements) {
+  if (_generics.len() == 0) { return statements; }
+  let out = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < statements.len()) {
+    let g = indexOf(_genericPlaceholders, statements[i]);
+    if (g < 0) { out.push(statements[i]); }
+    let j = 0;
+
+    while ((g >= 0) && (j < _instances.len())) {
+      if (H.templateOf(_instances[j]) == _generics[g]) { out.push(_instanceInits[j]); }
+      j++;
+    }
+    i++;
+  }
+  out
+};
+
+_checkFunctionLiteral = fn(params, result, body, expected, isMethod) {
+  if (isMethod && (_methodContext() < 0)) { throw "a `method fn` sees the `this` of the method around it, so it is only inside a prototype's method"; }
+  let index = _addFunction(isMethod ? "method fn" : "fn", params, result, expected, _syntax, isMethod ? -2 : -1);
   let captured = _checkFunction(index, body, _syntax);
   H.node(Op.FunctionRef, _functionType(index), index + 1, 0, captured)
 };
@@ -2971,6 +3394,25 @@ export let beginCheck: () -> Bool = fn() {
   _templateBody = false;
   _dropped = Array.new<Bool>(0);
   _captureFloor = 0;
+  _methodIndexes = Array.new<I32>(0);
+  _methodKinds = Array.new<I32>(0);
+  _methodNames = Array.new<Bytes>(0);
+  _methods = Array.new<I32>(0);
+  _prototypes = Array.new<I32>(0);
+  _prototypeGlobals = Array.new<I32>(0);
+  _prototypeParents = Array.new<I32>(0);
+  _initFields = Array.new<I32>(0);
+  _generics = Array.new<I32>(0);
+  _genericModules = Array.new<I32>(0);
+  _genericStatements = Array.new<Stmt>(0);
+  _genericSyntaxes = Array.new<Syntax>(0);
+  _genericPlaceholders = Array.new<I32>(0);
+  _instances = Array.new<I32>(0);
+  _instanceGlobals = Array.new<I32>(0);
+  _instanceInits = Array.new<I32>(0);
+  _instanceNesting = Array.new<I32>(0);
+  _openReads = Array.new<Tuple<I32, I32>>(0);
+  _built = 0;
   _aliases = Array.new<I32>(0);
   _aliasParams = Array.new<Array<I32>>(0);
   _aliasBodies = Array.new<I32>(0);
@@ -3059,7 +3501,7 @@ let _dropTemplates = fn() {
   let i = 0;
 
   while (i < _functionNodes.len()) {
-    numbers.push(kept.len());
+    numbers.push(_dropped[i] ? -1 : kept.len() as I32);
     if (!_dropped[i]) { kept.push(_functionNodes[i]); }
     i++;
   }
@@ -3078,7 +3520,7 @@ let _dropTemplates = fn() {
 export let finishProgram: (I32) -> Hir = fn(body) {
   _functionNodes.push(body);
   _dropped.push(false);
-  if (_templateFunctions.len() > 0) { _dropTemplates(); }
+  if ((_templateFunctions.len() > 0) || (_generics.len() > 0)) { _dropTemplates(); }
   _settleTypes();
   let hir = H.finishHir(H.node(Op.Program, 0, 0, 0, _functionNodes));
   _syntax = _noSyntax();

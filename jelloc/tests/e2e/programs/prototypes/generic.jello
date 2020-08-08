@@ -1,0 +1,43 @@
+// expect: ok
+// A generic prototype has an instance for each list of type arguments it is used at, with a
+// prototype Object and methods of its own; `new` infers the type arguments from `init`.
+prototype Named {
+  label(): Bytes { "named" };
+};
+typedef Box<T> = { let value: T; let next: ?Box<T>; };
+prototype Box<T> {
+  __proto__: Named;
+  made: 0;
+  init(value: T) { this.value = value; this.next = null; };
+  get(): T { this.value };
+  pair(other: T): Tuple<T, T> { (this.get(), other) };
+  push(value: T): Box<T> { let top = new Box<T>(value); top.next = this; top };
+  depth(): I32 { let at = this.next; at == null ? 1 : 1 + at.depth() };
+  label(): Bytes { "box of " + super.label() };
+};
+let wrap<T> = fn(value: T): Box<T> { new Box(value) };
+
+let a = new Box<I32>(7);
+let b = new Box("hi");
+let c = wrap(3);
+System.assert(a.get() + c.get() == 10);
+System.assert(b.pair("yo").1 == "yo");
+System.assert(a.push(8).push(9).depth() == 3);
+System.assert(b.label() == "box of named");
+// Each instance has its own prototype, which `is` tells apart.
+System.assert((a as Dynamic) is Box<I32>);
+System.assert(!((b as Dynamic) is Box<I32>));
+System.assert((c as Dynamic) is Named);
+// A method read alone is a function of its instance's types.
+let get = a.get;
+System.assert(get(c) == 3);
+// An annotation settles what `init` leaves open, and integer literals default to I32.
+let wide: Box<I64> = new Box(5);
+let w: I64 = wide.get();
+System.assert(w == 5);
+let held: Box<?Bytes> = new Box<?Bytes>(null);
+System.assert(held.value == null);
+// A default field is the prototype's own, read through any instance.
+System.assert((a.made as I32) == 0);
+match (a) { { value } => System.assert(value == 7) };
+"ok"

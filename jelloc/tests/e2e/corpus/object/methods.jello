@@ -1,11 +1,10 @@
 // expect: ok
-// pending: objects
 let o = {};
 let ka = Atom.intern("a");
 let kb = Atom.intern("b");
 o.set(ka, 1);
 o.set(kb, 2);
-let va: I32 = o.get(ka);
+let va: I32 = o.get<I32>(ka);
 System.assert(o.exists(ka));
 System.assert(o.isEmpty() == false);
 System.assert(o.len() == 2);
@@ -19,13 +18,13 @@ let other = {};
 other.set(ka, 10);
 other.set(kb, 20);
 o.merge(other);
-System.assert(o.get(ka) == 10);
+System.assert(o.get<I32>(ka) == 10);
 System.assert(o.len() == 2);
-let vb: I32 = o2.get(kb);
+let vb: I32 = o2.get<I32>(kb);
 System.assert(vb == 2);
 
 o.set(kb, 99);
-System.assert(o.get(kb) == 99);
+System.assert(o.get<I32>(kb) == 99);
 System.assert(o.remove(ka));
 System.assert(o.exists(ka) == false);
 System.assert(o.len() == 1);
@@ -37,30 +36,19 @@ o.set(ka, "x");
 System.assert(Bytes.len(o.toString()) > 2);
 
 let add: (Object, I32) -> I32 = fn(self, y) {
-  let x: I32 = self.x;
+  let x = self.x as I32;
   return x + y;
 };
 let mobj = { x: 4, add: add };
 System.assert(mobj.add(3) == 7);
 
-let f: (Object) -> I32 = fn(o) { return o.a; };
+let f: (Object) -> I32 = fn(o) { return o.a as I32; };
 System.assert(f({ a: 7 }) == 7);
 
-let init: (Object, I32) -> Object = fn(self, n) {
-  self.n = n;
-  return self;
-};
-let get: (Object) -> I32 = fn(self) { return self.n; };
 prototype P {
-  init: init;
-  get: get;
+  init(n: I32) { this.n = n; };
+  get(): I32 { this.n as I32 };
 };
 let po: P = new P(7);
-let addT<T>: (Object, T, T) -> T = fn(self, a, b) { return a + b; };
-let plain = {};
-let addT_result_i32 = addT<I32>(plain, 2, 3);
-let addT_result_bytes = addT<Bytes>(plain, "a", "b");
 System.assert(po.get() == 7);
-System.assert(addT_result_i32 == 5);
-System.assert(addT_result_bytes == "ab");
 "ok"

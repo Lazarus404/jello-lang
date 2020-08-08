@@ -1,0 +1,27 @@
+// expect: ok
+// An Object maps atoms to boxed values; its fields read as Dynamic, and it shows them in atom
+// order, :c first here.
+let x = 1;
+let key = :c;
+let o = { x, b: "two", [key]: true, ["d"]: :atom };
+o.e = 2.5;
+o[:f] = [1, 2];
+o["g"] = { nested: 1 };
+System.assert(Std.string(o) == "{c: true, x: 1, b: \"two\", d: :atom, e: 2.5, f: [object], g: {nested: 1}}");
+System.assert(o.get<I32>(:x) + 1 == 2);
+System.assert(o.get<Bytes>(:b) == "two");
+System.assert(o["c"] as Bool);
+System.assert(o.get<Atom>("d") == :atom);
+System.assert(o.get<Object>(:g).get<I32>(:nested) == 1);
+System.assert(o.zz == null);
+let read: Dynamic = o.x;
+System.assert(read as I32 == 1);
+// A write yields the value written.
+let written = o.x = 7;
+System.assert((written == 7) && (o.x as I32 == 7));
+// Objects are shared by reference and compare by identity.
+let alias = o;
+alias.x = 8;
+System.assert((o.x as I32 == 8) && (o == alias) && (o != o.copy()) && ({} != {}));
+System.assert(Std.string({}) == "{}");
+"ok"

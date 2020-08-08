@@ -1,0 +1,21 @@
+// expect: ok
+// Nothing records which prototype made an Object, so `as P` and `is P` check that it delegates
+// to P; a value of a prototype's type is one of each prototype it delegates to.
+prototype P { a: 1; };
+prototype Q { __proto__: P; };
+let q = new Q();
+let d = q as Dynamic;
+System.assert(d as P == q);
+System.assert(d as Q == q);
+System.assert(match (d) { is Q as x => x == q, _ => false });
+System.assert(match (new P() as Dynamic) { is Q => false, is P => true, _ => false });
+System.assert(match ({} as Dynamic) { is P => false, _ => true });
+let o: Object = q;
+System.assert(o as Q == q);
+System.assert(q as Object == o);
+let p: P = q;
+System.assert(p == q);
+System.assert(q as P == p);
+// The prototype itself is a value of its type.
+System.assert((P as Dynamic) is P);
+"ok"

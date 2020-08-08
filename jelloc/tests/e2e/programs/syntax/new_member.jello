@@ -1,5 +1,5 @@
-// error: 4:9: `new` is not supported yet
+// expect: 1
 // What follows `new P(...)` applies to the object: this is `(new P(1)).x`.
-let P = 1;
-let o = new P(1).x;
-0
+prototype P { init(x: I32) { this.x = x; }; };
+let x = new P(1).x;
+x as I32

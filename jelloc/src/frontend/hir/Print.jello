@@ -50,6 +50,8 @@ let _section = fn(name: Bytes, id: I32, index: I32, indent: Bytes): Bytes {
   indent + "  " + name + "\n" + _expr(childOf(id, index), indent + "    ")
 };
 
+let _key = fn(id: I32): Bytes { valueOf(id) < 0 ? "" : " :" + bytesOf(valueOf(id)) };
+
 let _catch = fn(id: I32): Bytes { valueOf(id) < 0 ? "catch" : "catch %" + _id(id) + " " + bytesOf(auxOf(id)) + ": Dynamic" };
 
 _expr = fn(id, indent) {
@@ -70,6 +72,14 @@ _expr = fn(id, indent) {
     SetField => _operation("field.set " + _id(id), id, indent),
     EnumNew => _operation("enum.new " + variantName(typeOf(id), valueOf(id)), id, indent),
     EnumTag => _operation("enum.tag", id, indent),
+    ObjectNew => _operation("object.new", id, indent),
+    ObjectGet => _operation("object.get" + _key(id), id, indent),
+    ObjectSet => _operation("object.set" + _key(id), id, indent),
+    ObjectHas => _operation("object.has" + _key(id), id, indent),
+    ObjectRemove => _operation("object.remove", id, indent),
+    ObjectClear => _operation("object.clear", id, indent),
+    ObjectCopy => _operation("object.copy", id, indent),
+    ObjectKeys => _operation("object.keys", id, indent),
     EnumField => _operation("enum.field " + variantName(typeOf(childOf(id, 0)), auxOf(id)) + "." + _id(id), id, indent),
     Call => _operation("call @" + _id(id), id, indent),
     CallIndirect => _operation("call.indirect", id, indent),

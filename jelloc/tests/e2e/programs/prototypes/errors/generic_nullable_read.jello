@@ -1,0 +1,8 @@
+// error: 8:20: c is annotated Box<?I32>, but its value is Box<Unknown>
+typedef Box<T> = { let value: T; };
+prototype Box<T> {
+  set(v: T) { this.value = v; };
+};
+let b = new Box();
+let v = b.value;
+let c: Box<?I32> = b;

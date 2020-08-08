@@ -1,0 +1,9 @@
+// trap: TYPE_MISMATCH 9:1
+// A typed field is checked as it is read, so a value of another type written through an Object
+// traps rather than being read as the field's type.
+typedef Point = { let x: I32; };
+prototype Point { x: 0; };
+let p = new Point();
+let o: Object = p;
+o.x = "one";
+p.x + 1

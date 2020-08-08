@@ -4,8 +4,8 @@ import type { Hir } from frontend.hir.Hir;
 import type { SourceSpan } from frontend.syntax.Source;
 import { internalError } from support.Internal;
 import {
-  KIND_ATOM, KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_I32, KIND_I64, Kind, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, TYPE_U64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
-  fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, integerBits, isFloatKind, isFloatType, isKind, isNumberType, kindOf, memberCount, memberType, nativeCount, nativeTypeOf, nodeCount, opOf, rootNode, spanCount, spanEndOf, spanPathOf,
+  KIND_ATOM, KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_I32, KIND_I64, KIND_OBJECT, Kind, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, TYPE_OBJECT, TYPE_U64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
+  fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, integerBits, isFloatKind, isFloatType, isKind, isNumberType, isObject, isPrototype, kindOf, memberCount, memberType, nativeCount, nativeTypeOf, nodeCount, opOf, readsExactly, rootNode, spanCount, spanEndOf, spanPathOf,
   segmentType, slotType, spanOf, spanStartOf, typeArg, typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.hir.Hir;
 
@@ -267,6 +267,25 @@ let _boxable = fn(ty: I32, what: Bytes): Bool {
   true
 };
 
+let _extractable = fn(ty: I32): Bool { match (kindOf(ty)) { Bool, I32, I64, F16, F32, F64, Atom, Bytes, Enum, Object => true, _ => false } };
+
+let _upcast = fn(ty: I32, source: I32): Bool { isObject(ty) && isPrototype(source) };
+
+let _objectOperand = fn(id: I32, count: I32) {
+  _arity(id, count);
+  if (!isObject(_operand(id, 0))) { _fail("object operand type"); }
+  null
+};
+
+let _objectAccess = fn(id: I32, extra: I32): I32 {
+  let keyed = valueOf(id) < 0;
+  if (!keyed && (valueOf(id) >= bytesCount())) { _fail("object key name index"); }
+  _arity(id, (keyed ? 2 : 1) + extra);
+  if (!isObject(_operand(id, 0))) { _fail("object access of a non-object"); }
+  if (keyed && (_operand(id, 1) != TYPE_ATOM)) { _fail("object key type"); }
+  extra > 0 ? _operand(id, keyed ? 2 : 1) : TYPE_OBJECT
+};
+
 let _width = fn(ty: I32): I32 { isNumberType(ty) ? ty : TYPE_I32 };
 
 let _typed = fn(id: I32, operands: Array<I32>, result: I32, message: Bytes): I32 {
@@ -357,7 +376,10 @@ _expr = fn(id) {
       _typed(id, [width, width], width, "number operation requires operands of its type")
     },
     Eq when ((childCount(id) > 0) && (typeOf(childOf(id, 0)) == TYPE_BOOL)) => _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "bool equality requires bool operands"),
-    Eq when ((childCount(id) > 0) && (typeOf(childOf(id, 0)) == TYPE_ATOM)) => _typed(id, [TYPE_ATOM, TYPE_ATOM], TYPE_BOOL, "atom equality requires atom operands"),
+    Eq when ((childCount(id) > 0) && ((typeOf(childOf(id, 0)) == TYPE_ATOM) || isObject(typeOf(childOf(id, 0))))) => {
+      let t = typeOf(childOf(id, 0));
+      _typed(id, [t, t], TYPE_BOOL, "identity equality requires operands of one type")
+    },
     Eq when ((childCount(id) > 0) && isKind(typeOf(childOf(id, 0)), Kind.Function)) => {
       let f = typeOf(childOf(id, 0));
       _typed(id, [f, f], TYPE_BOOL, "function equality requires operands of one function type")
@@ -379,7 +401,8 @@ _expr = fn(id) {
     Convert => {
       _arity(id, 1);
       let source = _operand(id, 0);
-      if (!isNumberType(ty) || !isNumberType(source)) { _fail("number conversion type"); }
+      let objects = (isKind(ty, Kind.Null) && isKind(source, Kind.Null)) ? _upcast(innerOf(ty), innerOf(source)) : _upcast(ty, source);
+      if (!(isNumberType(ty) && isNumberType(source)) && !objects) { _fail("conversion type"); }
       ty
     },
     Present => {
@@ -397,12 +420,12 @@ _expr = fn(id) {
       TYPE_DYNAMIC
     },
     FromDynamic => {
-      if (!match (kindOf(ty)) { Bool, I32, I64, F16, F32, F64, Atom, Bytes, Enum => true, _ => false }) { _fail("extraction from Dynamic to an unchecked type"); }
+      if (!_extractable(ty)) { _fail("extraction from Dynamic to an unchecked type"); }
       _typed(id, [TYPE_DYNAMIC], ty, "extraction requires a Dynamic operand")
     },
     IsKind => {
       let code = valueOf(id);
-      let known = (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64) || (code == KIND_ATOM) || isFloatKind(code)
+      let known = (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64) || (code == KIND_ATOM) || (code == KIND_OBJECT) || isFloatKind(code)
         || ((code == KIND_ENUM) && isKind(auxOf(id), Kind.Enum));
       if (!known) { _fail("kind test of an unknown kind"); }
       _typed(id, [TYPE_DYNAMIC], TYPE_BOOL, "kind test requires a Dynamic operand")
@@ -569,6 +592,39 @@ _expr = fn(id) {
     Atom => {
       if ((valueOf(id) < 0) || (valueOf(id) >= bytesCount())) { _fail("atom name index"); }
       _typed(id, [], TYPE_ATOM, "")
+    },
+    ObjectNew => {
+      _arity(id, 0);
+      if (!isObject(ty)) { _fail("object type"); }
+      ty
+    },
+    ObjectGet => {
+      _objectAccess(id, 0);
+      if ((ty != TYPE_DYNAMIC) && !readsExactly(ty)) { _fail("object read as an unchecked type"); }
+      ty
+    },
+    ObjectSet => {
+      let value = _objectAccess(id, 1);
+      _boxable(value, "a ByteBuffer or list stored in an object");
+      value
+    },
+    ObjectHas => {
+      _objectAccess(id, 0);
+      TYPE_BOOL
+    },
+    ObjectRemove => {
+      _objectOperand(id, 2);
+      if (_operand(id, 1) != TYPE_ATOM) { _fail("object key type"); }
+      TYPE_BOOL
+    },
+    ObjectClear, ObjectCopy => {
+      _objectOperand(id, 1);
+      TYPE_OBJECT
+    },
+    ObjectKeys => {
+      if (!isKind(ty, Kind.Array) || (innerOf(ty) != TYPE_ATOM)) { _fail("object keys type"); }
+      _objectOperand(id, 1);
+      ty
     },
     _ => {
       _fail("expected expression");

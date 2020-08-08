@@ -1,0 +1,6 @@
+// error: 6:37: field value of Box<ByteBuffer> is ByteBuffer, which a prototype's Object cannot hold as itself
+typedef Box<T> = { let value: T; };
+prototype Box<T> {
+  init(value: T) { this.value = value; };
+};
+let make = fn(buffer: ByteBuffer) { new Box(buffer) };

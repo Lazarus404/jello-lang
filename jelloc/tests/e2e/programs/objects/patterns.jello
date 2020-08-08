@@ -1,0 +1,15 @@
+// expect: ok
+// An Object pattern matches an Object that has every field it names; each field reads as a
+// Dynamic, and `...rest` binds a copy without them.
+let o = { a: 1, b: "x", c: true };
+let first = match (o) { { z } => "z", { a: is I32 as n, ...rest } => Std.string(n) + Std.string(rest), _ => "none" };
+System.assert(first == "1{b: \"x\", c: true}");
+System.assert(o.len() == 3);
+let { b: text } = o else { throw "no b"; };
+System.assert(text as Bytes == "x");
+let nested = { inner: { d: 4 } };
+let d = if (let { inner: is Object as inner } = nested) { inner.get<I32>(:d) } else { 0 };
+System.assert(d == 4);
+let missing = match ({}) { { a } => "a", { ..._ } => "empty" };
+System.assert(missing == "empty");
+"ok"

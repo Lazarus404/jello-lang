@@ -1,0 +1,28 @@
+package std.core;
+
+export let len = fn(o: Object): I32 { o.keys().len() };
+
+export let isEmpty = fn(o: Object): Bool { len(o) == 0 };
+
+export let merge = fn(o: Object, other: Object): Object {
+  let keys = other.keys();
+  let i = 0;
+
+  while (i < keys.len()) {
+    o[keys[i]] = other[keys[i]];
+    i++;
+  }
+  o
+};
+
+export let values = fn(o: Object): Array<Dynamic> {
+  let keys = o.keys();
+  let out = Array.new<Dynamic>(0);
+  let i = 0;
+
+  while (i < keys.len()) {
+    out.push(o[keys[i]]);
+    i++;
+  }
+  out
+};
