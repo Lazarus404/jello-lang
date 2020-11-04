@@ -1,6 +1,8 @@
-// error: 3:6: regexp patterns are not supported in with clauses
-// pending: the diagnostic: expected pattern
-with when ~r/a+/ <- "abc" {
-  1
-};
+// expect: ok
+import { group } from std.core.RegExp;
+let found = with when ~r/a+/ as m <- "aab" { group(m, 0) };
+System.assert(found == "aa");
+// A clause that fails gives the value it tested.
+let missed = with when ~r/a+/ <- "bcd" { "matched" };
+System.assert(missed == "bcd");
 "ok"

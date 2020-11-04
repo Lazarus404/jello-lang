@@ -4,6 +4,7 @@ import type { BytesLayoutField, BytesLayoutType, Stmt, StructField, TypeParam } 
 import { BitValueKind } from frontend.syntax.Ast;
 import { placeSegments, segmentCode } from frontend.semantics.Bits;
 import { indexOf } from support.Arrays;
+import { E0302, E0605, E0804, coded } from support.Codes;
 import { checkFields, defineEnums } from frontend.semantics.Enums;
 import { declareEnum, declareGenericEnum, declareGenericPrototype, declareGenericRecord, declareLayout, declarePrototype, declareRecord, defineVariants, enumParams, isParametric, isPrototype, layoutCodes, readsTyped, segmentType, typeName } from frontend.hir.Hir;
 import { declareScopedType, exportScopedType, scopedType } from frontend.semantics.ModuleScope;
@@ -29,7 +30,7 @@ let _declareAlias = fn(alias: I32) {
 
   match (_statements[_aliases[alias]]) {
     Typedef(exported, name, typeParams, Alias(body)) => {
-      if (_states[alias] == 1) { throw "typedef " + name + " refers to itself"; }
+      if (_states[alias] == 1) { throw coded(E0804, "typedef " + name + " refers to itself"); }
       _states[alias] = 1;
       let parent = enterSyntax(_syntaxes[alias]);
       let params = checkTypeParams(typeParams, false);
@@ -65,7 +66,7 @@ let _defineRecord = fn(name: Bytes, names: Array<Bytes>, types: Array<I32>) {
   let f = 0;
 
   while (f < names.len()) {
-    if (indexOf(names, names[f]) < f) { throw "duplicate field " + names[f] + " of " + name; }
+    if (indexOf(names, names[f]) < f) { throw coded(E0302, "duplicate field " + names[f] + " of " + name); }
     f++;
   }
   defineVariants(scopedType(name), [name], [names], [types]);
@@ -103,7 +104,7 @@ let _defineStruct = fn(name: Bytes, fields: Array<StructField>) {
   let f = isPrototype(scopedType(name)) ? 0 : types.len();
 
   while (f < types.len()) {
-    if (!isParametric(types[f]) && !readsTyped(types[f])) { throw "field " + names[f] + " of typedef " + name + " is " + typeName(types[f]) + ", which a prototype's Object cannot hold as itself"; }
+    if (!isParametric(types[f]) && !readsTyped(types[f])) { throw coded(E0804, "field " + names[f] + " of typedef " + name + " is " + typeName(types[f]) + ", which a prototype's Object cannot hold as itself"); }
     f++;
   }
   _defineRecord(name, names, types)
@@ -147,8 +148,8 @@ let _linksPrototype = fn(statement: I32, name: Bytes, exported: Bool, params: Ar
     match (_statements[i]) {
       Typedef(_, declared, _, Struct(_)) when ((declared == name) && ((i as I32) < statement)) => { return false; },
       Prototype(other, declared, typeParams, _) when (declared == name) => {
-        if (other != exported) { throw "typedef " + name + " and prototype " + name + " are linked, so both or neither must be exported"; }
-        if (_paramKey(typeParams) != _paramKey(params)) { throw "typedef " + name + " and prototype " + name + " are linked, so they must take the same type parameters"; }
+        if (other != exported) { throw coded(E0804, "typedef " + name + " and prototype " + name + " are linked, so both or neither must be exported"); }
+        if (_paramKey(typeParams) != _paramKey(params)) { throw coded(E0804, "typedef " + name + " and prototype " + name + " are linked, so they must take the same type parameters"); }
         linked = true;
       },
       _ => null,
@@ -206,7 +207,7 @@ export let declareTypes: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, modul
       },
       Typedef(exported, name, typeParams, BytesLayout(fields)) => {
         let parent = enterSyntax(syntaxChild(i));
-        if (typeParams.len() != 0) { throw "a bytes layout takes no type parameters"; }
+        if (typeParams.len() != 0) { throw coded(E0605, "a bytes layout takes no type parameters"); }
         _declare(name, exported, _declareLayout(name, fields));
         enterSyntax(parent);
       },

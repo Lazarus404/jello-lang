@@ -1,0 +1,200 @@
+package support;
+
+import { concatAll, hexValue, u8, utf8FromCodepoint } from support.Text;
+
+export enum Json {
+  Null(at: I32);
+  Bool(at: I32, value: Bool);
+  Number(at: I32, text: Bytes);
+  Text(at: I32, value: Bytes);
+  List(at: I32, items: Array<Json>);
+  Object(at: I32, keys: Array<Bytes>, values: Array<Json>);
+}
+
+export let jsonAt = fn(value: Json): I32 {
+  match (value) { Null(at), Bool(at, _), Number(at, _), Text(at, _), List(at, _), Object(at, _, _) => at }
+};
+
+export let jsonField = fn(value: Json, key: Bytes): ?Json {
+  match (value) {
+    Object(_, keys, values) => {
+      let i = keys.len() - 1;
+
+      while (i >= 0) {
+        if (keys[i] == key) { return values[i]; }
+        i--;
+      }
+      null
+    },
+    _ => null,
+  }
+};
+
+let _text = "";
+let _pos = 0;
+
+let _errorAt = -1;
+
+let _fail = fn(at: I32, message: Bytes): Json {
+  _errorAt = at;
+  throw message;
+  Json.Null(at)
+};
+
+let _peek = fn(): I32 { _pos < _text.len() ? Bytes.get_u8(_text, _pos) : -1 };
+
+let _skipSpace = fn() {
+  while ((_peek() == 32) || (_peek() == 9) || (_peek() == 10) || (_peek() == 13)) { _pos++; }
+  null
+};
+
+let _accept = fn(word: Bytes): Bool {
+  if ((_pos + word.len() <= _text.len()) && (Bytes.slice(_text, _pos, word.len()) == word)) {
+    _pos += word.len();
+    return true;
+  }
+  false
+};
+
+let _codeUnit = fn(): I32 {
+  let unit = 0;
+  let i = 0;
+
+  while (i < 4) {
+    let digit = hexValue(_peek());
+    if (digit < 0) { _fail(_pos, "expected four hex digits after \\u"); }
+    unit = unit * 16 + digit;
+    _pos++;
+    i++;
+  }
+  unit
+};
+
+let _string = fn(): Bytes {
+  let start = _pos;
+  _pos++;
+  let parts = Array.new<Bytes>(0);
+  let run = _pos;
+
+  while (_peek() != "\"".code) {
+    let c = _peek();
+    if (c < 0) { _fail(start, "unterminated string"); }
+    if (c < 32) { _fail(_pos, "control character in string"); }
+
+    if (c == "\\".code) {
+      parts.push(Bytes.slice(_text, run, _pos - run));
+      let escape = _pos;
+      _pos++;
+      let e = _peek();
+      _pos++;
+      parts.push(match (e) {
+        "\"".code => "\"", "\\".code => "\\", "/".code => "/",
+        "b".code => u8(8), "f".code => u8(12), "n".code => "\n", "r".code => "\r", "t".code => "\t",
+        "u".code => {
+          let unit = _codeUnit();
+          if ((unit >= 0xDC00) && (unit <= 0xDFFF)) { _fail(escape, "lone surrogate in \\u escape"); }
+
+          if ((unit >= 0xD800) && (unit <= 0xDBFF)) {
+            if (!_accept("\\u")) { _fail(escape, "lone surrogate in \\u escape"); }
+            let low = _codeUnit();
+            if ((low < 0xDC00) || (low > 0xDFFF)) { _fail(escape, "lone surrogate in \\u escape"); }
+            unit = 0x10000 + (unit - 0xD800) * 1024 + (low - 0xDC00);
+          }
+          utf8FromCodepoint(unit)
+        },
+        _ => {
+          _fail(escape, "unknown escape in string");
+          ""
+        },
+      });
+      run = _pos;
+    } else {
+      _pos++;
+    }
+  }
+  parts.push(Bytes.slice(_text, run, _pos - run));
+  _pos++;
+  concatAll(parts)
+};
+
+let _digits = fn(): I32 {
+  let start = _pos;
+  while ((_peek() >= "0".code) && (_peek() <= "9".code)) { _pos++; }
+  _pos - start
+};
+
+let _number = fn(): Json {
+  let start = _pos;
+  _accept("-");
+  let first = _peek();
+  let count = _digits();
+  if (count == 0) { _fail(start, "expected a value"); }
+  if ((first == "0".code) && (count > 1)) { _fail(start, "a number cannot start with 0"); }
+  if (_accept(".") && (_digits() == 0)) { _fail(_pos, "expected digits after ."); }
+
+  if ((_peek() == "e".code) || (_peek() == "E".code)) {
+    _pos++;
+    if (!_accept("+")) { _accept("-"); }
+    if (_digits() == 0) { _fail(_pos, "expected digits in exponent"); }
+  }
+  Json.Number(start, Bytes.slice(_text, start, _pos - start))
+};
+
+let _value: () -> Json = fn() {
+  _skipSpace();
+  let start = _pos;
+
+  match (_peek()) {
+    "{".code => {
+      _pos++;
+      _skipSpace();
+      let keys = Array.new<Bytes>(0);
+      let values = Array.new<Json>(0);
+      if (_accept("}")) { return Json.Object(start, keys, values); }
+
+      while (true) {
+        _skipSpace();
+        if (_peek() != "\"".code) { _fail(_pos, "expected a string key"); }
+        keys.push(_string());
+        _skipSpace();
+        if (!_accept(":")) { _fail(_pos, "expected : after key"); }
+        values.push(_value());
+        _skipSpace();
+        if (_accept("}")) { return Json.Object(start, keys, values); }
+        if (!_accept(",")) { _fail(_pos, "expected , or } in object"); }
+      }
+      Json.Null(start)
+    },
+    "[".code => {
+      _pos++;
+      _skipSpace();
+      let items = Array.new<Json>(0);
+      if (_accept("]")) { return Json.List(start, items); }
+
+      while (true) {
+        items.push(_value());
+        _skipSpace();
+        if (_accept("]")) { return Json.List(start, items); }
+        if (!_accept(",")) { _fail(_pos, "expected , or ] in array"); }
+      }
+      Json.Null(start)
+    },
+    "\"".code => Json.Text(start, _string()),
+    _ => {
+      if (_accept("null")) { Json.Null(start) } else if (_accept("true")) { Json.Bool(start, true) } else if (_accept("false")) { Json.Bool(start, false) } else { _number() }
+    },
+  }
+};
+
+export let parseJson = fn(text: Bytes): Tuple<?Json, Bytes, I32> {
+  _text = text;
+  _pos = 0;
+  _errorAt = -1;
+
+  try {
+    let value = _value();
+    _skipSpace();
+    if (_pos < _text.len()) { _fail(_pos, "unexpected text after the value"); }
+    (value, "", -1)
+  } catch (e) { (null, Std.string(e), _errorAt) }
+};

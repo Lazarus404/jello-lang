@@ -6,6 +6,7 @@ import frontend.hir.Hir as H;
 import { BITS_BIG, BITS_FLOAT, Op, segmentType, segmentWidth } from frontend.hir.Hir;
 import { i32Of, lengthTest } from frontend.semantics.Derived;
 import { checkOperand, enterSyntax, syntaxChild, widened } from frontend.semantics.TypeCheck;
+import { E0007, E0104, E0400, coded } from support.Codes;
 
 export let segmentCode: (I32, Endian, BitValueKind) -> I32 = fn(width, endian, kind) {
   width + (match (endian) { Big => BITS_BIG, Little => 0 }) + (match (kind) { Float => BITS_FLOAT, _ => 0 })
@@ -23,17 +24,17 @@ export let placeSegments: (Array<I32>) -> Tuple<Array<I32>, I32> = fn(codes) {
       let later = i + 1;
 
       while (later < codes.len()) {
-        if (segmentWidth(codes[later]) == 0) { throw "a bits value has at most one rest segment"; }
+        if (segmentWidth(codes[later]) == 0) { throw coded(E0104, "a bits value has at most one rest segment"); }
         later++;
       }
-      if (later > i + 1) { throw "a rest segment must be the last"; }
+      if (later > i + 1) { throw coded(E0104, "a rest segment must be the last"); }
     }
-    if (((width == 0) || (width >= 8)) && (bit % 8 != 0)) { throw "a segment of 8 or more bits, or a rest, must start on a byte boundary"; }
+    if (((width == 0) || (width >= 8)) && (bit % 8 != 0)) { throw coded(E0104, "a segment of 8 or more bits, or a rest, must start on a byte boundary"); }
     offsets.push(bit);
     bit += width;
     i++;
   }
-  if (bit % 8 != 0) { throw "the segments of a bits value must fill whole bytes"; }
+  if (bit % 8 != 0) { throw coded(E0104, "the segments of a bits value must fill whole bytes"); }
   (offsets, bit / 8)
 };
 
@@ -43,7 +44,7 @@ export let checkSegmentLiteral: (I32, Bool, Bytes, Bool) -> Bool = fn(code, sign
   let value = wideIntegerValue(digits, negative);
 
   if ((value < 0) || (value >= ((1 as I64) << (width as I64)))) {
-    throw (negative ? "-" : "") + digits + " does not fit in " + Std.string(width) + (width == 1 ? " bit" : " bits");
+    throw coded(E0007, (negative ? "-" : "") + digits + " does not fit in " + Std.string(width) + (width == 1 ? " bit" : " bits"));
   }
   true
 };
@@ -109,7 +110,7 @@ export let checkBits: (Array<BitExprSegment>) -> I32 = fn(segments) {
 
       if (H.typeOf(checked) != ty) {
         enterSyntax(syntaxChild(i));
-        throw "this segment holds " + H.typeName(ty) + ", not " + H.typeName(H.typeOf(checked));
+        throw coded(E0400, "this segment holds " + H.typeName(ty) + ", not " + H.typeName(H.typeOf(checked)));
       }
       values.push(checked);
     } };

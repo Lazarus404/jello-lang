@@ -1,5 +1,6 @@
 package frontend.syntax;
 
+import { E0007, coded } from support.Codes;
 import { internalError } from support.Internal;
 
 export enum IntSize {
@@ -342,7 +343,7 @@ let _digitValue = fn(c: I32): I32 {
 };
 
 let _outOfRange = fn(text: Bytes, negative: Bool, range: Bytes): Bytes {
-  "integer literal " + (negative ? "-" : "") + text + " is out of range for " + range
+  coded(E0007, "integer literal " + (negative ? "-" : "") + text + " is out of range for " + range)
 };
 
 let _digits = fn(text: Bytes): Tuple<I32, I32, Bool> {

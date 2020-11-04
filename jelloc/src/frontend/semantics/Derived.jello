@@ -8,6 +8,7 @@ import { Kind, Op } from frontend.hir.Hir;
 import { equalValues } from frontend.semantics.Values;
 import { Binding } from frontend.semantics.ModuleScope;
 import { bufferHint, callFunction, defineFunction, enterSyntax, generateFunction, inTemplate, isNullaryVariant, needsBound, newBinding, syntaxChild, unknownType } from frontend.semantics.TypeCheck;
+import { E0500, coded } from support.Codes;
 
 let _deciding = Array.new<I32>(0);
 let _unsupported: (I32, Bool) -> I32 = fn(_ty, _printing) { -1 };
@@ -202,7 +203,7 @@ let _equalBody = fn(params: Array<I32>, ty: I32): Array<I32> {
 export let structuralEquality: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
   let ty = H.defaultIntegers(H.typeOf(left));
   let bad = _unsupported(ty, false);
-  if (bad >= 0) { throw "operator == is not defined for " + H.typeName(ty) + ", which holds " + H.typeName(bad) + _boundHint(bad, false); }
+  if (bad >= 0) { throw coded(E0500, "operator == is not defined for " + H.typeName(ty) + ", which holds " + H.typeName(bad) + _boundHint(bad, false)); }
   let equal = inTemplate() ? H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [left, right])
     : H.isKind(ty, Kind.Enum) && _tagOnly(ty) ? H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(left), _tag(right)])
     : callFunction(Binding.Function(_derived(_equalTypes, _equalFunctions, "equal", ["left", "right"], ty, H.TYPE_BOOL, _equalBody)), "equal", [left, right]);
@@ -372,7 +373,7 @@ export let printed: (I32, Bytes, I32) -> I32 = fn(value, what, at) {
 
   if (bad >= 0) {
     if (at >= 0) { enterSyntax(syntaxChild(at)); }
-    throw what + " cannot print " + H.typeName(ty) + (bad == ty ? "" : ", which holds " + H.typeName(bad)) + bufferHint(bad) + _boundHint(bad, true);
+    throw coded(E0500, what + " cannot print " + H.typeName(ty) + (bad == ty ? "" : ", which holds " + H.typeName(bad)) + bufferHint(bad) + _boundHint(bad, true));
   }
   _shown(value, false)
 };

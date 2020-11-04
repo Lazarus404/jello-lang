@@ -1,0 +1,428 @@
+package support;
+
+import { joined } from support.Text;
+
+export let E0001 = "E0001";
+export let E0002 = "E0002";
+export let E0003 = "E0003";
+export let E0004 = "E0004";
+export let E0005 = "E0005";
+export let E0006 = "E0006";
+export let E0007 = "E0007";
+export let E0008 = "E0008";
+
+export let E0100 = "E0100";
+export let E0101 = "E0101";
+export let E0102 = "E0102";
+export let E0103 = "E0103";
+export let E0104 = "E0104";
+export let E0105 = "E0105";
+export let E0106 = "E0106";
+export let E0107 = "E0107";
+export let E0108 = "E0108";
+
+export let E0200 = "E0200";
+export let E0201 = "E0201";
+export let E0202 = "E0202";
+export let E0203 = "E0203";
+export let E0204 = "E0204";
+export let E0205 = "E0205";
+export let E0206 = "E0206";
+export let E0207 = "E0207";
+export let E0208 = "E0208";
+export let E0209 = "E0209";
+export let E0210 = "E0210";
+export let E0211 = "E0211";
+export let E0212 = "E0212";
+export let E0213 = "E0213";
+export let E0214 = "E0214";
+
+export let E0300 = "E0300";
+export let E0301 = "E0301";
+export let E0302 = "E0302";
+export let E0303 = "E0303";
+export let E0304 = "E0304";
+export let E0305 = "E0305";
+export let E0306 = "E0306";
+export let E0307 = "E0307";
+export let E0308 = "E0308";
+
+export let E0400 = "E0400";
+export let E0401 = "E0401";
+export let E0402 = "E0402";
+export let E0403 = "E0403";
+export let E0404 = "E0404";
+export let E0405 = "E0405";
+export let E0406 = "E0406";
+export let E0407 = "E0407";
+export let E0408 = "E0408";
+export let E0409 = "E0409";
+export let E0410 = "E0410";
+export let E0411 = "E0411";
+export let E0412 = "E0412";
+
+export let E0500 = "E0500";
+export let E0501 = "E0501";
+
+export let E0600 = "E0600";
+export let E0601 = "E0601";
+export let E0602 = "E0602";
+export let E0603 = "E0603";
+export let E0604 = "E0604";
+export let E0605 = "E0605";
+
+export let E0700 = "E0700";
+export let E0701 = "E0701";
+export let E0702 = "E0702";
+export let E0703 = "E0703";
+export let E0704 = "E0704";
+export let E0705 = "E0705";
+export let E0706 = "E0706";
+
+export let E0800 = "E0800";
+export let E0801 = "E0801";
+export let E0802 = "E0802";
+export let E0803 = "E0803";
+export let E0804 = "E0804";
+export let E0805 = "E0805";
+export let E0806 = "E0806";
+export let E0807 = "E0807";
+export let E0808 = "E0808";
+export let E0809 = "E0809";
+
+export let E0900 = "E0900";
+export let E0901 = "E0901";
+
+let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
+  (E0001, "the source is not valid UTF-8",
+    "A source file must be UTF-8. The error points at the first byte that starts no valid "
+    + "UTF-8 sequence; save the file as UTF-8."),
+  (E0002, "a character that starts no token",
+    "The character can begin no token, such as a control character outside a literal or "
+    + "a comment. Remove it, or write it inside a bytes literal."),
+  (E0003, "a malformed number literal",
+    "A number literal has no digits after its radix prefix, as `0x` has none, or runs into "
+    + "a letter, digit or dot that cannot follow it, as in `12abc`. Complete the literal, or "
+    + "separate it from what follows."),
+  (E0004, "an invalid escape",
+    "A backslash in a bytes literal or a template starts an escape. The escapes are \\0, \\a, "
+    + "\\b, \\f, \\n, \\r, \\t, a quote or backslash after a backslash, \\xHH for any byte, and "
+    + "\\uHHHH or \\u{H...} (one to six hex digits) for a Unicode scalar value, which is no "
+    + "surrogate and at most 10FFFF. Write a literal backslash as \\\\."),
+  (E0005, "an unterminated literal or comment",
+    "A bytes literal, regexp literal, template or block comment runs to the end of its "
+    + "line, or of the file, without its closing delimiter. A bytes literal ends on the line "
+    + "it starts; a template and a block comment may span lines. Close it."),
+  (E0006, "a backslash ends a template's line",
+    "A backslash cannot be the last character of a line in a template, where it would "
+    + "escape the newline. Write \\n for a newline, or move the backslash."),
+  (E0007, "a literal does not fit its type",
+    "A number literal's value is not a value of the type it has: it is out of the type's "
+    + "range, or, for an integer given a float type, not exactly representable. A bits "
+    + "segment's literal must fit the segment's width. Use a wider type, or a smaller "
+    + "value; `let big: I64 = 3000000000;`."),
+  (E0008, "`.code` needs exactly one character",
+    "`\"A\".code` is the code point of a literal of one Unicode character. The literal has "
+    + "none, or more than one."),
+
+  (E0100, "a syntax error",
+    "The parser found a token where the grammar allows none of that kind; the message "
+    + "says what it expected. The fault is often just before the place shown, such as a "
+    + "missing `;`, `)` or `}`."),
+  (E0101, "a trailing comma",
+    "A list of arguments, parameters, array items or function type parameters cannot end "
+    + "with a comma. Remove it; `f(1, 2)`, not `f(1, 2,)`."),
+  (E0102, "parameters in the wrong order",
+    "Required parameters come first, then those with defaults, then optional `?x` "
+    + "parameters, and a varargs parameter, `xs: T...`, is last; it takes no `?` and no "
+    + "default. A function type's `T...` is likewise its last parameter."),
+  (E0103, "an invalid assignment target",
+    "Only a variable, an array or buffer element, or a record's or an Object's field can "
+    + "be assigned, and only those of them that hold integers incremented. "
+    + "A tuple's fields cannot be assigned; build a new tuple instead."),
+  (E0104, "an invalid bits segment",
+    "In a bytes layout or a bits value, segments must fill whole bytes: a segment of 8 "
+    + "bits or more, or a rest, starts on a byte boundary, there is at most one rest, and "
+    + "it is last. Widths are 1 to 8, 16 or 32 bits; `le` or `be` goes on wider segments, "
+    + "not on `u8` or a rest."),
+  (E0105, "a `let ... else` misused",
+    "Only a `let` whose pattern can fail takes an `else`, as in "
+    + "`let [first, ..._] = xs else { return 0; };`, and the `else` must leave by `return`, "
+    + "`throw`, `break` or `continue`, since the names would otherwise be unbound. A `let` "
+    + "of one name cannot fail, so it takes none."),
+  (E0106, "a pipeline misused",
+    "`%` names the value of a pipeline, `value |> body`, so it is only in a pipeline's "
+    + "body. A body that does not use `%` must be a call, which takes the value as its "
+    + "first argument; `5 |> double()`."),
+  (E0107, "a declaration that cannot be exported",
+    "`export` goes before a top-level `let`, `const`, enum, typedef, prototype or bytes "
+    + "layout. Remove it from this declaration."),
+  (E0108, "a chain needs parentheses",
+    "`x is A is B` and `A -> B -> C` do not chain. Parenthesise to say which you mean; "
+    + "a function type of two parameters is `(A, B) -> C`."),
+
+  (E0200, "a module not found",
+    "An import names a module that is in no source root. The module a.b.C is the file "
+    + "a/b/C.jello under one of the roots; the message lists the paths tried. Add the "
+    + "root with --path <dir>, or in a project, check its jello.json `src` and dependencies."),
+  (E0201, "the standard library was not found",
+    "The module is in the standard library, but the compiler was not told where that "
+    + "is. Pass --std <dir> or set JELLO_STD_PATH."),
+  (E0202, "a module's package does not match its path",
+    "A module's `package` declaration must name the directories its import path gives; "
+    + "a.b.C declares `package a.b;`. Change the declaration or the import."),
+  (E0203, "an import cycle",
+    "Modules import each other in a cycle, so none can be initialised first. Move what "
+    + "they share into a module both import."),
+  (E0204, "an imported module ends with an expression",
+    "Only the program's entry module has a result, its last expression. A module that "
+    + "is imported must end with a statement; end the expression with `;`."),
+  (E0205, "a duplicate import name",
+    "Two imports bring in the same name. Rename one with `as`; "
+    + "`import { f as g } from a.B;`."),
+  (E0206, "the wrong import form",
+    "Values are imported with `import { x } from m;` or `import m as M;`, types with "
+    + "`import type { T } from m;`, and natives with `load { f } from library;`, where the "
+    + "library is one name. The import used names the wrong kind."),
+  (E0207, "a module imported under two names",
+    "One file can be imported by one module path only, since a path names the module's "
+    + "package. Import it the same way everywhere."),
+  (E0208, "an unknown export",
+    "The module exports no value or type of that name. Check its spelling, and that the "
+    + "declaration is marked `export`."),
+  (E0209, "a test file misnamed or misplaced",
+    "A test file's name ends in .test.jello, and it is under a --path root, which gives "
+    + "its module path."),
+  (E0210, "a test with the wrong signature",
+    "A test is a top-level `let testName = fn(t: Test) { ... };`, or takes no parameter."),
+  (E0211, "an invalid jello.json",
+    "A project's jello.json is a JSON object. `src` is a string, `test` an object whose "
+    + "`dirs` is an array of strings, `package_paths` an array of strings, and "
+    + "`dependencies` an object. Other keys are ignored."),
+  (E0212, "a dependency not found",
+    "A dependency in jello.json is in neither packages/<name> nor a directory of "
+    + "`package_paths`. Run `jelloc deps.get` to fetch it."),
+  (E0213, "an invalid native declaration",
+    "A native is bound with a function type whose parameters and result are Bool, I32, "
+    + "Bytes or Dynamic: `let f: (Bytes) -> I32 = native_name;`. Every binding of one "
+    + "native gives it the same type."),
+  (E0214, "std.core exports an intrinsic",
+    "A std.core module cannot export a name the compiler provides itself."),
+
+  (E0300, "an unknown name",
+    "No binding of that name is in scope. Check the spelling, declare it before its use "
+    + "in a block, or import it."),
+  (E0301, "not a value",
+    "The name is a type, or `_`, which binds nothing; neither is a value. Construct a "
+    + "value of the type instead, as with an enum variant, `Shape.Circle(1.0)`."),
+  (E0302, "a duplicate declaration",
+    "A name is declared twice where it must be unique: two locals of one scope, two "
+    + "top-level names of a module, two parameters, type parameters, fields or variants, "
+    + "or a method that shares its name with a field. Rename one."),
+  (E0303, "an assignment to something immutable",
+    "Only a local or global declared with `let`, not `const`, can be assigned. Functions, "
+    + "natives, namespaces, assertions and imported bindings cannot be."),
+  (E0304, "a use before initialisation",
+    "A global is read while the module initialises, before its `let` has run, or a "
+    + "function uses a binding whose type is not known yet. Move the declaration earlier, "
+    + "or annotate the binding's type."),
+  (E0305, "a type parameter hides a type",
+    "A type parameter has the name of a type in scope, so the type could not be named "
+    + "inside. Rename the parameter."),
+  (E0306, "`this` outside a method",
+    "`this` is the receiver of a prototype's method. A plain `fn` inside a method does "
+    + "not see it; write `method fn` for one that does."),
+  (E0307, "`break`, `continue` or `return` out of place",
+    "`break` and `continue` are inside a loop, and do not leave a function or a "
+    + "`try` body; `return` is inside a function."),
+  (E0308, "a generic local function captures a local",
+    "A generic function declared inside another cannot capture the outer function's "
+    + "locals. Pass the value as an argument."),
+
+  (E0400, "mismatched types",
+    "A value's type is not the one its place requires: a parameter, an annotation, a "
+    + "field, an element, a condition (which is Bool), or a function's result. Convert the "
+    + "value, as `n as I64`, or change the annotation. Values convert implicitly only "
+    + "where nothing is lost: a number to a type that holds all its values, a T to a "
+    + "Null<T>."),
+  (E0401, "an unknown type",
+    "No type of that name is in scope, or it cannot be used as written: Void is no value "
+    + "type, and a tuple type is `Tuple<A, B>`. Import the type with `import type`."),
+  (E0402, "the wrong number of type arguments",
+    "A generic type or function takes as many type arguments as it has type parameters; "
+    + "anything else takes none. An enum's are written on the enum, not the variant: "
+    + "`Box<I32>.Empty`."),
+  (E0403, "a type cannot be inferred",
+    "Nothing fixes a type here, such as a bare `null`, an empty array, or a parameter "
+    + "no call constrains. Annotate it; `let xs: Array<I32> = [];`."),
+  (E0404, "an implicit Dynamic conversion",
+    "A value becomes Dynamic only with `as Dynamic`, and a Dynamic one becomes a T only "
+    + "with `as T`, which checks it at run time."),
+  (E0405, "a value that cannot become Dynamic",
+    "A Dynamic holds a value it can describe exactly. A list cannot become Dynamic, since "
+    + "its empty value, nil, reads as null; nor a buffer from Bytes.new, nor a U64, or "
+    + "U32 inside another type, whose large values would read as negative."),
+  (E0406, "an invalid `as` or `is`",
+    "`as` converts between number types and to and from Dynamic; `is` tests a Dynamic or "
+    + "nullable value. Only Bool, I32, I64, F16, F32, F64, Atom, Bytes, enums and Object "
+    + "are checked kinds, which a Dynamic can be extracted as or tested for."),
+  (E0407, "an invalid Dynamic comparison",
+    "A Dynamic compares with null, or with a value of a kind `is` can test. Two "
+    + "Dynamics do not compare; extract one first with `as T`."),
+  (E0408, "a misuse of null",
+    "Only a Null<T>, written ?T, holds null, and only it compares with null, by == and "
+    + "!=. A list is never null: its empty value is nil, which List.is_nil tests. A "
+    + "parameter with a default is not nullable; an optional `?x` parameter is."),
+  (E0409, "a value that cannot be thrown",
+    "A thrown value is caught as Dynamic, so it must be a value that can become one: not "
+    + "a list or a buffer from Bytes.new."),
+  (E0410, "a block used as a value has none",
+    "A block, match arm, `try`, `with` body or `if` used as a value must end with an "
+    + "expression, without `;`, and an `if` needs an `else`."),
+  (E0411, "a buffer where Bytes are needed",
+    "A buffer from Bytes.new is mutable, and not Bytes. Copy its bytes out with "
+    + "`buffer.toString()`."),
+  (E0412, "Bytes are immutable",
+    "A Bytes value cannot change. Build bytes in a buffer from Bytes.new, then copy them "
+    + "out with `buffer.toString()`."),
+
+  (E0500, "an operator not defined for a type",
+    "The operator does not apply to its operands' types. Arithmetic takes two numbers of "
+    + "one type, `&&`, `||` and `!` take Bool, and ++ and -- an integer. Convert one "
+    + "operand with `as`, so that both have the same type."),
+  (E0501, "a missing or unknown bound",
+    "A generic function uses == on a type parameter, prints it, or uses it as an integer, "
+    + "so the parameter needs that bound, Eq, Show or Integer: "
+    + "`let same<T: Eq> = fn(a: T, b: T) ...`. "
+    + "A call's type argument must satisfy the bounds; only functions' type parameters "
+    + "take bounds."),
+
+  (E0600, "the wrong number of arguments",
+    "A call passes more arguments than the function has parameters, or fewer than it "
+    + "requires. Parameters with defaults and optional ones may be left out."),
+  (E0601, "a call of something that is not a function",
+    "The value called is not a function. Check what the name is bound to."),
+  (E0602, "a name that is not a value",
+    "A generic function, a native and an assertion can only be called, and a module "
+    + "namespace only named through, as `M.x`. A generic prototype is a value with its "
+    + "type arguments, `P<I32>`."),
+  (E0603, "an invalid parameter default",
+    "A default is a constant of the parameter's type, which is not nullable; a parameter "
+    + "that may be left out to null is an optional one, `?x: T`."),
+  (E0604, "an invalid spread",
+    "A spread, `...xs`, passes an array's or a tuple's items as arguments or items. Some "
+    + "calls, such as Function.bind, Function.call and an Object's functions, take none."),
+  (E0605, "type parameters where none are taken",
+    "Only functions, enums, typedefs and prototypes take type parameters; a generic "
+    + "function is `let id<T> = fn(x: T): T { x };`. A `let` of any other value, and a "
+    + "bytes layout, takes none."),
+
+  (E0700, "a match that is not exhaustive",
+    "A match must cover every value of its subject. The message gives a value no arm "
+    + "matches; add an arm for it, or a `_` arm."),
+  (E0701, "unreachable code",
+    "A match arm can match nothing the arms before it do not, or a statement follows one "
+    + "that always leaves, such as `return`. Remove it, or reorder the arms."),
+  (E0702, "a pattern that can fail",
+    "The pattern of a plain `let`, or of a `let` clause in a `with`, must match every "
+    + "value. Use `if (let p = value)` or `let p = value else { ... };` for a pattern that "
+    + "can fail, and in a `with`, a clause `p <- value`."),
+  (E0703, "a pattern that cannot match its value",
+    "The pattern is of a different type from the value it matches, such as a tuple "
+    + "pattern of the wrong size, or a record pattern with a rest."),
+  (E0704, "a pattern binds a name badly",
+    "A pattern binds each name once, and every alternative of an `|` pattern binds the "
+    + "same names with the same types. A spread is used once, and in a list pattern only "
+    + "at its end; a field is matched once."),
+  (E0705, "an invalid pin",
+    "`^x` matches the value of x, a constant in scope. It cannot pin a name the pattern "
+    + "itself binds, nor one that can be assigned."),
+  (E0706, "a `with` that cannot give its value",
+    "A `with` clause that fails gives the failing value, unless an `else` handles it, so "
+    + "that value must have the `with`'s type; add an `else` otherwise. An `else` needs at "
+    + "least one arm, and a `with` of only `let` clauses cannot fail, so takes none."),
+
+  (E0800, "no such field, member or function",
+    "The type has no field or method of that name, or the namespace no such function. "
+    + "Check the spelling; the message lists close names when there are any."),
+  (E0801, "an invalid record literal",
+    "A record literal names each field of its type once: `{ x: 1, y: 2 }`. A spread of a "
+    + "record of the same type may come first, `{ ...p, x: 3 }`, to fill the rest."),
+  (E0802, "an unknown enum variant",
+    "The enum has no variant of that name."),
+  (E0803, "the wrong payload count",
+    "An enum variant is constructed and matched with as many values as it declares, and "
+    + "one without values is written without parentheses."),
+  (E0804, "an invalid typedef",
+    "A typedef cannot refer to itself. A typedef linked to a prototype of the same name "
+    + "has the same type parameters and is exported as it is, and its fields have types "
+    + "an Object can hold as themselves."),
+  (E0805, "a misuse of a prototype",
+    "`new P(args)` makes an Object that delegates to the prototype P, passing the "
+    + "arguments to its init method; `super.m(...)` calls the method m of the Object a "
+    + "prototype delegates to. An Object's __proto__ is an Object, and no prototype "
+    + "delegates to itself."),
+  (E0806, "a misuse of an Object",
+    "An Object's keys are Atoms or bytes literals, and its fields are Dynamic, so a field "
+    + "is assigned a new value rather than updated in place, as with +=. An Object "
+    + "literal spreads only another Object."),
+  (E0807, "an invalid index or tuple field",
+    "Arrays, buffers and Objects are indexed with []; a tuple's fields are .0, .1 and "
+    + "so on, up to its size. A method cannot be updated in place."),
+  (E0808, "a compile-time literal required",
+    "Atom.intern takes a bytes literal, which the compiler interns."),
+  (E0809, "an invalid regexp",
+    "A regexp literal or pattern does not compile, or has a flag that is not one of the "
+    + "known flags. The message gives the regexp engine's reason."),
+
+  (E0900, "not supported yet",
+    "The form is part of the language, but this compiler does not support it yet."),
+  (E0901, "a compiler limit",
+    "The program passes a limit of the compiler or VM: 256 registers in one function, "
+    + "try regions nested 16 deep, natives of more than 8 arguments, or generic instances "
+    + "nested 64 deep. Split the function, or simplify the nesting.")
+] };
+
+export let coded = fn(code: Bytes, message: Bytes): Bytes { message + " [" + code + "]" };
+
+export let errorCodes = fn(): Array<Bytes> {
+  let explained = _explained();
+  let codes = Array.new<Bytes>(0);
+  let i = 0;
+
+  while (i < explained.len()) {
+    codes.push(explained[i].0);
+    i++;
+  }
+  codes
+};
+
+let _wrapped = fn(text: Bytes): Bytes {
+  let lines = Array.new<Bytes>(0);
+  let start = 0;
+
+  while (start < text.len()) {
+    let end = start + 80;
+
+    if (end >= text.len()) { end = text.len(); } else {
+      let space = end;
+      while ((space > start) && (Bytes.get_u8(text, space) != " ".code)) { space--; }
+      if (space > start) { end = space; }
+    }
+    lines.push(Bytes.slice(text, start, end - start));
+    start = ((end < text.len()) && (Bytes.get_u8(text, end) == " ".code)) ? end + 1 : end;
+  }
+  joined(lines, "\n") + "\n"
+};
+
+export let explain = fn(code: Bytes): Bytes {
+  let explained = _explained();
+  let i = 0;
+
+  while (i < explained.len()) {
+    let (known, title, text) = explained[i];
+    if (known == code) { return code + ": " + title + "\n\n" + _wrapped(text); }
+    i++;
+  }
+  ""
+};

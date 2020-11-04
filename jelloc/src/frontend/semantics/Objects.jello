@@ -7,6 +7,7 @@ import { expressionOf, i32Of, printed } from frontend.semantics.Derived;
 import { UNCHECKED_KINDS, checkedKind, storable } from frontend.semantics.Values;
 import { appendFrom } from support.Arrays;
 import { checkArity, checkIndirectCall, checkOperand, checkPresent, checkType, enterSyntax, hasSpread, hideValue, inferLater, newBinding, objectValue, syntaxChild } from frontend.semantics.TypeCheck;
+import { E0402, E0406, E0604, E0805, E0806, coded } from support.Codes;
 
 let _object = fn(binding: I32): I32 { H.local(binding, H.TYPE_OBJECT) };
 
@@ -20,7 +21,7 @@ export let objectKey: (AstExpr, I32) -> I32 = fn(key, index) {
 
       if (H.typeOf(checked) != H.TYPE_ATOM) {
         enterSyntax(syntaxChild(index));
-        throw "an Object key is an Atom or a bytes literal, not " + H.typeName(H.typeOf(checked));
+        throw coded(E0806, "an Object key is an Atom or a bytes literal, not " + H.typeName(H.typeOf(checked)));
       }
       checked
     },
@@ -54,7 +55,7 @@ let _store = fn(object: I32, key: I32, value: AstExpr, index: I32): I32 {
   let ty = H.typeOf(checked);
   let outer = enterSyntax(syntaxChild(index));
   let link = (H.opOf(key) == Op.Atom) && (H.bytesOf(H.valueOf(key)) == "__proto__");
-  if (link && !H.isObject(ty) && (ty != H.TYPE_DYNAMIC) && (ty != H.TYPE_NULL)) { throw "an Object's __proto__ is the Object it delegates to, not " + H.typeName(ty); }
+  if (link && !H.isObject(ty) && (ty != H.TYPE_DYNAMIC) && (ty != H.TYPE_NULL)) { throw coded(E0805, "an Object's __proto__ is the Object it delegates to, not " + H.typeName(ty)); }
   let stored = storable(checked);
   enterSyntax(outer);
   _write(object, key, stored)
@@ -64,7 +65,7 @@ export let storeField: (I32, Bytes, AstExpr, I32) -> I32 = fn(object, name, valu
 
 export let writeField: (I32, Bytes, I32) -> I32 = fn(object, name, value) { _write(object, namedKey(name), value) };
 
-export let OBJECT_UPDATE: Bytes = "an Object field is Dynamic, so it cannot be updated in place; assign it a value";
+export let OBJECT_UPDATE: Bytes = coded(E0806, "an Object field is Dynamic, so it cannot be updated in place; assign it a value");
 
 export let assignObject: (I32, I32, AssignOp, AstExpr) -> I32 = fn(object, key, op, value) {
   match (op) {
@@ -95,7 +96,7 @@ let _spread = fn(value: AstExpr, index: I32): I32 {
 
   if (!H.isObject(H.typeOf(source))) {
     enterSyntax(syntaxChild(index));
-    throw "an Object literal spreads only an Object, not " + H.typeName(H.typeOf(source));
+    throw coded(E0806, "an Object literal spreads only an Object, not " + H.typeName(H.typeOf(source)));
   }
   source
 };
@@ -130,10 +131,10 @@ export let checkObject: (Array<ObjectEntry>) -> I32 = fn(entries) {
 };
 
 let _readType = fn(types: Array<AstType>, name: Bytes): I32 {
-  if (types.len() > 1) { throw name + " takes one type argument"; }
+  if (types.len() > 1) { throw coded(E0402, name + " takes one type argument"); }
   if (types.len() == 0) { return H.TYPE_DYNAMIC; }
   let ty = checkType(types[0]);
-  if ((ty != H.TYPE_DYNAMIC) && (checkedKind(ty) < 0)) { throw name + " cannot read " + H.typeName(ty) + UNCHECKED_KINDS; }
+  if ((ty != H.TYPE_DYNAMIC) && (checkedKind(ty) < 0)) { throw coded(E0406, name + " cannot read " + H.typeName(ty) + UNCHECKED_KINDS); }
   ty
 };
 
@@ -143,7 +144,7 @@ export let isObjectIntrinsic: (Bytes) -> Bool = fn(name) {
 
 export let checkObjectCall: (Bytes, I32, Array<AstType>, Array<AstExpr>, I32) -> I32 = fn(name, object, types, args, first) {
   let qualified = "Object." + name;
-  if ((types.len() != 0) && (name != "get")) { throw qualified + " does not take type arguments"; }
+  if ((types.len() != 0) && (name != "get")) { throw coded(E0402, qualified + " does not take type arguments"); }
   let arity = match (name) { "get", "exists", "remove" => 1, "set" => 2, _ => 0 };
   checkArity(args, arity, qualified);
 
@@ -167,7 +168,7 @@ export let objectArgument: (AstExpr, Bytes) -> I32 = fn(arg, name) {
 
   if (!H.isObject(H.typeOf(object))) {
     enterSyntax(syntaxChild(1));
-    throw name + " requires an Object, not " + H.typeName(H.typeOf(object));
+    throw coded(E0806, name + " requires an Object, not " + H.typeName(H.typeOf(object)));
   }
   objectValue(object)
 };
@@ -175,7 +176,7 @@ export let objectArgument: (AstExpr, Bytes) -> I32 = fn(arg, name) {
 export let callObjectField: (I32, Bytes, Array<AstExpr>) -> I32 = fn(object, name, args) { callField(object, -1, name, args) };
 
 export let callField: (I32, I32, Bytes, Array<AstExpr>) -> I32 = fn(holder, receiver, name, args) {
-  if (hasSpread(args)) { throw "an Object's function cannot take a spread; its type is the arguments'"; }
+  if (hasSpread(args)) { throw coded(E0604, "an Object's function cannot take a spread; its type is the arguments'"); }
   let statements = Array.new<I32>(0);
   let object = hideValue(statements, receiver < 0 ? "receiver" : "holder", objectValue(holder));
   let first = receiver < 0 ? object : hideValue(statements, "receiver", objectValue(receiver));

@@ -6,6 +6,7 @@ import { blockCatch, blockIndexes, terminatorRead } from ir.Cfg;
 import { liveness } from ir.Liveness;
 import { verifyAllocatedProgram } from ir.Verify;
 import { internalError } from support.Internal;
+import { E0901, coded } from support.Codes;
 
 let _REGISTER_LIMIT = 256;
 
@@ -533,7 +534,7 @@ let _rewriteBlock = fn(block: BasicBlock): BasicBlock {
 };
 
 let _tooMany = fn(id: I32) {
-  throw "function @" + Std.string(id) + " needs more than 256 registers; split it into smaller functions";
+  throw coded(E0901, "function @" + Std.string(id) + " needs more than 256 registers; split it into smaller functions");
   null
 };
 
@@ -635,7 +636,7 @@ let _allocate = fn(function: Function): Function {
     i = 0;
 
     while (i < payloads.len()) {
-      if (_colors[payloads[i]] < 0) { throw "a catch value needs a register, and all 256 are in use"; }
+      if (_colors[payloads[i]] < 0) { throw coded(E0901, "a catch value needs a register, and all 256 are in use"); }
       i++;
     }
     _slots = Array.new<I32>(_colors.len());

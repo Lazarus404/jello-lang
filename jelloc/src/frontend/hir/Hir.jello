@@ -2,6 +2,7 @@ package frontend.hir;
 
 import type { SourceSpan } from frontend.syntax.Source;
 import { SourceSpan } from frontend.syntax.Source;
+import { E0213, E0408, E0901, coded } from support.Codes;
 import { internalError } from support.Internal;
 
 export enum Op {
@@ -378,7 +379,7 @@ export let declareNative: (Bytes, Bytes, I32) -> I32 = fn(library, name, ty) {
 
   while (i < nativeCount()) {
     if ((nativeLibraryOf(i) == library) && (nativeNameOf(i) == name)) {
-      if (nativeTypeOf(i) != ty) { throw "native " + library + "." + name + " is declared with two different types"; }
+      if (nativeTypeOf(i) != ty) { throw coded(E0213, "native " + library + "." + name + " is declared with two different types"); }
       return i;
     }
     i++;
@@ -493,7 +494,7 @@ export let listType: (I32) -> I32 = fn(element) { _intern(Kind.List, element, []
 export let nullType: (I32) -> I32 = fn(ty) {
   let inner = _current(ty);
   if (isKind(inner, Kind.Param)) { _types[inner * _TYPE_WIDTH + 1] = _types[inner * _TYPE_WIDTH + 1] | _NULLED; }
-  if (isKind(inner, Kind.List)) { throw "a list cannot be null: its empty value is nil; test it with List.is_nil"; }
+  if (isKind(inner, Kind.List)) { throw coded(E0408, "a list cannot be null: its empty value is nil; test it with List.is_nil"); }
   (isKind(inner, Kind.Null) || isKind(inner, Kind.Dynamic)) ? inner : _intern(Kind.Null, inner, [])
 };
 export let holdsNull: (I32) -> Bool = fn(ty) { isKind(ty, Kind.Null) || isKind(ty, Kind.Dynamic) };
@@ -823,7 +824,7 @@ export let declarePrototype: (Bytes) -> I32 = fn(name) { _addType(Kind.Object, b
 let _pending = Array.new<I32>(0);
 let _nesting = 0;
 export let MAX_INSTANCE_DEPTH: I32 = 64;
-export let nestsTooDeep: (Bytes) -> Bytes = fn(name) { "instantiating " + name + " nests more than " + Std.string(MAX_INSTANCE_DEPTH) + " deep" };
+export let nestsTooDeep: (Bytes) -> Bytes = fn(name) { coded(E0901, "instantiating " + name + " nests more than " + Std.string(MAX_INSTANCE_DEPTH) + " deep") };
 
 let _makeGeneric = fn(ty: I32, params: Array<I32>): I32 {
   _generic[ty] = tupleType(params);
@@ -1071,6 +1072,10 @@ export let typeArgNames: (I32) -> Bytes = fn(ty) {
 
 export let local: (I32, I32) -> I32 = fn(binding, ty) { node(Op.Local, ty, binding, 0, []) };
 
+export let bindingNode: (Op, I32, Bytes, I32) -> I32 = fn(op, binding, name, value) {
+  node(op, typeOf(value), binding, bytesId(name), [value])
+};
+
 export let declareBinding: (Op, I32, Bytes, I32) -> I32 = fn(op, binding, name, value) {
-  node(Op.Declare, 0, 0, 0, [node(op, typeOf(value), binding, bytesId(name), [value])])
+  node(Op.Declare, 0, 0, 0, [bindingNode(op, binding, name, value)])
 };

@@ -3,6 +3,7 @@ package frontend.semantics;
 import type { Import, Module } from frontend.Loader;
 import { Module, modulePath } from frontend.Loader;
 import frontend.hir.Hir as H;
+import { E0206, E0208, E0302, coded } from support.Codes;
 
 export enum Binding {
   Global(id: I32);
@@ -63,7 +64,7 @@ let _record = fn(name: Bytes, types: Bool, index: I32) {
     _at.push(-1);
     _isType.push(false);
   }
-  if (_epochs[id] == _epoch) { throw "duplicate top-level name: " + name; }
+  if (_epochs[id] == _epoch) { throw coded(E0302, "duplicate top-level name: " + name); }
   _epochs[id] = _epoch;
   _at[id] = index;
   _isType[id] = types;
@@ -105,7 +106,7 @@ let _chain = fn(heads: Array<I32>, links: Array<I32>, name: Bytes): Null {
   null
 };
 
-let _unknownExport = fn(kind: Bytes, name: Bytes, path: Bytes): Bytes { "unknown " + kind + " " + name + " in " + path };
+let _unknownExport = fn(kind: Bytes, name: Bytes, path: Bytes): Bytes { coded(E0208, "unknown " + kind + " " + name + " in " + path) };
 
 export let resetExports: () -> Bool = fn() {
   _exportModules = Array.new<I32>(0);
@@ -209,7 +210,7 @@ export let exportedValue: (I32, Bytes) -> Binding = fn(module, name) {
 export let namespaceMember: (I32, Bytes, Bytes) -> Binding = fn(module, path, name) {
   let found = _value(module, name);
   if (found >= 0) { return _exportBindings[found]; }
-  if (_type(module, name) >= 0) { throw name + " is a type; name it with import type { " + name + " } from the module"; }
+  if (_type(module, name) >= 0) { throw coded(E0206, name + " is a type; name it with import type { " + name + " } from the module"); }
   throw _unknownExport("export", name, path);
   Binding.Unbound
 };

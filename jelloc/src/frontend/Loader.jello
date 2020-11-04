@@ -5,11 +5,12 @@ import { bindPatternName, isBindPattern } from frontend.syntax.Ast;
 import { appendFrom, indexOf } from support.Arrays;
 import { lexFile } from frontend.syntax.Lexer;
 import { noteFailure } from frontend.semantics.Failures;
+import { E0200, E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0209, E0900, coded } from support.Codes;
 import { packageSpan, parseProgram, programSyntax } from frontend.syntax.Parser;
 import type { SourceSpan, Syntax } from frontend.syntax.Source;
 import { SourceSpan } from frontend.syntax.Source;
 import { locate } from frontend.syntax.Locations;
-import { bytesLiteral, joined } from support.Text;
+import { bytesLiteral, endsWith, joined } from support.Text;
 import { exists, readText } from std.io.File;
 
 export enum Import {
@@ -49,7 +50,7 @@ let _checkPackage = fn(path: Bytes, packageName: Package, parts: Array<Bytes>, d
   let expected = _packageText(needed);
 
   if (declared != expected) {
-    throw noteFailure(declaration, "its package is declared here", path + " declares " + declared + ", but importing it as `" + joined(parts, ".") + "` needs " + expected);
+    throw noteFailure(declaration, "its package is declared here", coded(E0202, path + " declares " + declared + ", but importing it as `" + joined(parts, ".") + "` needs " + expected));
   }
   true
 };
@@ -98,7 +99,7 @@ let _modulePath = fn(parts: Array<Bytes>): Bytes {
   let i = 0;
 
   if (parts[0] == "std") {
-    if (_stdRoot == "") { throw "module " + joined(parts, ".") + " is in the standard library; pass its directory with --std <dir> or set JELLO_STD_PATH"; }
+    if (_stdRoot == "") { throw coded(E0201, "module " + joined(parts, ".") + " is in the standard library; pass its directory with --std <dir> or set JELLO_STD_PATH"); }
     roots = [_stdRoot];
     i = 1;
   }
@@ -117,7 +118,7 @@ let _modulePath = fn(parts: Array<Bytes>): Bytes {
     tried += (i == 0 ? "" : ", ") + path;
     i++;
   }
-  throw "module " + joined(parts, ".") + " not found: " + tried;
+  throw coded(E0200, "module " + joined(parts, ".") + " not found: " + tried);
   ""
 };
 
@@ -131,9 +132,7 @@ let _import = fn(parts: Array<Bytes>): I32 {
 let _TEST = ".test";
 let _TEST_FILE = _TEST + ".jello";
 
-let _endsWith = fn(value: Bytes, suffix: Bytes): Bool {
-  (value.len() >= suffix.len()) && (Bytes.slice(value, value.len() - suffix.len(), suffix.len()) == suffix)
-};
+export let isTestFile: (Bytes) -> Bool = fn(path) { endsWith(path, _TEST_FILE) };
 
 let _tests = fn(parts: Array<Bytes>, imported: Array<Bytes>): Bool {
   if (parts.len() != imported.len()) { return false; }
@@ -147,7 +146,7 @@ let _tests = fn(parts: Array<Bytes>, imported: Array<Bytes>): Bool {
   parts[last] == imported[last] + _TEST
 };
 
-export let isTestModule: (Bytes) -> Bool = fn(name) { _endsWith(name, _TEST) };
+export let isTestModule: (Bytes) -> Bool = fn(name) { endsWith(name, _TEST) };
 
 export let isTestName: (Bytes) -> Bool = fn(name) {
   (name.len() > 4) && (Bytes.slice(name, 0, 4) == "test") && (Bytes.get_u8(name, 4) >= "A".code) && (Bytes.get_u8(name, 4) <= "Z".code)
@@ -168,7 +167,7 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
 
       if (tail != null) {
         _failure = _statementSpan(syntax, statements.len() as I32);
-        throw "an imported module cannot end with an expression, since only the program's entry module has a result; end it with `;`";
+        throw coded(E0204, "an imported module cannot end with an expression, since only the program's entry module has a result; end it with `;`");
       }
     }
     let dotted = joined(parts, ".");
@@ -183,7 +182,7 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
 
           let typeOnly = match (kind) {
             Value => false, TypeOnly => true, _ => {
-              throw "macro imports are not supported";
+              throw coded(E0900, "macro imports are not supported");
               false
             }
           };
@@ -194,7 +193,7 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
           while (j < items.len()) {
             match (items[j]) { Item(name, alias) => {
               let added = Import.Import(alias == null ? name : alias, dependency, name, typeOnly, privately, i);
-              if (_repeats(imports, added)) { throw "duplicate import name: " + _localOf(added); }
+              if (_repeats(imports, added)) { throw coded(E0205, "duplicate import name: " + _localOf(added)); }
               imports.push(added);
             } };
             j++;
@@ -207,20 +206,20 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
           match (kind) {
             Value => null,
             TypeOnly => {
-              throw "a namespace import names values; import types with import type { T } from " + joined(importParts, ".");
+              throw coded(E0206, "a namespace import names values; import types with import type { T } from " + joined(importParts, "."));
               null
             },
             Native => {
-              throw "a native library's exports are named: load { name } from " + joined(importParts, ".") + ";";
+              throw coded(E0206, "a native library's exports are named: load { name } from " + joined(importParts, ".") + ";");
               null
             },
             _ => {
-              throw "macro imports are not supported";
+              throw coded(E0900, "macro imports are not supported");
               null
             },
           };
           let added = Import.Namespace(alias, _import(importParts), testFile && _tests(parts, importParts), i);
-          if (_repeats(imports, added)) { throw "duplicate import name: " + alias; }
+          if (_repeats(imports, added)) { throw coded(E0205, "duplicate import name: " + alias); }
           imports.push(added);
           null
         },
@@ -248,11 +247,11 @@ _load = fn(path, parts) {
     let dotted = joined(parts, ".");
 
     if (name != dotted) {
-      throw noteFailure(_importedAt[loaded], "it is first imported here", path + " is imported as `" + name + "`, so it cannot also be imported as `" + dotted + "`");
+      throw noteFailure(_importedAt[loaded], "it is first imported here", coded(E0207, path + " is imported as `" + name + "`, so it cannot also be imported as `" + dotted + "`"));
     }
     return loaded;
   }
-  if (indexOf(_visiting, path) >= 0) { throw "import cycle through " + path; }
+  if (indexOf(_visiting, path) >= 0) { throw coded(E0203, "import cycle through " + path); }
   _visiting.push(path);
   let importing = _failure;
   let module = _module(path, readText(path), parts, Array.new<Import>(0));
@@ -308,7 +307,7 @@ export let loadModules: (Bytes, Bytes, Array<Bytes>, Array<Bytes>) -> Array<Modu
 };
 
 let _testParts = fn(path: Bytes): Array<Bytes> {
-  if (!_endsWith(path, _TEST_FILE)) { throw "a test file's name ends in " + _TEST_FILE + ": " + path; }
+  if (!isTestFile(path)) { throw coded(E0209, "a test file's name ends in " + _TEST_FILE + ": " + path); }
   let start = -1;
   let i = 0;
 
@@ -317,7 +316,7 @@ let _testParts = fn(path: Bytes): Array<Bytes> {
     if ((prefix.len() > start) && (path.len() > prefix.len()) && (Bytes.slice(path, 0, prefix.len()) == prefix)) { start = prefix.len(); }
     i++;
   }
-  if (start < 0) { throw "test file " + path + " is under no --path root"; }
+  if (start < 0) { throw coded(E0209, "test file " + path + " is under no --path root"); }
   let parts = Array.new<Bytes>(0);
   let end = path.len() - _TEST_FILE.len() + _TEST.len();
   i = start;

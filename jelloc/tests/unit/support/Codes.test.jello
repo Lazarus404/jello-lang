@@ -1,0 +1,52 @@
+package support;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { coded, errorCodes, explain } from support.Codes;
+import { joined } from support.Text;
+
+// The codes, in order. A code is never renumbered or removed, so this list only grows.
+const _CODES = "E0001 E0002 E0003 E0004 E0005 E0006 E0007 E0008 "
+  + "E0100 E0101 E0102 E0103 E0104 E0105 E0106 E0107 E0108 "
+  + "E0200 E0201 E0202 E0203 E0204 E0205 E0206 E0207 E0208 E0209 E0210 E0211 E0212 E0213 E0214 "
+  + "E0300 E0301 E0302 E0303 E0304 E0305 E0306 E0307 E0308 "
+  + "E0400 E0401 E0402 E0403 E0404 E0405 E0406 E0407 E0408 E0409 E0410 E0411 E0412 "
+  + "E0500 E0501 "
+  + "E0600 E0601 E0602 E0603 E0604 E0605 "
+  + "E0700 E0701 E0702 E0703 E0704 E0705 E0706 "
+  + "E0800 E0801 E0802 E0803 E0804 E0805 E0806 E0807 E0808 E0809 "
+  + "E0900 E0901";
+
+let testKeepsEveryCode = fn(t: Test) { T.equal(t, joined(errorCodes(), " "), _CODES); };
+
+let testEndsAMessageWithItsCode = fn(t: Test) {
+  T.equal(t, coded("E0302", "duplicate local: x"), "duplicate local: x [E0302]");
+};
+
+let testExplainsEachCodeInLinesOfAtMost80Bytes = fn(t: Test) {
+  let codes = errorCodes();
+  let i = 0;
+
+  while (i < codes.len()) {
+    let text = explain(codes[i]);
+    T.isTrue(t, Bytes.slice(text, 0, 7) == codes[i] + ": ");
+    let start = 0;
+    let longest = 0;
+
+    while (start < text.len()) {
+      let end = start;
+      while (Bytes.get_u8(text, end) != "\n".code) { end++; }
+      if (end - start > longest) { longest = end - start; }
+      start = end + 1;
+    }
+    let last = Bytes.get_u8(text, text.len() - 1);
+    T.equal(t, (codes[i], longest <= 80, last), (codes[i], true, "\n".code));
+    i++;
+  }
+};
+
+let testExplainsNoUnknownCode = fn(t: Test) {
+  T.equal(t, explain("E9999"), "");
+  T.equal(t, explain("e0302"), "");
+  T.equal(t, explain(""), "");
+};

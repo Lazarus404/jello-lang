@@ -1,0 +1,24 @@
+// expect: aa,else baa,12!,if x,if else,ab12|cd|,z,1,guard,yes,none,["1", "2"],
+// A regexp pattern, with or without `when`, works wherever a pattern does: a with clause, if
+// and while lets, a let's else, a generator, a nullable subject and inside another pattern.
+import { advance, group } from std.core.RegExp;
+let out = "";
+let put = fn(v: Bytes) { out = out + v + ","; null };
+put(with when ~r/a+/ as m <- "aab" { group(m, 0) } else { _ => "no" });
+put(with ~r/a+/ as m <- "baa" { group(m, 0) } else { s => "else " + s });
+put(with ~r/(\d+)/ as m <- "12x", let n = group(m, 1) { n + "!" });
+let s = "x1";
+if (let ~r/[a-z]/ as m = s) { put("if " + group(m, 0)); } else { put("if no"); }
+if (let ~r/[0-9]/ = s) { put("bad"); } else { put("if else"); }
+// A tokenizer: each match is a prefix of what is left.
+let rest = "ab12 cd"; let tokens = "";
+while (let ~r/\s*(\w+)/ as m = rest) { tokens = tokens + group(m, 1) + "|"; rest = advance(rest, m); }
+put(tokens);
+let maybe: ?Bytes = "zz";
+put(match (maybe) { when ~r/z/ => "z", _ => "none" });
+put(match (("q1", 3)) { (~r/q(\d)/ as m, 3) => group(m, 1), _ => "no" });
+put(match ("hello") { ~r/h/ as m when (group(m, 0) == "h") => "guard", _ => "x" });
+let first = fn(s: Bytes): Bytes { let ~r/y/ as m = s else { return "none"; }; "yes" };
+put(first("yes")); put(first("no"));
+put(Std.string(list[for ~r/a(\d)/ as m <- list["a1", "b", "a2"], do: group(m, 1)]));
+out

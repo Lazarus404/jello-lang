@@ -1,7 +1,8 @@
 package frontend.syntax;
 
 import { sourceDiagnostic, utf8CharLength } from frontend.syntax.Source;
-import { concatAll, u8, utf8FromCodepoint, utf8Validate } from support.Text;
+import { E0001, E0002, E0003, E0004, E0005, E0006, coded } from support.Codes;
+import { concatAll, hexValue, u8, utf8FromCodepoint, utf8Validate } from support.Text;
 
 export enum IntegerSize {
   Infer;
@@ -250,18 +251,6 @@ let _floatSize = fn(suffix: Bytes) {
   }
 };
 
-let _hexValue = fn(c: I32) {
-  if ((c >= "0".code) && (c <= "9".code)) {
-    c - "0".code
-  } else if ((c >= "a".code) && (c <= "f".code)) {
-    c - "a".code + 10
-  } else if ((c >= "A".code) && (c <= "F".code)) {
-    c - "A".code + 10
-  } else {
-    -1
-  }
-};
-
 let _escapeByte = fn(c: I32) {
   match (c) {
     "0".code => 0,
@@ -312,7 +301,7 @@ let _dotStartsMember = fn(src: Bytes, dot: I32): Bool {
 
 let _checkConstantEnd = fn(src: Bytes, end: I32, text: Bytes) {
   let c = _byteAt(src, end);
-  if (_isWordChar(c) || ((c == ".".code) && !_dotStartsMember(src, end))) { throw ("invalid constant: " + text); }
+  if (_isWordChar(c) || ((c == ".".code) && !_dotStartsMember(src, end))) { throw coded(E0003, "invalid constant: " + text); }
   null
 };
 
@@ -342,7 +331,7 @@ let _radixEnd = fn(src: Bytes, i: I32): I32 {
     while (more) {
       let c = _byteAt(src, end);
       more = (c == "_".code)
-        || (hex && (_hexValue(c) >= 0))
+        || (hex && (hexValue(c) >= 0))
         || (binary && ((c == "0".code) || (c == "1".code)))
         || (octal && (c >= "0".code) && (c <= "7".code));
       if (more) { end++; }
@@ -360,13 +349,13 @@ let _lexRadix = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
     if (_byteAt(text, k) != "_".code) { digits++; }
     k++;
   }
-  if (digits == 0) { throw ("invalid integer literal: " + text); }
+  if (digits == 0) { throw coded(E0003, "invalid integer literal: " + text); }
   let (token, cur) = _lexConstant(src, text, end);
 
   match (token) {
     IntegerConstant(_, _) => (token, cur),
     _ => {
-      throw ("invalid integer literal: " + text);
+      throw coded(E0003, "invalid integer literal: " + text);
       (Token.Eof, end)
     },
   }
@@ -427,7 +416,7 @@ let _unicodeEscape = fn(src: Bytes, at: I32): Tuple<I32, I32> {
     reading = braced ? (c != "}".code) : (digits < limit);
 
     if (reading) {
-      let h = _hexValue(c);
+      let h = hexValue(c);
       if ((h < 0) || (digits >= limit)) { return (-1, i); }
       cp = cp * 16 + h;
       digits++;
@@ -449,19 +438,19 @@ let _escape = fn(src: Bytes, i: I32, esc: I32, out: Array<Bytes>): I32 {
 
     if (cp < 0) {
       _failAt = i;
-      throw "invalid unicode escape";
+      throw coded(E0004, "invalid unicode escape");
     }
     out.push(utf8FromCodepoint(cp));
     return end;
   }
 
   if (esc == "x".code) {
-    let hi = _hexValue(_byteAt(src, i + 2));
-    let lo = _hexValue(_byteAt(src, i + 3));
+    let hi = hexValue(_byteAt(src, i + 2));
+    let lo = hexValue(_byteAt(src, i + 3));
 
     if ((hi < 0) || (lo < 0)) {
       _failAt = i;
-      throw "invalid hex escape";
+      throw coded(E0004, "invalid hex escape");
     }
     out.push(u8(hi * 16 + lo));
     return i + 4;
@@ -474,7 +463,7 @@ let _escape = fn(src: Bytes, i: I32, esc: I32, out: Array<Bytes>): I32 {
 
 let _unknownEscape = fn(src: Bytes, i: I32) {
   _failAt = i;
-  throw "unknown escape \\" + Bytes.slice(src, i + 1, utf8CharLength(src, i + 1));
+  throw coded(E0004, "unknown escape \\" + Bytes.slice(src, i + 1, utf8CharLength(src, i + 1)));
   null
 };
 
@@ -489,7 +478,7 @@ let _lexBytesLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
     let c = _byteAt(src, i);
 
     if ((c < 0) || (c == "\n".code) || (c == "\r".code)) {
-      throw "unterminated bytes literal";
+      throw coded(E0005, "unterminated bytes literal");
     } else if (c == delimiter) {
       out.push(Bytes.slice(src, run, i - run));
       i++;
@@ -500,7 +489,7 @@ let _lexBytesLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
       let end = _escape(src, i, esc, out);
 
       if (end < 0) {
-        if ((esc < 0) || (esc == "\n".code) || (esc == "\r".code)) { throw "unterminated bytes literal"; }
+        if ((esc < 0) || (esc == "\n".code) || (esc == "\r".code)) { throw coded(E0005, "unterminated bytes literal"); }
         _unknownEscape(src, i);
       }
       i = end;
@@ -522,7 +511,7 @@ let _lexTemplate = fn(src: Bytes, at: I32, tick: I32, head: Bool): Tuple<Token, 
 
     if (c < 0) {
       _failAt = tick;
-      throw "unterminated template";
+      throw coded(E0005, "unterminated template");
     }
     let hole = (c == "$".code) && (_byteAt(src, i + 1) == "{".code);
 
@@ -545,12 +534,12 @@ let _lexTemplate = fn(src: Bytes, at: I32, tick: I32, head: Bool): Tuple<Token, 
       if (end < 0) {
         if (esc < 0) {
           _failAt = tick;
-          throw "unterminated template";
+          throw coded(E0005, "unterminated template");
         }
 
         if ((esc == "\n".code) || (esc == "\r".code)) {
           _failAt = i;
-          throw "a backslash cannot end a template's line";
+          throw coded(E0006, "a backslash cannot end a template's line");
         }
         _unknownEscape(src, i);
       }
@@ -576,9 +565,9 @@ let _lexRegExpLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
     let c = _byteAt(src, i);
 
     if ((c < 0) || (c == "\n".code) || (c == "\r".code)) {
-      throw "unterminated regexp literal";
+      throw coded(E0005, "unterminated regexp literal");
     } else if (c == "\\".code) {
-      if (_byteAt(src, i + 1) < 0) { throw "unterminated regexp literal"; }
+      if (_byteAt(src, i + 1) < 0) { throw coded(E0005, "unterminated regexp literal"); }
       i = i + 2;
     } else if (c == "/".code) {
       close = i;
@@ -654,7 +643,7 @@ let _lexOp = fn(src: Bytes, i: I32): Tuple<Token, I32> {
           "|".code => Token.Pipe,
           "^".code => Token.Caret,
           _ => {
-            throw "unexpected character";
+            throw coded(E0002, "unexpected character");
             Token.Eof
           },
         };
@@ -684,7 +673,7 @@ let _lexOne = fn(src: Bytes, i: I32): Tuple<Token, I32> {
     let end = _digitsEnd(src, i);
     (Token.IntegerConstant(Bytes.slice(src, i, end - i), IntegerSize.Infer), end)
   } else if ((c == "/".code) && (_byteAt(src, i + 1) == "*".code)) {
-    throw "unterminated block comment";
+    throw coded(E0005, "unterminated block comment");
     (Token.Eof, i)
   } else if (_startsAt(src, i, "~r/")) {
     _lexRegExpLiteral(src, i)
@@ -732,7 +721,7 @@ export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Arr
   let cap = 64;
   let pos = 0;
   let invalid = _invalidUtf8(src);
-  if (invalid >= 0) { throw sourceDiagnostic(filename, src, invalid, "invalid UTF-8"); }
+  if (invalid >= 0) { throw sourceDiagnostic(filename, src, invalid, coded(E0001, "invalid UTF-8")); }
   let depth = -1;
   Array.resize(_holes, 0);
   let done = false;
@@ -794,7 +783,7 @@ export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Arr
       _ => false,
     };
   }
-  if (depth >= 0) { throw sourceDiagnostic(filename, src, _holes[_holes.len() - 1], "unterminated template"); }
+  if (depth >= 0) { throw sourceDiagnostic(filename, src, _holes[_holes.len() - 1], coded(E0005, "unterminated template")); }
   Array.resize(toks, count);
   Array.resize(starts, count);
   Array.resize(ends, count);

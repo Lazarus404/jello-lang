@@ -1,22 +1,22 @@
-// error: 25:18: count is annotated I32, but its value is Bytes
+// error: 25:18: count is annotated I32, but its value is Bytes [E0400]
 // error: let count: I32 = "three";
 // error:                  ^
-// error: $DIR/several_errors.jello:27:21: half is annotated Bytes, but its value is I32
+// error: $DIR/several_errors.jello:27:21: half is annotated Bytes, but its value is I32 [E0400]
 // error:   let half: Bytes = n / 2;
 // error:                     ^
-// error: $DIR/several_errors.jello:28:15: operator + is not defined for I32 and Bytes
+// error: $DIR/several_errors.jello:28:15: operator + is not defined for I32 and Bytes [E0500]
 // error:   let twice = n + "x";
 // error:               ^
-// error: $DIR/several_errors.jello:30:23: the function returns I32, but this value is Bytes
+// error: $DIR/several_errors.jello:30:23: the function returns I32, but this value is Bytes [E0400]
 // error:   if (n > 0) { return "big"; }
 // error:                       ^
 // error: $DIR/several_errors.jello:26:13: note: the function is declared here
 // error: let scale = fn(n: I32): I32 {
 // error:             ^
-// error: $DIR/several_errors.jello:33:27: the function returns Bytes, but this value is I32
+// error: $DIR/several_errors.jello:33:27: the function returns Bytes, but this value is I32 [E0400]
 // error: let label = fn(): Bytes { scale(1) };
 // error:                           ^
-// error: $DIR/several_errors.jello:34:13: operator + is not defined for I32 and Bool
+// error: $DIR/several_errors.jello:34:13: operator + is not defined for I32 and Bool [E0500]
 // error: let ratio = 1 + true;
 // error:             ^
 // Checking goes on after an error, so one run reports each independent error,

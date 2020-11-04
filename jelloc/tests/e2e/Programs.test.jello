@@ -3,6 +3,36 @@
 // scripts/test.sh passes the compiler, the VM and the decode check.
 
 import type { Test } from std.testing;
+import std.testing as T;
 import { run } from degust.Programs;
+import { endsWith, join } from std.core.Bytes;
+import { exists, listDir } from std.io.File;
 
 let testPrograms = fn(t: Test) { run(t, "tests/e2e/programs"); };
+
+// The fixture trees under DIR whose directory fixture, NAME/, has a sibling NAME.jello.
+let _collisions = fn(dir: Bytes, found: Array<Bytes>): Null {
+  let entries = listDir(dir);
+  let i = 0;
+
+  while (i < entries.len()) {
+    let entry = entries[i];
+
+    if (endsWith(entry, "/")) {
+      let name = Bytes.slice(entry, 0, Bytes.len(entry) - 1);
+      if (exists(dir + "/" + name + ".jello")) { found.push(dir + "/" + name); }
+      _collisions(dir + "/" + name, found);
+    }
+    i++;
+  }
+  null
+};
+
+// A directory fixture and a file fixture of one name compile to one module path, so the
+// runner's parallel compiles of them race; no tree may have both.
+let testNoFixturesShareAName = fn(t: Test) {
+  let found = Array.new<Bytes>(0);
+  _collisions("tests/e2e/programs", found);
+  _collisions("tests/e2e/corpus", found);
+  T.equal(t, join(found, ", "), "");
+};

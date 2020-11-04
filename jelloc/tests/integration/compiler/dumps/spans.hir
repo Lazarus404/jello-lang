@@ -1,30 +1,141 @@
 program
-  fn @1 fn(%0 s: bytes @1578..1586 ../stdlib/core/RegExp.jello, %1 m: dynamic @1588..1598 ../stdlib/core/RegExp.jello) -> bytes @1575..1666 ../stdlib/core/RegExp.jello
-    let %2 n: i32 @1611..1626 ../stdlib/core/RegExp.jello
-      call.native std.regexp_match_len: i32 @1619..1625 ../stdlib/core/RegExp.jello
-        local %1: dynamic @1623..1624 ../stdlib/core/RegExp.jello
+  fn @1 fn(%0 s: bytes @2527..2535 ../stdlib/core/RegExp.jello, %1 re: dynamic @2537..2548 ../stdlib/core/RegExp.jello) -> bool @2524..2579 ../stdlib/core/RegExp.jello
     tail
-      bytes.slice: bytes @1629..1664 ../stdlib/core/RegExp.jello
-        local %0: bytes @1641..1642 ../stdlib/core/RegExp.jello
-        local %2: i32 @1644..1645 ../stdlib/core/RegExp.jello
-        sub.wrap: i32 @1647..1663 ../stdlib/core/RegExp.jello
-          bytes.len: i32 @1647..1659 ../stdlib/core/RegExp.jello
-            local %0: bytes @1657..1658 ../stdlib/core/RegExp.jello
-          local %2: i32 @1662..1663 ../stdlib/core/RegExp.jello
-  fn @2 width(%3 s: Shape @302..310) -> i32 @299..458
+      is_present: bool @2558..2577 ../stdlib/core/RegExp.jello
+        call.native std.regexp_match: dynamic @2558..2569 ../stdlib/core/RegExp.jello
+          local %0: bytes @2563..2564 ../stdlib/core/RegExp.jello
+          local %1: dynamic @2566..2568 ../stdlib/core/RegExp.jello
+  fn @2 fn(%2 s: bytes @2693..2701 ../stdlib/core/RegExp.jello, %3 m: dynamic @2703..2713 ../stdlib/core/RegExp.jello) -> bytes @2690..2781 ../stdlib/core/RegExp.jello
+    let %4 n: i32 @2726..2741 ../stdlib/core/RegExp.jello
+      call.native std.regexp_match_len: i32 @2734..2740 ../stdlib/core/RegExp.jello
+        local %3: dynamic @2738..2739 ../stdlib/core/RegExp.jello
+    tail
+      bytes.slice: bytes @2744..2779 ../stdlib/core/RegExp.jello
+        local %2: bytes @2756..2757 ../stdlib/core/RegExp.jello
+        local %4: i32 @2759..2760 ../stdlib/core/RegExp.jello
+        sub.wrap: i32 @2762..2778 ../stdlib/core/RegExp.jello
+          bytes.len: i32 @2762..2774 ../stdlib/core/RegExp.jello
+            local %2: bytes @2772..2773 ../stdlib/core/RegExp.jello
+          local %4: i32 @2777..2778 ../stdlib/core/RegExp.jello
+  fn @3 fn(%5 s: bytes @3062..3070 ../stdlib/core/RegExp.jello, %6 re: dynamic @3072..3083 ../stdlib/core/RegExp.jello) -> array<bytes> @3059..3765 ../stdlib/core/RegExp.jello
+    let %7 parts: array<bytes> @3103..3135 ../stdlib/core/RegExp.jello
+      array.new: array<bytes> @3115..3134 ../stdlib/core/RegExp.jello
+        i32 0: i32 @3132..3133 ../stdlib/core/RegExp.jello
+    let %8 all: dynamic @3136..3154 ../stdlib/core/RegExp.jello
+      call.native std.regexp_text: dynamic @3146..3153 ../stdlib/core/RegExp.jello
+        local %5: bytes @3151..3152 ../stdlib/core/RegExp.jello
+    let %9 n: i32 @3155..3176 ../stdlib/core/RegExp.jello
+      bytes.len: i32 @3163..3175 ../stdlib/core/RegExp.jello
+        local %5: bytes @3173..3174 ../stdlib/core/RegExp.jello
+    let %10 part: i32 @3179..3192 ../stdlib/core/RegExp.jello
+      i32 0: i32 @3190..3191 ../stdlib/core/RegExp.jello
+    let %11 at: i32 @3193..3204 ../stdlib/core/RegExp.jello
+      i32 0: i32 @3202..3203 ../stdlib/core/RegExp.jello
+    while @3207..3709 ../stdlib/core/RegExp.jello
+      condition
+        lt.s.i32: bool @3214..3220 ../stdlib/core/RegExp.jello
+          local %11: i32 @3214..3216 ../stdlib/core/RegExp.jello
+          local %9: i32 @3219..3220 ../stdlib/core/RegExp.jello
+      body
+        let %12 m: dynamic @3228..3256 ../stdlib/core/RegExp.jello
+          call.native std.regexp_find_at: dynamic @3236..3255 ../stdlib/core/RegExp.jello
+            local %8: dynamic @3243..3246 ../stdlib/core/RegExp.jello
+            local %6: dynamic @3248..3250 ../stdlib/core/RegExp.jello
+            local %11: i32 @3252..3254 ../stdlib/core/RegExp.jello
+        if @3261..3286 ../stdlib/core/RegExp.jello
+          condition
+            is_null: bool @3265..3274 ../stdlib/core/RegExp.jello
+              local %12: dynamic @3265..3266 ../stdlib/core/RegExp.jello
+          then
+            break @3278..3284 ../stdlib/core/RegExp.jello
+        let %13 begin: i32 @3291..3315 ../stdlib/core/RegExp.jello
+          call.native std.regexp_capture_start: i32 @3303..3314 ../stdlib/core/RegExp.jello
+            local %12: dynamic @3309..3310 ../stdlib/core/RegExp.jello
+            i32 0: i32 @3312..3313 ../stdlib/core/RegExp.jello
+        let %14 end: i32 @3316..3341 ../stdlib/core/RegExp.jello
+          add.wrap: i32 @3326..3340 ../stdlib/core/RegExp.jello
+            local %13: i32 @3326..3331 ../stdlib/core/RegExp.jello
+            call.native std.regexp_match_len: i32 @3334..3340 ../stdlib/core/RegExp.jello
+              local %12: dynamic @3338..3339 ../stdlib/core/RegExp.jello
+        if @3393..3419 ../stdlib/core/RegExp.jello
+          condition
+            not.bool: bool @3397..3407 ../stdlib/core/RegExp.jello
+              lt.s.i32: bool @3397..3407 ../stdlib/core/RegExp.jello
+                local %13: i32 @3397..3402 ../stdlib/core/RegExp.jello
+                local %9: i32 @3406..3407 ../stdlib/core/RegExp.jello
+          then
+            break @3411..3417 ../stdlib/core/RegExp.jello
+        if @3424..3705 ../stdlib/core/RegExp.jello
+          condition
+            eq.i32: bool @3428..3439 ../stdlib/core/RegExp.jello
+              local %14: i32 @3428..3431 ../stdlib/core/RegExp.jello
+              local %10: i32 @3435..3439 ../stdlib/core/RegExp.jello
+          then
+            expression @3519..3534 ../stdlib/core/RegExp.jello
+              assign %11: i32 @3519..3533 ../stdlib/core/RegExp.jello
+                add.wrap: i32 @3524..3533 ../stdlib/core/RegExp.jello
+                  local %13: i32 @3524..3529 ../stdlib/core/RegExp.jello
+                  i32 1: i32 @3532..3533 ../stdlib/core/RegExp.jello
+            while @3541..3604 ../stdlib/core/RegExp.jello
+              condition
+                and: bool @3548..3593 ../stdlib/core/RegExp.jello
+                  lt.s.i32: bool @3548..3556 ../stdlib/core/RegExp.jello
+                    local %11: i32 @3549..3551 ../stdlib/core/RegExp.jello
+                    local %9: i32 @3554..3555 ../stdlib/core/RegExp.jello
+                  eq.i32: bool @3560..3593 ../stdlib/core/RegExp.jello
+                    bitand: i32 @3561..3585 ../stdlib/core/RegExp.jello
+                      bytes.get_u8: i32 @3562..3578 ../stdlib/core/RegExp.jello
+                        local %5: bytes @3572..3573 ../stdlib/core/RegExp.jello
+                        local %11: i32 @3575..3577 ../stdlib/core/RegExp.jello
+                      i32 192: i32 @3581..3584 ../stdlib/core/RegExp.jello
+                    i32 128: i32 @3589..3592 ../stdlib/core/RegExp.jello
+              body
+                expression @3597..3601 ../stdlib/core/RegExp.jello
+                  assign %11: i32 @3597..3601 ../stdlib/core/RegExp.jello
+                    add.wrap: i32 @3597..3601 ../stdlib/core/RegExp.jello
+                      local %11: i32 @3597..3599 ../stdlib/core/RegExp.jello
+                      i32 1: i32 @3597..3601 ../stdlib/core/RegExp.jello
+          else
+            expression @3624..3671 ../stdlib/core/RegExp.jello
+              array.push: i32 @3624..3670 ../stdlib/core/RegExp.jello
+                local %7: array<bytes> @3624..3629 ../stdlib/core/RegExp.jello
+                bytes.slice: bytes @3635..3669 ../stdlib/core/RegExp.jello
+                  local %5: bytes @3647..3648 ../stdlib/core/RegExp.jello
+                  local %10: i32 @3650..3654 ../stdlib/core/RegExp.jello
+                  sub.wrap: i32 @3656..3668 ../stdlib/core/RegExp.jello
+                    local %13: i32 @3656..3661 ../stdlib/core/RegExp.jello
+                    local %10: i32 @3664..3668 ../stdlib/core/RegExp.jello
+            expression @3678..3689 ../stdlib/core/RegExp.jello
+              assign %10: i32 @3678..3688 ../stdlib/core/RegExp.jello
+                local %14: i32 @3685..3688 ../stdlib/core/RegExp.jello
+            expression @3690..3699 ../stdlib/core/RegExp.jello
+              assign %11: i32 @3690..3698 ../stdlib/core/RegExp.jello
+                local %14: i32 @3695..3698 ../stdlib/core/RegExp.jello
+    expression @3712..3755 ../stdlib/core/RegExp.jello
+      array.push: i32 @3712..3754 ../stdlib/core/RegExp.jello
+        local %7: array<bytes> @3712..3717 ../stdlib/core/RegExp.jello
+        bytes.slice: bytes @3723..3753 ../stdlib/core/RegExp.jello
+          local %5: bytes @3735..3736 ../stdlib/core/RegExp.jello
+          local %10: i32 @3738..3742 ../stdlib/core/RegExp.jello
+          sub.wrap: i32 @3744..3752 ../stdlib/core/RegExp.jello
+            local %9: i32 @3744..3745 ../stdlib/core/RegExp.jello
+            local %10: i32 @3748..3752 ../stdlib/core/RegExp.jello
+    tail
+      local %7: array<bytes> @3758..3763 ../stdlib/core/RegExp.jello
+  fn @4 width(%15 s: Shape @302..310) -> i32 @299..458
     tail
       block: i32 @321..456
-        const %4 match: Shape @321..456
-          local %3: Shape @328..329
-        const %5 match.tag: i32 @321..456
+        const %16 match: Shape @321..456
+          local %15: Shape @328..329
+        const %17 match.tag: i32 @321..456
           enum.tag: i32 @321..456
-            local %4: Shape @321..456
-        let %12 match.bound: ?i32 @321..456
+            local %16: Shape @321..456
+        let %24 match.bound: ?i32 @321..456
           null: ?i32 @321..456
         if: i32 @321..456
           condition
             eq.i32: bool @337..340
-              local %5: i32 @337..340
+              local %17: i32 @337..340
               i32 0: i32 @337..340
           then
             block: i32 @321..456
@@ -34,148 +145,152 @@ program
               condition
                 and: bool @321..456
                   eq.i32: bool @351..361
-                    local %5: i32 @351..361
+                    local %17: i32 @351..361
                     i32 1: i32 @351..361
                   block: bool @321..456
-                    const %6 a: i32 @321..456
+                    const %18 a: i32 @321..456
                       enum.field Line.0: i32 @356..357
-                        local %4: Shape @356..357
-                    const %7 b: i32 @321..456
+                        local %16: Shape @356..357
+                    const %19 b: i32 @321..456
                       enum.field Line.1: i32 @359..360
-                        local %4: Shape @359..360
+                        local %16: Shape @359..360
                     not.bool: bool @368..374
                       eq.i32: bool @368..374
-                        local %6: i32 @368..369
-                        local %7: i32 @373..374
+                        local %18: i32 @368..369
+                        local %19: i32 @373..374
               then
                 block: i32 @321..456
-                  const %8 a: i32 @321..456
+                  const %20 a: i32 @321..456
                     enum.field Line.0: i32 @356..357
-                      local %4: Shape @356..357
-                  const %9 b: i32 @321..456
+                      local %16: Shape @356..357
+                  const %21 b: i32 @321..456
                     enum.field Line.1: i32 @359..360
-                      local %4: Shape @359..360
+                      local %16: Shape @359..360
                   sub.wrap: i32 @379..384
-                    local %9: i32 @379..380
-                    local %8: i32 @383..384
+                    local %21: i32 @379..380
+                    local %20: i32 @383..384
               else
                 if: i32 @321..456
                   condition
                     and: bool @321..456
                       eq.i32: bool @390..409
-                        local %5: i32 @390..409
+                        local %17: i32 @390..409
                         i32 2: i32 @390..409
                       eq.i32: bool @395..405
                         enum.tag: i32 @395..405
                           enum.field Pair.0: Shape @395..405
-                            local %4: Shape @395..405
+                            local %16: Shape @395..405
                         i32 1: i32 @395..405
                   then
                     block: i32 @321..456
-                      const %10 a: i32 @321..456
+                      const %22 a: i32 @321..456
                         enum.field Line.0: i32 @400..401
                           enum.field Pair.0: Shape @400..401
-                            local %4: Shape @400..401
-                      const %11 t: i32 @321..456
+                            local %16: Shape @400..401
+                      const %23 t: i32 @321..456
                         enum.field Pair.1: i32 @407..408
-                          local %4: Shape @407..408
+                          local %16: Shape @407..408
                       add.wrap: i32 @413..418
-                        local %10: i32 @413..414
-                        local %11: i32 @417..418
+                        local %22: i32 @413..414
+                        local %23: i32 @417..418
                   else
                     block: i32 @321..456
                       expression @321..456
                         or: bool @321..456
                           and: bool @321..456
                             eq.i32: bool @424..434
-                              local %5: i32 @424..434
+                              local %17: i32 @424..434
                               i32 1: i32 @424..434
                             block: bool @424..434
                               expression @424..434
-                                assign %12: ?i32 @424..434
+                                assign %24: ?i32 @424..434
                                   present: ?i32 @424..434
                                     enum.field Line.0: i32 @429..430
-                                      local %4: Shape @429..430
+                                      local %16: Shape @429..430
                               bool true: bool @424..434
                           and: bool @321..456
                             eq.i32: bool @436..446
-                              local %5: i32 @436..446
+                              local %17: i32 @436..446
                               i32 2: i32 @436..446
                             block: bool @436..446
                               expression @436..446
-                                assign %12: ?i32 @436..446
+                                assign %24: ?i32 @436..446
                                   present: ?i32 @436..446
                                     enum.field Pair.1: i32 @444..445
-                                      local %4: Shape @444..445
+                                      local %16: Shape @444..445
                               bool true: bool @436..446
                       block: i32 @321..456
-                        const %13 a: i32 @321..456
+                        const %25 a: i32 @321..456
                           unwrap.known: i32 @321..456
-                            local %12: ?i32 @321..456
-                        local %13: i32 @450..451
-  fn @3 first(%14 text: bytes @475..486) -> i32 @472..572
+                            local %24: ?i32 @321..456
+                        local %25: i32 @450..451
+  fn @5 first(%26 text: bytes @475..486) -> i32 @472..572
     tail
       block: i32 @497..570
-        const %15 match: bytes @497..570
-          local %14: bytes @504..508
-        let %16 match.bound: dynamic @497..570
+        const %27 match: bytes @497..570
+          local %26: bytes @504..508
+        let %28 match.bound: dynamic @497..570
           null: dynamic @497..570
         if: i32 @497..570
           condition
             is_present: bool @512..534
-              assign %16: dynamic @512..534
+              assign %28: dynamic @512..534
                 call.native std.regexp_match_prefix: dynamic @512..534
-                  local %15: bytes @512..534
-                  global g2: dynamic @512..534
+                  local %27: bytes @512..534
+                  global g4: dynamic @512..534
           then
             block: i32 @497..570
-              const %17 m: dynamic @497..570
-                local %16: dynamic @512..534
+              const %29 m: dynamic @497..570
+                local %28: dynamic @512..534
               bytes.len: i32 @538..560
                 call.native std.regexp_capture_bytes: bytes @548..559
-                  local %17: dynamic @554..555
+                  local %29: dynamic @554..555
                   i32 1: i32 @557..558
           else
             block: i32 @497..570
               i32 0: i32 @567..568
-  fn @4 total(%18 n: ?i32 @589..596) -> i32 @586..680
-    const %19 let: tuple<i32, i32> @607..627
+  fn @6 total(%30 n: ?i32 @589..596) -> i32 @586..680
+    const %31 let: tuple<i32, i32> @607..627
       tuple: tuple<i32, i32> @620..626
         i32 0: i32 @621..622
         i32 1: i32 @624..625
-    let %20 t: i32 @612..613
+    let %32 t: i32 @612..613
       tuple.get 0: i32 @612..613
-        local %19: tuple<i32, i32> @612..613
-    let %21 u: i32 @615..616
+        local %31: tuple<i32, i32> @612..613
+    let %33 u: i32 @615..616
       tuple.get 1: i32 @615..616
-        local %19: tuple<i32, i32> @615..616
+        local %31: tuple<i32, i32> @615..616
     expression @630..641
-      assign %20: i32 @630..640
+      assign %32: i32 @630..640
         add.wrap: i32 @630..640
-          local %20: i32 @630..631
-          global g1: i32 @635..640
+          local %32: i32 @630..631
+          global g3: i32 @635..640
     if @644..670
       condition
         is_present: bool @648..657
-          local %18: ?i32 @648..649
+          local %30: ?i32 @648..649
       then
         expression @661..668
-          assign %20: i32 @661..667
+          assign %32: i32 @661..667
             add.wrap: i32 @661..667
-              local %20: i32 @661..662
+              local %32: i32 @661..662
               unwrap.known: i32 @666..667
-                local %18: ?i32 @666..667
+                local %30: ?i32 @666..667
     tail
       add.wrap: i32 @673..678
-        local %20: i32 @673..674
-        local %21: i32 @677..678
-  global g0 advance: (bytes, dynamic) -> bytes @1527..1667 ../stdlib/core/RegExp.jello
-    function @1: (bytes, dynamic) -> bytes @1575..1666 ../stdlib/core/RegExp.jello
-  global g1 limit: i32 @14..39 tests/e2e/programs/spans/lib/Limits.jello
+        local %32: i32 @673..674
+        local %33: i32 @677..678
+  global g0 matches: (bytes, dynamic) -> bool @2477..2580 ../stdlib/core/RegExp.jello
+    function @1: (bytes, dynamic) -> bool @2524..2579 ../stdlib/core/RegExp.jello
+  global g1 advance: (bytes, dynamic) -> bytes @2642..2782 ../stdlib/core/RegExp.jello
+    function @2: (bytes, dynamic) -> bytes @2690..2781 ../stdlib/core/RegExp.jello
+  global g2 split: (bytes, dynamic) -> array<bytes> @3006..3766 ../stdlib/core/RegExp.jello
+    function @3: (bytes, dynamic) -> array<bytes> @3059..3765 ../stdlib/core/RegExp.jello
+  global g3 limit: i32 @14..39 tests/e2e/programs/spans/lib/Limits.jello
     add.wrap: i32 @33..38 tests/e2e/programs/spans/lib/Limits.jello
       i32 2: i32 @33..34 tests/e2e/programs/spans/lib/Limits.jello
       i32 1: i32 @37..38 tests/e2e/programs/spans/lib/Limits.jello
-  global g2 ~r/([a-z]+)/: dynamic @512..534
+  global g4 ~r/([a-z]+)/: dynamic @512..534
     call.native std.regexp_compile: dynamic @512..534
       bytes "([a-z]+)": bytes @512..534
       bytes "": bytes @512..534
@@ -183,13 +298,13 @@ program
     add.wrap: i32 @682..779
       add.wrap: i32 @682..759
         mul.wrap: i32 @682..712
-          call @2: i32 @682..705
+          call @4: i32 @682..705
             enum.new Line: Shape @688..704
               i32 1: i32 @699..700
               i32 4: i32 @702..703
           i32 1000: i32 @708..712
         mul.wrap: i32 @715..759
-          call @2: i32 @715..753
+          call @4: i32 @715..753
             enum.new Pair: Shape @721..752
               enum.new Line: Shape @732..748
                 i32 5: i32 @743..744
@@ -197,9 +312,9 @@ program
               i32 2: i32 @750..751
           i32 100: i32 @756..759
       mul.wrap: i32 @762..779
-        call @3: i32 @762..774
+        call @5: i32 @762..774
           bytes "ab1": bytes @768..773
         i32 10: i32 @777..779
-    call @4: i32 @782..790
+    call @6: i32 @782..790
       present: ?i32 @788..789
         i32 3: i32 @788..789

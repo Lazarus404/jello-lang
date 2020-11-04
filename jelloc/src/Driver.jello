@@ -7,7 +7,8 @@ import { printTokens } from frontend.syntax.Tokens;
 import { checkProgram } from frontend.semantics.Modules;
 import { currentSpan } from frontend.semantics.TypeCheck;
 import type { Module } from frontend.Loader;
-import { loadFailureSpan, loadModules, loadTests } from frontend.Loader;
+import { isTestFile, loadFailureSpan, loadModules, loadTests } from frontend.Loader;
+import { Project, baseName, findProject, inDirectory, loadProject, parentDirectory } from Project;
 import { MAX_FAILURES, noteFailure, pendingNote, recordFailure, takeFailures, takeWarnings } from frontend.semantics.Failures;
 import { takeInternalError } from support.Internal;
 import { verifyFailureSpan } from frontend.hir.Verify;
@@ -17,9 +18,11 @@ import { printIr } from ir.Print;
 import { legalizeJlo, relegalizeJlo } from backend.jello.Legalize;
 import { allocateProgram, allocationFailure } from backend.jello.Allocate;
 import { emitAllocated } from backend.jello.Emit;
-import { exists, readText, writeText } from std.io.File;
+import { exists, listDir, makeDirs, readText, writeText } from std.io.File;
 import { getEnv } from std.io.Env;
-import { startsWith } from support.Text;
+import { endsWith, joined, startsWith } from support.Text;
+import { appendFrom } from support.Arrays;
+import { explain } from support.Codes;
 
 import type { Program } from ir.Model;
 import type { Hir } from frontend.hir.Hir;
@@ -28,7 +31,19 @@ import { spanOf, spanPathOf } from frontend.hir.Hir;
 enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; Help; }
 
 let _USAGE = "usage: jelloc <input.jello> (--out path | --lex | --parse | --hir [--spans] | --ir | --jlo [--out path]) [--std dir] [--path dir]...\n"
-  + "       jelloc --test <file.test.jello>... --path dir... (--out path | --hir [--spans] | --ir | --jlo [--out path]) [--std dir]\n\n"
+  + "       jelloc --test <file.test.jello>... --path dir... (--out path | --hir [--spans] | --ir | --jlo [--out path]) [--std dir]\n"
+  + "       jelloc run [--std dir] [--path dir]... <file.jello> [args...]\n"
+  + "       jelloc test [--std dir] [--path dir]... [dir...] [-- args...]\n"
+  + "       jelloc deps.get [dir]\n"
+  + "       jelloc --explain <code>\n\n"
+  + "  run          compile the file into the project's build/run/ (outside a\n"
+  + "               project, under $TMPDIR) and run it with jellovm, passing\n"
+  + "               it args\n"
+  + "  test         compile every *.test.jello file under the dirs (by default\n"
+  + "               the project's test.dirs) into one test binary in build/\n"
+  + "               and run it, passing it args\n"
+  + "  deps.get     fetch the project's dependencies into packages/, with\n"
+  + "               jlo_tool get-deps\n\n"
   + "  --test       compile a test binary instead: every test in the files, each\n"
   + "               under a --path root, run by std.testing\n"
   + "  --out path   write the compiled module to path\n"
@@ -44,10 +59,16 @@ let _USAGE = "usage: jelloc <input.jello> (--out path | --lex | --parse | --hir 
   + "  --ir         print the CFG IR\n"
   + "  --jlo        print the allocated JLO instructions (with --out, also\n"
   + "               write the compiled module)\n"
+  + "  --explain    print what an error code, such as E0302, means\n"
   + "  --help       print this help\n\n"
+  + "A project is the nearest directory at or above the file (run), or the\n"
+  + "first dir or else the current directory (test, deps.get), that holds a\n"
+  + "jello.json. Its src, and each dependency's, are searched after the\n"
+  + "--path roots. run and test find jellovm, and deps.get jlo_tool, as\n"
+  + "$JELLO_VM and $JELLO_JLO_TOOL say, else beside jelloc, else on PATH.\n\n"
   + "Exit status: 0 on success, 1 when the program does not compile (the\n"
   + "diagnostic is on standard error), 2 for a bad command line, 3 for an\n"
-  + "internal error (a compiler bug).\n";
+  + "internal error (a compiler bug). run and test exit as the program does.\n";
 
 let _exit = fn(code: I32, message: Bytes) {
   writeText("/dev/stderr", message);
@@ -63,6 +84,25 @@ let _testing = false;
 let _value = fn(rest: List<Bytes>, flag: Bytes, what: Bytes): Bytes {
   if (List.is_nil(rest) || (List.head(rest) == "")) { throw flag + " requires " + what; }
   List.head(rest)
+};
+
+let _commonOption = fn(args: List<Bytes>): List<Bytes> {
+  let arg = List.head(args);
+
+  match (arg) {
+    "--std" => {
+      _std = _value(List.tail(args), arg, "a directory");
+      List.tail(List.tail(args))
+    },
+    "--path" => {
+      _roots.push(_value(List.tail(args), arg, "a directory"));
+      List.tail(List.tail(args))
+    },
+    _ => {
+      if (startsWith(arg, "-")) { throw "unknown option: " + arg; }
+      args
+    },
+  }
 };
 
 let _parseArgs = fn(argv: List<Bytes>): Tuple<Array<Bytes>, Mode, Bytes> {
@@ -86,6 +126,11 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Array<Bytes>, Mode, Bytes> {
       cur = List.tail(cur);
       continue;
     }
+
+    if ((arg == "--std") || (arg == "--path")) {
+      cur = _commonOption(cur);
+      continue;
+    }
     let flag: ?Mode = match (arg) { "--lex" => Mode.Lex, "--parse" => Mode.Parse, "--hir" => Mode.Typed, "--ir" => Mode.Lowered, "--jlo" => Mode.Legalized, _ => null };
 
     if (flag != null) {
@@ -96,16 +141,6 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Array<Bytes>, Mode, Bytes> {
         "--out" => {
           cur = List.tail(cur);
           output = _value(cur, arg, "a path");
-          null
-        },
-        "--std" => {
-          cur = List.tail(cur);
-          _std = _value(cur, arg, "a directory");
-          null
-        },
-        "--path" => {
-          cur = List.tail(cur);
-          _roots.push(_value(cur, arg, "a directory"));
           null
         },
         _ => {
@@ -261,7 +296,194 @@ let _parse = fn(input: Bytes): Bytes {
   }
 };
 
+load { process_exec, process_executable } from std;
+
+let _execEntries: (Bytes) -> Bytes = process_exec;
+let _executable: () -> Bytes = process_executable;
+
+let _exec = fn(argv: Array<Bytes>) {
+  _exit(1, "jelloc: " + _execEntries(joined(argv, "\0") + "\0") + "\n")
+};
+
+let _tool = fn(variable: Bytes, name: Bytes): Bytes {
+  let set = getEnv(variable);
+  if (set != "") { return set; }
+  let beside = inDirectory(parentDirectory(_executable()), name);
+  exists(beside) ? beside : name
+};
+
+let _items = fn(list: List<Bytes>): Array<Bytes> {
+  let out = Array.new<Bytes>(0);
+  let cur = list;
+
+  while (!List.is_nil(cur)) {
+    out.push(List.head(cur));
+    cur = List.tail(cur);
+  }
+  out
+};
+
+let _project = fn(start: Bytes): ?Project {
+  let root = findProject(start);
+  if (root == "") { return null; }
+
+  try { loadProject(root) } catch (e) {
+    _exit(1, Std.string(e) + "\n");
+    null
+  }
+};
+
+let _buildDir = fn(project: ?Project, under: Bytes): Bytes {
+  let tmp = getEnv("TMPDIR");
+
+  let dir = match (project) {
+    Project(root, _, _, _) => inDirectory(root, under),
+    null => (tmp == "" ? "/tmp" : tmp) + "/jelloc/" + under,
+  };
+  if (!makeDirs(dir)) { _exit(1, "jelloc: cannot make " + dir + "\n"); }
+  dir
+};
+
+let _addSources = fn(project: ?Project) {
+  match (project) {
+    Project(_, sources, _, _) => {
+      appendFrom(_roots, sources, 0);
+      null
+    },
+    null => null,
+  }
+};
+
+let _compileAndRun = fn(inputs: Array<Bytes>, output: Bytes, args: Array<Bytes>, project: ?Project) {
+  _report(fn() {
+    _write(output, _allocated(inputs));
+    ""
+  }, "");
+  let vm = [_tool("JELLO_VM", "jellovm")];
+
+  match (project) {
+    Project(_, _, _, libraries) => {
+      if (libraries.len() > 0) {
+        vm.push("--jdll-path");
+        vm.push(joined(libraries, ":"));
+      }
+      null
+    },
+    null => null,
+  };
+  vm.push(output);
+  _exec(appendFrom(vm, args, 0))
+};
+
+let _runCommand = fn(argv: List<Bytes>) {
+  let cur = argv;
+  let input = "";
+
+  while (!List.is_nil(cur) && (input == "")) {
+    let rest = _commonOption(cur);
+
+    if (rest == cur) {
+      input = List.head(cur);
+      cur = List.tail(cur);
+    } else { cur = rest; }
+  }
+  if (input == "") { throw "run needs a file"; }
+  if (!exists(input)) { _exit(1, "jelloc: cannot read " + input + "\n"); }
+  let project = _project(parentDirectory(input));
+  _addSources(project);
+  let name = baseName(input);
+  if ((name.len() <= 6) || !endsWith(name, ".jello")) { throw "run takes a .jello file, not " + input; }
+  let output = _buildDir(project, "build/run") + "/" + Bytes.slice(name, 0, name.len() - 6) + ".jlo";
+  _compileAndRun([input], output, _items(cur), project)
+};
+
+let _testFiles: (Bytes, Array<Bytes>) -> Null = fn(dir, files) {
+  let entries = listDir(dir);
+  let i = 0;
+
+  while (i < entries.len()) {
+    let entry = entries[i];
+    let path = inDirectory(dir, entry);
+    if (Bytes.get_u8(entry, entry.len() - 1) == "/".code) { _testFiles(Bytes.slice(path, 0, path.len() - 1), files); } else if (isTestFile(entry)) { files.push(path); }
+    i++;
+  }
+  null
+};
+
+let _testCommand = fn(argv: List<Bytes>) {
+  let dirs = Array.new<Bytes>(0);
+  let cur = argv;
+
+  while (!List.is_nil(cur) && (List.head(cur) != "--")) {
+    let rest = _commonOption(cur);
+
+    if (rest == cur) {
+      dirs.push(List.head(cur));
+      cur = List.tail(cur);
+    } else { cur = rest; }
+  }
+  let args = List.is_nil(cur) ? Array.new<Bytes>(0) : _items(List.tail(cur));
+  let project = _project(dirs.len() == 0 ? "." : dirs[0]);
+
+  if (dirs.len() == 0) {
+    match (project) {
+      Project(_, _, tests, _) => {
+        let i = 0;
+
+        while (i < tests.len()) {
+          if (exists(tests[i])) { dirs.push(tests[i]); }
+          i++;
+        } null
+      },
+      null => {
+        throw "test needs a directory outside a project (no jello.json here or above)";
+        null
+      },
+    };
+    if (dirs.len() == 0) { _exit(1, "jelloc: the project has none of its test directories\n"); }
+  }
+  let files = Array.new<Bytes>(0);
+  let i = 0;
+
+  while (i < dirs.len()) {
+    if (!exists(dirs[i])) { _exit(1, "jelloc: cannot read " + dirs[i] + "\n"); }
+    _testFiles(dirs[i], files);
+    i++;
+  }
+  if (files.len() == 0) { _exit(1, "jelloc: no *.test.jello file under " + dirs[0] + "\n"); }
+  _roots = appendFrom(dirs, _roots, 0);
+  _addSources(project);
+  _testing = true;
+  _compileAndRun(files, _buildDir(project, "build") + "/test.jlo", args, project)
+};
+
+let _depsCommand = fn(argv: List<Bytes>) {
+  let args = _items(argv);
+  if (args.len() > 1) { throw "unexpected argument: " + args[1]; }
+  if ((args.len() == 1) && startsWith(args[0], "-")) { throw "unknown option: " + args[0]; }
+  let root = findProject(args.len() == 0 ? "." : args[0]);
+  if (root == "") { _exit(1, "jelloc: no jello.json here or in a directory above\n"); }
+  _exec([_tool("JELLO_JLO_TOOL", "jlo_tool"), "get-deps", root])
+};
+
+let _subcommand = fn(name: Bytes, args: List<Bytes>): Bool {
+  let command: ?((List<Bytes>) -> Null) = match (name) { "run" => _runCommand, "test" => _testCommand, "deps.get" => _depsCommand, _ => null };
+  if (command == null) { return false; }
+  try { command(args) } catch (e) { _exit(2, "jelloc: " + Std.string(e) + "\n" + _USAGE); }
+  true
+};
+
+let _explain = fn(args: Array<Bytes>): Bytes {
+  if (args.len() != 1) { _exit(2, "jelloc: --explain takes one error code, as E0302\n" + _USAGE); }
+  let text = explain(args[0]);
+  if (text == "") { _exit(2, "jelloc: unknown error code: " + args[0] + "\n" + _USAGE); }
+  text
+};
+
 export let run: (List<Bytes>) -> Bytes = fn(argv) {
+  if (!List.is_nil(argv) && _subcommand(List.head(argv), List.tail(argv))) { return ""; }
+  if (!List.is_nil(argv) && (List.head(argv) == "--explain")) { return _explain(_items(List.tail(argv))); }
+
   let (inputs, mode, output) = try { _parseArgs(argv) } catch (e) {
     _exit(2, "jelloc: " + Std.string(e) + "\n" + _USAGE);
     (Array.new<Bytes>(0), Mode.Help, "")

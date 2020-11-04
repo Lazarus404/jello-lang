@@ -1,0 +1,18 @@
+// expect: [a|b|c][a|b|c][][a||b|][h|é|l|l|o][|a]a+b+c;a[1]b[2];<>;10/2024 $;a-b;a\+b\ \(c\)\ é\#;true;false;hi hi;[]
+// std.core.RegExp: split as JavaScript's, a global replace with $n, ${name} and $$, escapeLiteral
+// under the x flag, and named captures.
+import { compile, escapeLiteral, find, group, matches, named, replace, split } from std.core.RegExp;
+import { join } from std.core.Bytes;
+let parts = fn(s: Bytes, re: Dynamic): Bytes { "[" + join(split(s, re), "|") + "]" };
+let out = parts("a,b,c", ~r/,/) + parts("abc", ~r/x*/) + parts("", ~r/,/) + parts("a,,b,", ~r/,/);
+out = out + parts("héllo", ~r//) + parts(",a", ~r/,/);
+out = out + replace("a-b-c", ~r/-/, "+") + ";" + replace("a1b2", ~r/[0-9]/, "[$0]") + ";";
+out = out + replace("ac", ~r/a(b)?c/, "<$1>") + ";";
+out = out + replace("2024-10", ~r/(?<y>\d+)-(?<m>\d+)/, "${m}/${y} $$") + ";";
+out = out + replace("a-b", ~r/z/, "") + ";";
+out = out + escapeLiteral("a+b (c) é#") + ";";
+let literal = compile(escapeLiteral("a+b #c"), "x");
+out = out + Std.string(matches("a+b #c", literal)) + ";" + Std.string(matches("ab#c", literal)) + ";";
+let m = find("hi!", ~r/(?<word>[a-z]+)/);
+out = out + named(m, "word") + " " + group(m, 1) + ";";
+out + "[" + named(find("ac", ~r/a(?<b>b)?c/), "b") + "]"

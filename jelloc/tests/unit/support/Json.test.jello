@@ -1,0 +1,68 @@
+package support;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { Json, jsonAt, jsonField, parseJson } from support.Json;
+
+// TEXT's value, which must parse.
+let _parsed = fn(t: Test, text: Bytes): Json {
+  let (value, message, _) = parseJson(text);
+
+  if (value == null) {
+    T.fail(t, "does not parse: " + text + ": " + message);
+    return Json.Null(0);
+  }
+  value
+};
+
+// The string at KEY of VALUE, or "" when there is none.
+let _text = fn(value: Json, key: Bytes): Bytes {
+  match (jsonField(value, key)) { Text(_, s) => s, _ => "" }
+};
+
+let testReadsAManifest = fn(t: Test) {
+  let value = _parsed(t, " {\"name\": \"app\", \"n\": -1.5e+3, \"ok\": true, \"none\": null,\n \"dirs\": [\"a\", \"b\"], \"deps\": {}} ");
+  T.equal(t, _text(value, "name"), "app");
+  T.equal(t, jsonAt(value), 1);
+  match (jsonField(value, "n")) { Number(at, text) => T.equal(t, (at, text), (22, "-1.5e+3")), _ => T.fail(t, "n is no number") };
+  match (jsonField(value, "ok")) { Bool(_, b) => T.isTrue(t, b), _ => T.fail(t, "ok is no bool") };
+  match (jsonField(value, "none")) { Null(_) => null, _ => T.fail(t, "none is not null") };
+  match (jsonField(value, "dirs")) { List(_, items) => T.equal(t, items.len(), 2), _ => T.fail(t, "dirs is no array") };
+  match (jsonField(value, "deps")) { Object(_, keys, _) => T.equal(t, keys.len(), 0), _ => T.fail(t, "deps is no object") };
+  T.isTrue(t, jsonField(value, "missing") == null);
+  // A repeated key reads as its last value.
+  T.equal(t, _text(_parsed(t, "{\"k\": \"a\", \"k\": \"b\"}"), "k"), "b");
+};
+
+let testDecodesEscapes = fn(t: Test) {
+  let value = _parsed(t, "{\"s\": \"q\\\" b\\\\ s\\/ \\n\\t\\r\\b\\f \\u00e9 \\ud83d\\ude00\"}");
+  T.equal(t, _text(value, "s"), "q\" b\\ s/ \n\t\r\x08\x0c \xc3\xa9 \xf0\x9f\x98\x80");
+};
+
+let testReportsWhereItFails = fn(t: Test) {
+  let cases = [
+    ("", "expected a value", 0),
+    ("{\"a\": 1,}", "expected a string key", 8),
+    ("[1 2]", "expected , or ] in array", 3),
+    ("{\"a\" 1}", "expected : after key", 5),
+    ("\"open", "unterminated string", 0),
+    ("\"a\nb\"", "control character in string", 2),
+    ("\"\\x\"", "unknown escape in string", 1),
+    ("\"\\ud800\"", "lone surrogate in \\u escape", 1),
+    ("\"\\u12\"", "expected four hex digits after \\u", 5),
+    ("01", "a number cannot start with 0", 0),
+    ("1.", "expected digits after .", 2),
+    ("1e", "expected digits in exponent", 2),
+    ("nul", "expected a value", 0),
+    ("{} x", "unexpected text after the value", 3)
+  ];
+  let i = 0;
+
+  while (i < cases.len()) {
+    let (text, message, at) = cases[i];
+    let (value, got, gotAt) = parseJson(text);
+    T.isTrue(t, value == null);
+    T.equal(t, (text, got, gotAt), (text, message, at));
+    i++;
+  }
+};

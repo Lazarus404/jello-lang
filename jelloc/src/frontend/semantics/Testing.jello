@@ -10,6 +10,7 @@ import { Binding, declareScoped, exportScoped, exportedType, namespaceMember } f
 import type { SourceSpan } from frontend.syntax.Source;
 import { locate } from frontend.syntax.Locations;
 import { callFunction, checkArity, checkOperand, currentSpan, enterSyntax, rejectAt, syntaxChild, widened } from frontend.semantics.TypeCheck;
+import { E0400, E0408, E0600, coded } from support.Codes;
 
 let _ASSERTIONS = ["equal", "notEqual", "isTrue", "isNull", "throws"];
 
@@ -38,7 +39,7 @@ let _location = fn(): Bytes {
 
 let _argument = fn(args: Array<AstExpr>, index: I32, ty: I32, name: Bytes, what: Bytes): I32 {
   let value = widened(checkOperand(args[index], index + 1, ty), ty);
-  if (!H.unify(H.typeOf(value), ty)) { rejectAt(index + 1, name + " takes " + what + " of type " + H.typeName(ty) + ", not " + H.typeName(H.typeOf(value))); }
+  if (!H.unify(H.typeOf(value), ty)) { rejectAt(index + 1, coded(E0400, name + " takes " + what + " of type " + H.typeName(ty) + ", not " + H.typeName(H.typeOf(value)))); }
   value
 };
 
@@ -57,7 +58,7 @@ export let checkSystemAssertion: (Bytes, Bytes, Array<AstExpr>) -> I32 = fn(asse
     checkArity(args, 1, name);
     return orThrow(_argument(args, 0, H.TYPE_BOOL, name, "a condition"), bytesOf(at + "assertion failed"));
   }
-  if ((args.len() < 2) || (args.len() > 3)) { throw name + " takes 2 or 3 arguments"; }
+  if ((args.len() < 2) || (args.len() > 3)) { throw coded(E0600, name + " takes 2 or 3 arguments"); }
   let statements = Array.new<I32>(0);
   let (got, want) = equalityOperands(args[0], args[1], 1);
   let g = bindOnce(statements, "got", got);
@@ -94,7 +95,7 @@ export let checkAssertion: (I32, Bytes, Bytes, Array<AstExpr>) -> I32 = fn(modul
 
       if (!H.isKind(ty, Kind.Null)) {
         enterSyntax(syntaxChild(2));
-        throw name + " takes a nullable value, not " + H.typeName(ty);
+        throw coded(E0408, name + " takes a nullable value, not " + H.typeName(ty));
       }
       let v = bindOnce(statements, "value", value);
       _unless(H.node(Op.IsNull, H.TYPE_BOOL, 0, 0, [H.local(v, ty)]), _report(module, "failNotNull", [H.local(t, testType), at, _shown(v, value)]))

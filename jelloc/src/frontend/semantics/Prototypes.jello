@@ -9,6 +9,7 @@ import { storable } from frontend.semantics.Values;
 import { callField, namedKey, readObject, storeField, writeField } from frontend.semantics.Objects;
 import { scopedType } from frontend.semantics.ModuleScope;
 import { indexOf } from support.Arrays;
+import { E0302, E0402, E0805, coded } from support.Codes;
 import { buildInstances, checkGenericPrototype, checkMethodCall, checkOperand, checkPresent, delegates, enterSyntax, fieldMismatch, findMethod, hasInitField, hideValue, linkedMember, methodValue, objectValue, prototypeGlobal, prototypeField, prototypeNamed, prototypeParent, prototypeValue, receiverMethodType, rejectAt, requireThis, resolveInstanceReads, syntaxChild, widened } from frontend.semantics.TypeCheck;
 
 let _methodCall = fn(holder: I32, receiver: I32, index: I32, name: Bytes, args: Array<AstExpr>): I32 {
@@ -35,10 +36,10 @@ export let checkSuperCall: (Bytes, Array<AstType>, Array<AstExpr>) -> I32 = fn(n
   let ty = requireThis("`super`");
   let receiver = checkPresent(AstExpr.This, 0);
   let parent = prototypeParent(ty);
-  if (parent == -2) { throw H.typeName(ty) + " has no __proto__, so `super` has nothing to call"; }
+  if (parent == -2) { throw coded(E0805, H.typeName(ty) + " has no __proto__, so `super` has nothing to call"); }
   let holder = readObject(prototypeValue(ty), namedKey("__proto__"), H.TYPE_OBJECT);
   enterSyntax(outer);
-  if (types.len() != 0) { throw "super." + name + " does not take type arguments"; }
+  if (types.len() != 0) { throw coded(E0402, "super." + name + " does not take type arguments"); }
   let found = parent >= 0 ? findMethod(parent, name) : -1;
   found >= 0 ? _methodCall(holder, receiver, found, name, args) : callField(holder, receiver, name, args)
 };
@@ -53,7 +54,7 @@ let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): 
     match (fields[f]) { Field(field, value) => {
       if (indexOf(names, field) >= 0) {
         enterSyntax(syntaxChild(f));
-        throw name + " declares " + field + " twice";
+        throw coded(E0302, name + " declares " + field + " twice");
       }
       names.push(field);
 
@@ -63,7 +64,7 @@ let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): 
 
           if (declared >= 0) {
             enterSyntax(syntaxChild(f));
-            throw field + " is a method of " + name + " and a field of its typedef";
+            throw coded(E0302, field + " is a method of " + name + " and a field of its typedef");
           }
           writeField(H.local(object, ty), field, methodValue(ty, field, f, body))
         },
@@ -86,7 +87,7 @@ let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): 
 
 export let checkPrototype: (Bytes, Array<PrototypeField>) -> I32 = fn(name, fields) {
   let ty = scopedType(name);
-  if (delegates(ty, ty)) { throw name + " delegates to itself through __proto__"; }
+  if (delegates(ty, ty)) { throw coded(E0805, name + " delegates to itself through __proto__"); }
   H.isTemplateEnum(ty) ? checkGenericPrototype(ty, fn() { _prototypeObject(ty, name, fields) }) : _prototypeObject(ty, name, fields)
 };
 
@@ -105,7 +106,7 @@ let _checkNew = fn(proto: AstExpr, args: Array<AstExpr>): I32 {
 
   if (!H.isObject(ty)) {
     enterSyntax(syntaxChild(0));
-    throw "`new` makes an Object that delegates to an Object, not " + H.typeName(ty);
+    throw coded(E0805, "`new` makes an Object that delegates to an Object, not " + H.typeName(ty));
   }
   let made = H.isPrototype(ty) ? ty : H.TYPE_OBJECT;
   let statements = Array.new<I32>(0);
@@ -115,8 +116,8 @@ let _checkNew = fn(proto: AstExpr, args: Array<AstExpr>): I32 {
   let init = H.isPrototype(ty) ? findMethod(ty, "init") : -1;
 
   if (init >= 0) { statements.push(expressionOf(_methodCall(-1, H.local(object, made), init, "init", args))); } else if (args.len() != 0) {
-    if (hasInitField(ty)) { throw "the init of " + H.typeName(ty) + " is a field; `new` passes its arguments to an init method, `init(params) { ... }`"; }
-    throw H.isPrototype(ty) ? H.typeName(ty) + " has no init method, so `new` passes it no arguments" : "`new` passes arguments only to a prototype's init method";
+    if (hasInitField(ty)) { throw coded(E0805, "the init of " + H.typeName(ty) + " is a field; `new` passes its arguments to an init method, `init(params) { ... }`"); }
+    throw coded(E0805, H.isPrototype(ty) ? H.typeName(ty) + " has no init method, so `new` passes it no arguments" : "`new` passes arguments only to a prototype's init method");
   }
   statements.push(H.local(object, made));
   H.node(Op.Block, made, 0, 1, statements)
@@ -127,7 +128,7 @@ export let checkPrototypeExpr: (AstExpr) -> I32 = fn(expr) {
     New(proto, args) => _checkNew(proto, args),
     _ => {
       requireThis("`super`");
-      throw "`super` calls a method of the Object the prototype delegates to, as `super.m(...)`";
+      throw coded(E0805, "`super` calls a method of the Object the prototype delegates to, as `super.m(...)`");
       -1
     },
   }

@@ -6,6 +6,7 @@ import frontend.hir.Hir as H;
 import { internalError } from support.Internal;
 import { Kind, Op } from frontend.hir.Hir;
 import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, hideValue, integerConversion, isNullaryVariant, presentAt, presentKnown, prototypeValue, syntaxChild, upcasts } from frontend.semantics.TypeCheck;
+import { E0405, E0406, E0407, E0500, coded } from support.Codes;
 
 let _bool = fn(op: Op, children: Array<I32>): I32 { H.node(op, H.TYPE_BOOL, 0, 0, children) };
 
@@ -37,11 +38,11 @@ let _read = fn(binding: I32, value: I32): I32 { binding < 0 ? value : H.local(bi
 let _negated = fn(op: BinaryOp, equal: I32): I32 { match (op) { NotEqual => _bool(Op.Not, [equal]), _ => equal } };
 
 let _dynamicPresentEqual = fn(d: I32, ty: I32, value: I32): I32 {
-  if (ty == H.TYPE_DYNAMIC) { throw "two Dynamic values cannot be compared; extract one with `as T`"; }
-  if (ty == H.TYPE_U64) { throw "a Dynamic cannot be compared with a U64, which it never holds"; }
+  if (ty == H.TYPE_DYNAMIC) { throw coded(E0407, "two Dynamic values cannot be compared; extract one with `as T`"); }
+  if (ty == H.TYPE_U64) { throw coded(E0407, "a Dynamic cannot be compared with a U64, which it never holds"); }
 
   if (!H.isIntegerType(ty) && (checkedKind(ty) < 0)) {
-    throw "a Dynamic compares only with null or a value `is` can test, not " + H.typeName(ty) + UNCHECKED_KINDS;
+    throw coded(E0407, "a Dynamic compares only with null or a value `is` can test, not " + H.typeName(ty) + UNCHECKED_KINDS);
   }
   let held = H.isIntegerType(ty) ? H.TYPE_I64 : ty;
   let compared = (ty == held) ? value : H.node(Op.Convert, held, 0, 0, [value]);
@@ -65,7 +66,7 @@ export let equalBindings: (BinaryOp, I32, I32, I32, I32) -> I32 = fn(op, a, left
   let rightNull = H.isKind(rightType, Kind.Null);
   if (!leftNull && !rightNull) { return binaryValues(op, _read(a, left), _read(b, right)); }
   let inner = leftNull ? H.innerOf(leftType) : leftType;
-  if ((rightNull ? H.innerOf(rightType) : rightType) != inner) { throw "cannot compare " + H.typeName(leftType) + " with " + H.typeName(rightType); }
+  if ((rightNull ? H.innerOf(rightType) : rightType) != inner) { throw coded(E0500, "cannot compare " + H.typeName(leftType) + " with " + H.typeName(rightType)); }
   let equal = binaryValues(BinaryOp.Equal, a < 0 ? left : _present(a, leftType), b < 0 ? right : _present(b, rightType));
   _negated(op, (leftNull && rightNull)
     ? H.node(Op.If, H.TYPE_BOOL, 0, 0, [
@@ -101,11 +102,11 @@ export let UNCHECKED_KINDS: Bytes = ": only Bool, I32, I64, F16, F32, F64, Atom,
 
 let _boxable = fn(operand: I32) {
   let ty = H.typeOf(operand);
-  if (ty == H.TYPE_BYTE_BUFFER) { throw "a buffer from Bytes.new cannot become Dynamic" + bufferHint(ty); }
-  if (H.isKind(ty, Kind.List)) { throw "a list cannot become Dynamic: its nil would read as null"; }
+  if (ty == H.TYPE_BYTE_BUFFER) { throw coded(E0405, "a buffer from Bytes.new cannot become Dynamic" + bufferHint(ty)); }
+  if (H.isKind(ty, Kind.List)) { throw coded(E0405, "a list cannot become Dynamic: its nil would read as null"); }
   let held = (H.isKind(ty, Kind.Null) && (H.innerOf(ty) >= 0)) ? H.resolve(H.innerOf(ty)) : ty;
-  if (held == H.TYPE_U64) { throw "a " + H.typeName(ty) + " cannot become Dynamic: one above the greatest I64 would read as negative"; }
-  if ((held == H.TYPE_U32) && (held != ty)) { throw "a " + H.typeName(ty) + " cannot become Dynamic: one above the greatest I32 would read as negative"; }
+  if (held == H.TYPE_U64) { throw coded(E0405, "a " + H.typeName(ty) + " cannot become Dynamic: one above the greatest I64 would read as negative"); }
+  if ((held == H.TYPE_U32) && (held != ty)) { throw coded(E0405, "a " + H.typeName(ty) + " cannot become Dynamic: one above the greatest I32 would read as negative"); }
   null
 };
 
@@ -138,13 +139,13 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   let operand = checkOperand(value, 0, -1);
   let ty = H.typeOf(operand);
   if (ty == target) { return operand; }
-  if (ty == H.TYPE_BYTE_BUFFER) { throw "`as` cannot convert a buffer from Bytes.new" + bufferHint(ty); }
+  if (ty == H.TYPE_BYTE_BUFFER) { throw coded(E0406, "`as` cannot convert a buffer from Bytes.new" + bufferHint(ty)); }
   if (target == H.TYPE_DYNAMIC) { return toDynamic(operand); }
   if (upcasts(ty, target)) { return H.node(Op.Convert, target, 0, 0, [operand]); }
   if (H.isPrototype(target) && (H.isObject(ty) || (ty == H.TYPE_DYNAMIC))) { return _asPrototype(operand, target); }
 
   if (ty == H.TYPE_DYNAMIC) {
-    if (checkedKind(target) < 0) { throw "cannot extract " + H.typeName(target) + " from Dynamic" + UNCHECKED_KINDS; }
+    if (checkedKind(target) < 0) { throw coded(E0406, "cannot extract " + H.typeName(target) + " from Dynamic" + UNCHECKED_KINDS); }
     return H.node(Op.FromDynamic, target, 0, 0, [operand]);
   }
   let present = presentAt(operand, 0);
@@ -158,7 +159,7 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
       H.node(Op.Convert, target, 0, 0, [present])
     },
     _ => {
-      throw "cannot convert " + H.typeName(ty) + " to " + H.typeName(target);
+      throw coded(E0406, "cannot convert " + H.typeName(ty) + " to " + H.typeName(target));
       -1
     },
   }
@@ -167,7 +168,7 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
 export let kindTest: (I32, I32) -> I32 = fn(operand, target) {
   if (H.isPrototype(target)) { return _delegatesTo(operand, target); }
   let code = checkedKind(target);
-  if (code < 0) { throw "is cannot test for " + H.typeName(target) + UNCHECKED_KINDS; }
+  if (code < 0) { throw coded(E0406, "is cannot test for " + H.typeName(target) + UNCHECKED_KINDS); }
   H.node(Op.IsKind, H.TYPE_BOOL, code, code == H.KIND_ENUM ? target : 0, [operand])
 };
 
@@ -176,7 +177,7 @@ let _is = fn(value: AstExpr, targetType: AstType): I32 {
 
   if (H.typeOf(operand) != H.TYPE_DYNAMIC) {
     enterSyntax(syntaxChild(0));
-    throw "is tests a Dynamic value, not " + H.typeName(H.typeOf(operand));
+    throw coded(E0406, "is tests a Dynamic value, not " + H.typeName(H.typeOf(operand)));
   }
   kindTest(operand, checkType(targetType))
 };

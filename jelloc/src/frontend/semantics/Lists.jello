@@ -9,6 +9,7 @@ import { expressionOf } from frontend.semantics.Derived;
 import {
   beginLoopScope, checkOperand, endLoopScope, enterSyntax, hideValue, newBinding, rejectAt, syntaxChild, widened,
 } from frontend.semantics.TypeCheck;
+import { E0400, coded } from support.Codes;
 
 let _element = fn(expected: I32, inferred: Bool): I32 {
   if (H.isKind(expected, Kind.List)) { return H.innerOf(expected); }
@@ -23,7 +24,7 @@ let _items = fn(items: Array<AstExpr>, first: I32, element: I32, values: Array<I
   while (i < items.len()) {
     let value = widened(checkOperand(items[i], first + i, ty), declared);
     if (ty < 0) { ty = H.typeOf(value); }
-    if (!H.unify(H.typeOf(value), ty)) { rejectAt(first + i, "list element must be " + H.typeName(ty)); }
+    if (!H.unify(H.typeOf(value), ty)) { rejectAt(first + i, coded(E0400, "list element must be " + H.typeName(ty))); }
     values.push(value);
     i++;
   }
@@ -36,11 +37,11 @@ let _listOperand = fn(operand: AstExpr, index: I32, element: I32, what: Bytes): 
 
   if (!H.isKind(ty, Kind.List)) {
     enterSyntax(syntaxChild(index));
-    throw what + " must be a List, not " + H.typeName(ty);
+    throw coded(E0400, what + " must be a List, not " + H.typeName(ty));
   }
 
   if ((element >= 0) && !H.unify(ty, H.listType(element))) {
-    rejectAt(index, what + " must be " + H.typeName(H.listType(element)) + ", not " + H.typeName(ty));
+    rejectAt(index, coded(E0400, what + " must be " + H.typeName(H.listType(element)) + ", not " + H.typeName(ty)));
     return H.node(Op.ListNil, H.listType(element), 0, 0, []);
   }
   checked
@@ -118,7 +119,7 @@ let _guard = fn(guard: AstExpr, index: I32, loop: Array<I32>) {
 
   if (H.typeOf(test) != H.TYPE_BOOL) {
     enterSyntax(syntaxChild(index));
-    throw "comprehension guard must be a Bool";
+    throw coded(E0400, "comprehension guard must be a Bool");
   }
   let skip = H.node(Op.Block, 0, 0, 0, [H.node(Op.Continue, 0, 0, 0, [])]);
   loop.push(H.node(Op.IfStatement, 0, 0, 0, [H.node(Op.Not, H.TYPE_BOOL, 0, 0, [test]), skip]));

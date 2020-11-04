@@ -28,6 +28,7 @@ import {
 } from frontend.semantics.TypeCheck;
 import { checkPrototype, instantiatePrototypes } from frontend.semantics.Prototypes;
 import { verifyHir } from frontend.hir.Verify;
+import { E0206, E0210, E0213, E0214, E0304, E0605, E0900, E0901, coded } from support.Codes;
 
 let _initializers = Array.new<I32>(0);
 let _testing = -1;
@@ -38,7 +39,7 @@ let _returnsVoid = fn(ty: AstType): Bool {
 
 let _marshalled = fn(ty: I32, name: Bytes): I32 {
   let count = typeArgCount(ty);
-  if (count > 8) { throw "native " + name + " takes " + Std.string(count) + " arguments; at most 8 are supported"; }
+  if (count > 8) { throw coded(E0901, "native " + name + " takes " + Std.string(count) + " arguments; at most 8 are supported"); }
   let i = 0;
 
   while (i <= count) {
@@ -46,7 +47,7 @@ let _marshalled = fn(ty: I32, name: Bytes): I32 {
 
     match (kindOf(part)) {
       Bool, I32, Bytes, Dynamic => null, _ => {
-        throw "native " + name + " cannot pass " + typeName(part) + "; natives take and return Bool, I32, Bytes or Dynamic";
+        throw coded(E0213, "native " + name + " cannot pass " + typeName(part) + "; natives take and return Bool, I32, Bytes or Dynamic");
         null
       }
     };
@@ -94,7 +95,7 @@ let _checkSignature = fn(statement: Stmt, test: I32) {
         let params = isTestName(name) ? [test] : Array.new<I32>(0);
 
         if (bindingType(scoped(name)) != functionType(params, TYPE_NULL)) {
-          throw "wrong signature for " + name + ", must be: let " + name + " = fn(" + (params.len() == 0 ? "" : "t: Test") + ") { ... }";
+          throw coded(E0210, "wrong signature for " + name + ", must be: let " + name + " = fn(" + (params.len() == 0 ? "" : "t: Test") + ") { ... }");
         }
       }
       null
@@ -121,7 +122,7 @@ let _exportNames = fn(statements: Array<Stmt>): Array<Bytes> {
 
 let _checkExtension = fn(statement: Stmt, owner: Bytes) {
   let name = _exportedName(statement);
-  if ((name != "") && isIntrinsic(owner, name)) { throw owner + "." + name + " is intrinsic, so std.core." + owner + " cannot export " + name; }
+  if ((name != "") && isIntrinsic(owner, name)) { throw coded(E0214, owner + "." + name + " is intrinsic, so std.core." + owner + " cannot export " + name); }
   null
 };
 
@@ -164,7 +165,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
 
         match (statements[i]) {
           ImportFrom(Native, items, library) => {
-            if (library.len() != 1) { throw "a native library is named by one identifier: load { ... } from std;"; }
+            if (library.len() != 1) { throw coded(E0206, "a native library is named by one identifier: load { ... } from std;"); }
             let j = 0;
 
             while (j < items.len()) {
@@ -176,9 +177,9 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
           ImportFrom(_, _, _), ImportModule(_, _, _) => null,
           LetStmt(_, exported, pattern, _, annotation, value, _) when (isBindPattern(pattern) && isLoaded(value)) => {
             let name = bindPatternName(pattern);
-            if ((annotation != null) && _returnsVoid(annotation)) { throw "native " + name + " needs a result type: natives without a result are not supported yet"; }
+            if ((annotation != null) && _returnsVoid(annotation)) { throw coded(E0900, "native " + name + " needs a result type: natives without a result are not supported yet"); }
             let ty = checkAnnotation(annotation);
-            if ((ty < 0) || !isKind(ty, Kind.Function)) { throw "a native needs a function type: let " + name + ": (Bytes) -> I32 = ...;"; }
+            if ((ty < 0) || !isKind(ty, Kind.Function)) { throw coded(E0213, "a native needs a function type: let " + name + ": (Bytes) -> I32 = ...;"); }
 
             match (value) { Variable(loaded) => match (scoped(loaded)) {
               Loaded(library, native) => declareScoped(name, Binding.Native(declareNative(library, native, _marshalled(ty, native)))),
@@ -201,7 +202,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
           },
           LetStmt(isConst, exported, pattern, typeParams, annotation, value, _) when (isBindPattern(pattern)) => {
             let name = bindPatternName(pattern);
-            if (typeParams.len() != 0) { throw "globals do not support type parameters"; }
+            if (typeParams.len() != 0) { throw coded(E0605, "globals do not support type parameters"); }
             let global = annotation == null ? -1 : annotatedGlobal(i);
             let (checked, suspect) = checkGlobalInitializer(value, global < 0 ? -1 : globalTypeOf(global), name);
             let init = global < 0 ? declareGlobal(name, checked, !isConst) : node(Op.InitGlobal, typeOf(checked), global, 0, [checked]);
@@ -273,7 +274,7 @@ let _checkInitOrder = fn() {
 
   if (binding >= 0) {
     enterNode(binding);
-    throw "global " + globalNameOf(global) + " is read before it is initialized";
+    throw coded(E0304, "global " + globalNameOf(global) + " is read before it is initialized");
   }
   null
 };

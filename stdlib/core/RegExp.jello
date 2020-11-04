@@ -11,8 +11,12 @@ load {
   regexp_capture_count,
   regexp_capture_bytes,
   regexp_capture_start,
+  regexp_capture_named,
+  regexp_replace,
+  regexp_escape_literal,
   regexp_text,
   regexp_match_at,
+  regexp_find_at,
 } from std;
 
 export let compile: (Bytes, Bytes) -> Dynamic = regexp_compile;
@@ -25,11 +29,44 @@ export let len: (Dynamic) -> I32 = regexp_match_len;
 export let captureCount: (Dynamic) -> I32 = regexp_capture_count;
 export let group: (Dynamic, I32) -> Bytes = regexp_capture_bytes;
 export let start: (Dynamic, I32) -> I32 = regexp_capture_start;
+export let named: (Dynamic, Bytes) -> Bytes = regexp_capture_named;
+export let replace: (Bytes, Dynamic, Bytes) -> Bytes = regexp_replace;
+export let escapeLiteral: (Bytes) -> Bytes = regexp_escape_literal;
 
 export let text: (Bytes) -> Dynamic = regexp_text;
 export let matchAt: (Dynamic, Dynamic, I32) -> Dynamic = regexp_match_at;
+export let findAt: (Dynamic, Dynamic, I32) -> Dynamic = regexp_find_at;
+
+export let matches: (Bytes, Dynamic) -> Bool = fn(s: Bytes, re: Dynamic): Bool { find(s, re) != null };
 
 export let advance: (Bytes, Dynamic) -> Bytes = fn(s: Bytes, m: Dynamic): Bytes {
   let n = len(m);
   Bytes.slice(s, n, Bytes.len(s) - n)
+};
+
+export let split: (Bytes, Dynamic) -> Array<Bytes> = fn(s: Bytes, re: Dynamic): Array<Bytes> {
+  let parts = Array.new<Bytes>(0);
+  let all = text(s);
+  let n = Bytes.len(s);
+  let part = 0;
+  let at = 0;
+
+  while (at < n) {
+    let m = findAt(all, re, at);
+    if (m == null) { break; }
+    let begin = start(m, 0);
+    let end = begin + len(m);
+    if (begin >= n) { break; }
+
+    if (end == part) {
+      at = begin + 1;
+      while ((at < n) && ((Bytes.get(s, at) & 192) == 128)) { at++; }
+    } else {
+      parts.push(Bytes.slice(s, part, begin - part));
+      part = end;
+      at = end;
+    }
+  }
+  parts.push(Bytes.slice(s, part, n - part));
+  parts
 };

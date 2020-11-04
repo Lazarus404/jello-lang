@@ -21,13 +21,14 @@ import { checkPrototypeCall, checkPrototypeExpr, checkSuperCall } from frontend.
 import { appendFrom, indexOf, internIndex } from support.Arrays;
 import { closestNames, joined, startsWith } from support.Text;
 import { binaryValues, bufferHint, checkArity, checkFunctionCall, checkIndirectCall, checkInstance, checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, hasSpread, hideValue, fieldMismatch, isBound, joinArrays, linkedMember, newBinding, objectValue, one, prototypeField, prototypeMethod, receiverMethodType, rejectAt, spreadArray, spreadOperand, syntaxChild, tupleFields, widened, withoutCallee } from frontend.semantics.TypeCheck;
+import { E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0600, E0800, E0801, E0807, E0808, E0900, coded } from support.Codes;
 
 let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   let checked = checkOperand(expr, index, H.TYPE_I32);
 
   if (H.typeOf(checked) != H.TYPE_I32) {
     enterSyntax(syntaxChild(index));
-    throw what + " must be I32";
+    throw coded(E0400, what + " must be I32");
   }
   checked
 };
@@ -37,7 +38,7 @@ let _readable = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
 
   if (!H.isKind(H.typeOf(checked), Kind.Bytes) && !H.isKind(H.typeOf(checked), Kind.ByteBuffer)) {
     enterSyntax(syntaxChild(index));
-    throw what;
+    throw coded(E0400, what);
   }
   checked
 };
@@ -47,7 +48,7 @@ let _of = fn(expr: AstExpr, index: I32, kind: Kind, expected: I32, what: Bytes):
 
   if (!H.isKind(H.typeOf(checked), kind)) {
     enterSyntax(syntaxChild(index));
-    throw what;
+    throw coded(E0400, what);
   }
   checked
 };
@@ -90,7 +91,7 @@ let _args = fn(): I32 {
 
 let _fieldOf = fn(ty: I32, member: Bytes): I32 {
   let field = H.recordField(ty, member);
-  if (field < 0) { throw H.typeName(ty) + " has no field " + member; }
+  if (field < 0) { throw coded(E0800, H.typeName(ty) + " has no field " + member); }
   field
 };
 let _readField = fn(record: I32, field: I32): I32 { H.node(Op.TupleField, H.fieldType(H.typeOf(record), 0, field), field, 0, [record]) };
@@ -99,7 +100,7 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
   match (base) {
     Bytes(value) when (member == "code") => {
       let code = _codePoint(value);
-      if (code < 0) { throw "'.code' requires one Unicode character"; }
+      if (code < 0) { throw coded(E0008, "'.code' requires one Unicode character"); }
       return H.node(Op.I32, H.TYPE_I32, code, 0, []);
     },
     Variable(space) when ((space == "System") && (member == "args") && _builtin(space)) => { return _args(); },
@@ -119,7 +120,7 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
       return linked < 0 ? readObject(tuple, namedKey(member), H.TYPE_DYNAMIC) : readTyped(tuple, namedKey(member), linked);
     }
     enterSyntax(syntaxChild(0));
-    throw "unknown member: " + member;
+    throw coded(E0800, "unknown member: " + member);
   }
   let field = 0;
   let i = 0;
@@ -135,7 +136,7 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
       i++;
     }
   }
-  if ((field < 0) || (field >= H.typeArgCount(ty))) { throw "tuple " + H.typeName(ty) + " has no field " + member; }
+  if ((field < 0) || (field >= H.typeArgCount(ty))) { throw coded(E0807, "tuple " + H.typeName(ty) + " has no field " + member); }
   H.node(Op.TupleField, H.typeArg(ty, field), field, 0, [tuple])
 };
 
@@ -167,13 +168,13 @@ let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
       Spread(value) => {
         if (i > 0) {
           enterSyntax(syntaxChild(i));
-          throw "a spread must be the first entry of a record literal";
+          throw coded(E0801, "a spread must be the first entry of a record literal");
         }
         let source = checkPresentAs(value, 0, ty);
 
         if (!H.unify(H.typeOf(source), ty)) {
           enterSyntax(syntaxChild(0));
-          throw "cannot spread " + H.typeName(H.typeOf(source)) + " into a record literal of " + H.typeName(ty);
+          throw coded(E0801, "cannot spread " + H.typeName(H.typeOf(source)) + " into a record literal of " + H.typeName(ty));
         }
         spread = hideValue(statements, "spread", source);
       },
@@ -182,7 +183,7 @@ let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
 
         if ((field < 0) || (values[field] >= 0)) {
           enterSyntax(syntaxChild(i));
-          throw field < 0 ? H.typeName(ty) + " has no field " + name : "field " + name + " is given twice";
+          throw field < 0 ? coded(E0800, H.typeName(ty) + " has no field " + name) : coded(E0801, "field " + name + " is given twice");
         }
         let declared = H.fieldType(ty, 0, field);
         let checked = widened(checkOperand(value, i, declared), H.isOpen(declared) ? -1 : declared);
@@ -191,7 +192,7 @@ let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
       },
       Computed(_, _) => {
         enterSyntax(syntaxChild(i));
-        throw "a record literal's fields are named; " + H.typeName(ty) + " has no computed keys";
+        throw coded(E0801, "a record literal's fields are named; " + H.typeName(ty) + " has no computed keys");
       },
     };
     i++;
@@ -200,7 +201,7 @@ let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
 
   while (i < count) {
     if (values[i] < 0) {
-      if (spread < 0) { throw "the record literal of " + H.typeName(ty) + " is missing field " + H.fieldName(ty, 0, i); }
+      if (spread < 0) { throw coded(E0801, "the record literal of " + H.typeName(ty) + " is missing field " + H.fieldName(ty, 0, i)); }
       values[i] = _readField(H.local(spread, ty), i);
     }
     i++;
@@ -282,7 +283,7 @@ let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
       _ => {
         let value = widened(checkOperand(items[i], i, element), declared);
         if (element < 0) { element = H.typeOf(value); }
-        if (!H.unify(H.typeOf(value), element)) { rejectAt(i, "array element must be " + H.typeName(element)); }
+        if (!H.unify(H.typeOf(value), element)) { rejectAt(i, coded(E0400, "array element must be " + H.typeName(element))); }
         values.push(value);
       },
     };
@@ -302,7 +303,7 @@ let _index = fn(base: AstExpr, index: AstExpr): I32 {
     Array => H.node(Op.ArrayGet, H.innerOf(ty), 0, 0, [value, checkedIndex]),
     _ => {
       enterSyntax(syntaxChild(0));
-      throw "cannot index " + H.typeName(ty);
+      throw coded(E0807, "cannot index " + H.typeName(ty));
       -1
     },
   }
@@ -329,11 +330,11 @@ let _indexTarget = fn(base: AstExpr, index: AstExpr): Tuple<I32, I32> {
   let outer = enterSyntax(syntaxChild(0));
   let array = objectValue(checkPresent(base, 0));
   let ty = H.typeOf(array);
-  if (H.isKind(ty, Kind.Bytes)) { throw "Bytes values are immutable; build bytes in a buffer from Bytes.new"; }
+  if (H.isKind(ty, Kind.Bytes)) { throw coded(E0412, "Bytes values are immutable; build bytes in a buffer from Bytes.new"); }
 
   if (!H.isKind(ty, Kind.Array) && !H.isKind(ty, Kind.ByteBuffer) && (ty != H.TYPE_OBJECT)) {
     enterSyntax(syntaxChild(0));
-    throw "cannot index " + H.typeName(ty);
+    throw coded(E0807, "cannot index " + H.typeName(ty));
   }
   let checkedIndex = ty == H.TYPE_OBJECT ? objectKey(index, 1) : _i32(index, 1, "index");
   enterSyntax(outer);
@@ -349,7 +350,7 @@ let _updated = fn(set: I32, ty: I32, op: BinaryOp, postfix: Bool, declared: Arra
 
 let _updateIndex = fn(array: I32, index: I32, op: BinaryOp, checked: I32, step: Bool, postfix: Bool): I32 {
   let element = _elementOf(array);
-  if (step && !H.isInteger(element)) { throw "increment and decrement require an integer element, not " + H.typeName(element); }
+  if (step && !H.isInteger(element)) { throw coded(E0500, "increment and decrement require an integer element, not " + H.typeName(element)); }
   let declared = Array.new<I32>(0);
   let (arrayRead, arrayWrite) = _twice(array, step, declared, "array");
   let (indexRead, indexWrite) = _twice(index, step, declared, "index");
@@ -363,7 +364,7 @@ let _assignIndex = fn(base: AstExpr, index: AstExpr, op: AssignOp, value: AstExp
   let checked = match (op) { Assign => widened(checkOperand(value, 1, element), element), _ => checkOperand(value, 1, element) };
 
   if (!H.unify(H.typeOf(checked), element)) {
-    rejectAt(1, (H.isKind(H.typeOf(array), Kind.ByteBuffer) ? "a byte" : "array element") + " must be " + H.typeName(element));
+    rejectAt(1, coded(E0400, (H.isKind(H.typeOf(array), Kind.ByteBuffer) ? "a byte" : "array element") + " must be " + H.typeName(element)));
     return _set(array, checkedIndex, checked);
   }
   match (op) { Assign => _set(array, checkedIndex, checked), Compound(binary) => _updateIndex(array, checkedIndex, binary, checked, false, false) }
@@ -385,17 +386,17 @@ let _fieldTarget = fn(base: AstExpr, member: Bytes, inPlace: Bool): Tuple<I32, I
   let ty = H.typeOf(record);
 
   if (replaced >= 0) {
-    if (inPlace) { throw member + " is a method, so it cannot be updated in place"; }
+    if (inPlace) { throw coded(E0807, member + " is a method, so it cannot be updated in place"); }
     return (record, -2, receiverMethodType(replaced, H.typeOf(checked)), H.typeOf(checked));
   }
   if (ty == H.TYPE_OBJECT) { return (record, -1, prototypeField(H.typeOf(checked), member), H.typeOf(checked)); }
-  if (!H.isRecord(ty)) { throw H.isKind(ty, Kind.Tuple) ? "tuple fields cannot be assigned" : "only a record's fields can be assigned, not a member of " + H.typeName(ty); }
+  if (!H.isRecord(ty)) { throw coded(E0103, H.isKind(ty, Kind.Tuple) ? "tuple fields cannot be assigned" : "only a record's fields can be assigned, not a member of " + H.typeName(ty)); }
   let field = _fieldOf(ty, member);
   (record, field, H.fieldType(ty, 0, field), ty)
 };
 
 let _updateField = fn(record: I32, field: I32, member: Bytes, ty: I32, op: BinaryOp, checked: I32, step: Bool, postfix: Bool): I32 {
-  if (step && !H.isInteger(ty)) { throw "increment and decrement require an integer field, not " + H.typeName(ty); }
+  if (step && !H.isInteger(ty)) { throw coded(E0500, "increment and decrement require an integer field, not " + H.typeName(ty)); }
   let declared = Array.new<I32>(0);
   let (read, write) = _twice(record, step, declared, "record");
   let updated = binaryValues(op, field < 0 ? readTyped(read, namedKey(member), ty) : _readField(read, field), checked);
@@ -407,7 +408,7 @@ let _assignField = fn(base: AstExpr, member: Bytes, op: AssignOp, value: AstExpr
 
   if (field == -2) {
     let replacement = checkOperand(value, 1, ty);
-    if (!H.unify(H.typeOf(replacement), ty)) { rejectAt(1, member + " is a method of type " + H.typeName(ty) + ", so only a function of that type replaces it"); }
+    if (!H.unify(H.typeOf(replacement), ty)) { rejectAt(1, coded(E0400, member + " is a method of type " + H.typeName(ty) + ", so only a function of that type replaces it")); }
     return writeField(record, member, replacement);
   }
   if (ty < 0) { return assignObject(record, namedKey(member), op, value); }
@@ -581,7 +582,7 @@ let _extensionCall = fn(owner: Bytes, name: Bytes, types: Array<AstType>, receiv
     Unbound => {
       let closest = module < 0 ? Array.new<Bytes>(0) : closestNames(exports, name);
       let message = receiver >= 0 ? "unknown method " + name + " of " + H.typeName(H.typeOf(receiver)) : "unknown function " + qualified;
-      throw closest.len() == 0 ? message : message + "; closest: " + joined(closest, ", ");
+      throw coded(E0800, closest.len() == 0 ? message : message + "; closest: " + joined(closest, ", "));
       -1
     },
     _ => checkFunctionCall(binding, qualified, types, receiver, args, expected),
@@ -605,7 +606,7 @@ let _bytesOperand = fn(receiver: I32, args: Array<AstExpr>, ty: I32, what: Bytes
   if (receiver < 0) {
     return ty < 0 ? _readable(args[0], 1, what) : _of(args[0], 1, H.kindOf(ty), ty == H.TYPE_BYTES ? ty : -1, what);
   }
-  if ((ty >= 0) && !H.isKind(H.typeOf(receiver), H.kindOf(ty))) { throw what + bufferHint(H.typeOf(receiver)); }
+  if ((ty >= 0) && !H.isKind(H.typeOf(receiver), H.kindOf(ty))) { throw coded(E0400, what + bufferHint(H.typeOf(receiver))); }
   receiver
 };
 
@@ -658,17 +659,17 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
   let isFunction = (space == "Function") && isFunctionIntrinsic(name);
 
   if (isFunction || ((space == "Object") && isObjectIntrinsic(name))) {
-    if (args.len() == 0) { throw qualified + (isFunction ? " requires a function" : " requires an Object"); }
+    if (args.len() == 0) { throw coded(E0600, qualified + (isFunction ? " requires a function" : " requires an Object")); }
     let rest = Array.new<AstExpr>(0);
     appendFrom(rest, args, 1);
     if (!isFunction) { return checkObjectCall(name, objectArgument(args[0], qualified), types, rest, 2); }
-    if (types.len() != 0) { throw qualified + " does not take type arguments"; }
+    if (types.len() != 0) { throw coded(E0402, qualified + " does not take type arguments"); }
     let outer = enterSyntax(withoutCallee());
     let call = checkFunctionIntrinsic(name, checkPresent(args[0], 0), rest);
     enterSyntax(outer);
     return call;
   }
-  if ((types.len() != 0) && !_extends(space, qualified)) { throw qualified + " does not take type arguments"; }
+  if ((types.len() != 0) && !_extends(space, qualified)) { throw coded(E0402, qualified + " does not take type arguments"); }
   if ((space == "Bytes") && (name != "new") && (_bytesArity(name) > 0)) { return _bytesCall(name, -1, args); }
 
   match (qualified) {
@@ -682,7 +683,7 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
       match (args[0]) {
         Bytes(value) => namedKey(value),
         _ => {
-          throw "Atom.intern requires a compile-time bytes literal";
+          throw coded(E0808, "Atom.intern requires a compile-time bytes literal");
           -1
         },
       }
@@ -726,10 +727,10 @@ let _method = fn(base: AstExpr, name: Bytes, types: Array<AstType>, args: Array<
   if (ty == H.TYPE_OBJECT) {
     if (isObjectIntrinsic(name)) { return checkObjectCall(name, receiver, types, args, 1); }
     let (module, exports) = _extensionModule("Object");
-    if (linkedMember(declared, name).1 && (indexOf(exports, name) < 0)) { throw H.typeName(declared) + " has no method or field " + name; }
+    if (linkedMember(declared, name).1 && (indexOf(exports, name) < 0)) { throw coded(E0800, H.typeName(declared) + " has no method or field " + name); }
     if ((module < 0) || (indexOf(exports, name) >= 0)) { return _extensionCall("Object", name, types, receiver, args, expected); }
   }
-  if (types.len() != 0) { throw name + " does not take type arguments"; }
+  if (types.len() != 0) { throw coded(E0402, name + " does not take type arguments"); }
   let builtin = H.isKind(ty, Kind.Array) ? _builtinIndex(name) : H.isKind(ty, Kind.List) ? _receiverBuiltin("List." + name) : -1;
 
   match (H.kindOf(ty)) {
@@ -752,7 +753,7 @@ let _method = fn(base: AstExpr, name: Bytes, types: Array<AstType>, args: Array<
     },
     _ => {
       let extended = _extensionOf(ty);
-      if ((extended == "") || isIntrinsic(extended, name)) { throw "unknown method " + name + " of " + H.typeName(ty); }
+      if ((extended == "") || isIntrinsic(extended, name)) { throw coded(E0800, "unknown method " + name + " of " + H.typeName(ty)); }
       _extensionCall(extended, name, _NO_TYPES, receiver, args, expected)
     },
   }
@@ -760,8 +761,8 @@ let _method = fn(base: AstExpr, name: Bytes, types: Array<AstType>, args: Array<
 
 let _layoutCall = fn(ty: I32, name: Bytes, types: Array<AstType>, args: Array<AstExpr>): I32 {
   let qualified = H.typeName(ty) + "." + name;
-  if ((name != "pack") && (name != "unpack")) { throw "unknown function " + qualified + "; a bytes layout has pack and unpack"; }
-  if (types.len() != 0) { throw qualified + " does not take type arguments"; }
+  if ((name != "pack") && (name != "unpack")) { throw coded(E0800, "unknown function " + qualified + "; a bytes layout has pack and unpack"); }
+  if (types.len() != 0) { throw coded(E0402, qualified + " does not take type arguments"); }
   checkArity(args, 1, qualified);
   let statements = Array.new<I32>(0);
 
@@ -782,7 +783,7 @@ let _layoutCall = fn(ty: I32, name: Bytes, types: Array<AstType>, args: Array<As
 
   if (!H.unify(H.typeOf(record), ty)) {
     enterSyntax(syntaxChild(1));
-    throw qualified + " takes " + H.typeName(ty) + ", not " + H.typeName(H.typeOf(record));
+    throw coded(E0400, qualified + " takes " + H.typeName(ty) + ", not " + H.typeName(H.typeOf(record)));
   }
 
   if (H.opOf(record) == Op.Tuple) {
@@ -805,12 +806,12 @@ let _call = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>, 
     Member(Variable(space), name) when (!isBound(space) && H.isLayout(scopedType(space))) => _layoutCall(scopedType(space), name, types, args),
     Member(Variable(space), name) when (!isBound(space)) => {
       touch(space);
-      throw scopedType(space) >= 0 ? space + " is a type, not a value" : "unknown name " + space + " in " + space + "." + name + "; import a module as " + space + " to call its exports";
+      throw scopedType(space) >= 0 ? coded(E0301, space + " is a type, not a value") : coded(E0300, "unknown name " + space + " in " + space + "." + name + "; import a module as " + space + " to call its exports");
       -1
     },
     Member(base, name) => _method(base, name, types, args, expected),
     _ => {
-      throw "calling this expression is not supported yet; bind the function to a name first";
+      throw coded(E0900, "calling this expression is not supported yet; bind the function to a name first");
       -1
     },
   }

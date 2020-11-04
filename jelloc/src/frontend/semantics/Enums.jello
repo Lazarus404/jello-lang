@@ -2,6 +2,7 @@ package frontend.semantics;
 
 import type { Expr as AstExpr, Stmt, StructField, Type as AstType } from frontend.syntax.Ast;
 import { indexOf } from support.Arrays;
+import { E0302, E0400, E0402, E0802, E0803, coded } from support.Codes;
 import { Op, appliedType, defineVariants, enumParams, fieldCount, fieldType, isOpen, newVar, node, typeOf, unify, variantTag } from frontend.hir.Hir;
 import { checkMatch, checkWith } from frontend.semantics.Match;
 import { internalError } from support.Internal;
@@ -41,7 +42,7 @@ export let defineEnums: (Array<Stmt>) -> Bool = fn(statements) {
 
         while (c < constructors.len()) {
           match (constructors[c]) { Constructor(variant, fields) => {
-            if (indexOf(names, variant) >= 0) { throw "duplicate variant " + variant + " of " + name; }
+            if (indexOf(names, variant) >= 0) { throw coded(E0302, "duplicate variant " + variant + " of " + name); }
             let (fieldName, fieldType) = checkFields(fields);
             names.push(variant);
             fieldNames.push(fieldName);
@@ -70,7 +71,7 @@ let _construct = fn(base: AstExpr, variant: Bytes, variantTypes: Array<AstType>,
       ("", Array.new<AstType>(0))
     },
   };
-  if (variantTypes.len() != 0) { throw "enum constructors do not take type arguments; write them on the enum: " + enumName + "<T>." + variant; }
+  if (variantTypes.len() != 0) { throw coded(E0402, "enum constructors do not take type arguments; write them on the enum: " + enumName + "<T>." + variant); }
   let ty = scopedType(enumName);
   let params = enumParams(ty);
   if (typeArgs.len() != 0) { checkTypeArgCount(enumName, ty, typeArgs.len()); }
@@ -87,9 +88,9 @@ let _construct = fn(base: AstExpr, variant: Bytes, variantTypes: Array<AstType>,
     if (expected >= 0) { unify(ty, expected); }
   }
   let tag = variantTag(ty, variant);
-  if (tag < 0) { throw "unknown variant " + variant + " of " + enumName; }
+  if (tag < 0) { throw coded(E0802, "unknown variant " + variant + " of " + enumName); }
   let count = fieldCount(ty, tag);
-  if ((called == (count == 0)) || (args.len() != count)) { throw "wrong payload count for enum variant " + enumName + "." + variant; }
+  if ((called == (count == 0)) || (args.len() != count)) { throw coded(E0803, "wrong payload count for enum variant " + enumName + "." + variant); }
   let declared = Array.new<I32>(0);
   let i = 0;
 
@@ -102,7 +103,7 @@ let _construct = fn(base: AstExpr, variant: Bytes, variantTypes: Array<AstType>,
 
   while (i < count) {
     let field = widened(checkOperand(args[i], i + 1, fieldType(ty, tag, i)), declared[i]);
-    if (!unify(typeOf(field), fieldType(ty, tag, i))) { rejectAt(i + 1, "wrong payload type for enum variant " + enumName + "." + variant); }
+    if (!unify(typeOf(field), fieldType(ty, tag, i))) { rejectAt(i + 1, coded(E0400, "wrong payload type for enum variant " + enumName + "." + variant)); }
     fields.push(field);
     i++;
   }

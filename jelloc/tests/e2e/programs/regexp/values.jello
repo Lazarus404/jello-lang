@@ -1,0 +1,24 @@
+// expect: 0,7,14,f00b00,a|b|c,false,true,#one#two,ab,false,~r/a b/xi
+// flags: --path $DIR/auxiliary
+// A regexp literal is a value, compiled once wherever it is: in a loop, a generic function or a
+// generic prototype's instances, and as a module's export.
+import { word, firstWord } from Pats;
+import { compile, find, flags, group, matches, replace, source, split } from std.core.RegExp;
+import { join } from std.core.Bytes;
+let out = "";
+let put = fn(v: Bytes) { out = out + v + ","; null };
+let digits = ~r/[0-9]+/;
+let i = 0;
+while (i < 3) { put(group(find("ab" + Std.string(i * 7), ~r/\d+/), 0)); i++; }
+let zeros<T> = fn(x: T, s: Bytes): Bytes { replace(s, ~r/o/i, "0") };
+put(zeros(1, "foO") + zeros("a", "bOo"));
+put(join(split("a1b22c", digits), "|"));
+put(Std.string(matches("xyz", ~r/^y/m))); put(Std.string(matches("x\ny", ~r/^y/m)));
+prototype Box<T> {
+  init(v: T) { this.v = v; };
+  tag(s: Bytes): Bytes { group(find(s, ~r/#\w+/), 0) };
+};
+put(new Box(1).tag("a #one b") + new Box("x").tag("#two"));
+put(firstWord("12 ab cd")); put(Std.string(matches("Q", word)));
+let spaced = ~r/a b/xi;
+out + "~r/" + source(spaced) + "/" + flags(spaced)

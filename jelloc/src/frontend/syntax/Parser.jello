@@ -45,6 +45,7 @@ import { SourceSpan, SyntaxKind, SyntaxMark } from frontend.syntax.Source;
 import { syntaxTree } from frontend.syntax.SyntaxTree;
 import { exprTag, isBindPattern, patternTag, stmtTag } from frontend.syntax.Ast;
 import { isKeyword, tokenText } from frontend.syntax.Tokens;
+import { E0008, E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, coded } from support.Codes;
 import { internalError } from support.Internal;
 import { utf8Validate, utf8Length, utf8CharAt } from support.Text;
 
@@ -113,9 +114,9 @@ export let takeSyntaxErrors: () -> Array<Tuple<SourceSpan, Bytes, ?SourceSpan, B
 let _quietUntil = 0;
 export let parseFailureSpan: () -> ?SourceSpan = fn() { _failure };
 
-let _error = fn(msg: Bytes): I32 {
+let _error = fn(code: Bytes, msg: Bytes): I32 {
   _failure = _tokenSpan(_seen);
-  throw ("ParseError: " + msg);
+  throw "ParseError: " + coded(code, msg);
   0
 };
 
@@ -147,7 +148,7 @@ let _quoted = fn(token: Token): Bytes {
   match (token) { Eof => "the end of the file", _ => "'" + tokenText(token) + "'" }
 };
 
-let _expected = fn(what: Bytes, actual: Token): I32 { _error("expected " + what + ", found " + _quoted(actual)) };
+let _expected = fn(what: Bytes, actual: Token): I32 { _error(E0100, "expected " + what + ", found " + _quoted(actual)) };
 
 let expect = fn(expected: Token) {
   let actual = next();
@@ -249,7 +250,7 @@ let _digitsI32 = fn(digits: Bytes): I32 {
 let _bitsWidth = fn(digits: Bytes): I32 {
   if ((digits.len() != 1) || (Bytes.get_u8(digits, 0) < "1".code)
     || (Bytes.get_u8(digits, 0) > "7".code)) {
-    _error("bits(N) width must be 1..7");
+    _error(E0104, "bits(N) width must be 1..7");
   }
   Bytes.get_u8(digits, 0) - "0".code
 };
@@ -258,7 +259,7 @@ let _bitsSegmentWidth = fn(digits: Bytes): I32 {
   let width = if (digits.len() <= 2) { _digitsI32(digits) } else { 0 };
 
   if (!(((width >= 1) && (width <= 8)) || (width == 16) || (width == 32))) {
-    _error("bits segment width must be 1..8, 16, or 32");
+    _error(E0104, "bits segment width must be 1..8, 16, or 32");
   }
   width
 };
@@ -342,12 +343,12 @@ _parseTypeAtom = fn() {
 
         match (items[items.len() - 1]) {
           VarargsArg(_) => {
-            _error("varargs type must be the last parameter");
+            _error(E0102, "varargs type must be the last parameter");
             null
           },
           _ => null,
         };
-        if (peek() == Token.RParen) { _error("trailing comma is not supported in function types"); }
+        if (peek() == Token.RParen) { _error(E0101, "trailing comma is not supported in function types"); }
         items.push(_parseTypeArg());
       }
     }
@@ -500,7 +501,7 @@ let _endian = fn(): Endian {
   let e = _ident();
 
   if (e == "be") { Endian.Big } else {
-    if (e != "le") { _error("expected le or be"); }
+    if (e != "le") { _error(E0104, "expected le or be"); }
     Endian.Little
   }
 };
@@ -522,7 +523,7 @@ let _bitsSegment = fn(): Tuple<I32, Endian, Bool, BitValueKind> {
       } else if ((name == "f32") || (name == "F32")) {
         width = 32;
         kind = BitValueKind.Float;
-      } else { _error("unknown bits segment"); }
+      } else { _error(E0104, "unknown bits segment"); }
       null
     },
     IntegerConstant(digits, _) => {
@@ -530,13 +531,13 @@ let _bitsSegment = fn(): Tuple<I32, Endian, Bool, BitValueKind> {
       null
     },
     _ => {
-      _error("expected bits segment");
+      _error(E0104, "expected bits segment");
       null
     },
   };
 
   if ((peek() == Token.Dot) && ((width == 8) || (kind == BitValueKind.Rest))) {
-    _error("endian suffix is not supported on u8 or rest segments");
+    _error(E0104, "endian suffix is not supported on u8 or rest segments");
   }
   (width, _endian(), signed, kind)
 };
@@ -553,7 +554,7 @@ let _parseBitPattern = fn(): Pattern {
     segments.push(BitPatternSegment.Segment(width, endian, signed, kind, value));
     if (peek() == Token.Comma) { next(); } else { break; }
   }
-  if (segments.len() == 0) { _error("bits layout must have at least one segment"); }
+  if (segments.len() == 0) { _error(E0104, "bits layout must have at least one segment"); }
   expect(Token.RBracket);
   Pattern.Bits(segments)
 };
@@ -563,6 +564,18 @@ let _spreadPattern = fn(): Pattern {
   next();
   let name = _ident();
   _markPattern(Pattern.Spread(name == "_" ? null : name), start)
+};
+
+let _optionalAs = fn(): ?Bytes {
+  (peek() == Token.As) ? {
+    next();
+    _ident()
+  } : null
+};
+
+let _regexpPattern = fn(value: Bytes, flags: Bytes): Pattern {
+  next();
+  Pattern.RegExp(value, flags, _optionalAs())
 };
 let _itemPattern = fn(): Pattern { peek() == Token.DotDotDot ? _spreadPattern() : _parsePattern() };
 let _patternInner: () -> Pattern = fn() { Pattern.Wildcard };
@@ -576,14 +589,22 @@ _patternInner = fn() {
       next();
       Pattern.Pin(_ident())
     },
+    When => {
+      next();
+
+      match (peek()) {
+        RegExpLiteral(value, flags) => _regexpPattern(value, flags),
+        _ => {
+          _error(E0100, "expected regexp after when");
+          Pattern.Wildcard
+        },
+      }
+    },
+    RegExpLiteral(value, flags) => _regexpPattern(value, flags),
     Is => {
       next();
       let ty = _parseIsType();
-      let binding: ?Bytes = (peek() == Token.As) ? {
-        next();
-        _ident()
-      } : null;
-      Pattern.IsType(ty, binding)
+      Pattern.IsType(ty, _optionalAs())
     },
     True => {
       next();
@@ -613,7 +634,7 @@ _patternInner = fn() {
         IntegerConstant(digits, size) => Pattern.Integer("-" + digits, _intSize(size)),
         FloatConstant(literal, size) => Pattern.Float("-" + literal, _floatSize(size)),
         _ => {
-          _error("expected a number after '-'");
+          _error(E0100, "expected a number after '-'");
           Pattern.Wildcard
         },
       }
@@ -623,10 +644,10 @@ _patternInner = fn() {
 
       if (peek() == Token.Dot) {
         next();
-        if (_name() != "code") { _error("expected codepoint pattern"); }
+        if (_name() != "code") { _error(E0100, "expected codepoint pattern"); }
 
         if (!utf8Validate(value) || (utf8Length(value) != 1)) {
-          _error("'.code' requires one Unicode character");
+          _error(E0008, "'.code' requires one Unicode character");
         }
         Pattern.Integer(Std.string(utf8CharAt(value, 0)), IntSize.Infer)
       } else { Pattern.Bytes(value) }
@@ -668,7 +689,7 @@ _patternInner = fn() {
         Pattern.Tuple([])
       } else {
         let items = [_itemPattern()];
-        if (peek() != Token.Comma) { _error("tuple pattern requires a comma"); }
+        if (peek() != Token.Comma) { _error(E0100, "tuple pattern requires a comma"); }
 
         while (peek() == Token.Comma) {
           next();
@@ -705,7 +726,7 @@ _patternInner = fn() {
       Pattern.BindPattern("list")
     },
     _ => {
-      _error("expected pattern");
+      _error(E0100, "expected pattern");
       Pattern.Wildcard
     },
   }
@@ -772,7 +793,7 @@ let _exprList = fn(end: Token): Array<Expr> {
 
     while (peek() == Token.Comma) {
       next();
-      if (peek() == end) { _error("trailing comma is not supported in calls"); }
+      if (peek() == end) { _error(E0101, "trailing comma is not supported in calls"); }
       out.push(_element());
     }
   }
@@ -790,7 +811,7 @@ let _parseParams = fn(): Array<Parameter> {
     if (varargs) { next(); }
     let optional = (peek() == Token.Question);
     if (optional) { next(); }
-    if (varargs && optional) { _error("varargs parameter cannot use '?'"); }
+    if (varargs && optional) { _error(E0102, "varargs parameter cannot use '?'"); }
     let name = _bindingIdent();
     let annotation: ?Type = (peek() == Token.Colon) ? {
       next();
@@ -798,7 +819,7 @@ let _parseParams = fn(): Array<Parameter> {
     } : null;
 
     let kind = if (varargs) {
-      if (peek() == Token.Equal) { _error("varargs parameter cannot have a default value"); }
+      if (peek() == Token.Equal) { _error(E0102, "varargs parameter cannot have a default value"); }
       ParameterKind.Varargs
     } else if (optional) {
       let defaultValue: ?Expr = (peek() == Token.Equal) ? {
@@ -817,8 +838,8 @@ let _parseParams = fn(): Array<Parameter> {
 
     if (peek() == Token.Comma) {
       next();
-      if (varargs) { _error("varargs parameter must be last"); }
-      if (peek() == Token.RParen) { _error("trailing comma is not supported in parameters"); }
+      if (varargs) { _error(E0102, "varargs parameter must be last"); }
+      if (peek() == Token.RParen) { _error(E0101, "trailing comma is not supported in parameters"); }
     } else { break; }
   }
   expect(Token.RParen);
@@ -846,39 +867,19 @@ let _optionalGuard = fn(): ?Expr {
   out
 };
 
-let _matchPattern = fn(): Pattern {
-  if (peek() != Token.When) { return _parsePattern(); }
-  let start = pos;
-  next();
-
-  match (next()) {
-    RegExpLiteral(value, flags) => {
-      let binding: ?Bytes = (peek() == Token.As) ? {
-        next();
-        _ident()
-      } : null;
-      _markPattern(Pattern.RegExp(value, flags, binding), start)
-    },
-    _ => {
-      _error("expected regexp after when");
-      Pattern.Wildcard
-    },
-  }
-};
-
 let _matchArms = fn(): Array<MatchArm> {
   expect(Token.LBrace);
   let arms = Array.new<MatchArm>(0);
 
   while (peek() != Token.RBrace) {
     let alternatives = Array.new<MatchAlternative>(0);
-    let pattern = _matchPattern();
+    let pattern = _parsePattern();
     let guard = _optionalGuard();
 
     while (peek() != Token.FatArrow) {
       expect(Token.Comma);
       alternatives.push(MatchAlternative.Alternative(pattern, guard));
-      pattern = _matchPattern();
+      pattern = _parsePattern();
       guard = _optionalGuard();
     }
     alternatives.push(MatchAlternative.Alternative(pattern, null));
@@ -923,7 +924,7 @@ let _parseList = fn(): Expr {
         more = false;
       }
     }
-    if (!sawDo) { _error("expected 'do:' in list comprehension"); }
+    if (!sawDo) { _error(E0100, "expected 'do:' in list comprehension"); }
     expect(Token.Colon);
     let body = _parseExpr(0);
     expect(Token.RBracket);
@@ -975,7 +976,7 @@ let _parseBitExpr = fn(): Expr {
     segments.push(BitExprSegment.Segment(width, endian, signed, kind, value));
     if (peek() == Token.Comma) { next(); } else { break; }
   }
-  if (segments.len() == 0) { _error("bits layout must have at least one segment"); }
+  if (segments.len() == 0) { _error(E0104, "bits layout must have at least one segment"); }
   expect(Token.RBracket);
   Expr.Bits(segments)
 };
@@ -1035,7 +1036,7 @@ let _parseQuote = fn(): Expr {
       "type" => QuoteKind.Type,
       "pat", "pattern" => QuoteKind.Pattern,
       _ => {
-        _error("unknown quote kind");
+        _error(E0100, "unknown quote kind");
         QuoteKind.Auto
       },
     };
@@ -1047,13 +1048,13 @@ let _parseQuote = fn(): Expr {
     Pattern => QuoteBody.Pattern(_parsePattern()),
     Statement => QuoteBody.Statement(_parseStatement()),
     Statements => {
-      if (peek() == Token.RBrace) { _error("expected statements in quote block"); }
+      if (peek() == Token.RBrace) { _error(E0100, "expected statements in quote block"); }
       let statements = Array.new<Stmt>(0);
       while (peek() != Token.RBrace) { statements.push(_parseStatement()); }
       QuoteBody.Statements(statements)
     },
     Auto => {
-      if (peek() == Token.RBrace) { _error("expected quote body"); }
+      if (peek() == Token.RBrace) { _error(E0100, "expected quote body"); }
 
       if (_stmtStarts(peek())) {
         let statements = [_parseStatement()];
@@ -1075,7 +1076,7 @@ let _parseTemplate = fn(head: Bytes): Expr {
   let more = true;
 
   while (more) {
-    match (peek()) { TemplateMiddle(_), TemplateTail(_) => { _error("empty template hole"); }, _ => null };
+    match (peek()) { TemplateMiddle(_), TemplateTail(_) => { _error(E0100, "empty template hole"); }, _ => null };
     holes.push(_parseExpr(0));
     let after = next();
 
@@ -1235,12 +1236,12 @@ let _primary = fn(start: I32): Expr {
     },
     Bits => _parseBitExpr(),
     Percent => {
-      if (pipelineDepth == 0) { _error("pipeline topic used outside pipeline body"); }
+      if (pipelineDepth == 0) { _error(E0106, "pipeline topic used outside pipeline body"); }
       pipelineTopic = true;
       Expr.Topic
     },
     _ => {
-      _error("expected expression");
+      _error(E0100, "expected expression");
       Expr.Null
     },
   }
@@ -1260,7 +1261,7 @@ _parseArray = fn() {
       items.push(_element());
       if (peek() != Token.Comma) { break; }
       next();
-      if (peek() == Token.RBracket) { _error("trailing comma is not supported in arrays"); }
+      if (peek() == Token.RBracket) { _error(E0101, "trailing comma is not supported in arrays"); }
     }
   }
   expect(Token.RBracket);
@@ -1322,7 +1323,7 @@ let _assignable = fn(expr: Expr): Bool {
 };
 
 let _incDec = fn(op: IncDecOp, prefix: Bool, target: Expr): Expr {
-  if (!_assignable(target)) { _error("invalid increment/decrement target"); }
+  if (!_assignable(target)) { _error(E0103, "invalid increment/decrement target"); }
   Expr.IncDec(op, prefix, target)
 };
 
@@ -1395,7 +1396,7 @@ let _parseUnary: () -> Expr = fn() {
         proto = _markExpr(Expr.Member(proto, _memberName()), protoStart);
       }
       if ((peek() == Token.Less) && _looksLikeTypeArgs()) { proto = _markExpr(Expr.TypeApply(proto, _typeArgs()), protoStart); }
-      if (peek() != Token.LParen) { _error("new requires arguments"); }
+      if (peek() != Token.LParen) { _error(E0100, "new requires arguments"); }
       next();
       let args = _exprList(Token.RParen);
       _parsePostfix(start, _markExpr(Expr.New(proto, args), start))
@@ -1457,7 +1458,7 @@ let _binaryOp = fn(tok: Token): BinaryOp {
     And => BinaryOp.And,
     PipePipe => BinaryOp.Or,
     _ => {
-      _error("expected binary operator");
+      _error(E0100, "expected binary operator");
       BinaryOp.Add
     },
   }
@@ -1477,7 +1478,7 @@ let _assignOp = fn(tok: Token): AssignOp {
     PipeEqual => AssignOp.Compound(BinaryOp.BitOr),
     CaretEqual => AssignOp.Compound(BinaryOp.BitXor),
     _ => {
-      _error("expected assignment operator");
+      _error(E0100, "expected assignment operator");
       AssignOp.Assign
     },
   }
@@ -1514,12 +1515,12 @@ _parseBinary = fn(minPrec, element) {
       pipelineTopic = outerTopic;
     } else if (prec == 5) {
       next();
-      if (!_assignable(left)) { _error("invalid assignment target"); }
+      if (!_assignable(left)) { _error(E0103, "invalid assignment target"); }
       left = Expr.Assign(_assignOp(tok), left, _parseBinary(prec + 1, element));
     } else if (tok == Token.Is) {
       next();
       left = Expr.Is(left, _parseIsType());
-      if (peek() == Token.Is) { _error("chained 'is' expressions are not supported"); }
+      if (peek() == Token.Is) { _error(E0108, "chained 'is' expressions are not supported"); }
     } else {
       next();
       left = Expr.Binary(_binaryOp(tok), left, _parseBinary(prec + 1, element));
@@ -1550,7 +1551,7 @@ let _expressionStatement = fn(value: Expr): Stmt {
 let _otherwise = fn(pattern: Pattern): ?Block {
   if (peek() != Token.Else) { return null; }
   next();
-  if (isBindPattern(pattern)) { _error("a `let` of one name cannot fail, so it takes no else"); }
+  if (isBindPattern(pattern)) { _error(E0105, "a `let` of one name cannot fail, so it takes no else"); }
   _parseBlock()
 };
 
@@ -1563,7 +1564,7 @@ let _letElse = fn(value: Expr): Stmt {
       Stmt.LetStmt(false, false, pattern, typeParams, annotation, init, otherwise)
     },
     _ => {
-      _error("only a `let` may have an else");
+      _error(E0105, "only a `let` may have an else");
       Stmt.Expression(value)
     },
   }
@@ -1599,7 +1600,7 @@ _parseStatement = fn() {
     let statementStart = pos;
     let start = peek();
     let value = _statementExpr(start);
-    if (peek() == Token.Semicolon) { next(); } else if (!_selfDelimiting(start, value)) { _error("expected ';'"); }
+    if (peek() == Token.Semicolon) { next(); } else if (!_selfDelimiting(start, value)) { _error(E0100, "expected ';'"); }
     let statement = _expressionStatement(value);
     _markStmt(statement, statementStart)
   }
@@ -1696,7 +1697,7 @@ let _statements = fn(end: Token, expected: Bytes): Block {
           } else if (_selfDelimiting(start, value)) {
             statements.push(_markStmt(_expressionStatement(value), saved));
           } else {
-            _error("expected ';' or " + expected);
+            _error(E0100, "expected ';' or " + expected);
           }
         }
       }
@@ -1755,10 +1756,7 @@ let _parseImport = fn(native: Bool): Stmt {
 
     while (peek() != Token.RBrace) {
       let name = _ident();
-      let alias: ?Bytes = (peek() == Token.As) ? {
-        next();
-        _ident()
-      } : null;
+      let alias = _optionalAs();
       items.push(ImportItem.Item(name, alias));
       if (peek() == Token.Comma) { next(); } else { break; }
     }
@@ -1801,7 +1799,7 @@ let _layoutType = fn(): BytesLayoutType {
     let width = match (next()) {
       IntegerConstant(digits, _) => _bitsWidth(digits),
       _ => {
-        _error("expected bit width");
+        _error(E0104, "expected bit width");
         0
       },
     };
@@ -1818,7 +1816,7 @@ let _layoutType = fn(): BytesLayoutType {
     "i32", "I32" => BytesLayoutType.I32(endian),
     "f32", "F32" => BytesLayoutType.F32(endian),
     _ => {
-      _error("unknown bytes-layout type");
+      _error(E0104, "unknown bytes-layout type");
       BytesLayoutType.Rest
     },
   }
@@ -1858,7 +1856,7 @@ _parseStmtInner = fn() {
     match (kind) {
       Let, Const, Prototype, Typedef, EnumDecl, Macro => null,
       _ => {
-        _error("this declaration cannot be exported");
+        _error(E0107, "this declaration cannot be exported");
         null
       },
     };
@@ -1909,7 +1907,7 @@ _parseStmtInner = fn() {
       let body = if (_isIdent("bytes")) {
         next();
         expect(Token.Minus);
-        if (!_eatIdent("layout")) { _error("expected bytes-layout"); }
+        if (!_eatIdent("layout")) { _error(E0100, "expected bytes-layout"); }
         TypedefBody.BytesLayout(_parseLayoutFields())
       } else if (peek() == Token.LBrace) {
         TypedefBody.Struct(_parseStructFields())
@@ -2018,7 +2016,7 @@ _parseStmtInner = fn() {
       }
     },
     _ => {
-      _error("expected statement");
+      _error(E0100, "expected statement");
       Stmt.Break
     },
   }

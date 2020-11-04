@@ -401,8 +401,7 @@ let testValidatesGrammarOnlyRestrictionsAndResetsParserState = fn(t: Test) {
   T.throws(t, fn() { parse("let (x) = value;"); });
   parse("let () = value; let (x,) = value; value is fn;");
   T.throws(t, fn() { parse("list[for x <- xs: x]"); });
-  T.throws(t, fn() { parse("let ~r/a/ = value;"); });
-  T.throws(t, fn() { parse("with ~r/a/ <- value { 1 }"); });
+  parse("let ~r/a/ = value; with ~r/a/ <- value { 1 }; with when ~r/a/ as m <- value { m };");
   T.throws(t, fn() { parse("(a + b) = c;"); });
   T.throws(t, fn() { parse("++(a + b);"); });
   T.throws(t, fn() { parse("(a + b)++;"); });

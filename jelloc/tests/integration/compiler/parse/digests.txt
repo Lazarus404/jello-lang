@@ -12,7 +12,7 @@ itests/atom/atom_literals.jello accepted 65 -1840318588
 itests/atom/intern_not_literal.jello accepted 14 -1417251718
 itests/atom/std_methods.jello accepted 96 478251924
 itests/bits/duplicate_rest.jello accepted 17 -1060169980
-itests/bits/empty_bits.jello parser itests/bits/empty_bits.jello:1:14: ParseError: bits layout must have at least one segment
+itests/bits/empty_bits.jello parser itests/bits/empty_bits.jello:1:14: ParseError: bits layout must have at least one segment [E0104]
 let _ = bits[];
              ^
 itests/bits/literal_overflow.jello accepted 22 417155389
@@ -27,7 +27,7 @@ itests/bool/null_compare.jello accepted 16 -616366952
 itests/bytes/core.jello accepted 226 -341622537
 itests/bytes/inference_assign_int.jello accepted 9 -1442777455
 itests/bytes/inference_plus_bool.jello accepted 9 689703133
-itests/bytes/invalid_escape.jello lexer itests/bytes/invalid_escape.jello:2:2: invalid unicode escape
+itests/bytes/invalid_escape.jello lexer itests/bytes/invalid_escape.jello:2:2: invalid unicode escape [E0004]
 "\u{110000}"
  ^
 itests/bytes/std_methods.jello accepted 446 698622044
@@ -172,10 +172,10 @@ itests/prototype/duplicate.jello accepted 20 433442831
 itests/prototype/enum_clash.jello accepted 18 1590659507
 itests/prototype/export_generic.jello accepted 15 1561701866
 itests/prototype/let_clash.jello accepted 19 -1342036813
-itests/prototype/missing_brace.jello parser itests/prototype/missing_brace.jello:4:1: ParseError: expected identifier, found '"ok"'
+itests/prototype/missing_brace.jello parser itests/prototype/missing_brace.jello:4:1: ParseError: expected identifier, found '"ok"' [E0100]
 "ok"
 ^
-itests/prototype/missing_colon.jello parser itests/prototype/missing_colon.jello:3:5: ParseError: expected ':', found '1'
+itests/prototype/missing_colon.jello parser itests/prototype/missing_colon.jello:3:5: ParseError: expected ':', found '1' [E0100]
   a 1;
     ^
 itests/prototype/new_infer_nested.jello accepted 82 689334497
@@ -202,12 +202,12 @@ itests/spread/call_tuple_arity.jello accepted 44 -560741086
 itests/spread/not_array.jello accepted 15 1846866451
 itests/spread/not_object.jello accepted 14 858130956
 itests/spread/not_tuple.jello accepted 14 1570666381
-itests/spread/varargs_bad_optional.jello parser itests/spread/varargs_bad_optional.jello:1:15: ParseError: varargs parameter cannot use '?'
+itests/spread/varargs_bad_optional.jello parser itests/spread/varargs_bad_optional.jello:1:15: ParseError: varargs parameter cannot use '?' [E0102]
 let f = fn(...?x: I32) { return 0; };
               ^
 itests/spread/varargs_fixed_mismatch.jello accepted 30 1063362168
 itests/spread/varargs_no_type.jello accepted 23 858425347
-itests/spread/varargs_not_last.jello parser itests/spread/varargs_not_last.jello:1:22: ParseError: varargs parameter must be last
+itests/spread/varargs_not_last.jello parser itests/spread/varargs_not_last.jello:1:22: ParseError: varargs parameter must be last [E0102]
 let f = fn(...xs: I32, y: I32) { return y; };
                      ^
 itests/std/io.jello accepted 102 281153757
@@ -254,7 +254,7 @@ itests/try-catch/catch_reexport.jello accepted 55 -2017302139
 itests/try-catch/catch_reexport_via_let.jello accepted 60 -1346761878
 itests/try-catch/catch_reexport_via_let_bad_tail.jello accepted 60 -1703307301
 itests/try-catch/core.jello accepted 155 -1692170820
-itests/try-catch/missing_catch.jello parser itests/try-catch/missing_catch.jello:2:14: ParseError: expected 'catch', found '"bad"'
+itests/try-catch/missing_catch.jello parser itests/try-catch/missing_catch.jello:2:14: ParseError: expected 'catch', found '"bad"' [E0100]
 try { "ok" } "bad"
              ^
 itests/try-catch/try_body_value.jello accepted 26 948733650
@@ -333,24 +333,22 @@ itests/while/continue_before_assign.jello accepted 49 988892914
 itests/while/continue_cond_var.jello accepted 44 894895536
 itests/while/continue_outside.jello accepted 4 965545609
 itests/while/do_continue_break.jello accepted 52 -852739727
-itests/while/do_while_missing_paren.jello parser itests/while/do_while_missing_paren.jello:3:9: ParseError: expected '(', found 'n'
+itests/while/do_while_missing_paren.jello parser itests/while/do_while_missing_paren.jello:3:9: ParseError: expected '(', found 'n' [E0100]
 } while n > 0;
         ^
-itests/while/missing_while.jello parser itests/while/missing_while.jello:5:1: ParseError: expected 'while', found '"ok"'
+itests/while/missing_while.jello parser itests/while/missing_while.jello:5:1: ParseError: expected 'while', found '"ok"' [E0100]
 "ok"
 ^
-itests/while/while_missing_paren.jello parser itests/while/while_missing_paren.jello:3:7: ParseError: expected '(', found 'n'
+itests/while/while_missing_paren.jello parser itests/while/while_missing_paren.jello:3:7: ParseError: expected '(', found 'n' [E0100]
 while n > 0 {
       ^
 itests/with/body_else_type_mismatch.jello accepted 17 -1584684830
 itests/with/else_guarded_wildcard.jello accepted 21 1632566309
 itests/with/else_not_exhaustive.jello accepted 17 389690674
-itests/with/missing_arrow.jello parser itests/with/missing_arrow.jello:2:8: ParseError: expected '<-', found '='
+itests/with/missing_arrow.jello parser itests/with/missing_arrow.jello:2:8: ParseError: expected '<-', found '=' [E0100]
 with x = 1 {
        ^
 itests/with/no_else_type_mismatch.jello accepted 10 1801715672
-itests/with/regexp_in_clause.jello parser itests/with/regexp_in_clause.jello:2:6: ParseError: expected pattern
-with when ~r/a+/ <- "abc" {
-     ^
+itests/with/regexp_in_clause.jello accepted 11 -461586470
 itests/with/when_fail_no_else_type.jello accepted 16 -1162682784
 itests/with/when_not_bool.jello accepted 14 -1277004472
