@@ -14,6 +14,7 @@ import { takeInternalError } from support.Internal;
 import { verifyFailureSpan } from frontend.hir.Verify;
 import { printHir, printHirWithSpans } from frontend.hir.Print;
 import { functionNode, lowerProgram, relowerBodyInParts } from ir.Lower;
+import { optimizeProgram } from ir.Optimize;
 import { printIr } from ir.Print;
 import { legalizeJlo, relegalizeJlo } from backend.jello.Legalize;
 import { allocateProgram, allocationFailure } from backend.jello.Allocate;
@@ -165,13 +166,19 @@ let _checked = fn(inputs: Array<Bytes>): Hir {
   checkProgram(fn(types: Array<Bytes>): Array<Module> { _testing ? loadTests(inputs, _std, _roots, types) : loadModules(inputs[0], _std, _roots, types) })
 };
 
-let _allocated = fn(inputs: Array<Bytes>): Program {
-  let hir = _checked(inputs);
-  let legalized = legalizeJlo(lowerProgram(hir));
-
+let _allocatedInParts = fn(legalized: Program): Program {
   try { allocateProgram(legalized) } catch (e) {
     if (allocationFailure() != 0) { throw e; }
     allocateProgram(relegalizeJlo(relowerBodyInParts(legalized), legalized))
+  }
+};
+
+let _allocated = fn(inputs: Array<Bytes>): Program {
+  let lowered = lowerProgram(_checked(inputs));
+
+  try { _allocatedInParts(legalizeJlo(optimizeProgram(lowered, true))) } catch (e) {
+    if (allocationFailure() <= 0) { throw e; }
+    _allocatedInParts(legalizeJlo(optimizeProgram(lowered, false)))
   }
 };
 

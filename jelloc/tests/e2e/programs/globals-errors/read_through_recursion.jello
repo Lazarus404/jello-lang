@@ -1,0 +1,10 @@
+// error: 8:1: global later is read before it is initialized [E0304]
+// error: let first = even(4);
+// error: ^
+// `first` calls `even`, whose cycle with `odd` reads `later` before it is initialized.
+let even: (I32) -> Bool = fn(_n) { false };
+let odd = fn(n: I32): Bool { if (n == 0) { later > 0 } else { even(n - 1) } };
+even = fn(n) { if (n == 0) { true } else { odd(n - 1) } };
+let first = even(4);
+let later: I32 = 2;
+first

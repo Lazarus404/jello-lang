@@ -1,0 +1,269 @@
+package ir;
+
+import type { BasicBlock, Function, Instruction, Program, ThrowHandler, ValueType } from ir.Model;
+import { BasicBlock, Function, Op, Program, Terminator, argsOf, dstOf, immOf, instructionAt, nodeOf, opOf } from ir.Model;
+import { appendFrom } from support.Arrays;
+import { blockIndexes, blockMayThrow } from ir.Cfg;
+import { cleanupFunction } from ir.Cleanup;
+
+let _markGlobals = fn(function: Function, marked: Array<Bool>) {
+  match (function) { Function(_, _, _, _, _, blocks, _) => {
+    let i = 0;
+
+    while (i < blocks.len()) {
+      match (blocks[i]) { Block(_, instructions, _, _) => {
+        let j = 0;
+
+        while (j < instructions.len()) {
+          match (opOf(instructions[j])) {
+            GlobalGet, GlobalSet => { marked[immOf(instructions[j])] = true; },
+            _ => {},
+          }
+          j++;
+        }
+      } };
+      i++;
+    }
+  } };
+  null
+};
+
+let _promote = fn(insn: Instruction, promoted: Array<I32>): Instruction {
+  match (opOf(insn)) {
+    GlobalGet when (promoted[immOf(insn)] >= 0) => instructionAt(Op.Move, dstOf(insn), [promoted[immOf(insn)]], 0, nodeOf(insn)),
+    GlobalSet when (promoted[immOf(insn)] >= 0) => instructionAt(Op.Move, promoted[immOf(insn)], argsOf(insn), 0, nodeOf(insn)),
+    _ => insn,
+  }
+};
+
+let _promoteBody = fn(body: Function, globals: Array<ValueType>, elsewhere: Array<Bool>): ?Function {
+  let used = Array.new<Bool>(globals.len());
+  _markGlobals(body, used);
+
+  match (body) { Function(id, params, captures, registers, result, blocks, entry) => {
+    let types = appendFrom(Array.new<ValueType>(0), registers, 0);
+    let promoted = Array.new<I32>(0);
+    let g = 0;
+
+    while (g < globals.len()) {
+      if (used[g] && !elsewhere[g]) {
+        promoted.push(types.len() as I32);
+        types.push(globals[g]);
+      } else { promoted.push(-1); }
+      g++;
+    }
+    if (types.len() == registers.len()) { return null; }
+    let out = Array.new<BasicBlock>(0);
+    let i = 0;
+
+    while (i < blocks.len()) {
+      match (blocks[i]) { Block(block, instructions, terminator, handler) => {
+        let rewritten = Array.new<Instruction>(0);
+        let j = 0;
+
+        while (j < instructions.len()) {
+          rewritten.push(_promote(instructions[j], promoted));
+          j++;
+        }
+        out.push(BasicBlock.Block(block, rewritten, terminator, handler));
+      } };
+      i++;
+    }
+    Function.Function(id, params, captures, types, result, out, entry)
+  } }
+};
+
+let _INLINE_LIMIT = 16;
+
+let _inlinable = fn(function: Function): Bool {
+  match (function) { Function(id, _, captures, _, _, blocks, _) => {
+    if ((id == 0) || (captures != 0)) { return false; }
+    let size = 0;
+    let i = 0;
+
+    while (i < blocks.len()) {
+      match (blocks[i]) { Block(_, instructions, terminator, handler) => {
+        size = size + (instructions.len() as I32);
+        if ((size > _INLINE_LIMIT) || (handler != null) || blockMayThrow(instructions, terminator)) { return false; }
+        let j = 0;
+
+        while (j < instructions.len()) {
+          if (opOf(instructions[j]) == Op.CallNative) { return false; }
+          j++;
+        }
+      } };
+      i++;
+    }
+    true
+  } }
+};
+
+let _entry = fn(function: Function): I32 { match (function) { Function(_, _, _, _, _, _, entry) => entry } };
+
+let _leafCalled = fn(insn: Instruction, leaves: Array<?Function>): ?Function {
+  (opOf(insn) == Op.Call) ? leaves[immOf(insn)] : null
+};
+
+let _shifted = fn(insn: Instruction, offset: I32): Instruction {
+  let args = argsOf(insn);
+  let shifted = Array.new<I32>(0);
+  let i = 0;
+
+  while (i < args.len()) {
+    shifted.push(args[i] + offset);
+    i++;
+  }
+  let dst = dstOf(insn);
+  instructionAt(opOf(insn), (dst >= 0) ? dst + offset : dst, shifted, immOf(insn), nodeOf(insn))
+};
+
+let _copy = fn(callee: Function, call: Instruction, base: I32, next: I32, handler: ?ThrowHandler,
+  blocks: Array<BasicBlock>, types: Array<ValueType>): I32 {
+  match (callee) { Function(_, params, _, registers, _, code, entry) => {
+    let offset = types.len() as I32;
+    let i = 0;
+    appendFrom(types, registers, 0);
+
+    while (i < code.len()) {
+      match (code[i]) { Block(id, instructions, terminator, _) => {
+        let out = Array.new<Instruction>(0);
+        let j = 0;
+
+        if (id == entry) {
+          let args = argsOf(call);
+
+          while (j < params.len()) {
+            out.push(instructionAt(Op.Move, params[j] + offset, [args[j]], 0, nodeOf(call)));
+            j++;
+          }
+          j = 0;
+        }
+
+        while (j < instructions.len()) {
+          out.push(_shifted(instructions[j], offset));
+          j++;
+        }
+
+        let last = match (terminator) {
+          Jump(target) => Terminator.Jump(target + base),
+          Branch(condition, thenTarget, elseTarget) => Terminator.Branch(condition + offset, thenTarget + base, elseTarget + base),
+          ReturnValue(value) => {
+            if (dstOf(call) >= 0) { out.push(instructionAt(Op.Move, dstOf(call), [value + offset], 0, nodeOf(call))); }
+            Terminator.Jump(next)
+          },
+          _ => terminator,
+        };
+        blocks.push(BasicBlock.Block(id + base, out, last, handler));
+      } };
+      i++;
+    }
+    base + (blockIndexes(code).len() as I32)
+  } }
+};
+
+let _callsLeaf = fn(blocks: Array<BasicBlock>, leaves: Array<?Function>): Bool {
+  let i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) { Block(_, instructions, _, _) => {
+      let j = 0;
+
+      while (j < instructions.len()) {
+        if (_leafCalled(instructions[j], leaves) != null) { return true; }
+        j++;
+      }
+    } };
+    i++;
+  }
+  false
+};
+
+let _inlineInto = fn(function: Function, leaves: Array<?Function>): ?Function {
+  match (function) { Function(id, params, captures, registers, result, blocks, entry) => {
+    if (!_callsLeaf(blocks, leaves)) { return null; }
+    let out = Array.new<BasicBlock>(0);
+    let types = appendFrom(Array.new<ValueType>(0), registers, 0);
+    let next = blockIndexes(blocks).len() as I32;
+    let i = 0;
+
+    while (i < blocks.len()) {
+      match (blocks[i]) { Block(block, instructions, terminator, handler) => {
+        let current = block;
+        let code = Array.new<Instruction>(0);
+        let j = 0;
+
+        while (j < instructions.len()) {
+          let leaf = _leafCalled(instructions[j], leaves);
+
+          if (leaf == null) { code.push(instructions[j]); } else {
+            let rest = next;
+            out.push(BasicBlock.Block(current, code, Terminator.Jump(rest + 1 + _entry(leaf)), handler));
+            next = _copy(leaf, instructions[j], rest + 1, rest, handler, out, types);
+            current = rest;
+            code = Array.new<Instruction>(0);
+          }
+          j++;
+        }
+        out.push(BasicBlock.Block(current, code, terminator, handler));
+      } };
+      i++;
+    }
+    Function.Function(id, params, captures, types, result, out, entry)
+  } }
+};
+
+let _inlineAll = fn(functions: Array<Function>): ?Array<Function> {
+  let leaves = Array.new<?Function>(0);
+  let i = 0;
+
+  while (i < functions.len()) {
+    match (functions[i]) { Function(id, _, _, _, _, _, _) => {
+      while (leaves.len() <= id) { leaves.push(null); }
+      if (_inlinable(functions[i])) { leaves[id] = functions[i]; }
+      null
+    } };
+    i++;
+  }
+  let out = Array.new<Function>(0);
+  let changed = false;
+  i = 0;
+
+  while (i < functions.len()) {
+    let inlined: ?Function = null;
+    match (functions[i]) { Function(id, _, _, _, _, _, _) => { if (id != 0) { inlined = _inlineInto(functions[i], leaves); } null } };
+
+    if (inlined == null) { out.push(functions[i]); } else {
+      out.push(inlined);
+      changed = true;
+    }
+    i++;
+  }
+  changed ? out : null
+};
+
+export let optimizeProgram: (Program, Bool) -> Program = fn(program, rewrite) {
+  match (program) { Program(functions, pool, wides, floats, atoms, enums, globals, natives) => {
+    let elsewhere = Array.new<Bool>(globals.len());
+    let i = 0;
+
+    while (i < functions.len() - 1) {
+      _markGlobals(functions[i], elsewhere);
+      i++;
+    }
+    let body = _promoteBody(functions[functions.len() - 1], globals, elsewhere);
+    if ((body == null) && !rewrite) { return program; }
+    let inlined: ?Array<Function> = rewrite ? _inlineAll(functions) : null;
+    let out = (inlined == null) ? appendFrom(Array.new<Function>(0), functions, 0) : inlined;
+
+    if (rewrite) {
+      i = 0;
+
+      while (i < out.len() - 1) {
+        out[i] = cleanupFunction(out[i]);
+        i++;
+      }
+    }
+    if (body != null) { out[out.len() - 1] = body; }
+    Program.Program(out, pool, wides, floats, atoms, enums, globals, natives)
+  } }
+};

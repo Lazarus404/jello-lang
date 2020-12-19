@@ -1,0 +1,5 @@
+// trap: BOUNDS 3:44
+// A leaf's trap, once inlined into its caller, still points into the leaf.
+let at = fn(xs: Array<I32>, i: I32): I32 { xs[i] };
+let use = fn(n: I32): I32 { at([1, 2, 3], n) + 1 };
+use(7)

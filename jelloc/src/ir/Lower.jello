@@ -10,7 +10,7 @@ import { BasicBlock, EnumSchema, Native, Op, Program as IrProgram, Terminator, T
 import { blockMayThrow } from ir.Cfg;
 import { verifyProgramFrom } from ir.Verify;
 import { internalError } from support.Internal;
-import { indexOf } from support.Arrays;
+import { appendFrom, indexOf } from support.Arrays;
 
 let _registers = Array.new<ValueType>(0);
 let _instructions = Array.new<Instruction>(0);
@@ -1542,6 +1542,11 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
 
 export let relowerBodyInParts: (IrProgram) -> IrProgram = fn(earlier) {
   if (_poolSizes.len() == 0) { throw "no program body to lower again"; }
+  _pool = appendFrom(Array.new<Bytes>(0), _pool, 0);
+  _wides = appendFrom(Array.new<I64>(0), _wides, 0);
+  _floats = appendFrom(Array.new<I64>(0), _floats, 0);
+  _atoms = appendFrom(Array.new<Bytes>(0), _atoms, 0);
+  _natives = appendFrom(Array.new<Native>(0), _natives, 0);
   Array.resize(_pool, _poolSizes[0]);
   Array.resize(_wides, _poolSizes[1]);
   Array.resize(_floats, _poolSizes[2]);
@@ -1550,7 +1555,6 @@ export let relowerBodyInParts: (IrProgram) -> IrProgram = fn(earlier) {
   _forgetIndexes(_poolIndexes, _poolSizes[0]);
   _forgetIndexes(_atomIndexes, _poolSizes[3]);
   _forgetIndexes(_nativeIndexes, _poolSizes[4]);
-  _poolSizes = [];
 
   match (earlier) { Program(functions, _, _, _, _, enums, _, _) => {
     let kept = Array.new<IrFunction>(0);

@@ -1,0 +1,142 @@
+package ir;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { optimizeProgram } from ir.Optimize;
+import { verifyProgram } from ir.Verify;
+import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, ThrowHandler, ValueType } from ir.Model;
+import { Op, Terminator, argsOf, dstOf, immOf, instruction, opOf } from ir.Model;
+
+let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
+let none = fn(): Array<I32> { Array.new<I32>(0) };
+
+/** A helper, function 1, that reads global 1, and the body, function 0, that writes global 0 and
+ * reads globals 0 and 1; global 2 is never addressed. */
+let _program = fn(): Program {
+  let helper = Function.Function(1, [], 0, [ValueType.I32], ValueType.I32, [
+    BasicBlock.Block(0, [insn(Op.GlobalGet, 0, none(), 1)], Terminator.ReturnValue(0), null)
+  ], 0);
+  let body = Function.Function(0, [], 0, [ValueType.F64, ValueType.F64, ValueType.I32], ValueType.F64, [
+    BasicBlock.Block(0, [
+      insn(Op.ConstFloat, 0, none(), 0),
+      insn(Op.GlobalSet, -1, [0], 0),
+      insn(Op.GlobalGet, 1, none(), 0),
+      insn(Op.GlobalGet, 2, none(), 1)
+    ], Terminator.ReturnValue(1), null)
+  ], 0);
+  Program.Program([helper, body], Array.new<Bytes>(0), Array.new<I64>(0), [0], Array.new<Bytes>(0),
+    Array.new<EnumSchema>(0), [ValueType.F64, ValueType.I32, ValueType.I32], Array.new<Native>(0))
+};
+
+let _function = fn(program: Program, index: I32): Function {
+  match (program) { Program(functions, _, _, _, _, _, _, _) => functions[index] }
+};
+
+let _instructions = fn(function: Function): Array<Instruction> {
+  match (function) { Function(_, _, _, _, _, blocks, _) => match (blocks[0]) { Block(_, instructions, _, _) => instructions } }
+};
+
+let _registers = fn(function: Function): Array<ValueType> {
+  match (function) { Function(_, _, _, registers, _, _, _) => registers }
+};
+
+let testPromotesAGlobalOnlyTheBodyAddresses = fn(t: Test) {
+  let program = optimizeProgram(_program(), true);
+  let body = _function(program, 1);
+  let registers = _registers(body);
+  T.equal(t, registers.len(), 4);
+  T.isTrue(t, registers[3] == ValueType.F64);
+  let code = _instructions(body);
+  T.isTrue(t, opOf(code[1]) == Op.Move);
+  T.equal(t, dstOf(code[1]), 3);
+  T.equal(t, argsOf(code[1])[0], 0);
+  T.isTrue(t, opOf(code[2]) == Op.Move);
+  T.equal(t, dstOf(code[2]), 1);
+  T.equal(t, argsOf(code[2])[0], 3);
+  T.isTrue(t, verifyProgram(program));
+};
+
+let testKeepsAGlobalAnotherFunctionAddresses = fn(t: Test) {
+  let program = optimizeProgram(_program(), true);
+  let code = _instructions(_function(program, 1));
+  T.isTrue(t, opOf(code[3]) == Op.GlobalGet);
+  T.equal(t, immOf(code[3]), 1);
+  T.isTrue(t, opOf(_instructions(_function(program, 0))[0]) == Op.GlobalGet);
+};
+
+/** A leaf, function 1, returning its I32 argument plus one; function 2, calling it in block 1,
+ * with `handler`, and returning the result; function 3, calling function 2; and an empty body. */
+let _calls = fn(handler: ?ThrowHandler): Program {
+  let leaf = Function.Function(1, [0], 0, [ValueType.I32, ValueType.I32], ValueType.I32, [
+    BasicBlock.Block(0, [insn(Op.AddImm, 1, [0], 1)], Terminator.ReturnValue(1), null)
+  ], 0);
+  let caller = Function.Function(2, [], 0, [ValueType.I32, ValueType.I32, ValueType.Dynamic], ValueType.I32, [
+    BasicBlock.Block(0, [insn(Op.ConstI32, 0, none(), 4)], Terminator.Jump(1), null),
+    BasicBlock.Block(1, [insn(Op.Call, 1, [0], 1)], Terminator.ReturnValue(1), handler),
+    BasicBlock.Block(2, [insn(Op.ConstI32, 1, none(), 0)], Terminator.ReturnValue(1), null)
+  ], 0);
+  let outer = Function.Function(3, [], 0, [ValueType.I32], ValueType.I32, [
+    BasicBlock.Block(0, [insn(Op.Call, 0, none(), 2)], Terminator.ReturnValue(0), null)
+  ], 0);
+  let body = Function.Function(0, [], 0, [ValueType.I32], ValueType.I32, [
+    BasicBlock.Block(0, [insn(Op.Call, 0, none(), 2)], Terminator.ReturnValue(0), null)
+  ], 0);
+  Program.Program([leaf, caller, outer, body], Array.new<Bytes>(0), Array.new<I64>(0), Array.new<I64>(0),
+    Array.new<Bytes>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0))
+};
+
+let _blocks = fn(function: Function): Array<BasicBlock> {
+  match (function) { Function(_, _, _, _, _, blocks, _) => blocks }
+};
+
+let _callCount = fn(function: Function): I32 {
+  let blocks = _blocks(function);
+  let count = 0;
+  let i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) { Block(_, code, _, _) => {
+      let j = 0;
+
+      while (j < code.len()) {
+        if (opOf(code[j]) == Op.Call) { count++; }
+        j++;
+      }
+    } };
+    i++;
+  }
+  count
+};
+
+let testInlinesALeafIntoItsCaller = fn(t: Test) {
+  let program = optimizeProgram(_calls(null), true);
+  let caller = _function(program, 1);
+  T.equal(t, _callCount(caller), 0);
+  T.equal(t, _registers(caller).len(), 5);
+  // The copy and the blocks around it join the entry block, and block 2, unreached, goes.
+  T.equal(t, _blocks(caller).len(), 1);
+  T.isTrue(t, verifyProgram(program));
+};
+
+let testKeepsCallsOfNonLeavesAndInTheBody = fn(t: Test) {
+  let program = optimizeProgram(_calls(null), true);
+  T.equal(t, _callCount(_function(program, 2)), 1);
+  T.equal(t, _callCount(_function(program, 3)), 1);
+};
+
+let testInlinedCopyJoinsTheCallersTryRegion = fn(t: Test) {
+  let program = optimizeProgram(_calls(ThrowHandler.Catch(2, 2)), true);
+  let blocks = _blocks(_function(program, 1));
+  let i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) { Block(id, _, _, handler) => { T.isTrue(t, ((id == 0) || (id == 2)) == (handler == null)); } };
+    i++;
+  }
+  T.isTrue(t, verifyProgram(program));
+};
+
+let testInlinesNothingWhenAsked = fn(t: Test) {
+  let program = _calls(null);
+  T.isTrue(t, optimizeProgram(program, false) == program);
+};

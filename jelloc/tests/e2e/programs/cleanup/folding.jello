@@ -1,0 +1,29 @@
+// expect: ok
+// I32 and Bool operations of constants, which compile to constants, give what the same
+// operations give at run time: wrapping, shift counts modulo 32, and arithmetic right shifts.
+let folded = fn(): Array<I32> {
+  let max = 2147483647; let min = -2147483647 - 1; let one = 1; let eight = -8;
+  [max + one, min * -one, one << 32, one << 33, one << -1, eight >> 1, eight >> 33, 7 - 9, 5 & 3, 5 | 3,
+    5 ^ 3, -min]
+};
+let computed = fn(max: I32, one: I32, eight: I32): Array<I32> {
+  let min = -max - one;
+  [max + one, min * -one, one << 32, one << 33, one << -1, eight >> 1, eight >> 33, 7 - 9, 5 & 3, 5 | 3,
+    5 ^ 3, -min]
+};
+let foldedBools = fn(): Array<Bool> {
+  let yes = true; let max = 2147483647; let min = -2147483647 - 1;
+  [!yes, max == max, min < max, max < min, yes == yes]
+};
+let computedBools = fn(yes: Bool, max: I32): Array<Bool> {
+  let min = -max - 1;
+  [!yes, max == max, min < max, max < min, yes == yes]
+};
+let expected = [-2147483647 - 1, -2147483647 - 1, 1, 2, -2147483647 - 1, -4, -4, -2, 1, 7, 6, -2147483647 - 1];
+let a = folded(); let b = computed(2147483647, 1, -8);
+let i = 0;
+while (i < a.len()) { System.assert((a[i] == b[i]) && (a[i] == expected[i])); i++; }
+let c = foldedBools(); let d = computedBools(true, 2147483647); let truths = [false, true, true, false, true];
+i = 0;
+while (i < c.len()) { System.assert((c[i] == d[i]) && (c[i] == truths[i])); i++; }
+"ok"

@@ -1,0 +1,442 @@
+package ir;
+
+import type { BasicBlock, Function, Instruction, Terminator } from ir.Model;
+import { BasicBlock, Function, Op, Terminator, argsOf, dstOf, handlerTarget, immOf, instructionAt, nodeOf, opOf } from ir.Model;
+import { blockIndexes, normalSuccessors, terminatorRead } from ir.Cfg;
+import { appendFrom } from support.Arrays;
+
+let _UNKNOWN = 0;
+let _INT = 1;
+let _BOOL = 2;
+
+let _kinds = Array.new<I32>(0);
+let _values = Array.new<I32>(0);
+let _known = Array.new<I32>(0);
+let _copies = Array.new<I32>(0);
+let _copied = Array.new<I32>(0);
+
+let _forget = fn(register: I32) {
+  _kinds[register] = _UNKNOWN;
+  _copies[register] = -1;
+  let i = 0;
+
+  while (i < _copied.len()) {
+    let copy = _copied[i];
+
+    if ((_copies[copy] < 0) || (_copies[copy] == register)) {
+      _copies[copy] = -1;
+      _copied[i] = _copied[_copied.len() - 1];
+      _copied.pop();
+    } else { i++; }
+  }
+  null
+};
+
+let _forgetAll = fn() {
+  let i = 0;
+
+  while (i < _copied.len()) {
+    _copies[_copied[i]] = -1;
+    i++;
+  }
+  _copied = Array.new<I32>(0);
+  i = 0;
+
+  while (i < _known.len()) {
+    _kinds[_known[i]] = _UNKNOWN;
+    i++;
+  }
+  _known = Array.new<I32>(0);
+  null
+};
+
+let _source = fn(register: I32): I32 { (_copies[register] >= 0) ? _copies[register] : register };
+
+let _rebuilt = fn(blocks: Array<BasicBlock>, index: I32, instructions: Array<Instruction>, terminator: Terminator): BasicBlock {
+  match (blocks[index]) { Block(id, _, _, handler) => BasicBlock.Block(id, instructions, terminator, handler) }
+};
+
+let _merged = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
+  let indexes = blockIndexes(blocks);
+  let count = blocks.len() as I32;
+  let entries = Array.new<I32>(count);
+  let outside = Array.new<Bool>(count);
+  let code = Array.new<Array<Instruction>>(0);
+  let lasts = Array.new<Terminator>(0);
+  let i = 0;
+  entries[indexes[entry]] = 2;
+
+  while (i < count) {
+    match (blocks[i]) { Block(_, instructions, terminator, handler) => {
+      let targets = normalSuccessors(terminator);
+      let t = 0;
+
+      while (t < targets.len()) {
+        entries[indexes[targets[t]]] = entries[indexes[targets[t]]] + 1;
+        t++;
+      }
+      if (handler != null) { entries[indexes[handlerTarget(handler)]] = 2; }
+      code.push(instructions);
+      lasts.push(terminator);
+      outside[i] = handler == null;
+    } };
+    i++;
+  }
+  let gone = Array.new<Bool>(count);
+  let joined = false;
+  i = 0;
+
+  while (i < count) {
+    let joining = !gone[i] && outside[i];
+
+    while (joining) {
+      joining = false;
+
+      match (lasts[i]) {
+        Jump(target) => {
+          let next = indexes[target];
+
+          if ((next != i) && (entries[next] == 1) && outside[next]) {
+            code[i] = appendFrom(appendFrom(Array.new<Instruction>(0), code[i], 0), code[next], 0);
+            lasts[i] = lasts[next];
+            gone[next] = true;
+            joined = true;
+            joining = true;
+          }
+        },
+        _ => {},
+      }
+    }
+    i++;
+  }
+  if (!joined) { return blocks; }
+  let out = Array.new<BasicBlock>(0);
+  i = 0;
+
+  while (i < count) {
+    if (!gone[i]) { out.push(_rebuilt(blocks, i, code[i], lasts[i])); }
+    i++;
+  }
+  out
+};
+
+let _intResult = fn(op: Op, left: I32, right: I32): I32 {
+  match (op) {
+    Add => left + right, Sub => left - right, Mul => left * right, BitAnd => left & right,
+    BitOr => left | right, BitXor => left ^ right, Shl => left << right, Shr => left >> right,
+    Neg => -left, _ => 0,
+  }
+};
+
+let _folded = fn(insn: Instruction, args: Array<I32>): ?Instruction {
+  let n = args.len();
+  let ints = n > 0;
+  let bools = n > 0;
+  let i = 0;
+
+  while (i < n) {
+    if (_kinds[args[i]] != _INT) { ints = false; }
+    if (_kinds[args[i]] != _BOOL) { bools = false; }
+    i++;
+  }
+  if (!ints && !bools) { return null; }
+  let op = opOf(insn);
+  let int = match (op) { Add, Sub, Mul, BitAnd, BitOr, BitXor, Shl, Shr, Neg => ints, _ => false };
+  let bool = match (op) { Eq => true, Lt => ints, Not => bools, _ => false };
+  if (!int && !bool) { return null; }
+  let left = _values[args[0]];
+  let right = (n > 1) ? _values[args[1]] : 0;
+  let value = int ? _intResult(op, left, right) : match (op) { Eq => (left == right) ? 1 : 0, Lt => (left < right) ? 1 : 0, _ => 1 - left };
+  instructionAt(int ? Op.ConstI32 : Op.ConstBool, dstOf(insn), [], value, nodeOf(insn))
+};
+
+let _countReads = fn(blocks: Array<BasicBlock>, reads: Array<I32>) {
+  let i = 0;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) { Block(_, instructions, terminator, _) => {
+      let j = 0;
+
+      while (j < instructions.len()) {
+        let args = argsOf(instructions[j]);
+        let a = 0;
+
+        while (a < args.len()) {
+          reads[args[a]] = reads[args[a]] + 1;
+          a++;
+        }
+        j++;
+      }
+      let last = terminatorRead(terminator);
+      if (last >= 0) { reads[last] = reads[last] + 1; }
+    } };
+    i++;
+  }
+  null
+};
+
+let _reads = Array.new<I32>(0);
+
+let _onlyReadAfter = fn(copy: I32, source: I32, instructions: Array<Instruction>, at: I32, terminator: Terminator): Bool {
+  let seen = 0;
+  let j = at + 1;
+
+  while ((j < instructions.len()) && (seen < _reads[copy])) {
+    let args = argsOf(instructions[j]);
+    let a = 0;
+
+    while (a < args.len()) {
+      if (args[a] == copy) { seen++; }
+      a++;
+    }
+    let dst = dstOf(instructions[j]);
+    if ((dst == copy) || (dst == source)) { return seen == _reads[copy]; }
+    j++;
+  }
+  if ((seen < _reads[copy]) && (terminatorRead(terminator) == copy)) { seen++; }
+  seen == _reads[copy]
+};
+
+let _changed = false;
+
+let _propagated = fn(instructions: Array<Instruction>, at: I32, terminator: Terminator): Instruction {
+  let insn = instructions[at];
+  let args = argsOf(insn);
+  let copied = false;
+  let i = 0;
+
+  while (i < args.len()) {
+    if (_copies[args[i]] >= 0) { copied = true; }
+    i++;
+  }
+  let read = args;
+
+  if (copied) {
+    read = Array.new<I32>(0);
+    i = 0;
+
+    while (i < args.len()) {
+      read.push(_source(args[i]));
+      i++;
+    }
+  }
+  let dst = dstOf(insn);
+  let folded = _folded(insn, read);
+  let out = (folded != null) ? folded : (copied ? instructionAt(opOf(insn), dst, read, immOf(insn), nodeOf(insn)) : insn);
+  if (copied || (folded != null)) { _changed = true; }
+  if (dst < 0) { return out; }
+  _forget(dst);
+
+  match (opOf(out)) {
+    ConstI32 => {
+      _kinds[dst] = _INT;
+      _values[dst] = immOf(out);
+      _known.push(dst);
+    },
+    ConstBool => {
+      _kinds[dst] = _BOOL;
+      _values[dst] = immOf(out);
+      _known.push(dst);
+    },
+    Move when (read[0] != dst) => {
+      if (_kinds[read[0]] != _UNKNOWN) {
+        _kinds[dst] = _kinds[read[0]];
+        _values[dst] = _values[read[0]];
+        _known.push(dst);
+      }
+
+      if (_onlyReadAfter(dst, read[0], instructions, at, terminator)) {
+        _copies[dst] = read[0];
+        _copied.push(dst);
+      }
+    },
+    _ => {},
+  }
+  out
+};
+
+let _terminator = fn(terminator: Terminator): Terminator {
+  let read = terminatorRead(terminator);
+  if (read < 0) { return terminator; }
+  let source = _source(read);
+
+  match (terminator) {
+    Branch(_, thenTarget, elseTarget) when (_kinds[source] == _BOOL) => {
+      _changed = true;
+      Terminator.Jump((_values[source] != 0) ? thenTarget : elseTarget)
+    },
+    _ when (source == read) => terminator,
+    Branch(_, thenTarget, elseTarget) => {
+      _changed = true;
+      Terminator.Branch(source, thenTarget, elseTarget)
+    },
+    ReturnValue(_) => {
+      _changed = true;
+      Terminator.ReturnValue(source)
+    },
+    Throw(_, node) => {
+      _changed = true;
+      Terminator.Throw(source, node)
+    },
+    _ => terminator,
+  }
+};
+
+let _anyChanged = false;
+
+let _propagateAll = fn(blocks: Array<BasicBlock>): Array<BasicBlock> {
+  let out = Array.new<BasicBlock>(0);
+  let i = 0;
+  _anyChanged = false;
+
+  while (i < blocks.len()) {
+    match (blocks[i]) { Block(_, instructions, terminator, _) => {
+      _forgetAll();
+      _changed = false;
+      let code = Array.new<Instruction>(0);
+      let j = 0;
+
+      while (j < instructions.len()) {
+        code.push(_propagated(instructions, j, terminator));
+        j++;
+      }
+      let last = _terminator(terminator);
+      out.push(_changed ? _rebuilt(blocks, i, code, last) : blocks[i]);
+      if (_changed) { _anyChanged = true; }
+    } };
+    i++;
+  }
+  out
+};
+
+let _reachable = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
+  let indexes = blockIndexes(blocks);
+  let seen = Array.new<Bool>(blocks.len());
+  let pending = [indexes[entry]];
+  seen[indexes[entry]] = true;
+  let reached = 1;
+
+  while (pending.len() > 0) {
+    let index = pending[pending.len() - 1];
+    pending.pop();
+    let next = Array.new<I32>(0);
+
+    match (blocks[index]) { Block(_, _, terminator, handler) => {
+      let targets = normalSuccessors(terminator);
+      let t = 0;
+
+      while (t < targets.len()) {
+        next.push(indexes[targets[t]]);
+        t++;
+      }
+      if (handler != null) { next.push(indexes[handlerTarget(handler)]); }
+    } };
+    let t = 0;
+
+    while (t < next.len()) {
+      if (!seen[next[t]]) {
+        seen[next[t]] = true;
+        pending.push(next[t]);
+        reached++;
+      }
+      t++;
+    }
+  }
+  if (reached == blocks.len()) { return blocks; }
+  let out = Array.new<BasicBlock>(0);
+  let i = 0;
+
+  while (i < blocks.len()) {
+    if (seen[i]) { out.push(blocks[i]); }
+    i++;
+  }
+  out
+};
+
+let _removable = fn(insn: Instruction): Bool {
+  match (opOf(insn)) {
+    ConstBool, ConstI32, ConstI64, ConstFloat, ConstBytes, ConstAtom, ConstNull, ConstFunction, Move,
+    Add, Sub, Mul, Shl, Shr, BitAnd, BitOr, BitXor, Neg, Not, Eq, Lt, LtU, Sext, Trunc, Zext, Box,
+    KindOf, IsEnum, IsNull, ListNil, ListIsNil, TupleNew, EnumNew, ObjectNew, GlobalGet => dstOf(insn) >= 0,
+    _ => false,
+  }
+};
+
+let _withoutDead = fn(blocks: Array<BasicBlock>, reads: Array<I32>): Array<BasicBlock> {
+  let current = blocks;
+  let again = true;
+
+  while (again) {
+    again = false;
+    let out = Array.new<BasicBlock>(0);
+    let i = 0;
+
+    while (i < current.len()) {
+      match (current[i]) { Block(_, instructions, terminator, _) => {
+        let removed = Array.new<I32>(0);
+        let j = instructions.len() - 1;
+
+        while (j >= 0) {
+          let insn = instructions[j];
+
+          if (_removable(insn) && (reads[dstOf(insn)] == 0)) {
+            let args = argsOf(insn);
+            let a = 0;
+
+            while (a < args.len()) {
+              reads[args[a]] = reads[args[a]] - 1;
+              if (reads[args[a]] == 0) { again = true; }
+              a++;
+            }
+            removed.push(j);
+          }
+          j--;
+        }
+
+        if (removed.len() > 0) {
+          let kept = Array.new<Instruction>(0);
+          let r = removed.len() - 1;
+          j = 0;
+
+          while (j < instructions.len()) {
+            if ((r >= 0) && (removed[r] == j)) { r--; } else { kept.push(instructions[j]); }
+            j++;
+          }
+          out.push(_rebuilt(current, i, kept, terminator));
+        } else { out.push(current[i]); }
+      } };
+      i++;
+    }
+    current = out;
+  }
+  current
+};
+
+export let cleanupFunction: (Function) -> Function = fn(function) {
+  match (function) { Function(id, params, captures, registers, result, blocks, entry) => {
+    let count = registers.len() as I32;
+    _kinds = Array.new<I32>(count);
+    _values = Array.new<I32>(count);
+    _copies = Array.new<I32>(count);
+    _copied = Array.new<I32>(0);
+    _known = Array.new<I32>(0);
+    let i = 0;
+
+    while (i < count) {
+      _copies[i] = -1;
+      i++;
+    }
+    let merged = _merged(blocks, entry);
+    _reads = Array.new<I32>(count);
+    _countReads(merged, _reads);
+    let propagated = _propagateAll(merged);
+    let reached = _reachable(propagated, entry);
+    let reads = _reads;
+
+    if (_anyChanged || (reached.len() != propagated.len())) {
+      reads = Array.new<I32>(count);
+      _countReads(reached, reads);
+    }
+    Function.Function(id, params, captures, registers, result, _withoutDead(reached, reads), entry)
+  } }
+};

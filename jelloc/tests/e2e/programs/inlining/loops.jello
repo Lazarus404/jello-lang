@@ -1,0 +1,8 @@
+// expect: 204
+// Leaves that loop, by a call of themselves in return position or a loop first, inlined into
+// their caller: their parameters are set once, before the loop.
+let sum = fn(n: I32, acc: I32): I32 { if (n == 0) { acc } else { sum(n - 1, acc + n) } };
+let first = fn(n: I32): I32 { let i = n; while (i > 100) { i = i - 7; } i };
+let once = fn(n: I32): I32 { let i = n; do { i = i + 3; } while (i < 50); i };
+let use = fn(n: I32): I32 { sum(n, 0) + first(n * 100) + once(n) };
+use(10)

@@ -1,0 +1,140 @@
+package ir;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { cleanupFunction } from ir.Cleanup;
+import { verifyProgram } from ir.Verify;
+import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
+import { Op, Terminator, ThrowHandler, argsOf, dstOf, immOf, instruction, opOf } from ir.Model;
+
+let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
+let none = fn(): Array<I32> { Array.new<I32>(0) };
+
+/** Function 1, of I32 parameter 0 and `count` I32 registers, with `blocks`. */
+let _function = fn(count: I32, blocks: Array<BasicBlock>): Function {
+  let registers = Array.new<ValueType>(0);
+  while (registers.len() < count) { registers.push(ValueType.I32); }
+  Function.Function(1, [0], 0, registers, ValueType.I32, blocks, 0)
+};
+
+/** A program of `function` and a body that calls it. */
+let _program = fn(function: Function): Program {
+  let body = Function.Function(0, [], 0, [ValueType.I32, ValueType.I32], ValueType.I32, [
+    BasicBlock.Block(0, [insn(Op.ConstI32, 0, none(), 1), insn(Op.Call, 1, [0], 1)], Terminator.ReturnValue(1), null)
+  ], 0);
+  Program.Program([function, body], Array.new<Bytes>(0), Array.new<I64>(0), Array.new<I64>(0), Array.new<Bytes>(0),
+    Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0))
+};
+
+let _blocks = fn(function: Function): Array<BasicBlock> {
+  match (function) { Function(_, _, _, _, _, blocks, _) => blocks }
+};
+
+let _code = fn(function: Function, index: I32): Array<Instruction> {
+  match (_blocks(function)[index]) { Block(_, instructions, _, _) => instructions }
+};
+
+let _last = fn(function: Function, index: I32): Terminator {
+  match (_blocks(function)[index]) { Block(_, _, terminator, _) => terminator }
+};
+
+let _returned = fn(terminator: Terminator): I32 {
+  match (terminator) { ReturnValue(value) => value, _ => -1 }
+};
+
+let testReadsThroughACopyAndRemovesIt = fn(t: Test) {
+  let cleaned = cleanupFunction(_function(3, [
+    BasicBlock.Block(0, [insn(Op.Move, 1, [0], 0), insn(Op.Add, 2, [1, 1], 0)], Terminator.ReturnValue(2), null)
+  ]));
+  let code = _code(cleaned, 0);
+  T.equal(t, code.len(), 1);
+  T.isTrue(t, opOf(code[0]) == Op.Add);
+  T.equal(t, argsOf(code[0])[0], 0);
+  T.equal(t, argsOf(code[0])[1], 0);
+  T.isTrue(t, verifyProgram(_program(cleaned)));
+};
+
+let testKeepsACopyItsSourceChangesUnder = fn(t: Test) {
+  let cleaned = cleanupFunction(_function(2, [
+    BasicBlock.Block(0, [insn(Op.Move, 1, [0], 0), insn(Op.ConstI32, 0, none(), 5)], Terminator.ReturnValue(1), null)
+  ]));
+  T.equal(t, _returned(_last(cleaned, 0)), 1);
+  T.isTrue(t, opOf(_code(cleaned, 0)[0]) == Op.Move);
+};
+
+let testKeepsACopyReadInAnotherBlock = fn(t: Test) {
+  let cleaned = cleanupFunction(_function(4, [
+    BasicBlock.Block(0, [insn(Op.Move, 1, [0], 0), insn(Op.Add, 2, [1, 1], 0), insn(Op.Eq, 3, [2, 0], 0)], Terminator.Branch(3, 1, 2), null),
+    BasicBlock.Block(1, Array.new<Instruction>(0), Terminator.Jump(2), null),
+    BasicBlock.Block(2, [insn(Op.Add, 2, [2, 1], 0)], Terminator.ReturnValue(2), null)
+  ]));
+  T.isTrue(t, opOf(_code(cleaned, 0)[0]) == Op.Move);
+  T.equal(t, argsOf(_code(cleaned, 0)[1])[0], 1);
+};
+
+let testFoldsConstantsAndRemovesThem = fn(t: Test) {
+  let cleaned = cleanupFunction(_function(4, [
+    BasicBlock.Block(0, [
+      insn(Op.ConstI32, 1, none(), 2147483647), insn(Op.ConstI32, 2, none(), 1), insn(Op.Add, 3, [1, 2], 0)
+    ], Terminator.ReturnValue(3), null)
+  ]));
+  let code = _code(cleaned, 0);
+  T.equal(t, code.len(), 1);
+  T.isTrue(t, opOf(code[0]) == Op.ConstI32);
+  T.equal(t, immOf(code[0]), -2147483648);
+  T.equal(t, dstOf(code[0]), 3);
+};
+
+let testStopsFoldingAfterAWrite = fn(t: Test) {
+  let cleaned = cleanupFunction(_function(3, [
+    BasicBlock.Block(0, [insn(Op.ConstI32, 1, none(), 2), insn(Op.Add, 1, [1, 0], 0), insn(Op.Add, 2, [1, 1], 0)], Terminator.ReturnValue(2), null)
+  ]));
+  let code = _code(cleaned, 0);
+  T.equal(t, code.len(), 3);
+  T.isTrue(t, opOf(code[2]) == Op.Add);
+};
+
+let testKeepsDivisionAndCalls = fn(t: Test) {
+  let cleaned = cleanupFunction(_function(3, [
+    BasicBlock.Block(0, [insn(Op.Div, 1, [0, 0], 0), insn(Op.Call, 2, [0], 1)], Terminator.ReturnValue(0), null)
+  ]));
+  T.equal(t, _code(cleaned, 0).len(), 2);
+};
+
+let testFoldsABranchOnAConstantAndDropsWhatItSkips = fn(t: Test) {
+  let cleaned = cleanupFunction(_function(2, [
+    BasicBlock.Block(0, [insn(Op.ConstBool, 1, none(), 1)], Terminator.Branch(1, 2, 1), null),
+    BasicBlock.Block(1, Array.new<Instruction>(0), Terminator.ReturnValue(0), null),
+    BasicBlock.Block(2, Array.new<Instruction>(0), Terminator.ReturnValue(0), null)
+  ]));
+  let blocks = _blocks(cleaned);
+  T.equal(t, blocks.len(), 2);
+  T.equal(t, _code(cleaned, 0).len(), 0);
+  T.isTrue(t, match (_last(cleaned, 0)) { Jump(target) => target == 2, _ => false });
+  T.isTrue(t, verifyProgram(_program(cleaned)));
+};
+
+let testKeepsACatchAndWhatOnlyItReads = fn(t: Test) {
+  let registers = [ValueType.I32, ValueType.I32, ValueType.I32, ValueType.Dynamic];
+  let function = Function.Function(1, [0], 0, registers, ValueType.I32, [
+    BasicBlock.Block(0, Array.new<Instruction>(0), Terminator.Jump(1), null),
+    BasicBlock.Block(1, [insn(Op.ConstI32, 1, none(), 7), insn(Op.Call, 2, [0], 1)], Terminator.ReturnValue(2), ThrowHandler.Catch(2, 3)),
+    BasicBlock.Block(2, Array.new<Instruction>(0), Terminator.ReturnValue(1), null)
+  ], 0);
+  let cleaned = cleanupFunction(function);
+  T.equal(t, _blocks(cleaned).len(), 3);
+  T.equal(t, _code(cleaned, 1).len(), 2);
+  T.isTrue(t, verifyProgram(_program(cleaned)));
+};
+
+let testJoinsABlockOnlyAJumpReachesAndFoldsAcrossIt = fn(t: Test) {
+  let cleaned = cleanupFunction(_function(4, [
+    BasicBlock.Block(0, [insn(Op.ConstI32, 1, none(), 3)], Terminator.Jump(1), null),
+    BasicBlock.Block(1, [insn(Op.ConstI32, 2, none(), 4), insn(Op.Mul, 3, [1, 2], 0)], Terminator.ReturnValue(3), null)
+  ]));
+  T.equal(t, _blocks(cleaned).len(), 1);
+  let code = _code(cleaned, 0);
+  T.equal(t, code.len(), 1);
+  T.equal(t, immOf(code[0]), 12);
+  T.isTrue(t, verifyProgram(_program(cleaned)));
+};

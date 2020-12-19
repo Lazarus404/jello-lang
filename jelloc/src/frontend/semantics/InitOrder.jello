@@ -65,7 +65,73 @@ let _propagate = fn(nodes: Array<I32>) {
   null
 };
 
-let _offerAll = fn(functions: Array<I32>, sink: I32) {
+let _callees = Array.new<Array<I32>>(0);
+let _visit = Array.new<I32>(0);
+let _low = Array.new<I32>(0);
+let _stack = Array.new<I32>(0);
+let _visits = 0;
+
+let _settle: (I32) -> I32 = fn(_node) { 0 };
+_settle = fn(node) {
+  let start = _stack.len();
+  _visit[node] = _visits;
+  _low[node] = _visits;
+  _visits++;
+  _stack.push(node);
+  let c = 0;
+
+  while (c < _callees[node].len()) {
+    let callee = _callees[node][c];
+    if (_visit[callee] < 0) { _settle(callee); }
+    if (_low[callee] < _low[node]) { _low[node] = _low[callee]; }
+    c++;
+  }
+  if (_low[node] != _visit[node]) { return 0; }
+  let i = start;
+
+  while (i < _stack.len()) {
+    let member = _stack[i];
+    let callees = _callees[member];
+    let k = 0;
+    if (member != node) { bitsUnion(_reach[node], _reach[member]); }
+
+    while (k < callees.len()) {
+      bitsUnion(_reach[node], _reach[callees[k]]);
+      k++;
+    }
+    i++;
+  }
+
+  while (_stack.len() > start) {
+    let member = _stack.pop();
+    _low[member] = _visit.len() as I32;
+    if (member != node) { bitsUnion(_reach[member], _reach[node]); }
+  }
+  0
+};
+
+let _settleAll = fn() {
+  _visit = Array.new<I32>(0);
+  _low = Array.new<I32>(0);
+  _stack = Array.new<I32>(0);
+  _visits = 0;
+  let n = 0;
+
+  while (n < _callees.len()) {
+    _visit.push(-1);
+    _low.push(0);
+    n++;
+  }
+  n = 0;
+
+  while (n < _callees.len()) {
+    if (_visit[n] < 0) { _settle(n as I32); }
+    n++;
+  }
+  null
+};
+
+let _offer = fn(functions: Array<I32>, sink: I32): Bool {
   let grew = false;
   let f = 0;
 
@@ -79,7 +145,11 @@ let _offerAll = fn(functions: Array<I32>, sink: I32) {
     }
     f++;
   }
-  if (grew) { _propagate([sink]); }
+  grew
+};
+
+let _offerAll = fn(functions: Array<I32>, sink: I32) {
+  if (_offer(functions, sink)) { _propagate([sink]); }
   null
 };
 
@@ -91,15 +161,15 @@ export let firstUninitializedRead: () -> Tuple<I32, I32> = fn() {
   _reach = Array.new<Array<I32>>(0);
   _callers = Array.new<Array<I32>>(0);
   _queued = Array.new<Bool>(0);
+  _callees = Array.new<Array<I32>>(0);
   _offered = bitsNew(nodes);
-  let all = Array.new<I32>(0);
   let f = 0;
 
   while (f < nodes) {
     _reach.push(bitsNew(globalCount()));
     _callers.push(Array.new<I32>(0));
+    _callees.push(Array.new<I32>(0));
     _queued.push(false);
-    all.push(f);
     f++;
   }
   let refs = bitsNew(nodes);
@@ -108,17 +178,18 @@ export let firstUninitializedRead: () -> Tuple<I32, I32> = fn() {
   while (f <= functions) {
     let calls = bitsNew(nodes);
     if (_scan(childOf(root, f - 1), _reach[f], calls, refs)) { bitsAdd(calls, sink); }
-    let callees = bitsMembers(calls);
+    _callees[f] = bitsMembers(calls);
     let c = 0;
 
-    while (c < callees.len()) {
-      _callers[callees[c]].push(f);
+    while (c < _callees[f].len()) {
+      _callers[_callees[f][c]].push(f);
       c++;
     }
     f++;
   }
-  _offerAll(bitsMembers(refs), sink);
-  _propagate(all);
+  _offer(bitsMembers(refs), sink);
+  _callees[sink] = bitsMembers(_offered);
+  _settleAll();
   let body = lastChild(root);
   let initialized = bitsNew(globalCount());
   let i = 0;

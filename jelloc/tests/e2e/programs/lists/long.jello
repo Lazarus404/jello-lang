@@ -1,9 +1,9 @@
-// expect: 1800030000
+// expect: 74925000
 // gc: collects
 // Every cell of a long list stays reachable from its head while collections run.
 let xs = List.nil<I32>();
-let i = 60000;
-while (i > 0) { xs = List.cons(i, xs); i--; }
+let i = 150000;
+while (i > 0) { xs = List.cons(i % 1000, xs); i--; }
 let total = 0;
 while (!List.is_nil(xs)) { total += List.head(xs); xs = List.tail(xs); }
 total
