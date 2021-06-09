@@ -1,0 +1,23 @@
+// expect: 1023
+// schedulers: 4
+// Processes spawn a tree of processes, each counting its subtree from its children's counts.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+// Sends UP how many nodes the tree of DEPTH more levels below this one holds.
+let grow = fn(depth: I32, up: Process<I32>) {
+  let again = grow;
+  let total = 1;
+  if (depth > 0) {
+    let inbox = new Inbox<I32>();
+    let me = Process.self<I32>(inbox);
+    Process.spawn<I32>(fn(_: Inbox<I32>) { again(depth - 1, me); });
+    Process.spawn<I32>(fn(_: Inbox<I32>) { again(depth - 1, me); });
+    total = total + inbox.receive() + inbox.receive();
+  }
+  up.send(total);
+};
+
+let inbox = new Inbox<I32>();
+grow(9, Process.self<I32>(inbox));
+inbox.receive()

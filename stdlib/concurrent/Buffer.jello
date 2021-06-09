@@ -1,0 +1,71 @@
+package std.concurrent;
+
+load {
+  buffer_new,
+  buffer_length,
+  buffer_get,
+  buffer_set,
+  buffer_get_i64,
+  buffer_set_i64,
+  buffer_get_f32,
+  buffer_set_f32,
+  buffer_get_f64,
+  buffer_set_f64,
+  buffer_add_i32,
+  buffer_cas_i32,
+  buffer_add_i64,
+  buffer_cas_i64,
+  buffer_slice,
+} from vm;
+
+let _new: (I32) -> Dynamic = buffer_new;
+let _length: (Dynamic) -> I32 = buffer_length;
+let _get: (Dynamic, I32, I32) -> I32 = buffer_get;
+let _set: (Dynamic, I32, I32, I32) -> Bool = buffer_set;
+let _getI64: (Dynamic, I32) -> I64 = buffer_get_i64;
+let _setI64: (Dynamic, I32, I64) -> Bool = buffer_set_i64;
+let _getF32: (Dynamic, I32) -> F32 = buffer_get_f32;
+let _setF32: (Dynamic, I32, F32) -> Bool = buffer_set_f32;
+let _getF64: (Dynamic, I32) -> F64 = buffer_get_f64;
+let _setF64: (Dynamic, I32, F64) -> Bool = buffer_set_f64;
+let _addI32: (Dynamic, I32, I32) -> I32 = buffer_add_i32;
+let _casI32: (Dynamic, I32, I32, I32) -> Bool = buffer_cas_i32;
+let _addI64: (Dynamic, I32, I64) -> I64 = buffer_add_i64;
+let _casI64: (Dynamic, I32, I64, I64) -> Bool = buffer_cas_i64;
+let _slice: (Dynamic, I32, I32) -> Dynamic = buffer_slice;
+
+export typedef Buffer = { let handle: Dynamic; };
+
+export prototype Buffer {
+  init(bytes: I32) { this.handle = _new(bytes); };
+  len(): I32 { _length(this.handle) };
+
+  getI8(i: I32): I8 { _get(this.handle, 1, i) as I8 };
+  getU8(i: I32): U8 { _get(this.handle, 1, i) as U8 };
+  getI16(i: I32): I16 { _get(this.handle, 2, i) as I16 };
+  getU16(i: I32): U16 { _get(this.handle, 2, i) as U16 };
+  getI32(i: I32): I32 { _get(this.handle, 4, i) };
+  getU32(i: I32): U32 { _get(this.handle, 4, i) as U32 };
+  getI64(i: I32): I64 { _getI64(this.handle, i) };
+  getU64(i: I32): U64 { _getI64(this.handle, i) as U64 };
+  getF32(i: I32): F32 { _getF32(this.handle, i) };
+  getF64(i: I32): F64 { _getF64(this.handle, i) };
+
+  setI8(i: I32, v: I8) { _set(this.handle, 1, i, v as I32); };
+  setU8(i: I32, v: U8) { _set(this.handle, 1, i, v as I32); };
+  setI16(i: I32, v: I16) { _set(this.handle, 2, i, v as I32); };
+  setU16(i: I32, v: U16) { _set(this.handle, 2, i, v as I32); };
+  setI32(i: I32, v: I32) { _set(this.handle, 4, i, v); };
+  setU32(i: I32, v: U32) { _set(this.handle, 4, i, v as I32); };
+  setI64(i: I32, v: I64) { _setI64(this.handle, i, v); };
+  setU64(i: I32, v: U64) { _setI64(this.handle, i, v as I64); };
+  setF32(i: I32, v: F32) { _setF32(this.handle, i, v); };
+  setF64(i: I32, v: F64) { _setF64(this.handle, i, v); };
+
+  addI32(i: I32, v: I32): I32 { _addI32(this.handle, i, v) };
+  addI64(i: I32, v: I64): I64 { _addI64(this.handle, i, v) };
+  casI32(i: I32, old: I32, v: I32): Bool { _casI32(this.handle, i, old, v) };
+  casI64(i: I32, old: I64, v: I64): Bool { _casI64(this.handle, i, old, v) };
+
+  slice(start: I32, length: I32): Bytes { _slice(this.handle, start, length) as Bytes };
+};

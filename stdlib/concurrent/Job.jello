@@ -1,0 +1,76 @@
+package std.concurrent;
+
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Exit, Reply } from std.concurrent.Process;
+import type { Buffer } from std.concurrent.Buffer;
+
+load { proc_reply_new, proc_reply_wait, proc_reply_value, proc_schedulers } from vm;
+
+let _replyNew: () -> Dynamic = proc_reply_new;
+let _replyWait: (Dynamic, Dynamic, I32) -> I32 = proc_reply_wait;
+let _replyValue: (Dynamic) -> Dynamic = proc_reply_value;
+let _schedulers: () -> I32 = proc_schedulers;
+
+let _finish = fn(p: Process<I32>) {
+  match (p.join()) {
+    Normal => null,
+    Crashed(thrown) => {
+      throw thrown == null ? "the job trapped" as Dynamic : thrown;
+      null
+    },
+    _ => {
+      throw "the job did not finish";
+      null
+    },
+  };
+};
+
+export typedef Job<T> = {
+  let process: Process<I32>;
+  let reply: Reply<T>;
+};
+
+export prototype Job<T> {
+  init(process: Process<I32>, reply: Reply<T>) {
+    this.process = process;
+    this.reply = reply;
+  };
+  join(): T {
+    if (_replyWait(this.reply.handle, this.process.handle, -1) == 0) { _finish(this.process); }
+    _replyValue(this.reply.handle) as T
+  };
+};
+
+export let start<T> = fn(work: () -> T): Job<T> {
+  let reply = new Reply<T>(_replyNew());
+  new Job<T>(Process.spawn<I32>(fn(inbox: Inbox<I32>) { reply.send(work()); }), reply)
+};
+
+export let parallelFor = fn(count: I32, grain: I32, body: (I32, I32) -> Void) {
+  if (grain < 1) { throw "Job.parallelFor: grain must be positive, not " + Std.string(grain); }
+  if (count < 1) { return; }
+  let chunks = (count - 1) / grain + 1;
+  let next = new Buffer(4);
+  let schedulers = _schedulers();
+  let workers = Array.new<Process<I32>>(0);
+
+  while ((workers.len() < chunks) && (workers.len() < schedulers)) {
+    workers.push(Process.spawn<I32>(fn(inbox: Inbox<I32>) {
+      let chunk = next.addI32(0, 1);
+
+      while ((chunk >= 0) && (chunk < chunks)) {
+        let first = chunk * grain;
+        body(first, count - first > grain ? first + grain : count);
+        chunk = next.addI32(0, 1);
+      }
+    }));
+  }
+  let failure: Dynamic = null;
+  let i = 0;
+
+  while (i < workers.len()) {
+    try { _finish(workers[i]); } catch (e) { if (failure == null) { failure = e; } }
+    i++;
+  }
+  if (failure != null) { throw failure; };
+};

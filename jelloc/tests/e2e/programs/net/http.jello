@@ -1,0 +1,94 @@
+// expect: 200 hello /a?x=1|200 posted 5|200 chunked 11|404 |500 |200 close|400 |413 |3
+// schedulers: 4
+// An HTTP server answers requests from its handler on keep-alive connections, reads bodies by
+// Content-Length and chunked, answers 404s and 500s as the handler does or throws, closes for an
+// HTTP/1.0 request, answers 400 to what is not HTTP and 413 to a body too large; its client reads
+// each response.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
+import std.net.Http as Http;
+import type { Request, Response, Header, Client } from std.net.Http;
+
+let handle = fn(req: Request): Response {
+  let path = req.path();
+  if (path == "/missing") { return new Response(404, ""); };
+  if (path == "/boom") { throw "boom"; };
+  if (req.verb == "POST") {
+    return new Response(200, (Bytes.contains(req.body, " ") ? "chunked " : "posted ")
+      + Std.string(Bytes.len(req.body)));
+  };
+  new Response(200, "hello " + req.target).withHeader("Content-Type", "text/plain")
+};
+
+// One line for RES: its status and body.
+let show = fn(res: Response): Bytes { Std.string(res.status) + " " + res.body };
+
+let run = fn(): Bytes {
+  let listener = Tcp.listen("127.0.0.1", 0);
+  let port = listener.port();
+  Process.spawn<I32>(fn(_: Inbox<I32>) { Http.serve(listener, handle); });
+
+  let c = Http.connect("127.0.0.1", port);
+  let out = Array.new<Bytes>(0);
+  out.push(show(c.get("/a?x=1")));
+  out.push(show(c.send("POST", "/p", Array.new<Header>(0), "12345")));
+
+  // A chunked body, sent by hand.
+  let raw = Tcp.connect("127.0.0.1", port);
+  raw.write("POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    + "6\r\nhello \r\n5;ext=1\r\nworld\r\n0\r\n\r\n");
+  let reply = "";
+  while (!Bytes.contains(reply, "chunked 11")) { reply = reply + raw.read(1024); }
+  out.push("200 chunked 11");
+  raw.close();
+
+  out.push(show(c.get("/missing")));
+  out.push(show(c.get("/boom")));
+  c.close();
+
+  // HTTP/1.0 without keep-alive: the server closes after answering.
+  let old = Tcp.connect("127.0.0.1", port);
+  old.write("GET /o HTTP/1.0\r\n\r\n");
+  let all = "";
+  let more = old.read(1024);
+  while (Bytes.len(more) > 0) { all = all + more; more = old.read(1024); }
+  out.push(Bytes.startsWith(all, "HTTP/1.1 200 OK") && Bytes.contains(all, "Connection: close")
+    ? "200 close" : all);
+  old.close();
+
+  let bad = Tcp.connect("127.0.0.1", port);
+  bad.write("NOT HTTP\r\n\r\n");
+  let answer = "";
+  let got = bad.read(1024);
+  while (Bytes.len(got) > 0) { answer = answer + got; got = bad.read(1024); }
+  out.push(Bytes.startsWith(answer, "HTTP/1.1 400 Bad Request") ? "400 " : answer);
+  bad.close();
+
+  let big = Tcp.connect("127.0.0.1", port);
+  big.write("POST /b HTTP/1.1\r\nContent-Length: 20000000\r\n\r\n");
+  let refusal = "";
+  let part = big.read(1024);
+  while (Bytes.len(part) > 0) { refusal = refusal + part; part = big.read(1024); }
+  out.push(Bytes.startsWith(refusal, "HTTP/1.1 413 Content Too Large") ? "413 " : refusal);
+  big.close();
+
+  // Three clients at once, each on a connection of its own.
+  let done = new Inbox<I32>();
+  let main = Process.self<I32>(done);
+  let i = 0;
+  while (i < 3) {
+    Process.spawn<I32>(fn(_: Inbox<I32>) {
+      let k = Http.connect("127.0.0.1", port);
+      let ok = k.get("/k").body == "hello /k" ? 1 : 0;
+      k.close();
+      main.send(ok);
+    });
+    i++;
+  }
+  let ok = done.receive() + done.receive() + done.receive();
+  out.push(Std.string(ok));
+  Bytes.join(out, "|")
+};
+run()

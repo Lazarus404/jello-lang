@@ -2,7 +2,7 @@ package ir;
 
 import type { Hir } from frontend.hir.Hir;
 import {
-  BITS_BIG, BITS_FLOAT, KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_NULL, TYPE_U32, TYPE_U64, TYPE_U8, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits, isFloatKind, isFloatType, isRecord, isReference, isTemplateEnum, kindOf, lastChild, leastValue, mostValue, opOf, rootNode, slotType, typeArg,
+  BITS_BIG, BITS_FLOAT, KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_NULL, TYPE_U32, TYPE_U64, TYPE_U8, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits, isFloatKind, isFloatType, isRecord, isReference, isTemplateEnum, kindOf, lastChild, leastValue, mostValue, opOf, rootNode, slotType, typeArg,
   typeArgCount, typeCount, findBytesId, globalCount, isObject, nodeCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, segmentWidth, typeOf, useHir, valueOf, variantCount,
 } from frontend.hir.Hir;
 import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
@@ -771,6 +771,7 @@ let _bitsPack = fn(id: I32): I32 {
     if (width == 0) { _emit(Op.BytesBlit, -1, [bytes, values[i], _i32(fixed)], 0); } else if (width <= 8) { _emit(Op.BitsWrite, -1, [bytes, values[i]], valueOf(field) * 16 + width); } else { _emit(Op.BytesWrite, -1, [bytes, _i32(valueOf(field) / 8), values[i]], _bytesFormat(auxOf(field))); }
     i++;
   }
+  _emit(Op.BytesFreeze, -1, [bytes], 0);
   bytes
 };
 
@@ -914,15 +915,6 @@ _exprAt = fn(id) {
       let dst = _fresh(typeOf(id));
       if (width <= 8) { _emit(Op.BitsRead, dst, [bytes], valueOf(id) * 16 + width); } else { _emit(Op.BytesRead, dst, [bytes, _i32(valueOf(id) / 8)], _bytesFormat(auxOf(id))); }
       dst
-    },
-    BytesSlice when (typeOf(childOf(id, 0)) == TYPE_BYTE_BUFFER) => {
-      let operands = _values(id, 0);
-      let view = _fresh(TYPE_BYTES);
-      _emit(Op.BytesSlice, view, operands, 0);
-      let copy = _fresh(TYPE_BYTES);
-      _emit(Op.BytesNew, copy, [operands[2]], 0);
-      _emit(Op.BytesBlit, -1, [copy, view, _i32(0)], 0);
-      copy
     },
     ArrayLiteral => _arrayLiteral(id),
     ArrayPush => _push(id),

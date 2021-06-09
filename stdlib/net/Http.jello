@@ -1,0 +1,399 @@
+package std.net;
+
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
+
+let _HEAD_MAX = 65536;
+let _READ = 16384;
+let _BODY_MAX = 16777216;
+
+export typedef Header = {
+  let name: Bytes;
+  let value: Bytes;
+};
+
+export prototype Header {
+  init(name: Bytes, value: Bytes) {
+    this.name = name;
+    this.value = value;
+  };
+};
+
+let _lower = fn(text: Bytes): Bytes {
+  let n = Bytes.len(text);
+  let i = 0;
+  while ((i < n) && !((Bytes.get_u8(text, i) >= 65) && (Bytes.get_u8(text, i) <= 90))) { i++; }
+  if (i == n) { return text; };
+  let out = Bytes.new(n);
+  let j = 0;
+
+  while (j < n) {
+    let c = Bytes.get_u8(text, j);
+    Bytes.set_u8(out, j, (c >= 65) && (c <= 90) ? c + 32 : c);
+    j++;
+  }
+  Bytes.toString(out)
+};
+
+let _find = fn(headers: Array<Header>, name: Bytes): ?Bytes {
+  let i = 0;
+
+  while (i < headers.len()) {
+    let h = headers[i];
+    if ((Bytes.len(h.name) == Bytes.len(name)) && (_lower(h.name) == name)) { return h.value; };
+    i++;
+  }
+  null
+};
+
+let _number = fn(text: Bytes, base: I32): I32 {
+  let n = Bytes.len(text);
+  if ((n == 0) || (n > 9)) { return -1; };
+  let v = 0;
+  let i = 0;
+
+  while (i < n) {
+    let c = Bytes.get_u8(text, i);
+    let d = (c >= 48) && (c <= 57) ? c - 48
+      : (base == 16) && (c >= 97) && (c <= 102) ? c - 87
+      : (base == 16) && (c >= 65) && (c <= 70) ? c - 55
+      : -1;
+    if (d < 0) { return -1; };
+    v = v * base + d;
+    i++;
+  }
+  v
+};
+
+export typedef Request = {
+  let verb: Bytes;
+  let target: Bytes;
+  let version: Bytes;
+  let headers: Array<Header>;
+  let body: Bytes;
+};
+
+export prototype Request {
+  init(verb: Bytes, target: Bytes, headers: Array<Header>, body: Bytes) {
+    this.verb = verb;
+    this.target = target;
+    this.version = "HTTP/1.1";
+    this.headers = headers;
+    this.body = body;
+  };
+  header(name: Bytes): ?Bytes { _find(this.headers, _lower(name)) };
+  path(): Bytes {
+    let q = Bytes.indexOf(this.target, "?");
+    q < 0 ? this.target : Bytes.slice(this.target, 0, q)
+  };
+};
+
+export typedef Response = {
+  let status: I32;
+  let headers: Array<Header>;
+  let body: Bytes;
+};
+
+export prototype Response {
+  init(status: I32, body: Bytes) {
+    this.status = status;
+    this.headers = Array.new<Header>(0);
+    this.body = body;
+  };
+  withHeader(name: Bytes, value: Bytes): Response {
+    this.headers.push(new Header(name, value));
+    this
+  };
+  header(name: Bytes): ?Bytes { _find(this.headers, _lower(name)) };
+};
+
+let _reason = fn(status: I32): Bytes {
+  match (status) {
+    100 => "Continue", 200 => "OK", 201 => "Created", 202 => "Accepted", 204 => "No Content",
+    301 => "Moved Permanently", 302 => "Found", 303 => "See Other", 304 => "Not Modified",
+    307 => "Temporary Redirect", 308 => "Permanent Redirect", 400 => "Bad Request",
+    401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found", 405 => "Method Not Allowed",
+    408 => "Request Timeout", 411 => "Length Required", 413 => "Content Too Large",
+    431 => "Request Header Fields Too Large", 500 => "Internal Server Error",
+    501 => "Not Implemented", 502 => "Bad Gateway", 503 => "Service Unavailable",
+    505 => "HTTP Version Not Supported",
+    _ => "Unknown",
+  }
+};
+
+typedef _Reader = {
+  let stream: Stream;
+  let buf: Bytes;
+  let at: I32;
+};
+
+prototype _Reader {
+  init(stream: Stream) {
+    this.stream = stream;
+    this.buf = "";
+    this.at = 0;
+  };
+  fill(): Bool {
+    let more = this.stream.read(_READ);
+    if (Bytes.len(more) == 0) { return false; };
+    let kept = Bytes.len(this.buf) - this.at;
+    this.buf = kept == 0 ? more : Bytes.slice(this.buf, this.at, kept) + more;
+    this.at = 0;
+    true
+  };
+  line(limit: I32): ?Bytes {
+    let searched = 0;
+
+    while (true) {
+      let end = Bytes.indexOfFrom(this.buf, "\r\n", this.at + searched);
+
+      if (end >= 0) {
+        let l = Bytes.slice(this.buf, this.at, end - this.at);
+        this.at = end + 2;
+        return l;
+      };
+      let held = Bytes.len(this.buf) - this.at;
+      if (held > limit) { throw "header too long"; };
+      searched = held > 0 ? held - 1 : 0;
+      if (!this.fill()) { return null; };
+    }
+    null
+  };
+  take(n: I32): Bytes {
+    let held = Bytes.len(this.buf) - this.at;
+
+    if (held >= n) {
+      let out = Bytes.slice(this.buf, this.at, n);
+      this.at = this.at + n;
+      return out;
+    };
+    let parts = Array.new<Bytes>(0);
+    parts.push(Bytes.slice(this.buf, this.at, held));
+    let need = n - held;
+    this.buf = "";
+    this.at = 0;
+
+    while (need > 0) {
+      let more = this.stream.read(_READ);
+      if (Bytes.len(more) == 0) { throw "body cut short"; };
+
+      if (Bytes.len(more) > need) {
+        parts.push(Bytes.slice(more, 0, need));
+        this.buf = more;
+        this.at = need;
+        need = 0;
+      } else {
+        parts.push(more);
+        need = need - Bytes.len(more);
+      };
+    }
+    Bytes.join(parts, "")
+  };
+  rest(): Bytes {
+    let parts = Array.new<Bytes>(0);
+    let total = Bytes.len(this.buf) - this.at;
+    parts.push(Bytes.slice(this.buf, this.at, total));
+    this.buf = "";
+    this.at = 0;
+    let more = this.stream.read(_READ);
+
+    while (Bytes.len(more) > 0) {
+      total = total + Bytes.len(more);
+      if (total > _BODY_MAX) { throw "body too large"; };
+      parts.push(more);
+      more = this.stream.read(_READ);
+    }
+    Bytes.join(parts, "")
+  };
+  headers(limit: I32): Array<Header> {
+    let out = Array.new<Header>(0);
+    let used = 0;
+
+    while (true) {
+      let l = this.line(limit - used);
+
+      match (l) {
+        null => { throw "headers cut short"; },
+        text => {
+          if (Bytes.len(text) == 0) { return out; };
+          used = used + Bytes.len(text) + 2;
+          if (used > limit) { throw "header too long"; };
+          let colon = Bytes.indexOf(text, ":");
+          if (colon <= 0) { throw "malformed header"; };
+          out.push(new Header(Bytes.slice(text, 0, colon),
+            Bytes.trim(Bytes.slice(text, colon + 1, Bytes.len(text) - colon - 1))));
+        },
+      };
+    }
+    out
+  };
+  chunked(): Bytes {
+    let parts = Array.new<Bytes>(0);
+    let total = 0;
+
+    while (true) {
+      let size = match (this.line(_HEAD_MAX)) { null => "", l => l };
+      let semi = Bytes.indexOf(size, ";");
+      let n = _number(Bytes.trim(semi < 0 ? size : Bytes.slice(size, 0, semi)), 16);
+      if (n < 0) { throw "malformed chunk"; };
+      total = total + n;
+      if (total > _BODY_MAX) { throw "body too large"; };
+
+      if (n == 0) {
+        this.headers(_HEAD_MAX);
+        return Bytes.join(parts, "");
+      };
+      parts.push(this.take(n));
+      if (this.take(2) != "\r\n") { throw "malformed chunk"; };
+    }
+    ""
+  };
+  body(headers: Array<Header>, toEnd: Bool): Bytes {
+    let coding = _find(headers, "transfer-encoding");
+
+    if ((coding != null) && Bytes.contains(_lower(coding as Bytes), "chunked")) {
+      return this.chunked();
+    };
+
+    match (_find(headers, "content-length")) {
+      null => toEnd ? this.rest() : "",
+      text => {
+        let n = _number(Bytes.trim(text), 10);
+        if (n < 0) { throw "malformed Content-Length"; };
+        if (n > _BODY_MAX) { throw "body too large"; };
+        this.take(n)
+      },
+    }
+  };
+};
+
+let _message = fn(first: Bytes, headers: Array<Header>, body: Bytes, close: Bool): Bytes {
+  let parts = Array.new<Bytes>(0);
+  parts.push(first);
+  parts.push("\r\n");
+  let i = 0;
+
+  while (i < headers.len()) {
+    parts.push(headers[i].name);
+    parts.push(": ");
+    parts.push(headers[i].value);
+    parts.push("\r\n");
+    i++;
+  }
+
+  if (_find(headers, "content-length") == null) {
+    parts.push("Content-Length: ");
+    parts.push(Std.string(Bytes.len(body)));
+    parts.push("\r\n");
+  };
+  if (close && (_find(headers, "connection") == null)) { parts.push("Connection: close\r\n"); };
+  parts.push("\r\n");
+  parts.push(body);
+  Bytes.join(parts, "")
+};
+
+let _keeps = fn(version: Bytes, headers: Array<Header>): Bool {
+  let connection = match (_find(headers, "connection")) { null => "", c => _lower(c) };
+  if (version == "HTTP/1.0") { return Bytes.contains(connection, "keep-alive"); };
+  !Bytes.contains(connection, "close")
+};
+
+let _respond = fn(handle: (Request) -> Response, req: Request): Response {
+  let res: ?Response = null;
+  try { res = handle(req); } catch (_) {};
+  match (res) { null => new Response(500, ""), done => done }
+};
+
+let _converse = fn(s: Stream, handle: (Request) -> Response) {
+  let r = new _Reader(s);
+  let open = true;
+
+  while (open) {
+    let answer: ?Response = null;
+
+    try {
+      match (r.line(_HEAD_MAX)) {
+        null => { open = false; },
+        start => {
+          let parts = Bytes.split(start, " ");
+
+          if ((parts.len() != 3) || !Bytes.startsWith(parts[2], "HTTP/1.")) {
+            answer = new Response(400, "");
+            open = false;
+          } else {
+            let headers = r.headers(_HEAD_MAX);
+            let req = new Request(parts[0], parts[1], headers, r.body(headers, false));
+            req.version = parts[2];
+            open = _keeps(parts[2], headers);
+            answer = _respond(handle, req);
+          };
+        },
+      };
+    } catch (e) {
+      let why = e as Bytes;
+      answer = new Response(Bytes.contains(why, "too long") ? 431
+        : Bytes.contains(why, "too large") ? 413 : 400, "");
+      open = false;
+    };
+
+    match (answer) {
+      null => {},
+      res => {
+        let first = "HTTP/1.1 " + Std.string(res.status) + " " + _reason(res.status);
+        s.write(_message(first, res.headers, res.body, !open));
+      },
+    };
+  }
+  s.close();
+};
+
+export let serve = fn(listener: Listener, handle: (Request) -> Response) {
+  while (true) {
+    let s = listener.accept();
+    Process.spawn<I32>(fn(_: Inbox<I32>) { _converse(s, handle); });
+  }
+};
+
+export typedef Client = {
+  let host: Bytes;
+  let stream: Stream;
+  let reader: _Reader;
+};
+
+export prototype Client {
+  init(host: Bytes, stream: Stream) {
+    this.host = host;
+    this.stream = stream;
+    this.reader = new _Reader(stream);
+  };
+  send(verb: Bytes, target: Bytes, headers: Array<Header>, body: Bytes): Response {
+    let all = Array.new<Header>(0);
+    if (_find(headers, "host") == null) { all.push(new Header("Host", this.host)); };
+    Array.appendFrom(all, headers, 0);
+    this.stream.write(_message(verb + " " + target + " HTTP/1.1", all, body, false));
+
+    let start = match (this.reader.line(_HEAD_MAX)) {
+      null => { throw "connection closed"; },
+      l => l,
+    };
+    let parts = Bytes.split(start, " ");
+    let status = parts.len() >= 2 ? _number(parts[1], 10) : -1;
+
+    if ((status < 0) || !Bytes.startsWith(parts[0], "HTTP/1.")) {
+      throw "malformed status line";
+    };
+    let res = new Response(status, "");
+    res.headers = this.reader.headers(_HEAD_MAX);
+    let bodiless = (verb == "HEAD") || (status == 204) || (status == 304) || (status < 200);
+    res.body = bodiless ? "" : this.reader.body(res.headers, !_keeps(parts[0], res.headers));
+    res
+  };
+  get(target: Bytes): Response { this.send("GET", target, Array.new<Header>(0), "") };
+  close() { this.stream.close(); };
+};
+
+export let connect = fn(host: Bytes, port: I32): Client {
+  new Client(host + ":" + Std.string(port), Tcp.connect(host, port))
+};

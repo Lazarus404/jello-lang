@@ -1,0 +1,45 @@
+// expect: 4000
+// schedulers: 4
+// Processes spawned on main stay on the main thread through yields, sleeps and receives, while
+// ordinary processes keep the other schedulers busy enough to take whatever they can.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+let counts = new Inbox<I32>();
+let main = Process.self<I32>(counts);
+let pinned = Array.new<Process<I32>>(0);
+let i = 0;
+while (i < 20) {
+  pinned.push(Process.spawnOnMain<I32>(fn(inbox: Inbox<I32>) {
+    let seen = 0;
+    let n = 0;
+    while (n < 100) {
+      if (Process.onMain()) { seen++; }
+      if (n % 3 == 0) {
+        Process.yield();
+      } else if (n % 3 == 1) {
+        Process.sleep(0);
+      } else {
+        inbox.receive();
+      }
+      if (Process.onMain()) { seen++; }
+      n++;
+    }
+    main.send(seen);
+  }));
+  i++;
+}
+let busy = 0;
+while (busy < 8) {
+  Process.spawn<I32>(fn(_: Inbox<I32>) {
+    let k = 0;
+    while (k < 2000) { Process.yield(); k++; }
+  });
+  busy++;
+}
+i = 0;
+while (i < 20 * 33) { pinned[i % 20].send(i); i++; }
+let total = 0;
+i = 0;
+while (i < 20) { total = total + counts.receive(); i++; }
+total

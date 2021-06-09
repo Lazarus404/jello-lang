@@ -1,0 +1,12 @@
+// expect: false
+// schedulers: 4
+// A process that finishes cancels the timers it has yet to fire.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Timer } from std.concurrent.Process;
+
+enum Note { Pending(timer: Timer); }
+
+let notes = new Inbox<Note>();
+let me = Process.self<Note>(notes);
+Process.spawn<I32>(fn(own: Inbox<I32>) { me.send(Note.Pending(own.sendAfter(60000, 1))); }).join();
+match (notes.receive()) { Pending(timer) => Std.string(timer.cancel()) }

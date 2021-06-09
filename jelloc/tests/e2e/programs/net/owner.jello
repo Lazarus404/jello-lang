@@ -1,0 +1,91 @@
+// expect: Connection refused|hello|true|-1 true|true|Connection refused|true true
+// schedulers: 4
+// A socket closes when the process owning it finishes, so a listener's port refuses
+// connections once its process is done; but a stream sent away in a message belongs to its
+// receiver, and stays open when its sender finishes. A copy of a global holding a socket never
+// owns it, even while a message moving it waits to be received; a message that cannot be sent
+// leaves the socket with its sender, and one never received closes it. A socket sent in a reply
+// belongs to the process reading the reply, after its sender has finished too.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Exit, Reply } from std.concurrent.Process;
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
+
+let ports = new Inbox<I32>();
+let me = Process.self<I32>(ports);
+let lone = Process.spawn<I32>(fn(_: Inbox<I32>) {
+  let l = Tcp.listen("127.0.0.1", 0);
+  me.send(l.port());
+});
+let gone = ports.receive();
+lone.join();
+let refused = "connected";
+try { Tcp.connect("127.0.0.1", gone); } catch (e) { refused = e as Bytes; };
+
+// The acceptor hands the stream it accepts to main, then finishes; the listener is a local
+// so that the acceptor captures it rather than a copy of a global.
+let handOver = fn(): Bytes {
+  let streams = new Inbox<Stream>();
+  let main = Process.self<Stream>(streams);
+  let l = Tcp.listen("127.0.0.1", 0);
+  let port = l.port();
+  let acceptor = Process.spawn<I32>(fn(_: Inbox<I32>) { main.send(l.accept()); });
+  let c = Tcp.connect("127.0.0.1", port);
+  let s = streams.receive();
+  acceptor.join();
+  c.write("hello");
+  let got = "";
+  while (Bytes.len(got) < 5) { got = got + s.read(16); }
+  s.close();
+  let ended = Bytes.len(c.read(16)) == 0;
+  got + "|" + Std.string(ended)
+};
+// The reader reads its copy of this global, a socket it does not own, while a message moving the
+// socket to the taker waits in the taker's inbox.
+let shared = Tcp.listen("127.0.0.1", 0);
+let sharedPort = shared.port();
+let replies = new Inbox<I32>();
+let back = Process.self<I32>(replies);
+let reader = Process.spawn<I32>(fn(inbox: Inbox<I32>) {
+  inbox.receive();
+  back.send(shared.port());
+});
+let taker = Process.spawn<Listener>(fn(inbox: Inbox<Listener>) {
+  Process.sleep(50);
+  back.send(inbox.receive().port() == sharedPort ? 1 : 0);
+});
+taker.send(shared);
+reader.send(0);
+let tried = replies.receive();
+let taken = replies.receive() == 1;
+
+enum Ask { Give(reply: Reply<Listener>); }
+
+let moves = fn(): Bytes {
+  // A message to a process that has finished is not sent, and its listener stays here.
+  let mine = Tcp.listen("127.0.0.1", 0);
+  let minePort = mine.port();
+  let done = Process.spawn<Listener>(fn(_: Inbox<Listener>) {});
+  done.join();
+  let kept = !done.send(mine) && (mine.port() == minePort);
+
+  // A message its receiver never takes closes the listener it moves as the receiver finishes.
+  let dropped = Tcp.listen("127.0.0.1", 0);
+  let droppedPort = dropped.port();
+  let ignorer = Process.spawn<Listener>(fn(_: Inbox<Listener>) { Process.sleep(30); });
+  ignorer.send(dropped);
+  ignorer.join();
+  let closed = "connected";
+  try { Tcp.connect("127.0.0.1", droppedPort); } catch (e) { closed = e as Bytes; };
+  // A listener sent back in a reply.
+  let dealer = Process.spawn<Ask>(fn(inbox: Inbox<Ask>) {
+    match (inbox.receive()) { Give(reply) => { reply.send(Tcp.listen("127.0.0.1", 0)); } };
+  });
+  let dealt = Process.call<Ask, Listener>(dealer,
+    fn(reply: Reply<Listener>): Ask { Ask.Give(reply) });
+  let replied = dealt.port() > 0;
+  dealer.join();
+  let outlived = dealt.port() > 0;
+  Std.string(kept) + "|" + closed + "|" + Std.string(replied) + " " + Std.string(outlived)
+};
+refused + "|" + handOver() + "|" + Std.string(tried) + " " + Std.string(taken) + "|" + moves()

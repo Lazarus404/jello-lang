@@ -7,7 +7,7 @@ import { checkEnumExpr } from frontend.semantics.Enums;
 import { checkCondition, checkLet } from frontend.semantics.Match;
 import { resetDerived, structuralEquality, unsupported } from frontend.semantics.Derived;
 import { checkAssertion, declareAssertions } from frontend.semantics.Testing;
-import { declareTypes } from frontend.semantics.Typedefs;
+import { declareTypes, prototypeNames } from frontend.semantics.Typedefs;
 import { checkValueExpr } from frontend.semantics.Values;
 import { beginDoubt, beginTouch, failureCount, poison, recordFailure, resetFailures, sortFailures } from frontend.semantics.Failures;
 import type { Hir } from frontend.hir.Hir;
@@ -46,8 +46,8 @@ let _marshalled = fn(ty: I32, name: Bytes): I32 {
     let part = i < count ? typeArg(ty, i) : innerOf(ty);
 
     match (kindOf(part)) {
-      Bool, I32, Bytes, Dynamic => null, _ => {
-        throw coded(E0213, "native " + name + " cannot pass " + typeName(part) + "; natives take and return Bool, I32, Bytes or Dynamic");
+      Bool, I32, I64, F32, F64, Bytes, Dynamic => null, _ => {
+        throw coded(E0213, "native " + name + " cannot pass " + typeName(part) + "; natives take and return Bool, I32, I64, F32, F64, Bytes or Dynamic");
         null
       }
     };
@@ -118,6 +118,42 @@ let _exportNames = fn(statements: Array<Stmt>): Array<Bytes> {
     i++;
   }
   names
+};
+
+let _prototypeHome = fn(modules: Array<Module>, module: I32, name: Bytes): I32 {
+  match (modules[module]) { Module(_, _, statements, _, _, imports) => {
+    let prototypes = prototypeNames(statements);
+    if (indexOf(prototypes, name) >= 0) { return module; }
+    let named = "";
+    let i = 0;
+
+    while (i < statements.len()) {
+      match (statements[i]) {
+        Typedef(_, declared, _, Alias(Named(target))) when (declared == name) => {
+          named = target;
+          null
+        },
+        Typedef(_, declared, _, Alias(Generic(target, _))) when (declared == name) => {
+          named = target;
+          null
+        },
+        _ => null,
+      };
+      i++;
+    }
+    if (named == "") { return -1; }
+    if (indexOf(prototypes, named) >= 0) { return module; }
+    i = 0;
+
+    while (i < imports.len()) {
+      match (imports[i]) {
+        Import(local, source, exported, _, _, _) when (local == named) => { return _prototypeHome(modules, source, exported); },
+        _ => null,
+      };
+      i++;
+    }
+    -1
+  } }
 };
 
 let _checkExtension = fn(statement: Stmt, owner: Bytes) {
@@ -342,8 +378,11 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
 
         while (j < imports.len()) {
           match (imports[j]) {
-            Import(_, module, _, typeOnly, privately, _) => {
-              if (!typeOnly) { runs[module] = true; }
+            Import(_, module, name, typeOnly, privately, _) => {
+              if (!typeOnly) { runs[module] = true; } else {
+                let home = _prototypeHome(modules, module, name);
+                if (home >= 0) { runs[home] = true; }
+              }
               if (privately) { opened[module] = true; }
             },
             Namespace(_, module, privately, _) => {

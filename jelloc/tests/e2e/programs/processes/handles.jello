@@ -1,0 +1,27 @@
+// expect: ab42 7 b true | false
+// schedulers: 4
+// A native handle sent to another process, in a message or in the globals a process starts with,
+// is a handle of its own there to the same regexp, match or timer: here the child cancels its
+// parent's timer.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import { compile, find, group } from std.core.RegExp;
+
+let digits = compile("[0-9]+", "");
+let inbox = new Inbox<Dynamic>();
+let me = Process.self<Dynamic>(inbox);
+let timer = inbox.sendAfter(100000, "never" as Dynamic);
+let child = Process.spawn<Dynamic>(fn(own: Inbox<Dynamic>) {
+  let re = own.receive();
+  let found = own.receive();
+  me.send(group(find("ab42", re), 0) as Dynamic);
+  me.send(group(find("x7", digits), 0) as Dynamic);
+  me.send(group(found, 1) as Dynamic);
+  me.send(timer.cancel() as Dynamic);
+});
+child.send(compile("[a-z]*([0-9]+)", ""));
+child.send(find("a-b-c", compile("-([a-z])-", "")));
+let got = Std.string(inbox.receive()) + " " + Std.string(inbox.receive()) + " "
+  + Std.string(inbox.receive()) + " " + Std.string(inbox.receive());
+child.join();
+got + " | " + Std.string(timer.cancel())

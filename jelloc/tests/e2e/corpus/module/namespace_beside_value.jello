@@ -1,0 +1,8 @@
+// error: 6:1: duplicate import name: make [E0205]
+// flags: --path $DIR/auxiliary
+// Only a type may share its name with a namespace import; values and namespaces share one set
+// of names.
+import { make } from boxes;
+import boxes as make;
+make(1);
+"ok"

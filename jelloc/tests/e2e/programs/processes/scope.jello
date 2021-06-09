@@ -1,0 +1,49 @@
+// expect: Exit.Stopped Exit.Normal Exit.Stopped boom 20 4 closed
+// schedulers: 4
+// A scope's processes are all stopped and joined when its block ends, whether it returns or throws.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Scope, Exit } from std.concurrent.Process;
+
+let seen = Array.new<Process<I32>>(0);
+let wait = fn(i: Inbox<I32>) { i.receive(); };
+
+Process.scoped(fn(scope: Scope) {
+  seen.push(Process.spawnIn<I32>(scope, wait));
+  let quick = Process.spawnIn<I32>(scope, fn(_: Inbox<I32>) { });
+  quick.join();
+  seen.push(quick);
+});
+let failure = "";
+try {
+  Process.scoped(fn(scope: Scope) {
+    seen.push(Process.spawnIn<I32>(scope, wait));
+    throw "boom";
+  });
+} catch (e) { failure = Std.string(e); }
+
+// A scope forgets finished processes as it spawns more: 4 of these 20 remain at its end.
+let kept: ?Scope = null;
+let finished = 0;
+Process.scoped(fn(scope: Scope) {
+  kept = scope;
+  let n = 0;
+  while (n < 20) {
+    let p = Process.spawnIn<I32>(scope, fn(_: Inbox<I32>) { });
+    p.join();
+    if (p.exited() == Exit.Normal) { finished++; }
+    n++;
+  }
+});
+let left = 0;
+let late = "";
+match (kept) {
+  null => null,
+  s => {
+    left = s.handles.len();
+    try { Process.spawnIn<I32>(s, wait); } catch (e) { late = "closed"; }
+    null
+  }
+};
+Std.string(seen[0].exited()) + " " + Std.string(seen[1].exited()) + " "
+  + Std.string(seen[2].exited()) + " " + failure + " " + Std.string(finished) + " "
+  + Std.string(left) + " " + late

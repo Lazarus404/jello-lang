@@ -1,0 +1,39 @@
+// expect: 48000
+// schedulers: 4
+// Pairs of processes bounce a growing array between them, each send a copy, on many
+// schedulers at once while the collector runs; each ping spawns its pong meanwhile.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+enum Ball { Hit(back: Process<Ball>, data: Array<I32>); }
+
+let PAIRS = 16;
+let HITS = 3000;
+let results = new Inbox<I32>();
+let main = Process.self<I32>(results);
+
+let pong = fn(inbox: Inbox<Ball>) {
+  while (true) {
+    match (inbox.receive()) { Hit(back, data) => { data.push(1); back.send(Ball.Hit(back, data)); } }
+  }
+};
+
+let ping = fn(inbox: Inbox<Ball>) {
+  let me = Process.self<Ball>(inbox);
+  let other = Process.spawn<Ball>(pong);
+  let data = Array.new<I32>(0);
+  let n = 0;
+  while (n < HITS) {
+    other.send(Ball.Hit(me, data));
+    match (inbox.receive()) { Hit(_, back) => { data = back; } }
+    n++;
+  }
+  main.send(data.len());
+};
+
+let i = 0;
+while (i < PAIRS) { Process.spawn<Ball>(ping); i++; }
+let total = 0;
+i = 0;
+while (i < PAIRS) { total = total + results.receive(); i++; }
+total

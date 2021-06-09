@@ -1,0 +1,48 @@
+package std.io;
+
+import { indexOf } from std.core.Bytes;
+
+load { command_start, command_wait, command_stdout, command_stderr, command_done, command_next, cpu_count } from std;
+
+let _entries = fn(items: Array<Bytes>): Bytes {
+  let out = "";
+  let i = 0;
+
+  while (i < items.len()) {
+    if (indexOf(items[i], "\0") >= 0) { throw "a command argument or variable holds a NUL: " + Std.string(items[i]); }
+    out = out + items[i] + "\0";
+    i++;
+  }
+  out
+};
+
+let _start: (Bytes, Bytes) -> Dynamic = command_start;
+export let start = fn(argv: Array<Bytes>, env: Array<Bytes>): Dynamic { _start(_entries(argv), _entries(env)) };
+
+export let wait: (Dynamic) -> I32 = command_wait;
+export let stdout: (Dynamic) -> Bytes = command_stdout;
+export let stderr: (Dynamic) -> Bytes = command_stderr;
+
+let _done: (Dynamic) -> Bool = command_done;
+let _next: () -> Bool = command_next;
+
+export let waitAny = fn(commands: Array<Dynamic>): I32 {
+  if (commands.len() == 0) { return -1; }
+
+  while (true) {
+    let i = 0;
+
+    while (i < commands.len()) {
+      if (_done(commands[i])) { return i; }
+      i++;
+    }
+    if (!_next()) { return 0; }
+  }
+  -1
+};
+
+export let result = fn(command: Dynamic): Tuple<I32, Bytes, Bytes> { (wait(command), stdout(command), stderr(command)) };
+
+export let run = fn(argv: Array<Bytes>, env: Array<Bytes>): Tuple<I32, Bytes, Bytes> { result(start(argv, env)) };
+
+export let cpuCount: () -> I32 = cpu_count;

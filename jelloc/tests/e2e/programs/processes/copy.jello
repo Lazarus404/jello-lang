@@ -1,0 +1,18 @@
+// expect: [1, 2, 3] [1, 2, 3, 4] true
+// schedulers: 4
+// A message behaves as a copy: the sender's later writes never reach the receiver.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+enum Msg { Items(xs: Array<I32>, to: Process<Bytes>); }
+
+let reader = Process.spawn<Msg>(fn(inbox: Inbox<Msg>) {
+  match (inbox.receive()) { Items(xs, to) => { Process.yield(); to.send(Std.string(xs)); xs.push(9); true } };
+});
+let inbox = new Inbox<Bytes>();
+let xs = [1, 2, 3];
+reader.send(Msg.Items(xs, Process.self<Bytes>(inbox)));
+xs.push(4);
+let seen = inbox.receive();
+reader.join();
+seen + " " + Std.string(xs) + " " + Std.string(xs.len() == 4)

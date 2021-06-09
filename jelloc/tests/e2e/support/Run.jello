@@ -1,6 +1,6 @@
 package support;
 
-// Running the compiler under test and the VM as processes, for the e2e tests
+// Running the compiler under test and the VM as child commands, for the e2e tests
 // that check their command lines. What runs is the test package's options,
 // which scripts/test.sh passes; this is the one module that reads them.
 
@@ -8,7 +8,7 @@ import type { Test } from std.testing;
 import std.testing as T;
 import { contains } from std.core.Bytes;
 import { makeDirs, remove } from std.io.File;
-import { result, start } from std.io.Process;
+import { result, start } from std.io.Command;
 import { checkCommand, checkEnv, compiler, jloTool, modes as _modes, outDir, stdDir as _stdDir, vmCommand, vmEnv } from degust.Programs;
 
 T.declareOption("--self", "what the compiler under test builds from its own sources, when known (at the fixed point, the compiler itself)");
@@ -66,10 +66,10 @@ export let startJelloc = fn(args: Array<Bytes>, env: Array<Bytes>): Dynamic {
   start(concat(argv, args), env)
 };
 
-// Waits for PROCESS: its status, standard output and standard error, less
+// Waits for COMMAND: its status, standard output and standard error, less
 // trailing newlines.
-export let finish = fn(process: Dynamic): Tuple<I32, Bytes, Bytes> {
-  let (status, out, err) = result(process);
+export let finish = fn(command: Dynamic): Tuple<I32, Bytes, Bytes> {
+  let (status, out, err) = result(command);
   (status, _chomp(out), _chomp(err))
 };
 
@@ -94,15 +94,15 @@ export let has = fn(t: Test, text: Bytes, part: Bytes): Null {
   null
 };
 
-// Each of CASES, a started process and what its standard error contains, is
+// Each of CASES, a started command and what its standard error contains, is
 // a bad command line: status 2 and nothing on standard output. Start them
 // all before calling this, so they run at once.
 export let badCommandLines = fn(t: Test, cases: Array<Tuple<Dynamic, Array<Bytes>>>): Null {
   let i = 0;
 
   while (i < cases.len()) {
-    let (process, parts) = cases[i];
-    let (status, out, err) = finish(process);
+    let (command, parts) = cases[i];
+    let (status, out, err) = finish(command);
     T.equal(t, (status, out), (2, ""));
     let k = 0;
 

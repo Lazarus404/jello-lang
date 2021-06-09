@@ -101,7 +101,8 @@ let _checkNew = fn(proto: AstExpr, args: Array<AstExpr>): I32 {
   let inferred = H.isTemplateEnum(template);
   let vars = Array.new<I32>(0);
   while (inferred && (vars.len() < H.enumParamCount(template))) { vars.push(H.newVar(false)); }
-  let checked = inferred ? prototypeValue(H.appliedType(template, vars)) : checkPresent(proto, 0);
+  let named = inferred ? H.appliedType(template, vars) : template;
+  let checked = named >= 0 ? prototypeValue(named) : checkPresent(proto, 0);
   let ty = H.typeOf(checked);
 
   if (!H.isObject(ty)) {

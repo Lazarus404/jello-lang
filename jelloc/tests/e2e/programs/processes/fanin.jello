@@ -1,0 +1,21 @@
+// expect: 32000
+// schedulers: 4
+// Many processes send to one at once, across schedulers, and every message arrives.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+let SENDERS = 32;
+let EACH = 1000;
+let inbox = new Inbox<I32>();
+let me = Process.self<I32>(inbox);
+let i = 0;
+while (i < SENDERS) {
+  Process.spawn<I32>(fn(_: Inbox<I32>) {
+    let n = 0;
+    while (n < EACH) { me.send(1); n++; }
+  });
+  i++;
+}
+let total = 0;
+while (total < SENDERS * EACH) { total = total + inbox.receive(); }
+total

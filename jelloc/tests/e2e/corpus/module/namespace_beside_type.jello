@@ -1,0 +1,9 @@
+// expect: 3
+// flags: --path $DIR/auxiliary
+// A module's namespace import may share its name with a type it exports, as Process<M> and
+// Process.spawn do.
+import boxes as Box;
+import type { Box } from boxes;
+
+let b: Box = Box.make(3);
+b.v

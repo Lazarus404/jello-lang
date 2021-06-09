@@ -1,0 +1,67 @@
+// expect: true true true true 7 shape of 3 | true 9 4 | true true 0
+// schedulers: 4
+// Each process has its own prototypes, as it has its own globals. An instance copied into a
+// process, from a global, a message, a reply or a crash, delegates to that process's own, so
+// `is`, typed receives and methods work, and a write to a prototype stays in its process.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Reply, Exit } from std.concurrent.Process;
+import { Exit } from std.concurrent.Process;
+
+prototype Shape {
+  sides: 0;
+  name(): Bytes { "shape" };
+};
+typedef Square = { let size: I32; };
+prototype Square {
+  __proto__: Shape;
+  init(size: I32) { this.size = size; };
+  name(): Bytes { super.name() + " of " + Std.string(this.size) };
+};
+
+enum Ask { Make(size: I32, reply: Reply<Square>); Quit; }
+
+let held = new Square(2);
+let inbox = new Inbox<Square>();
+let me = Process.self<Square>(inbox);
+let child = Process.spawn<Square>(fn(own: Inbox<Square>) {
+  let sent = own.receive();
+  let fresh = new Square(3);
+  Shape.sides = 7;
+  me.send(fresh);
+  // What the child saw, sent back as a Square whose size encodes it.
+  let seen = ((held as Dynamic) is Square ? 1 : 0) + ((sent as Dynamic) is Square ? 2 : 0)
+    + ((fresh as Dynamic) is Shape ? 4 : 0) + (sent.size == 4 ? 8 : 0)
+    + (((sent as Object).__proto__ as Object) == (Square as Object) ? 16 : 0);
+  me.send(new Square(seen));
+  me.send(new Square(held.sides as I32));
+  me.send(new Square(0));
+});
+child.send(new Square(4));
+let fresh = inbox.receive();
+let seen = inbox.receive();
+let sides = inbox.receive();
+inbox.receive();
+child.join();
+let first = Std.string(seen.size == 31) + " " + Std.string((fresh as Dynamic) is Square) + " "
+  + Std.string(fresh.size == 3) + " " + Std.string((Shape.sides as I32) == 0) + " "
+  + Std.string(sides.size) + " " + fresh.name();
+
+let server = Process.spawn<Ask>(fn(asks: Inbox<Ask>) {
+  Shape.sides = 4;
+  while (true) {
+    match (asks.receive()) {
+      Make(size, reply) => { reply.send(new Square(size + (Shape.sides as I32))); },
+      Quit => { throw new Square(4); },
+    }
+  }
+});
+let made = Process.call<Ask, Square>(server, fn(reply: Reply<Square>) { Ask.Make(5, reply) });
+server.send(Ask.Quit);
+let crashed = match (server.join()) { Crashed(value) => value, _ => null };
+let second = Std.string((made as Dynamic) is Square) + " " + Std.string(made.size) + " "
+  + Std.string((crashed as Square).size);
+
+Shape.sides = 0;
+let last = Std.string((crashed is Square)) + " " + Std.string((crashed as Square).name() == "shape of 4")
+  + " " + Std.string(held.sides as I32);
+first + " | " + second + " | " + last

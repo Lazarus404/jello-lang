@@ -1,0 +1,16 @@
+// expect: Exit.ParentExited
+// schedulers: 4
+// A monitor's watcher is owned by the process that called monitor, so it stops watching when that
+// process finishes.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Exit } from std.concurrent.Process;
+
+enum Note { Watcher(p: Process<Exit>); }
+
+let notes = new Inbox<Note>();
+let me = Process.self<Note>(notes);
+let watched = Process.spawn<I32>(fn(i: Inbox<I32>) { i.receive(); });
+Process.spawn<I32>(fn(_: Inbox<I32>) {
+  me.send(Note.Watcher(Process.monitor<I32, I32>(watched, watched, fn(why: Exit) { 0 })));
+}).join();
+match (notes.receive()) { Watcher(p) => Std.string(p.join()) }

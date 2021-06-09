@@ -1,0 +1,29 @@
+// expect: null true 7 null 3 null null Exit.Normal
+// schedulers: 4
+// Waits with a limit end with null once it passes, and otherwise as waits without one do.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Reply, Exit } from std.concurrent.Process;
+
+enum Ask { Ping(reply: Reply<I32>); Release; }
+
+let inbox = new Inbox<I32>();
+let me = Process.self<I32>(inbox);
+let start = Process.now();
+let none = inbox.receiveWithin(10);
+let waited = Process.now() - start >= 10;
+Process.spawn<I32>(fn(unused: Inbox<I32>) { Process.sleep(5); me.send(7); });
+let got = inbox.receiveWithin(1000);
+let polled = inbox.receiveWithin(0);
+
+let server = Process.spawn<Ask>(fn(asks: Inbox<Ask>) {
+  match (asks.receive()) { Ping(reply) => reply.send(3), Release => false }
+  match (asks.receive()) { Ping(reply) => { asks.receive(); reply.send(4) }, Release => false };
+});
+let quick = Process.callWithin<Ask, I32>(server, 1000, fn(reply: Reply<I32>) { Ask.Ping(reply) });
+let late = Process.callWithin<Ask, I32>(server, 5, fn(reply: Reply<I32>) { Ask.Ping(reply) });
+let running = server.joinWithin(5);
+server.send(Ask.Release);
+let exit = server.joinWithin(-1);
+Std.string(none) + " " + Std.string(waited) + " " + Std.string(got) + " " + Std.string(polled) + " "
+  + Std.string(quick) + " " + Std.string(late) + " " + Std.string(running) + " "
+  + Std.string(exit)

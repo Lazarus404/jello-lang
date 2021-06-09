@@ -1,0 +1,40 @@
+// expect: ok
+// The vm library's natives, which std.concurrent.Process wraps: results, pending messages and
+// the copy a crash's value is read as.
+load { proc_spawn, proc_self, proc_send, proc_receive, proc_pending, proc_join, proc_exited, proc_exit_value, proc_stop, proc_yield } from vm;
+
+let spawn: (Dynamic) -> Dynamic = proc_spawn;
+let self: () -> Dynamic = proc_self;
+let send: (Dynamic, Dynamic) -> Bool = proc_send;
+let receive: () -> Dynamic = proc_receive;
+let pending: () -> I32 = proc_pending;
+let join: (Dynamic) -> I32 = proc_join;
+let exited: (Dynamic) -> I32 = proc_exited;
+let exitValue: (Dynamic) -> Dynamic = proc_exit_value;
+let stop: (Dynamic) -> Bool = proc_stop;
+let yield: () -> Bool = proc_yield;
+
+let me = self();
+System.assert(pending() == 0);
+let echo = spawn(fn() { let to = receive(); send(to, 1 as Dynamic); send(to, 2 as Dynamic); } as Dynamic);
+System.assert(exited(echo) == -1);
+System.assert(send(echo, me));
+System.assert(yield());
+System.assert(pending() == 2);
+System.assert((receive() as I32) == 1 && pending() == 1);
+System.assert(join(echo) == 0 && exited(echo) == 0);
+System.assert(!send(echo, me));
+System.assert(!stop(echo));
+System.assert(exitValue(echo) == null);
+
+let thrower = spawn(fn() { throw { n: 1 }; } as Dynamic);
+System.assert(join(thrower) == 2);
+let first = exitValue(thrower) as Object;
+first.n = 5;
+System.assert(((exitValue(thrower) as Object).n as I32) == 1);
+
+let parked = spawn(fn() { receive(); } as Dynamic);
+yield();
+System.assert(stop(parked));
+System.assert(join(parked) == 1);
+"ok"

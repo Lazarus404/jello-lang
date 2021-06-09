@@ -1,0 +1,37 @@
+// expect: [3|out|err][0|1 unset 3|][143||][127|true]secondfirst0[NUL](1, 0, 0, -1)true["a", "b/"][]true(true, false, true, false)(["a", "", "b"], [""], ["a", "b"], true, false)
+// Child commands and directories.
+import { exists, makeDirs, listDir, remove, writeText } from std.io.File;
+import { getEnv } from std.io.Env;
+import { start, wait, stdout, stderr, run, waitAny, cpuCount } from std.io.Command;
+import { endsWith, split, startsWith } from std.core.Bytes;
+
+// Child commands: status, both outputs, the environment
+// applied in order, a signal, a program that cannot run, two children at
+// once, a NUL refused, whichever of two ends first, past a stray; then directories and files, and std.core.Bytes'
+// split and endsWith.
+let shown = fn(result: Tuple<I32, Bytes, Bytes>): Bytes {
+  let (status, out, err) = result;
+  "[" + Std.string(status) + "|" + out + "|" + err + "]"
+};
+let sh = fn(script: Bytes): Array<Bytes> { ["/bin/sh", "-c", script] };
+
+let text = shown(run(sh("printf out; printf err >&2; exit 3"), []));
+text += shown(run(sh("printf '%s %s %s' \"$A\" \"${HOME-unset}\" \"$B\""), ["A=1", "HOME", "B=2", "B=3"]));
+text += shown(run(sh("kill -TERM $$"), []));
+let missing = start(["no-such-program-jello"], []);
+text += "[" + Std.string(wait(missing)) + "|" + Std.string(startsWith(stderr(missing), "cannot run no-such-program-jello: ")) + "]";
+let first = start(sh("sleep 0.2; printf first"), []);
+let second = start(["printf", "second"], []);
+text += stdout(second) + stdout(first) + Std.string(wait(first)) + stderr(first);
+text += try { start(["printf", "a\0b"], []); "" } catch (e) { "[NUL]" };
+// waitAny finds whichever child ends first, here the second, past a stray
+// child outside the set, which ends before both and is still waited for.
+let slow = start(sh("sleep 1"), []); let stray = start(["true"], []); let fast = start(sh("sleep 0.2"), []);
+text += Std.string((waitAny([slow, fast]), wait(stray), waitAny([missing]), waitAny([])));
+
+let dir = getEnv("TMPDIR") + "/command-spawn";
+let made = makeDirs(dir + "/b/c") && makeDirs(dir + "/b/c") && writeText(dir + "/a", "");
+text += Std.string(made) + Std.string(listDir(dir)) + Std.string(listDir(dir + "/b/c")) + Std.string(cpuCount() > 0);
+text += Std.string((remove(dir + "/a"), exists(dir + "/a"), remove(dir + "/a"), remove(dir + "/b")));
+text += Std.string((split("a,,b", ","), split("", ","), split("a::b", "::"), endsWith("ab", "b"), endsWith("b", "ab")));
+text

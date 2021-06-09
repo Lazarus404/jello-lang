@@ -1,0 +1,35 @@
+// expect: ping 127.0.0.1 true|true|pong ping2|socket closed, or another process's
+// schedulers: 4
+// UDP sockets send and receive datagrams, telling who sent each; a receive with a time limit
+// gives null once it passes; a socket a new process captures is that process's to use; and a
+// closed socket refuses to send.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.net.Udp as Udp;
+import type { Socket, Datagram } from std.net.Udp;
+
+// Its sockets are locals, so that a new process captures one rather than a copy of a global.
+let run = fn(): Bytes {
+  let a = Udp.bind("127.0.0.1", 0);
+  let b = Udp.bind("127.0.0.1", 0);
+  a.sendTo("ping", "127.0.0.1", b.port());
+  let d = b.receive(64);
+  let first = d.data + " " + d.host + " " + Std.string(d.port == a.port());
+  let quiet = b.receiveWithin(64, 20) == null;
+
+  // The echoer owns B now; it answers one datagram.
+  let bPort = b.port();
+  let echoer = Process.spawn<I32>(fn(_: Inbox<I32>) {
+    let got = b.receive(64);
+    b.sendTo("pong " + got.data, got.host, got.port);
+  });
+  a.sendTo("ping2", "127.0.0.1", bPort);
+  let answer = a.receive(64).data;
+  echoer.join();
+
+  a.close();
+  let refused = "sent";
+  try { a.sendTo("late", "127.0.0.1", bPort); } catch (e) { refused = e as Bytes; };
+  first + "|" + Std.string(quiet) + "|" + answer + "|" + refused
+};
+run()

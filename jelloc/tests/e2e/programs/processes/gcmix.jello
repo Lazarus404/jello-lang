@@ -1,0 +1,36 @@
+// expect: 80000 400000
+// schedulers: 4
+// Children collect their own spaces while the main process fills its own and collects it.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+let CHILDREN = 8;
+let results = new Inbox<I32>();
+let main = Process.self<I32>(results);
+
+let churn = fn(_: Inbox<I32>) {
+  let kept = 0;
+  let round = 0;
+  while (round < 100) {
+    let a = Array.new<Array<I32>>(0);
+    let i = 0;
+    while (i < 100) { a.push([i, round]); i++; }
+    kept = kept + a.len();
+    round++;
+  }
+  main.send(kept);
+};
+
+let i = 0;
+while (i < CHILDREN) { Process.spawn<I32>(churn); i++; }
+let made = 0;
+let n = 0;
+while (n < 400000) {
+  let pair = [n, n + 1];
+  made = made + pair.len() - 1;
+  n++;
+}
+let total = 0;
+i = 0;
+while (i < CHILDREN) { total = total + results.receive(); i++; }
+Std.string(total) + " " + Std.string(made)

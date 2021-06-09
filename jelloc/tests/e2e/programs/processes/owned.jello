@@ -1,0 +1,33 @@
+// expect: Exit.ParentExited Exit.ParentExited Exit.Stopped null
+// A process stops the processes it owns when it finishes, unless they were stopped first, and
+// they stop theirs in turn; a detached one runs on.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+enum Note { Child(p: Process<I32>); }
+
+let notes = new Inbox<Note>();
+let me = Process.self<Note>(notes);
+let wait = fn(i: Inbox<I32>) { i.receive(); };
+let child = fn(): Process<I32> { match (notes.receive()) { Child(p) => p } };
+
+Process.spawn<I32>(fn(_: Inbox<I32>) {
+  let main = me;
+  main.send(Note.Child(Process.spawn<I32>(fn(i: Inbox<I32>) {
+    main.send(Note.Child(Process.spawn<I32>(wait)));
+    i.receive();
+  })));
+  Process.yield();
+  let first = Process.spawn<I32>(wait);
+  first.stop();
+  me.send(Note.Child(first));
+  me.send(Note.Child(Process.spawnDetached<I32>(wait)));
+}).join();
+let owned = child();
+let grandchild = child();
+let stoppedFirst = child();
+let detached = child();
+let left = detached.exited();
+detached.stop();
+Std.string(owned.join()) + " " + Std.string(grandchild.join()) + " "
+  + Std.string(stoppedFirst.join()) + " " + Std.string(left)

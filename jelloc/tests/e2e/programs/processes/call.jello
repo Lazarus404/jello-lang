@@ -1,0 +1,25 @@
+// expect: ok 42 finished without replying
+// schedulers: 4
+// A call parks until its reply; a call to a process that finishes without replying throws.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Reply } from std.concurrent.Process;
+
+enum Ask { Double(n: I32, reply: Reply<I32>); Name(reply: Reply<Bytes>); Quit; }
+
+let server = Process.spawn<Ask>(fn(inbox: Inbox<Ask>) {
+  while (true) {
+    match (inbox.receive()) {
+      Double(n, reply) => { reply.send(n * 2); System.assert(!reply.send(0)); },
+      Name(reply) => { reply.send("ok"); },
+      Quit => { return; },
+    }
+  }
+});
+
+let name = Process.call<Ask, Bytes>(server, fn(reply: Reply<Bytes>) { Ask.Name(reply) });
+let doubled = Process.call<Ask, I32>(server, fn(reply: Reply<I32>) { Ask.Double(21, reply) });
+let failure = "";
+try {
+  Process.call<Ask, I32>(server, fn(reply: Reply<I32>) { Ask.Quit });
+} catch (e) { failure = Std.string(e); }
+name + " " + Std.string(doubled) + " " + Bytes.slice(failure, 12, Bytes.len(failure) - 12)

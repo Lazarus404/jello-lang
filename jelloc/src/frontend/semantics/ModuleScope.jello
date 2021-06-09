@@ -34,7 +34,8 @@ let _exportTypePublic = Array.new<Bool>(0);
 let _epoch = 0;
 let _epochs = Array.new<I32>(0);
 let _at = Array.new<I32>(0);
-let _isType = Array.new<Bool>(0);
+let _typeEpochs = Array.new<I32>(0);
+let _typeAt = Array.new<I32>(0);
 let _names = Array.new<I32>(0);
 let _places = Array.new<I32>(0);
 let _nameIsType = Array.new<Bool>(0);
@@ -45,29 +46,41 @@ enum Scope {
 let _scopes = Array.new<Scope>(0);
 let _module = -1;
 
-let _named = fn(name: Bytes): I32 {
+let _lookup = fn(name: Bytes, types: Bool): I32 {
   let id = H.findBytesId(name);
-  ((id >= 0) && (id < _epochs.len()) && (_epochs[id] == _epoch)) ? id : -1
+  if ((id < 0) || (id >= _epochs.len())) { return -1; }
+  if (types) { _typeEpochs[id] == _epoch ? _typeAt[id] : -1 } else { _epochs[id] == _epoch ? _at[id] : -1 }
 };
 
-let _lookup = fn(name: Bytes, types: Bool): I32 {
-  let id = _named(name);
-  ((id >= 0) && (_isType[id] == types)) ? _at[id] : -1
+let _place = fn(id: I32, types: Bool, index: I32) {
+  if (types) {
+    _typeEpochs[id] = _epoch;
+    _typeAt[id] = index;
+  } else {
+    _epochs[id] = _epoch;
+    _at[id] = index;
+  }
+  null
 };
 let _index = fn(name: Bytes): I32 { _lookup(name, false) };
 
-let _record = fn(name: Bytes, types: Bool, index: I32) {
+let _isNamespace = fn(binding: Binding): Bool { match (binding) { Namespace(_, _) => true, _ => false } };
+
+let _record = fn(name: Bytes, types: Bool, index: I32, binding: Binding, imported: Bool) {
   let id = H.bytesId(name);
 
   while (_epochs.len() <= id) {
     _epochs.push(-1);
     _at.push(-1);
-    _isType.push(false);
+    _typeEpochs.push(-1);
+    _typeAt.push(-1);
   }
-  if (_epochs[id] == _epoch) { throw coded(E0302, "duplicate top-level name: " + name); }
-  _epochs[id] = _epoch;
-  _at[id] = index;
-  _isType[id] = types;
+  let value = _epochs[id] == _epoch;
+  let typed = _typeEpochs[id] == _epoch;
+  let other = types ? value && !typed : typed && !value;
+  let shared = imported && other && _isNamespace(types ? _bindings[_at[id]] : binding);
+  if ((value || typed) && !shared) { throw coded(E0302, "duplicate top-level name: " + name); }
+  _place(id, types, index);
   _names.push(id);
   _places.push(index);
   _nameIsType.push(types);
@@ -76,14 +89,14 @@ let _record = fn(name: Bytes, types: Bool, index: I32) {
 
 let _add = fn(name: Bytes, binding: Binding, imported: Bool) {
   if (name == "_") { return null; }
-  _record(name, false, _bindings.len() as I32);
+  _record(name, false, _bindings.len() as I32, binding, imported);
   _bindings.push(binding);
   _imported.push(imported);
   null
 };
 
-let _addType = fn(name: Bytes, ty: I32) {
-  _record(name, true, _types.len() as I32);
+let _addType = fn(name: Bytes, ty: I32, imported: Bool) {
+  _record(name, true, _types.len() as I32, Binding.Unbound, imported);
   _types.push(ty);
   null
 };
@@ -156,7 +169,7 @@ export let addImport: (Import, Array<Module>, Bool) -> Bool = fn(imported, modul
     Import(local, module, name, typeOnly, _, _) => {
       let value = typeOnly ? -1 : _value(module, name);
       let ty = _type(module, name);
-      if (value >= 0) { _add(local, _exportBindings[value], true); } else if (ty >= 0) { if (_lookup(local, true) < 0) { _addType(local, _exportTypes[ty]); } } else if (!typesOnly) { throw _unknownExport(typeOnly ? "type export" : "export", name, modulePath(modules[module])); }
+      if (value >= 0) { _add(local, _exportBindings[value], true); } else if (ty >= 0) { if (_lookup(local, true) < 0) { _addType(local, _exportTypes[ty], true); } } else if (!typesOnly) { throw _unknownExport(typeOnly ? "type export" : "export", name, modulePath(modules[module])); }
     },
     Namespace(local, module, _, _) => _add(local, Binding.Namespace(module, modulePath(modules[module])), true),
   };
@@ -179,10 +192,7 @@ export let useModuleScope: (I32) -> I32 = fn(module) {
     let i = 0;
 
     while (i < names.len()) {
-      let id = names[i];
-      _epochs[id] = _epoch;
-      _at[id] = places[i];
-      _isType[id] = isType[i];
+      _place(names[i], isType[i], places[i]);
       i++;
     }
   } };
@@ -221,7 +231,7 @@ export let exportedType: (I32, Bytes) -> I32 = fn(module, name) {
 };
 
 export let declareScopedType: (Bytes, I32) -> Bool = fn(name, ty) {
-  _addType(name, ty);
+  _addType(name, ty, false);
   true
 };
 

@@ -1,0 +1,26 @@
+// expect: 2 [1, 2, 3, 4] 7 true | 3 [1, 2, 3] 0
+// schedulers: 4
+// A process starts with a copy of its spawner's globals as they are when it is spawned: neither
+// sees the other's later writes, a buffer is copied too, and two globals that share an array
+// still share it.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+let config = 1;
+let items = [1, 2, 3];
+let buffer = Bytes.new(4);
+let inbox = new Inbox<Bytes>();
+let me = Process.self<Bytes>(inbox);
+config = 2;
+let alias = items;
+let child = Process.spawn<I32>(fn(_: Inbox<I32>) {
+  let seen = Std.string(config);
+  config = 99;
+  alias.push(4);
+  buffer[0] = 7;
+  me.send(seen + " " + Std.string(items) + " " + Std.string(buffer[0]) + " " + Std.string(items.len() == alias.len()));
+});
+config = 3;
+let reply = inbox.receive();
+child.join();
+reply + " | " + Std.string(config) + " " + Std.string(items) + " " + Std.string(buffer[0])

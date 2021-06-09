@@ -1,0 +1,17 @@
+// expect: true false early late false null
+// schedulers: 4
+// A timer sends to its own inbox once its time has passed, unless it is cancelled first.
+import std.concurrent.Process as Process;
+import type { Inbox } from std.concurrent.Process;
+
+let inbox = new Inbox<Bytes>();
+let late = inbox.sendAfter(20, "late");
+let early = inbox.sendAfter(5, "early");
+let never = inbox.sendAfter(10, "never");
+let cancelled = never.cancel();
+let again = never.cancel();
+let first = inbox.receive();
+let second = inbox.receive();
+
+Std.string(cancelled) + " " + Std.string(again) + " " + first + " " + second + " "
+  + Std.string(late.cancel()) + " " + Std.string(inbox.receiveWithin(30))

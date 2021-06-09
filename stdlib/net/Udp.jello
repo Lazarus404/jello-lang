@@ -1,0 +1,66 @@
+package std.net;
+
+load {
+  net_udp_bind,
+  net_receive_from,
+  net_send_to,
+  net_close,
+  net_local_port,
+  net_peer_host,
+  net_peer_port,
+  net_error,
+  net_error_text,
+} from vm;
+
+let _bind: (Bytes, I32) -> Dynamic = net_udp_bind;
+let _receiveFrom: (Dynamic, I32, I32) -> Bytes = net_receive_from;
+let _sendTo: (Dynamic, Bytes, Bytes, I32) -> Bool = net_send_to;
+let _close: (Dynamic) -> Bool = net_close;
+let _localPort: (Dynamic) -> I32 = net_local_port;
+let _peerHost: (Dynamic) -> Bytes = net_peer_host;
+let _peerPort: (Dynamic) -> I32 = net_peer_port;
+let _error: () -> I32 = net_error;
+let _errorText: (I32) -> Bytes = net_error_text;
+
+let _raise = fn() { throw _errorText(_error()); };
+
+export typedef Datagram = {
+  let data: Bytes;
+  let host: Bytes;
+  let port: I32;
+};
+
+export prototype Datagram {
+  init(data: Bytes, host: Bytes, port: I32) {
+    this.data = data;
+    this.host = host;
+    this.port = port;
+  };
+};
+
+export typedef Socket = { let handle: Dynamic; };
+
+export prototype Socket {
+  init(handle: Dynamic) { this.handle = handle; };
+  sendTo(data: Bytes, host: Bytes, port: I32) {
+    if (!_sendTo(this.handle, data, host, port)) { _raise(); };
+  };
+  receive(max: I32): Datagram { this.receiveWithin(max, -1) as Datagram };
+  receiveWithin(max: I32, ms: I32): ?Datagram {
+    let data = _receiveFrom(this.handle, max, ms);
+
+    if ((Bytes.len(data) == 0) && (_error() != 0)) {
+      if (_error() != -1) { _raise(); };
+      return null;
+    };
+    new Datagram(data, _peerHost(this.handle), _peerPort(this.handle))
+  };
+  port(): I32 { _localPort(this.handle) };
+  close(): Bool { _close(this.handle) };
+};
+
+export let bind = fn(host: Bytes, port: I32): Socket {
+  let s = _bind(host, port);
+  if (s == null) { _raise(); };
+  new Socket(s)
+};

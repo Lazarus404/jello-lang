@@ -1,0 +1,90 @@
+package std.net;
+
+load {
+  net_tcp_listen,
+  net_tcp_accept,
+  net_tcp_connect,
+  net_read,
+  net_write,
+  net_close,
+  net_local_port,
+  net_peer_host,
+  net_peer_port,
+  net_error,
+  net_error_text,
+} from vm;
+
+let _listen: (Bytes, I32) -> Dynamic = net_tcp_listen;
+let _accept: (Dynamic, I32) -> Dynamic = net_tcp_accept;
+let _connect: (Bytes, I32, I32) -> Dynamic = net_tcp_connect;
+let _read: (Dynamic, I32, I32) -> Bytes = net_read;
+let _write: (Dynamic, Bytes) -> Bool = net_write;
+let _close: (Dynamic) -> Bool = net_close;
+let _localPort: (Dynamic) -> I32 = net_local_port;
+let _peerHost: (Dynamic) -> Bytes = net_peer_host;
+let _peerPort: (Dynamic) -> I32 = net_peer_port;
+let _error: () -> I32 = net_error;
+let _errorText: (I32) -> Bytes = net_error_text;
+
+let _raise = fn() { throw _errorText(_error()); };
+
+let _unlessTimedOut = fn() { if (_error() != -1) { _raise(); }; };
+
+export typedef Stream = { let handle: Dynamic; };
+
+export prototype Stream {
+  init(handle: Dynamic) { this.handle = handle; };
+  read(max: I32): Bytes { this.readWithin(max, -1) as Bytes };
+  readWithin(max: I32, ms: I32): ?Bytes {
+    let data = _read(this.handle, max, ms);
+
+    if ((Bytes.len(data) == 0) && (_error() != 0)) {
+      _unlessTimedOut();
+      return null;
+    };
+    data
+  };
+  write(data: Bytes) {
+    if (!_write(this.handle, data)) { _raise(); };
+  };
+  close(): Bool { _close(this.handle) };
+  peerHost(): Bytes { _peerHost(this.handle) };
+  peerPort(): I32 { _peerPort(this.handle) };
+  localPort(): I32 { _localPort(this.handle) };
+};
+
+export typedef Listener = { let handle: Dynamic; };
+
+export prototype Listener {
+  init(handle: Dynamic) { this.handle = handle; };
+  accept(): Stream { this.acceptWithin(-1) as Stream };
+  acceptWithin(ms: I32): ?Stream {
+    let s = _accept(this.handle, ms);
+
+    if (s == null) {
+      _unlessTimedOut();
+      return null;
+    };
+    new Stream(s)
+  };
+  port(): I32 { _localPort(this.handle) };
+  close(): Bool { _close(this.handle) };
+};
+
+export let listen = fn(host: Bytes, port: I32): Listener {
+  let l = _listen(host, port);
+  if (l == null) { _raise(); };
+  new Listener(l)
+};
+
+export let connectWithin = fn(host: Bytes, port: I32, ms: I32): ?Stream {
+  let s = _connect(host, port, ms);
+
+  if (s == null) {
+    _unlessTimedOut();
+    return null;
+  };
+  new Stream(s)
+};
+
+export let connect = fn(host: Bytes, port: I32): Stream { connectWithin(host, port, -1) as Stream };

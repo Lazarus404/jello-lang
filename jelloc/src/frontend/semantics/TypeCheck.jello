@@ -1092,7 +1092,9 @@ let _instanceGlobal = fn(ty: I32, depth: I32): I32 {
 
 export let prototypeGlobal: (I32) -> I32 = fn(ty) {
   let at = indexOf(_prototypes, ty);
-  at >= 0 ? _prototypeGlobals[at] : _instanceGlobal(ty, _instanceDepth)
+  if (at >= 0) { return _prototypeGlobals[at]; }
+  if (H.templateOf(ty) < 0) { internalError("the module of prototype " + H.typeName(ty) + " does not run"); }
+  _instanceGlobal(ty, _instanceDepth)
 };
 
 export let prototypeValue: (I32) -> I32 = fn(ty) {

@@ -1,0 +1,37 @@
+// expect: 42 hi boom the job trapped 332833500 chunk 0 Job.parallelFor: grain must be positive, not 0 5
+// schedulers: 4
+// Jobs give their values or throw what their work threw; parallelFor runs
+// every chunk once, across the schedulers, writing a shared Buffer, and once
+// every chunk has finished throws the failure of the first worker to fail, in
+// the order the workers started.
+import std.concurrent.Job as Job;
+import type { Job } from std.concurrent.Job;
+import type { Buffer } from std.concurrent.Buffer;
+
+let a = Job.start<I32>(fn(): I32 { 6 * 7 });
+let b = Job.start<Bytes>(fn(): Bytes { "hi" });
+let thrower = Job.start<I32>(fn(): I32 { throw "boom"; 1 });
+let thrown = try { thrower.join(); "none" } catch (e) { Std.string(e) };
+let trapper = Job.start<I32>(fn(): I32 { [1][2] });
+let trapped = try { trapper.join(); "none" } catch (e) { Std.string(e) };
+
+let squares = new Buffer(4 * 1000);
+Job.parallelFor(1000, 64, fn(first: I32, end: I32) {
+  let i = first;
+  while (i < end) { squares.setI32(i, i * i); i++; }
+});
+let sum = 0; let i = 0;
+while (i < 1000) { sum = sum + squares.getI32(i); i++; }
+
+let failed = try {
+  Job.parallelFor(10, 3, fn(first: I32, end: I32) { if (first == 3) { throw "chunk"; }; });
+  "none"
+} catch (e) { Std.string(e) };
+let calls = new Buffer(4);
+Job.parallelFor(0, 1, fn(first: I32, end: I32) { calls.addI32(0, 1); });
+let grain = try { Job.parallelFor(1, 0, fn(first: I32, end: I32) {}); "none" } catch (e) { Std.string(e) };
+let counted = new Buffer(4);
+Job.parallelFor(5, 1, fn(first: I32, end: I32) { counted.addI32(0, end - first); });
+
+Std.string(a.join()) + " " + b.join() + " " + thrown + " " + trapped + " " + Std.string(sum) + " " + failed
+  + " " + Std.string(calls.getI32(0)) + " " + grain + " " + Std.string(counted.getI32(0))

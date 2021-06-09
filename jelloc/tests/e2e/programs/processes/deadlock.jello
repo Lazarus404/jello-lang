@@ -1,0 +1,7 @@
+// trap: DEADLOCK 6:1
+// Waiting for a message no process could ever send traps rather than hanging.
+load { proc_receive } from vm;
+
+let receive: () -> Dynamic = proc_receive;
+receive();
+"ok"

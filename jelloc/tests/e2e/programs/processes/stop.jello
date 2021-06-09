@@ -1,0 +1,29 @@
+// expect: ok
+// schedulers: 4
+// Stopping a parked process wakes it to stop; stopping one that has finished does nothing. A
+// monitor reports each way a process finishes.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Exit } from std.concurrent.Process;
+import { Exit } from std.concurrent.Process;
+
+let inbox = new Inbox<I32>();
+let me = Process.self<I32>(inbox);
+let code = fn(e: Exit): I32 { match (e) { Normal => 0, Stopped => 1, Crashed(_) => 2, ParentExited => 3 } };
+
+let idle = Process.spawn<I32>(fn(inbox: Inbox<I32>) { inbox.receive(); });
+let spinner = Process.spawn<I32>(fn(inbox: Inbox<I32>) { let i = 0; while (true) { i++; } });
+let quick = Process.spawn<I32>(fn(inbox: Inbox<I32>) { });
+Process.monitor<I32, I32>(idle, me, code);
+Process.monitor<I32, I32>(quick, me, fn(e: Exit): I32 { code(e) + 10 });
+Process.yield();
+System.assert(idle.stop());
+System.assert(spinner.stop());
+let stopped = match (idle.join()) { Stopped => true, _ => false };
+System.assert(stopped);
+let spun = match (spinner.join()) { Stopped => true, _ => false };
+System.assert(spun);
+quick.join();
+System.assert(!quick.stop());
+let first = inbox.receive(); let second = inbox.receive();
+System.assert(first + second == 11);
+"ok"

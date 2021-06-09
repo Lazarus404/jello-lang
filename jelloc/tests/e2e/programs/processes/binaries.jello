@@ -1,0 +1,43 @@
+// expect: 1600000 true
+// schedulers: 4
+// A large Bytes sent to many processes at once shares its bytes: each holds the same frame, and
+// sends back a slice of it, letting go of both on its own scheduler while the collector runs.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+enum Msg { Frame(data: Bytes, to: Process<Bytes>); }
+
+let WORKERS = 32;
+let ROUNDS = 100;
+let frame = "";
+while (frame.len() < 1000) { frame = frame + "0123456789"; }
+let replies = new Inbox<Bytes>();
+let main = Process.self<Bytes>(replies);
+
+let worker = fn(inbox: Inbox<Msg>) {
+  let n = 0;
+  while (n < ROUNDS) {
+    match (inbox.receive()) { Frame(data, to) => { to.send(Bytes.slice(data, 100, 500)); } }
+    n++;
+  }
+};
+
+let workers = Array.new<Process<Msg>>(0);
+let i = 0;
+while (i < WORKERS) { workers.push(Process.spawn<Msg>(worker)); i++; }
+let total = 0;
+let same = true;
+let r = 0;
+while (r < ROUNDS) {
+  i = 0;
+  while (i < WORKERS) { workers[i].send(Msg.Frame(frame, main)); i++; }
+  i = 0;
+  while (i < WORKERS) {
+    let part = replies.receive();
+    total = total + part.len();
+    same = same && Bytes.slice(part, 0, 10) == "0123456789";
+    i++;
+  }
+  r++;
+}
+Std.string(total) + " " + Std.string(same && frame.len() == 1000)

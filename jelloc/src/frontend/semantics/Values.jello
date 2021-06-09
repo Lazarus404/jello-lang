@@ -5,7 +5,7 @@ import { BinaryOp } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { internalError } from support.Internal;
 import { Kind, Op } from frontend.hir.Hir;
-import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, hideValue, integerConversion, isNullaryVariant, presentAt, presentKnown, prototypeValue, syntaxChild, upcasts } from frontend.semantics.TypeCheck;
+import { binaryValues, bufferHint, checkOperand, checkType, enterSyntax, hideValue, inTemplate, integerConversion, isNullaryVariant, presentAt, presentKnown, prototypeValue, syntaxChild, upcasts } from frontend.semantics.TypeCheck;
 import { E0405, E0406, E0407, E0500, coded } from support.Codes;
 
 let _bool = fn(op: Op, children: Array<I32>): I32 { H.node(op, H.TYPE_BOOL, 0, 0, children) };
@@ -134,6 +134,8 @@ export let storable: (I32) -> I32 = fn(operand) {
   operand
 };
 
+let _deferred = fn(target: I32): Bool { inTemplate() && H.isParametric(target) };
+
 let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   let target = checkType(targetType);
   let operand = checkOperand(value, 0, -1);
@@ -145,7 +147,7 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   if (H.isPrototype(target) && (H.isObject(ty) || (ty == H.TYPE_DYNAMIC))) { return _asPrototype(operand, target); }
 
   if (ty == H.TYPE_DYNAMIC) {
-    if (checkedKind(target) < 0) { throw coded(E0406, "cannot extract " + H.typeName(target) + " from Dynamic" + UNCHECKED_KINDS); }
+    if (!_deferred(target) && (checkedKind(target) < 0)) { throw coded(E0406, "cannot extract " + H.typeName(target) + " from Dynamic" + UNCHECKED_KINDS); }
     return H.node(Op.FromDynamic, target, 0, 0, [operand]);
   }
   let present = presentAt(operand, 0);
@@ -167,6 +169,7 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
 
 export let kindTest: (I32, I32) -> I32 = fn(operand, target) {
   if (H.isPrototype(target)) { return _delegatesTo(operand, target); }
+  if (_deferred(target)) { return H.node(Op.IsKind, H.TYPE_BOOL, 0, 0, [operand]); }
   let code = checkedKind(target);
   if (code < 0) { throw coded(E0406, "is cannot test for " + H.typeName(target) + UNCHECKED_KINDS); }
   H.node(Op.IsKind, H.TYPE_BOOL, code, code == H.KIND_ENUM ? target : 0, [operand])

@@ -1,0 +1,33 @@
+// expect: 64 250 -6 1.5 2.25 -5 18446744073709551611 4000000000 0 true false 11 [6, 250] Exit.Crashed(null) Exit.Crashed(null) 9 -2 65534 0 3 -7 -3 253
+// A Buffer's reads and writes of each kind, element-indexed by their width;
+// its atomics; a slice copied out. An index past the end, and a negative
+// length, trap BOUNDS, crashing the process that tried.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import type { Buffer } from std.concurrent.Buffer;
+
+let b = new Buffer(64);
+b.setU8(0, 250 as U8);
+b.setI16(1, -2 as I16);
+b.setF32(1, 1.5 as F32);
+b.setF64(2, 2.25);
+b.setI64(3, -5 as I64);
+b.setU32(8, (-294967296) as U32);
+let old = b.addI32(9, 7);
+let swapped = b.casI32(9, 7, 11);
+let missed = b.casI32(9, 7, 12);
+b.setU8(1, 6 as U8);
+let out = b.slice(0, 2);
+let past = Process.spawn<I32>(fn(inbox: Inbox<I32>) { b.getI64(8); });
+let negative = Process.spawn<I32>(fn(inbox: Inbox<I32>) { new Buffer(-1); });
+b.casI64(5, 0 as I64, 9 as I64);
+let before = b.addI64(6, 3 as I64);
+let added = b.addI64(6, -10 as I64);
+b.setI8(56, -3 as I8);
+Std.string(b.len()) + " " + Std.string(b.getU8(0)) + " " + Std.string(b.getI8(0)) + " " + Std.string(b.getF32(1))
+  + " " + Std.string(b.getF64(2)) + " " + Std.string(b.getI64(3)) + " " + Std.string(b.getU64(3))
+  + " " + Std.string(b.getU32(8)) + " " + Std.string(old) + " " + Std.string(swapped) + " " + Std.string(missed)
+  + " " + Std.string(b.getI32(9)) + " [" + Std.string(out[1]) + ", " + Std.string(out[0]) + "] "
+  + Std.string(past.join()) + " " + Std.string(negative.join()) + " " + Std.string(b.getI64(5))
+  + " " + Std.string(b.getI16(1)) + " " + Std.string(b.getU16(1)) + " " + Std.string(before) + " " + Std.string(added)
+  + " " + Std.string(b.getI64(6)) + " " + Std.string(b.getI8(56)) + " " + Std.string(b.getU8(56))

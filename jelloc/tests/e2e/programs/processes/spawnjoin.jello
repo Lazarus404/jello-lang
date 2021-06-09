@@ -1,0 +1,14 @@
+// expect: 200
+// schedulers: 4
+// Each process finishes at once, often before its spawner has its handle, which must still hold it.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+let finished = 0;
+let n = 0;
+while (n < 200) {
+  Process.spawn<I32>(fn(_: Inbox<I32>) { }).join();
+  finished++;
+  n++;
+}
+finished

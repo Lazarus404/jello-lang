@@ -1,0 +1,9 @@
+// expect: 42
+// A type-only import of an alias naming a prototype runs the prototype's
+// module, not the alias's, so that `new` and its methods work where the
+// prototype is reached only through the alias's type.
+import type { Boxed } from boxes.Alias;
+
+let a = new Boxed(39);
+let b = new Boxed(1);
+a.get() + b.get()

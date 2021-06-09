@@ -1,0 +1,225 @@
+package std.concurrent;
+
+load {
+  proc_spawn,
+  proc_spawn_detached,
+  proc_spawn_on_main,
+  proc_on_main,
+  proc_self,
+  proc_send,
+  proc_receive,
+  proc_pending,
+  proc_join,
+  proc_join_within,
+  proc_wait_message,
+  proc_sleep,
+  proc_clock,
+  proc_send_after,
+  proc_timer_cancel,
+  proc_exited,
+  proc_exit_value,
+  proc_stop,
+  proc_on_exit,
+  proc_yield,
+  proc_reply_new,
+  proc_reply_send,
+  proc_reply_wait,
+  proc_reply_value,
+} from vm;
+
+let _spawn: (Dynamic) -> Dynamic = proc_spawn;
+let _spawnDetached: (Dynamic) -> Dynamic = proc_spawn_detached;
+let _spawnOnMain: (Dynamic) -> Dynamic = proc_spawn_on_main;
+let _onMain: () -> Bool = proc_on_main;
+let _self: () -> Dynamic = proc_self;
+let _send: (Dynamic, Dynamic) -> Bool = proc_send;
+let _receive: () -> Dynamic = proc_receive;
+let _pending: () -> I32 = proc_pending;
+let _join: (Dynamic) -> I32 = proc_join;
+let _joinWithin: (Dynamic, I32) -> I32 = proc_join_within;
+let _waitMessage: (I32) -> Bool = proc_wait_message;
+let _sleep: (I32) -> Bool = proc_sleep;
+let _clock: () -> I32 = proc_clock;
+let _sendAfter: (I32, Dynamic) -> Dynamic = proc_send_after;
+let _timerCancel: (Dynamic) -> Bool = proc_timer_cancel;
+let _exited: (Dynamic) -> I32 = proc_exited;
+let _exitValue: (Dynamic) -> Dynamic = proc_exit_value;
+let _stop: (Dynamic) -> Bool = proc_stop;
+let _onExit: (Dynamic) -> Bool = proc_on_exit;
+let _yield: () -> Bool = proc_yield;
+let _replyNew: () -> Dynamic = proc_reply_new;
+let _replySend: (Dynamic, Dynamic) -> Bool = proc_reply_send;
+let _replyWait: (Dynamic, Dynamic, I32) -> I32 = proc_reply_wait;
+let _replyValue: (Dynamic) -> Dynamic = proc_reply_value;
+
+export enum Exit { Normal; Stopped; Crashed(value: Dynamic); ParentExited; }
+
+let _exit = fn(code: I32, h: Dynamic): Exit {
+  match (code) {
+    0 => Exit.Normal,
+    1 => Exit.Stopped,
+    2 => Exit.Crashed(_exitValue(h)),
+    3 => Exit.ParentExited,
+    _ => {
+      throw "std.concurrent.Process: no Exit numbered " + Std.string(code);
+      Exit.Stopped
+    },
+  }
+};
+
+export typedef Timer = { let handle: Dynamic; };
+
+export prototype Timer {
+  init(handle: Dynamic) { this.handle = handle; };
+  cancel(): Bool { _timerCancel(this.handle) };
+};
+
+export typedef Inbox<M> = { let handle: Dynamic; };
+
+export prototype Inbox<M> {
+  init() { this.handle = _self(); };
+  receive(): M { _receive() as M };
+  tryReceive(): ?M { _pending() > 0 ? _receive() as M : null };
+  receiveWithin(ms: I32): ?M { _waitMessage(ms) ? _receive() as M : null };
+  sendAfter(ms: I32, message: M): Timer { new Timer(_sendAfter(ms, message as Dynamic)) };
+  waiting(): I32 { _pending() };
+};
+
+export typedef Process<M> = { let handle: Dynamic; };
+
+export prototype Process<M> {
+  init(handle: Dynamic) { this.handle = handle; };
+  send(message: M): Bool { _send(this.handle, message as Dynamic) };
+  stop(): Bool { _stop(this.handle) };
+  join(): Exit { _exit(_join(this.handle), this.handle) };
+  joinWithin(ms: I32): ?Exit {
+    let code = _joinWithin(this.handle, ms);
+    code < 0 ? null : _exit(code, this.handle)
+  };
+  exited(): ?Exit {
+    let code = _exited(this.handle);
+    code < 0 ? null : _exit(code, this.handle)
+  };
+};
+
+export typedef Reply<T> = { let handle: Dynamic; };
+
+export prototype Reply<T> {
+  init(handle: Dynamic) { this.handle = handle; };
+  send(value: T): Bool { _replySend(this.handle, value as Dynamic) };
+};
+
+export typedef Scope = {
+  let handles: Array<Dynamic>;
+  let limit: I32;
+  let closed: Bool;
+};
+
+export prototype Scope {
+  init() {
+    this.handles = Array.new<Dynamic>(0);
+    this.limit = 8;
+    this.closed = false;
+  };
+};
+
+export let spawn<M> = fn(body: (Inbox<M>) -> Void): Process<M> {
+  new Process<M>(_spawn(fn() { body(new Inbox<M>()); } as Dynamic))
+};
+
+export let spawnDetached<M> = fn(body: (Inbox<M>) -> Void): Process<M> {
+  new Process<M>(_spawnDetached(fn() { body(new Inbox<M>()); } as Dynamic))
+};
+
+let _close = fn(scope: Scope) {
+  scope.closed = true;
+  let i = 0;
+
+  while (i < scope.handles.len()) {
+    _stop(scope.handles[i]);
+    i++;
+  }
+  i = 0;
+
+  while (i < scope.handles.len()) {
+    _join(scope.handles[i]);
+    i++;
+  }
+};
+
+let _prune = fn(scope: Scope) {
+  let running = Array.new<Dynamic>(0);
+  let i = 0;
+
+  while (i < scope.handles.len()) {
+    if (_exited(scope.handles[i]) < 0) { running.push(scope.handles[i]); }
+    i++;
+  }
+  scope.handles = running;
+  scope.limit = 2 * running.len() + 8;
+};
+
+export let scoped = fn(body: (Scope) -> Void) {
+  let scope = new Scope();
+
+  try { body(scope); } catch (e) {
+    _close(scope);
+    throw e;
+  }
+  _close(scope);
+};
+
+export let spawnIn<M> = fn(scope: Scope, body: (Inbox<M>) -> Void): Process<M> {
+  if (scope.closed) { throw "Process.spawnIn on a scope whose block has ended"; }
+  if (scope.handles.len() >= scope.limit) { _prune(scope); }
+  let p = spawn<M>(body);
+  scope.handles.push(p.handle);
+  p
+};
+
+export let spawnOnMain<M> = fn(body: (Inbox<M>) -> Void): Process<M> {
+  new Process<M>(_spawnOnMain(fn() { body(new Inbox<M>()); } as Dynamic))
+};
+
+export let onMain = fn(): Bool { _onMain() };
+
+export let self<M> = fn(inbox: Inbox<M>): Process<M> { new Process<M>(inbox.handle) };
+
+let _unanswered = "the process finished without replying";
+
+let _ask<M, T> = fn(p: Process<M>, make: (Reply<T>) -> M): Reply<T> {
+  let reply = new Reply<T>(_replyNew());
+  p.send(make(reply));
+  reply
+};
+
+export let call<M, T> = fn(p: Process<M>, make: (Reply<T>) -> M): T {
+  let reply = _ask(p, make);
+  if (_replyWait(reply.handle, p.handle, -1) == 0) { throw _unanswered; }
+  _replyValue(reply.handle) as T
+};
+
+export let callWithin<M, T> = fn(p: Process<M>, ms: I32, make: (Reply<T>) -> M): ?T {
+  let reply = _ask(p, make);
+
+  match (_replyWait(reply.handle, p.handle, ms)) {
+    0 => {
+      throw _unanswered;
+      null
+    },
+    1 => _replyValue(reply.handle) as T,
+    _ => null,
+  }
+};
+
+export let monitor<M, N> = fn(p: Process<M>, to: Process<N>, map: (Exit) -> N): Process<Exit> {
+  spawn<Exit>(fn(inbox: Inbox<Exit>) { to.send(map(p.join())); })
+};
+
+export let onExit = fn(cleanup: () -> Void) { _onExit(cleanup as Dynamic); };
+
+export let sleep = fn(ms: I32) { _sleep(ms); };
+
+export let now = fn(): I32 { _clock() };
+
+export let yield = fn() { _yield(); };

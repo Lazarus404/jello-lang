@@ -1,0 +1,54 @@
+// expect: 16 true cleaned
+// schedulers: 4
+// Processes reading and writing files and waiting for child commands park while a blocking pool
+// makes those calls, so the others run meanwhile; a stopped process's cleanup still writes.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import { readText, writeText, remove, makeDirs } from std.io.File;
+import { getEnv } from std.io.Env;
+import { run } from std.io.Command;
+
+let dir = getEnv("TMPDIR") + "/processes-files";
+makeDirs(dir);
+let done = new Inbox<I32>();
+let me = Process.self<I32>(done);
+let N = 16;
+let i = 0;
+while (i < N) {
+  let path = dir + "/" + Std.string(i);
+  Process.spawn<I32>(fn(_: Inbox<I32>) {
+    let text = "file " + path;
+    let ok = 1;
+    let n = 0;
+    while (n < 20) {
+      if (!(writeText(path, text) && readText(path) == text)) { ok = 0; }
+      n++;
+    }
+    remove(path);
+    me.send(ok);
+  });
+  i++;
+}
+let total = 0;
+i = 0;
+while (i < N) { total = total + done.receive(); i++; }
+
+Process.spawn<I32>(fn(_: Inbox<I32>) {
+  let (status, out, _) = run(["printf", "hi"], []);
+  me.send(status == 0 && out == "hi" ? 1 : 0);
+});
+let echoed = done.receive() == 1;
+
+let note = dir + "/stopped";
+let parked = Process.spawn<I32>(fn(own: Inbox<I32>) {
+  let to = note;
+  Process.onExit(fn() { writeText(to, "cleaned"); });
+  me.send(1);
+  own.receive();
+});
+done.receive();
+parked.stop();
+parked.join();
+let cleaned = readText(note);
+remove(note);
+Std.string(total) + " " + Std.string(echoed) + " " + cleaned

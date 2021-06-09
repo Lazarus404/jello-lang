@@ -1,0 +1,8 @@
+// expect: 7 ok Pair.Two
+// `as T` in a generic body extracts the type argument each instance has, checked as that type.
+enum Pair { One; Two; }
+let get<T> = fn(d: Dynamic): T { d as T };
+let n: I32 = get<I32>(7 as Dynamic);
+let s: Bytes = get<Bytes>("ok" as Dynamic);
+let p: Pair = get<Pair>(Pair.Two as Dynamic);
+Std.string(n) + " " + s + " " + Std.string(p)

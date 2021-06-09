@@ -1,0 +1,11 @@
+// expect: 1024 18446744073709551615 3.5
+// Natives taking and returning I64 and F64.
+load { math_pow, math_hypot, u64_string, integer_parse } from std;
+
+let pow: (F64, F64) -> F64 = math_pow;
+let hypot: (F64, F64) -> F64 = math_hypot;
+let u64: (I64) -> Bytes = u64_string;
+let parse: (Bytes) -> I64 = integer_parse;
+
+let big = parse("-1");
+Std.string(pow(2.0, 10.0) as I32) + " " + u64(big) + " " + Std.string(hypot(2.1, 2.8))

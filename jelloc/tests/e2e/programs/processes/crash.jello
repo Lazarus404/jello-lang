@@ -1,0 +1,26 @@
+// expect: ok
+// schedulers: 4
+// A crash ends only its process; its exit carries a copy of what it threw, and a monitor reports it.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Exit } from std.concurrent.Process;
+import { Exit } from std.concurrent.Process;
+
+enum Note { Down(why: Exit); }
+
+let thrower = Process.spawn<I32>(fn(inbox: Inbox<I32>) {
+  let n = inbox.receive();
+  throw { code: n };
+});
+let inbox = new Inbox<Note>();
+Process.monitor<I32, Note>(thrower, Process.self<Note>(inbox), fn(e: Exit) { Note.Down(e) });
+thrower.send(7);
+let code = match (thrower.join()) {
+  Crashed(value) => { let o = value as Object; o.code = 8; (o.code as I32) },
+  _ => -1,
+};
+System.assert(code == 8);
+let again = match (thrower.exited()) { Crashed(value) => ((value as Object).code as I32), _ => -1 };
+System.assert(again == 7);
+let reported = match (inbox.receive()) { Down(why) => match (why) { Crashed(value) => ((value as Object).code as I32), _ => -1 } };
+System.assert(reported == 7);
+"ok"

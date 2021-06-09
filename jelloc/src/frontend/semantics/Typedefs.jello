@@ -159,6 +159,22 @@ let _linksPrototype = fn(statement: I32, name: Bytes, exported: Bool, params: Ar
   linked
 };
 
+export let prototypeNames: (Array<Stmt>) -> Array<Bytes> = fn(statements) {
+  let names = Array.new<Bytes>(0);
+  let i = 0;
+
+  while (i < statements.len()) {
+    match (statements[i]) {
+      Prototype(_, name, _, _) => {
+        names.push(name);
+        null
+      }, _ => null
+    };
+    i++;
+  }
+  names
+};
+
 export let declareTypes: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, module, opened) {
   _statements = statements;
   _module = module;
@@ -166,19 +182,8 @@ export let declareTypes: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, modul
   _aliases = Array.new<I32>(0);
   _syntaxes = Array.new<Syntax>(0);
   _states = Array.new<I32>(0);
-  _prototypeNames = Array.new<Bytes>(0);
+  _prototypeNames = prototypeNames(statements);
   let i = 0;
-
-  while (i < statements.len()) {
-    match (statements[i]) {
-      Prototype(_, name, _, _) => {
-        _prototypeNames.push(name);
-        null
-      }, _ => null
-    };
-    i++;
-  }
-  i = 0;
 
   while (i < statements.len()) {
     match (statements[i]) {

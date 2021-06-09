@@ -1,0 +1,32 @@
+// expect: 8000 8 28
+// schedulers: 4
+// A Buffer sent in a message, or captured, is the same memory in every
+// process: racing atomic adds all count, and each process's writes to its own
+// elements are seen by the main process.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import type { Buffer } from std.concurrent.Buffer;
+
+enum Work { Count(buffer: Buffer, index: I32); }
+
+let shared = new Buffer(64);
+let done = new Inbox<I32>();
+let main = Process.self<I32>(done);
+let i = 0;
+while (i < 8) {
+  let worker = Process.spawn<Work>(fn(inbox: Inbox<Work>) {
+    match (inbox.receive()) { Count(buffer, index) => {
+      let k = 0;
+      while (k < 1000) { buffer.addI32(0, 1); k++; }
+      shared.setI32(8 + index, index);
+      main.send(index);
+    } };
+  });
+  worker.send(Work.Count(shared, i));
+  i++;
+}
+let finished = 0;
+while (finished < 8) { done.receive(); finished++; }
+let sum = 0; i = 0;
+while (i < 8) { sum = sum + shared.getI32(8 + i); i++; }
+Std.string(shared.getI32(0)) + " " + Std.string(finished) + " " + Std.string(sum)

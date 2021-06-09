@@ -1,0 +1,92 @@
+// expect: hello world|3|true|true|socket closed, or another process's|Connection refused
+// schedulers: 4
+// A listener accepts streams, which processes they are sent to echo until the other end closes;
+// a stream sent in a message moves, closing the sender's, and one in a global is not a new
+// process's; a read and an accept can time out; and a connection nothing listens for is refused.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
+
+enum Conn { Accepted(stream: Stream); }
+
+// Echoes what S reads until its other end closes.
+let echo = fn(s: Stream) {
+  let data = s.read(1024);
+  while (Bytes.len(data) > 0) { s.write(data); data = s.read(1024); }
+  s.close();
+};
+
+// A listener in a global is not the copy a new process starts with.
+let global = Tcp.listen("127.0.0.1", 0);
+let why = new Inbox<Bytes>();
+let asker = Process.self<Bytes>(why);
+Process.spawn<I32>(fn(_: Inbox<I32>) {
+  let failed = "";
+  try { global.accept(); } catch (e) { failed = e as Bytes; }
+  asker.send(failed);
+});
+let notOurs = why.receive();
+
+// The rest, with what the global's use threw, NOT_OURS.
+let run = fn(notOurs: Bytes): Bytes {
+  let listener = Tcp.listen("127.0.0.1", 0);
+  let port = listener.port();
+  // One process accepts, sending each stream to another, which spawns its echo.
+  let handler = Process.spawn<Conn>(fn(inbox: Inbox<Conn>) {
+    while (true) {
+      match (inbox.receive()) {
+        Accepted(s) => Process.spawn<I32>(fn(_: Inbox<I32>) { echo(s); }),
+      };
+    }
+  });
+  let moved = new Inbox<Bytes>();
+  let main = Process.self<Bytes>(moved);
+  Process.spawn<I32>(fn(_: Inbox<I32>) {
+    let n = 0;
+    while (n < 3) {
+      let s = listener.accept();
+      handler.send(Conn.Accepted(s));
+      if (n == 0) {
+        let left = "";
+        try { s.write("x"); } catch (e) { left = e as Bytes; }
+        main.send(left);
+      }
+      n++;
+    }
+  });
+
+  let a = Tcp.connect("127.0.0.1", port);
+  a.write("hello ");
+  a.write("world");
+  let got = "";
+  while (Bytes.len(got) < 11) { got = got + a.read(64); }
+  a.close();
+  let left = moved.receive();
+
+  let clients = 1;
+  let i = 0;
+  while (i < 2) {
+    let s = Tcp.connect("localhost", port);
+    s.write("x");
+    if (s.read(8) == "x") { clients++; }
+    s.close();
+    i++;
+  }
+
+  let quiet = Tcp.listen("127.0.0.1", 0);
+  let idle = Tcp.connect("127.0.0.1", quiet.port());
+  let timedOut = idle.readWithin(16, 30) == null;
+  let accepted = quiet.acceptWithin(1000) != null;
+  let none = quiet.acceptWithin(20) == null;
+  idle.close();
+  let closedPort = quiet.port();
+  quiet.close();
+
+  let refused = "";
+  try { Tcp.connect("127.0.0.1", closedPort); } catch (e) { refused = e as Bytes; }
+  handler.stop();
+  got + "|" + Std.string(clients) + "|" + Std.string(timedOut && accepted) + "|"
+    + Std.string(none) + "|" + notOurs + "|" + refused
+};
+run(notOurs)

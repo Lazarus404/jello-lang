@@ -65,6 +65,8 @@ let _repeats = fn(imports: Array<Import>, added: Import): Bool {
       let allowed = match ((imports[i], added)) {
         (Import(_, module, name, typeOnly, _, _), Import(_, addedModule, addedName, addedTypeOnly, _, _)) =>
           (module == addedModule) && (name == addedName) && (typeOnly != addedTypeOnly),
+        (Import(_, module, _, true, _, _), Namespace(_, addedModule, _, _)) => module == addedModule,
+        (Namespace(_, module, _, _), Import(_, addedModule, _, true, _, _)) => module == addedModule,
         _ => false,
       };
       if (!allowed) { return true; }

@@ -1,0 +1,41 @@
+// expect: ok
+// Processes receive typed messages in order, poll their inboxes, and finish normally.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Exit } from std.concurrent.Process;
+import { Exit } from std.concurrent.Process;
+
+enum Msg { Add(n: I32); Total(to: Process<I32>); Done; }
+
+let adder = Process.spawn<Msg>(fn(inbox: Inbox<Msg>) {
+  let total = 0;
+  while (true) {
+    match (inbox.receive()) {
+      Add(n) => { total = total + n; },
+      Total(to) => { to.send(total); },
+      Done => { return; },
+    }
+  }
+});
+
+let inbox = new Inbox<I32>();
+let me = Process.self<I32>(inbox);
+System.assert(inbox.tryReceive() == null);
+System.assert(adder.exited() == null);
+System.assert(adder.send(Msg.Add(2)));
+adder.send(Msg.Add(3));
+adder.send(Msg.Total(me));
+System.assert(inbox.receive() == 5);
+adder.send(Msg.Add(10));
+adder.send(Msg.Total(me));
+adder.send(Msg.Total(me));
+System.assert(inbox.receive() == 15);
+Process.yield();
+System.assert(inbox.waiting() == 1);
+System.assert(inbox.tryReceive() == 15);
+adder.send(Msg.Done);
+let normal = match (adder.join()) { Normal => true, _ => false };
+System.assert(normal);
+let after = match (adder.exited()) { Normal => true, _ => false };
+System.assert(after);
+System.assert(!adder.send(Msg.Done));
+"ok"

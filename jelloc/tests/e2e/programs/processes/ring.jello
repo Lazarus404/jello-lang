@@ -1,0 +1,23 @@
+// expect: 3000
+// schedulers: 4
+// A token passes around a ring of processes, each adding one, for three laps.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+let SIZE = 1000;
+let inbox = new Inbox<I32>();
+let last = Process.self<I32>(inbox);
+let next = last;
+let i = 0;
+while (i < SIZE) {
+  let to = next;
+  next = Process.spawn<I32>(fn(box: Inbox<I32>) {
+    let lap = 0;
+    while (lap < 3) { to.send(box.receive() + 1); lap++; }
+  });
+  i++;
+}
+next.send(0);
+next.send(inbox.receive());
+next.send(inbox.receive());
+inbox.receive()

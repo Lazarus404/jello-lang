@@ -1,0 +1,62 @@
+// expect: main cleaned
+// expect: b a | crashed Exit.Crashed(boom) | stopped Exit.Stopped | after park | spun | Exit.Stopped 0
+// Cleanups run last first when a process finishes, however it does; a park inside one ends it,
+// a throw from one leaves how the process finished as it was and reaches no handler of the
+// process's body, and each has a budget. The main process's run when the program ends.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import { writeText } from std.io.File;
+
+let notes = new Inbox<Bytes>();
+let me = Process.self<Bytes>(notes);
+let next = fn(): Bytes { notes.receive() };
+Process.onExit(fn() { writeText("/dev/stdout", "main cleaned\n"); });
+
+Process.spawn<I32>(fn(_: Inbox<I32>) {
+  let to = me;
+  Process.onExit(fn() { to.send("a"); });
+  Process.onExit(fn() { to.send("b"); });
+}).join();
+let order = next() + " " + next();
+
+let crasher = Process.spawn<I32>(fn(_: Inbox<I32>) {
+  let to = me;
+  Process.onExit(fn() { to.send("crashed"); });
+  throw "boom";
+});
+let crashed = Std.string(crasher.join());
+
+let parked = Process.spawn<I32>(fn(own: Inbox<I32>) {
+  let to = me;
+  Process.onExit(fn() { to.send("stopped"); });
+  own.receive();
+});
+Process.yield();
+parked.stop();
+let stopped = Std.string(parked.join());
+
+Process.spawn<I32>(fn(own: Inbox<I32>) {
+  let to = me;
+  Process.onExit(fn() { to.send("after park"); });
+  Process.onExit(fn() { own.receive(); to.send("never"); });
+}).join();
+
+Process.spawn<I32>(fn(_: Inbox<I32>) {
+  let to = me;
+  Process.onExit(fn() { to.send("spun"); });
+  Process.onExit(fn() { while (true) { } });
+}).join();
+
+let waiting = notes.waiting();
+let guarded = Process.spawn<I32>(fn(own: Inbox<I32>) {
+  let to = me;
+  Process.onExit(fn() { throw "late"; });
+  try { own.receive(); } catch (e) { to.send("caught"); }
+  null
+});
+Process.yield();
+guarded.stop();
+let unguarded = Std.string(guarded.join()) + " " + Std.string(notes.waiting() - waiting);
+
+order + " | " + next() + " " + crashed + " | " + next() + " " + stopped + " | " + next() + " | "
+  + next() + " | " + unguarded
