@@ -2,9 +2,9 @@ package frontend.semantics;
 
 import type { Expr as AstExpr, Stmt, StructField, Type as AstType } from frontend.syntax.Ast;
 import { indexOf } from support.Arrays;
-import { E0302, E0400, E0402, E0802, E0803, coded } from support.Codes;
+import { E0302, E0400, E0402, E0802, coded } from support.Codes;
 import { Op, appliedType, defineVariants, enumParams, fieldCount, fieldType, isOpen, newVar, node, typeOf, unify, variantTag } from frontend.hir.Hir;
-import { checkMatch, checkWith } from frontend.semantics.Match;
+import { checkMatch, checkWith, payloadMismatch } from frontend.semantics.Match;
 import { internalError } from support.Internal;
 import { scopedType } from frontend.semantics.ModuleScope;
 import { checkOperand, checkType, checkTypeArgCount, enterSyntax, paramNames, rejectAt, syntaxChild, useTypeParams, widened } from frontend.semantics.TypeCheck;
@@ -90,7 +90,7 @@ let _construct = fn(base: AstExpr, variant: Bytes, variantTypes: Array<AstType>,
   let tag = variantTag(ty, variant);
   if (tag < 0) { throw coded(E0802, "unknown variant " + variant + " of " + enumName); }
   let count = fieldCount(ty, tag);
-  if ((called == (count == 0)) || (args.len() != count)) { throw coded(E0803, "wrong payload count for enum variant " + enumName + "." + variant); }
+  if ((called == (count == 0)) || (args.len() != count)) { throw payloadMismatch(enumName + "." + variant, count, args.len(), called); }
   let declared = Array.new<I32>(0);
   let i = 0;
 

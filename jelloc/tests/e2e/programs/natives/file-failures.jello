@@ -1,0 +1,10 @@
+// expect: ["File.readText: cannot read /nonexistent/file", "File.readText: cannot read tests", "File.listDir: cannot list /nonexistent", "File.listDir: cannot list tests/e2e/programs/natives/std-files/text.txt"]
+// Reading what is not a readable file, or listing what is not a directory, throws. Paths are
+// relative to jelloc/.
+import { readText, listDir } from std.io.File;
+let problems = Array.new<Bytes>(0);
+try { readText("/nonexistent/file"); } catch (e) { problems.push(e as Bytes); }
+try { readText("tests"); } catch (e) { problems.push(e as Bytes); }
+try { listDir("/nonexistent"); } catch (e) { problems.push(e as Bytes); }
+try { listDir("tests/e2e/programs/natives/std-files/text.txt"); } catch (e) { problems.push(e as Bytes); }
+Std.string(problems)

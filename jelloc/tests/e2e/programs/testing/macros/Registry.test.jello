@@ -1,0 +1,17 @@
+// expect: === RUN   Registry/testAdds
+// expect: === RUN   Registry/testMeasures
+// expect: === RUN   Registry/testByHand
+// expect: ok
+// flags: --test --path $DIR
+// A macro may declare tests: --test finds them in the expanded module, with those written out.
+import type { Test } from std.testing;
+import std.testing as T;
+
+macro test_case(name, body) {
+  quote.stmt { let unquote(name) = fn(t: Test) { unquote(body); }; };
+}
+
+test_case(testAdds, quote.stmts { T.equal(t, Std.string(1 + 1), "2"); });
+test_case(testMeasures, quote.stmts { T.equal(t, Std.string("hi".len()), "2"); });
+
+let testByHand = fn(t: Test) { T.equal(t, "ok", "ok"); };

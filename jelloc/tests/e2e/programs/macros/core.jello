@@ -1,0 +1,49 @@
+// expect: 10 11 21 3
+// A macro's call is replaced by what its body emits, as an expression or as statements.
+macro twice(x) {
+  Macro.emit(quote.expr { unquote(x) + unquote(x) });
+}
+
+macro increment(x) {
+  Macro.emit(quote.expr { unquote(x) + 1 });
+}
+
+// What a macro emits is expanded in turn.
+macro increment_twice(x) {
+  Macro.emit(quote.expr { increment(increment(unquote(x))) });
+}
+
+macro show(value) {
+  // A quote on its own, as a statement, is emitted.
+  quote.stmt { shown.push(Std.string(unquote(value))); };
+}
+
+macro emit_pair() {
+  Macro.emit(quote.stmt { log.push(1); });
+  Macro.emit(quote.stmt { log.push(2); });
+}
+
+macro emit_all_pair() {
+  Macro.emit_all([quote.stmt { log.push(3); }, quote.expr { log.push(4) }]);
+}
+
+macro parsed_add() {
+  Macro.emit(Macro.parse("3 * 7", "expr"));
+}
+
+macro assert_eq(actual, expected) {
+  quote.stmt { System.assert(unquote(actual) == unquote(expected)); };
+}
+
+let log = Array.new<I32>(0);
+let shown = Array.new<Bytes>(0);
+show(twice(5));
+show(increment_twice(quote.expr { 9 }));
+emit_pair();
+emit_all_pair();
+show(parsed_add());
+assert_eq(log.len(), 4);
+assert_eq("ab".len(), 2);
+assert_eq(twice(log[0]), log[1]);
+shown.push(Std.string(log[2]));
+shown.join(" ")

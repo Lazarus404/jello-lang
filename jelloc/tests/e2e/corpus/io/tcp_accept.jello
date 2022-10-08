@@ -1,24 +1,14 @@
 // expect: ok
-// pending: std.io.net.Tcp is not ported
-load { addr_resolve } from std;
-import { listen, connect, pollFd, tryAccept, boundPort } from std.io.net.Tcp;
-import { create, registerPoll, awaitFuture } from std.io.EventLoop;
-import { pending, complete } from std.concurrency.Future;
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
 
-let loop = create();
-let bindAddr = addr_resolve("127.0.0.1", 0);
-let listener = listen(bindAddr, 1);
-let port = boundPort(listener);
-let connectAddr = addr_resolve("127.0.0.1", port);
-let acceptF = pending();
-registerPoll(loop, pollFd(listener), fn(_loop) {
-  let tcp = tryAccept(listener);
-  if (tcp != null) {
-    complete(acceptF, tcp);
-  }
-});
-let client = connect(connectAddr);
-let server = await acceptF;
-System.assert(client != null);
-System.assert(server != null);
-"ok"
+let run = fn(): Bytes {
+  let listener = Tcp.listen("127.0.0.1", 0);
+  let client = Tcp.connect("127.0.0.1", listener.port());
+  let server = listener.acceptWithin(5000);
+  System.assert(server != null);
+  client.close();
+  listener.close();
+  "ok"
+};
+run()

@@ -1,50 +1,41 @@
-// expect: ok
-// pending: std.io.net.Tcp is not ported
-load { addr_resolve } from std;
-import { listen, connect, pollFd, tryAccept, boundPort } from std.io.net.Tcp;
-import { wrapClient, wrapServer, handshakePair } from std.io.net.TlsStream;
-import { create, registerPoll, awaitFuture, unregisterPoll } from std.io.EventLoop;
-import { pending, complete } from std.concurrency.Future;
-import { serverContext, clientContext, setCertChain, setPrivateKey } from std.crypto.TlsContext;
-
-let _keyMessage = Atom.intern("message");
+// expect: untrusted|wrong name|closed|Invalid argument
+// A client refuses a certificate it does not trust, and one for another name, and the stream it
+// could not secure is closed; it must be given the server's name.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
+import std.net.Tls as Tls;
+import type { Config } from std.net.Tls;
 
 let cert = "-----BEGIN CERTIFICATE-----\nMIIDCTCCAfGgAwIBAgIUXqSHNn1/LPS8R86KPQsk3E/9Ct8wDQYJKoZIhvcNAQEL\nBQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDcxOTE5MjAwOFoXDTM2MDcx\nNjE5MjAwOFowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF\nAAOCAQ8AMIIBCgKCAQEA2HqJDvd4nPC3p17CdwVPmHRwUmVoh/lHVZH9zPhvEViD\nNA0DJaBPQ5nZy5u6I1C4C61UpkPQyMhvG4YFlPSTP7RrlPT9/TjtPo8K0E2UyUI0\nH/0zRsQr/OfLKUNhGgm0zXRk7mL+ME5JoXqvcTIvQbIfvXuocv1vQjISz0Ekuiv7\n0MkLJ0P3+KAEY/GBnFWF5R4L3gfHJmurtKJLUh320mgOG7gmUKkhHQXWI1aml+KG\nbDLisjGNl7wx1SBZ+jPRwfCsXF+EXeG31unaBvHQastECJxlxI0aiogzx2tkDWZf\nTGYxYROby9QbWvqlwEQira1/fEl5nt5oXBf79EVivQIDAQABo1MwUTAdBgNVHQ4E\nFgQUi4C9RMKIq5wOaVhwnHgnHGm4e+AwHwYDVR0jBBgwFoAUi4C9RMKIq5wOaVhw\nnHgnHGm4e+AwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAJMRv\ntVH8VU/FD2HtFeX5leHtEnyMkuche8u0Jr2HIa3stMqUxo/307Tt0Fg80vMKruNj\ngFbPzhOEnWlgqBKOM/xOx+uXcoImaxFTyC8EE/zxW1Ius8vX8+cTkilhL0QZbIJP\nOsm4MXCBdqbygoM3qFCRHSKUzVIMRKJ6bfbyvqqVdImBlJNRI1QCRD8Nib8Raxqb\nOntcrqGd4lMnTVxkJigHj8Nv3WQh6ysKsuVmGPYbzO5DII2c3anvNXnc1eKuGY5u\n++FyMM0GMeoSgDqGFgtPkl+7yYUiErxDAkVGHWvbr/DvvFpjA7CJqVTBeIrkqcqY\ndDFYVlqzwyXHoUVdhA==\n-----END CERTIFICATE-----\n";
 let key = "-----BEGIN PRIVATE KEY-----\nMIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQDYeokO93ic8Len\nXsJ3BU+YdHBSZWiH+UdVkf3M+G8RWIM0DQMloE9DmdnLm7ojULgLrVSmQ9DIyG8b\nhgWU9JM/tGuU9P39OO0+jwrQTZTJQjQf/TNGxCv858spQ2EaCbTNdGTuYv4wTkmh\neq9xMi9Bsh+9e6hy/W9CMhLPQSS6K/vQyQsnQ/f4oARj8YGcVYXlHgveB8cma6u0\noktSHfbSaA4buCZQqSEdBdYjVqaX4oZsMuKyMY2XvDHVIFn6M9HB8KxcX4Rd4bfW\n6doG8dBqy0QInGXEjRqKiDPHa2QNZl9MZjFhE5vL1Bta+qXARCKtrX98SXme3mhc\nF/v0RWK9AgMBAAECggEAD5B/2jugyGfmTHpbsQMIvgVhLgtsgJpDrrtYbCxQkAa1\nKEDnQQVNraaaKjGAKJndIbnMpEer80O1+Vyhehw7mhD2yzbyLAqzxBO0y1VIpU/F\nP6eM0EG6h+yChuz5Rk38WelMeHdVn1OBp8KSaqkZDLgp4A3MBriCD1haUdx1L41o\nJxxQ2SegtI9llFRq34tDwfsQk/PcvCKNY/LlF69/U6BhgLF/MeJ40gCcGr8hQwFZ\nLdd9Cp9qtDiSZBOUD7kNYUxD2kxbVf8IGyhat19cR7iZDsgJCxDh5DxR7CSRbvZ0\n7Cxe+hBDHVypmB9mDrjFiiZKnoZ38gkMQgR/B7VeYQKBgQDzBBaqEQw9Z9AxaeP3\naiEu1LIcrFwoqX8wGVAhqAWDhIG2BbzTpTwQ8aDf+Jkr77OzIcdL1Hj7qcOihD3y\nWWyGOb/qYrDbmW9pvuA9NRLTQU+ac6VvO9Mwkw7jCOUFfpX8vw18A7SGVuBDAaUw\n1itlur5heDSgyZA+dAXJMAA/owKBgQDkC3nhAcOUhmABtwK3nhhYFUQ+WdmnLksm\nf+xmzspFEDKPqSj3Nmste0od+JTXHkMGnyNIhGDrREkK7zOsjj76IKhv6EkVTFvO\noHzoBsifw/K1yQ+/Kr2OalCPTniXvOQqxqXm/4gXwlRkCpxmrHEsDorkYedLHWaY\nkmgy+Q56HwKBgQCjTqcQaF5qUX42BqvckyRzfRmobSeNZ8ICB7CyvV/fLsegE6D+\nNXb1B/uNJ1l/jhibk2KDkegvbrj6WJXsa62jUeGnV+Tz3dtiG5RDbYwWDTi6WWbe\nJjzY0qpZZZvKInQWoikkorTI5k7UmKFy/SmytljD1WzAdFOLtJpCxhAUswJ/K6YG\nrgqoZMVTmwBshLi98B4h8c1A278Ao13Y4dSy4oU3KEg4jxjbatkuVo497u7b5WiQ\nWFD+PAnV8UHXoi+X3khh9QmA85Kp/+K4BbFGtU3MJv9VBEIqBhhTUxqx+lktUwKy\nvoQqiGGpxXxCc2SOROCDtTMIEliOSqW7TAZfvwKBgEi/Q/DzzP+MKBnS6Et8Xz9H\nRThn8yhJkFUzmTYPwuMbvlkMBizP/apDQVMFSUd4vWCEL3cmRdRcpqFzLRUeFEoc\n/4n2i3IgVIYSMPgeTZmtfoDP1SapSxd98xdsEaqfLGAlRJwVAFiYtogxhzbUZBGj\nbIisvAfN2iNrEqyMghPX\n-----END PRIVATE KEY-----\n";
 
-let loop = create();
-let bindAddr = addr_resolve("127.0.0.1", 0);
-let srvCtx = serverContext(false);
-System.assert(setCertChain(srvCtx, cert));
-System.assert(setPrivateKey(srvCtx, key));
-let cliCtx = clientContext(true);
+let failed = "X509 - Certificate verification failed, e.g. CRL, CA or signature check failed";
 
-let listener = listen(bindAddr, 1);
-let port = boundPort(listener);
-let connectAddr = addr_resolve("127.0.0.1", port);
-
-let acceptF = pending();
-registerPoll(loop, pollFd(listener), fn(_loop) {
-  let tcp = tryAccept(listener);
-  if (tcp != null) {
-    complete(acceptF, tcp);
-    let _u = unregisterPoll(loop, pollFd(listener));
-  }
-});
-
-let clientTcp = connect(connectAddr);
-let serverTcp = awaitFuture(loop, acceptF);
-let clientStream = wrapClient(cliCtx, clientTcp);
-let serverStream = wrapServer(srvCtx, serverTcp);
-
-let caught = false;
-let ioMsg = Bytes.new(0);
-try {
-  awaitFuture(loop, handshakePair(loop, clientStream, serverStream));
-} catch (e) {
-  caught = true;
-  ioMsg = Object.get<Bytes>(e, _keyMessage);
-}
-System.assert(caught);
-System.assert(Bytes.indexOf(ioMsg, "io:") >= 0);
-"ok"
+let run = fn(): Bytes {
+  let server = Tls.server(cert, key);
+  let listener = Tcp.listen("127.0.0.1", 0);
+  let port = listener.port();
+  Process.spawn<I32>(fn(_: Inbox<I32>) {
+    while (true) {
+      try { Tls.accept(listener, server); } catch (e) { null; };
+    }
+  });
+  // The system's certificates do not include this one, which signs itself.
+  let untrusted = "";
+  try { Tls.connect("localhost", port, Tls.client("")); } catch (e) { untrusted = e as Bytes; }
+  // It is localhost's, not 127.0.0.1's.
+  let wrongName = "";
+  try { Tls.connect("127.0.0.1", port, Tls.client(cert)); } catch (e) { wrongName = e as Bytes; }
+  let s = Tcp.connect("localhost", port);
+  try { Tls.secureClient(s, Tls.client(""), "localhost"); } catch (e) { null; };
+  let unnamed = "";
+  try { Tls.secureClient(Tcp.connect("localhost", port), Tls.client(cert), ""); } catch (e) {
+    unnamed = e as Bytes;
+  };
+  (untrusted == failed ? "untrusted" : untrusted) + "|"
+    + (wrongName == failed ? "wrong name" : wrongName) + "|" + (s.close() ? "open" : "closed")
+    + "|" + unnamed
+};
+run()

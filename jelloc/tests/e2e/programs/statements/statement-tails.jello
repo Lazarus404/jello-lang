@@ -1,0 +1,9 @@
+// expect: [3, 20, 1, 2] 4 7
+let log = Array.new<I32>(0);
+let g = fn(n: I32): Null { if (n > 0) { log.push(n); } };
+let h = fn(n: I32) { try { log.push(n * 10); } catch { } };
+let k = fn(n: I32): Null { if (n > 5) { log.push(1); } else { log.push(2); } };
+let w = fn(): I32 { let i = 0; while (true) { i++; if (i == 4) { return i; } } };
+let v = fn(): I32 { while (true) { let j = 0; while (true) { if (j == 2) { break; } j++; } return 7; } };
+g(3); g(-1); h(2); k(9); k(1);
+Std.string(log) + " " + Std.string(w()) + " " + Std.string(v())

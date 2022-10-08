@@ -1,17 +1,25 @@
 package std.io;
 
-load { file_exists, file_read, file_write, file_remove, dir_list, dir_make } from std;
+load { file_exists, file_contents, file_write, file_remove, dir_entries, dir_make } from std;
 
 export let exists: (Bytes) -> Bool = file_exists;
-export let readText: (Bytes) -> Bytes = file_read;
+let _read: (Bytes) -> Dynamic = file_contents;
+
+export let readText = fn(path: Bytes): Bytes {
+  let text = _read(path);
+  if (text == null) { throw "File.readText: cannot read " + path; }
+  text as Bytes
+};
 export let writeText: (Bytes, Bytes) -> Bool = file_write;
 export let remove: (Bytes) -> Bool = file_remove;
 export let makeDirs: (Bytes) -> Bool = dir_make;
 
-let _entries: (Bytes) -> Bytes = dir_list;
+let _entries: (Bytes) -> Dynamic = dir_entries;
 
 export let listDir = fn(dir: Bytes): Array<Bytes> {
-  let text = _entries(dir);
+  let entries = _entries(dir);
+  if (entries == null) { throw "File.listDir: cannot list " + dir; }
+  let text = entries as Bytes;
   let names = Array.new<Bytes>(0);
   let start = 0;
   let i = 0;

@@ -1,0 +1,197 @@
+package std.macro;
+
+import { appendFrom } from std.core.Array;
+import { u8 } from std.core.Bytes;
+
+export enum Fragment {
+  Argument(index: I32);
+  Quoted(index: I32, holes: Array<Fragment>);
+  Parsed(source: Bytes, kind: Bytes);
+  Name(name: Bytes);
+  Literal(value: Dynamic);
+}
+
+let _emitted = Array.new<Fragment>(0);
+let _names = 0;
+let _values = Array.new<Dynamic>(0);
+let _literal = Array.new<Bool>(0);
+
+let _kind = fn(kind: Bytes) {
+  match (kind) {
+    "auto", "expr", "stmt", "stmts", "type", "pat" => null,
+    _ => {
+      throw "Macro.parse: unknown kind " + kind + "; use expr, stmt, stmts, type, pat or auto";
+      null
+    },
+  }
+};
+
+export let emit = fn(fragment: Fragment) {
+  _emitted.push(fragment);
+  null
+};
+
+export let emit_all = fn(fragments: Array<Fragment>) {
+  appendFrom(_emitted, fragments, 0);
+  null
+};
+
+export let parse = fn(source: Bytes, kind: Bytes = "auto"): Fragment {
+  _kind(kind);
+  Fragment.Parsed(source, kind)
+};
+
+export let gensym = fn(prefix: Bytes): Fragment {
+  let i = 0;
+
+  while (i < prefix.len()) {
+    let c = Bytes.get_u8(prefix, i);
+    let letter = ((c >= "a".code) && (c <= "z".code)) || ((c >= "A".code) && (c <= "Z".code)) || (c == "_".code);
+    if (!letter && ((i == 0) || (c < "0".code) || (c > "9".code))) { throw "Macro.gensym: a prefix is letters, digits and _, and does not start with a digit: " + prefix; }
+    i++;
+  }
+  let name = prefix + "__" + Std.string(_names);
+  _names++;
+  Fragment.Name(name)
+};
+
+export let literal = fn(fragment: Fragment): Dynamic {
+  match (fragment) {
+    Argument(index) when (_literal[index]) => _values[index],
+    Literal(value) => value,
+    _ => {
+      throw "Macro.literal: the fragment is not a literal";
+      null
+    },
+  }
+};
+
+export let quoted = fn(index: I32, holes: Array<Dynamic>): Fragment {
+  let made = Array.new<Fragment>(0);
+  let i = 0;
+
+  while (i < holes.len()) {
+    let hole = holes[i];
+    made.push(match (hole) {
+      is Fragment as fragment => fragment,
+      is I32, is I64, is F64, is Bool, is Bytes => Fragment.Literal(hole),
+      _ when (hole == null) => Fragment.Literal(hole),
+      _ => {
+        throw "unquote takes a Fragment, or an I32, I64, F64, Bool, Bytes or null value";
+        Fragment.Literal(null)
+      },
+    });
+    i++;
+  }
+  Fragment.Quoted(index, made)
+};
+
+let _digit = fn(c: I32): I32 { c <= "9".code ? c - "0".code : c - "a".code + 10 };
+
+let _read = fn(form: Bytes): Dynamic {
+  let text = Bytes.slice(form, 1, form.len() - 1);
+
+  match (Bytes.get_u8(form, 0)) {
+    "i".code => {
+      let value: I32 = Integer.parse(text);
+      value as Dynamic
+    },
+    "l".code => {
+      let value: I64 = Integer.parse(text);
+      value as Dynamic
+    },
+    "f".code => Float.parse(text) as Dynamic,
+    "b".code => (text == "1") as Dynamic,
+    "s".code => {
+      let out = Array.new<Bytes>(0);
+      let i = 0;
+
+      while (2 * i < text.len()) {
+        out.push(u8(_digit(Bytes.get_u8(text, 2 * i)) * 16 + _digit(Bytes.get_u8(text, 2 * i + 1))));
+        i++;
+      }
+      out.join("") as Dynamic
+    },
+    _ => null,
+  }
+};
+
+let _encode: (Fragment, Array<Bytes>) -> Null = fn(_fragment, _out) { null };
+
+let _text = fn(tag: Bytes, text: Bytes, out: Array<Bytes>) {
+  out.push(tag + Std.string(text.len()) + ";" + text);
+  null
+};
+_encode = fn(fragment, out) {
+  match (fragment) {
+    Argument(index) => {
+      out.push("p" + Std.string(index) + ";");
+      null
+    },
+    Quoted(index, holes) => {
+      out.push("t" + Std.string(index) + ";" + Std.string(holes.len()) + ";");
+      let i = 0;
+
+      while (i < holes.len()) {
+        _encode(holes[i], out);
+        i++;
+      }
+      null
+    },
+    Parsed(source, kind) => {
+      _kind(kind);
+      _text("s" + kind + ":", source, out)
+    },
+    Name(name) => _text("g", name, out),
+    Literal(value) => match (value) {
+      _ when (value == null) => {
+        out.push("n");
+        null
+      },
+      is I32 as v => {
+        out.push("i" + Std.string(v) + ";");
+        null
+      },
+      is I64 as v => {
+        out.push("l" + Std.string(v) + ";");
+        null
+      },
+      is F64 as v => _text("f", Std.string(v), out),
+      is Bool as v => {
+        out.push(v ? "b1" : "b0");
+        null
+      },
+      is Bytes as v => _text("y", v, out),
+      _ => {
+        throw "a Fragment.Literal holds an I32, I64, F64, Bool, Bytes or null value";
+        null
+      },
+    },
+  }
+};
+
+export let run = fn(expanders: Array<(Array<Fragment>) -> Null>): Bytes {
+  let args = System.args;
+  let index: I32 = Integer.parse(List.head(args));
+  args = List.tail(args);
+  _names = Integer.parse(List.head(args));
+  args = List.tail(args);
+  let arguments = Array.new<Fragment>(0);
+
+  while (!List.is_nil(args)) {
+    let form = List.head(args);
+    _literal.push(form != "");
+    _values.push(form == "" ? null : _read(form));
+    arguments.push(Fragment.Argument(arguments.len()));
+    args = List.tail(args);
+  }
+  expanders[index](arguments);
+  let out = [Std.string(_names) + ";"];
+  let i = 0;
+
+  while (i < _emitted.len()) {
+    _encode(_emitted[i], out);
+    i++;
+  }
+  out.join("")
+};

@@ -1,0 +1,34 @@
+// expect: 28 1boom 2FUEL 1bad magic (offset 0)
+// schedulers: 4
+// The vm library's image_run runs a module image as a program on a VM of its own, here this
+// program's own image, from many processes at once; a tag byte says whether the run gave its
+// result or failed, and why.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+load { image_run } from vm;
+
+let run: (Bytes, Bytes, I64) -> Bytes = image_run;
+let tagged = fn(out: Bytes): Bytes { Std.string(Bytes.get_u8(out, 0)) + Bytes.slice(out, 1, out.len() - 1) };
+let args = System.args;
+if (List.is_nil(args)) {
+  let replies = new Inbox<Bytes>();
+  let main = Process.self<Bytes>(replies);
+  let i = 0;
+  while (i < 8) {
+    let k = i;
+    Process.spawn<Bytes>(fn(_inbox: Inbox<Bytes>) { main.send(run("", "echo\u0000" + Std.string(k) + "\u0000", 0)); });
+    i++;
+  }
+  // The runs end in any order; their results add up to 0 + 1 + ... + 7.
+  let echoed = 0; let n = 0;
+  while (n < 8) {
+    let out = replies.receive();
+    if (Bytes.get_u8(out, 0) == 0) { let value: I32 = Integer.parse(Bytes.slice(out, 1, out.len() - 1)); echoed += value; }
+    n++;
+  }
+  let spun = run("", "spin\u0000", 100000);
+  let fuel = Bytes.slice(spun, spun.len() - 4, 4);
+  Std.string(echoed) + " " + tagged(run("", "throw\u0000", 0)) + " " + Std.string(Bytes.get_u8(spun, 0)) + fuel + " " + tagged(run("garbage", "", 0))
+} else if (List.head(args) == "throw") { throw "boom"; "" }
+else if (List.head(args) == "spin") { let i = 0; while (true) { i++; } "" }
+else { List.head(List.tail(args)) }

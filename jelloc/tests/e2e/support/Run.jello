@@ -59,12 +59,15 @@ export let fresh = fn(name: Bytes): Bytes {
 // ARGS with the standard library's directory.
 export let withStd = fn(args: Array<Bytes>): Array<Bytes> { concat(args, ["--std", _stdDir()]) };
 
-// Starts the compiler under test with ARGS, and ENV over the environment.
-export let startJelloc = fn(args: Array<Bytes>, env: Array<Bytes>): Dynamic {
+// The command that runs the compiler under test with ARGS.
+let _jellocCommand = fn(args: Array<Bytes>): Array<Bytes> {
   let argv = compiler();
   if (argv.len() == 0) { throw "the e2e tests need -- --compiler CMD"; }
-  start(concat(argv, args), env)
+  concat(argv, args)
 };
+
+// Starts the compiler under test with ARGS, and ENV over the environment.
+export let startJelloc = fn(args: Array<Bytes>, env: Array<Bytes>): Dynamic { start(_jellocCommand(args), env) };
 
 // Waits for COMMAND: its status, standard output and standard error, less
 // trailing newlines.
@@ -76,6 +79,16 @@ export let finish = fn(command: Dynamic): Tuple<I32, Bytes, Bytes> {
 // The compiler under test given ARGS, with ENV over the environment, run to
 // the end.
 export let jelloc = fn(args: Array<Bytes>, env: Array<Bytes>): Tuple<I32, Bytes, Bytes> { finish(startJelloc(args, env)) };
+
+/* The compiler under test given ARGS in the directory DIR, with ENV over the
+ * environment and the standard library's directory, made absolute first, as
+ * JELLO_STD_PATH, run to the end. A directory the shell cannot enter is
+ * status 125, which jelloc never exits with. */
+export let jellocIn = fn(dir: Bytes, args: Array<Bytes>, env: Array<Bytes>): Tuple<I32, Bytes, Bytes> {
+  if (_stdDir() == "") { throw "the e2e tests need -- --std DIR"; }
+  let enter = "std=$(cd \"$2\" && pwd) && cd \"$1\" || exit 125; shift 2; JELLO_STD_PATH=$std exec \"$@\"";
+  finish(start(concat(["/bin/sh", "-c", enter, "sh", dir, _stdDir()], _jellocCommand(args)), env))
+};
 
 // Starts the VM in MODE ("" for the default) on ARGS, which start with the
 // module, as the fixtures run.

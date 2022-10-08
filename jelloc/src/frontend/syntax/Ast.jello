@@ -65,6 +65,7 @@ export enum Type {
   VarargsArg(inner: Type);
   Function(args: Array<Type>, result: Type);
   Tuple(items: Array<Type>);
+  Unquote(name: Bytes);
 }
 
 export enum ParameterKind {
@@ -176,6 +177,7 @@ export enum Pattern {
   Float(literal: Bytes, size: FloatSize);
   Null;
   Spread(binding: ?Bytes);
+  Unquote(value: Expr);
 }
 
 export enum Expr {
@@ -326,7 +328,7 @@ export let patternTag: (Pattern) -> I32 = fn(pattern) {
   match (pattern) {
     Wildcard => 1, BindPattern(_) => 2, Pin(_) => 3, Bool(_) => 4, Integer(_, _) => 5, Bytes(_) => 6, Atom(_) => 7,
     Object(_) => 8, Tuple(_) => 9, Array(_) => 10, Enum(_, _) => 11, RegExp(_, _, _) => 12,
-    IsType(_, _) => 13, Bits(_) => 14, Float(_, _) => 15, Null => 16, Spread(_) => 17,
+    IsType(_, _) => 13, Bits(_) => 14, Float(_, _) => 15, Null => 16, Spread(_) => 17, Unquote(_) => 18,
   }
 };
 

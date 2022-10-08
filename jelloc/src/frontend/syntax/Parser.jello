@@ -189,6 +189,14 @@ let _name = fn(): Bytes {
   }
 };
 
+let _atomName = fn(): Bytes {
+  if ((pending == Token.Eof) && (_offset(pos, false) != _offset(pos - 1, true))) {
+    peek();
+    _error(E0100, "an atom's name must follow its `:` directly");
+  }
+  _name()
+};
+
 let _memberName = fn(): Bytes {
   match (peek()) {
     IntegerConstant(digits, _) => {
@@ -357,7 +365,12 @@ _parseTypeAtom = fn() {
   } else {
     let name = _typeName();
 
-    if (peek() == Token.Less) {
+    if ((name == "unquote") && (peek() == Token.LParen)) {
+      next();
+      let held = _ident();
+      expect(Token.RParen);
+      Type.Unquote(held)
+    } else if (peek() == Token.Less) {
       next();
       let args = Array.new<Type>(0);
       args.push(_parseType());
@@ -460,10 +473,16 @@ let _parsePatternList = fn(end: Token): Array<Pattern> {
   out
 };
 
+let _unquotePattern: () -> Pattern = fn() { Pattern.Wildcard };
+
 let _declarationPattern = fn(): Pattern {
   let start = pos;
 
   match (peek()) {
+    Ident(name) when ((name == "unquote") && (tokens[pos + 1] == Token.LParen)) => {
+      next();
+      _markPattern(_unquotePattern(), start)
+    },
     Ident(name) => {
       next();
 
@@ -480,6 +499,7 @@ let _declarationPattern = fn(): Pattern {
 
 let _namedPattern = fn(name: Bytes): Pattern {
   if (name == "_") { return Pattern.Wildcard; }
+  if ((name == "unquote") && (peek() == Token.LParen)) { return _unquotePattern(); }
   let first = Bytes.get_u8(name, 0);
 
   if ((peek() == Token.LParen) || ((first >= "A".code) && (first <= "Z".code))) {
@@ -654,7 +674,7 @@ _patternInner = fn() {
     },
     Colon => {
       next();
-      Pattern.Atom(_name())
+      Pattern.Atom(_atomName())
     },
     Bits => {
       next();
@@ -737,6 +757,12 @@ let _parseBinary: (I32, Bool) -> Expr = fn(_minPrec, _element) {
   Expr.Null
 };
 let _parseExpr = fn(minPrec: I32): Expr { _parseBinary(minPrec, false) };
+_unquotePattern = fn() {
+  expect(Token.LParen);
+  let value = _parseExpr(0);
+  expect(Token.RParen);
+  Pattern.Unquote(value)
+};
 
 let _condition = fn(): Expr {
   let outer = inCondition;
@@ -1104,7 +1130,7 @@ let _primary = fn(start: I32): Expr {
     Null => Expr.Null,
     This => Expr.This,
     Super => Expr.Super,
-    Colon => Expr.Atom(_name()),
+    Colon => Expr.Atom(_atomName()),
     Ident(name) => {
       if (name == "method") {
         expect(Token.Fn);
@@ -1318,6 +1344,7 @@ let _assignable = fn(expr: Expr): Bool {
     Variable(_) => true,
     Member(_, _) => true,
     Index(_, _) => true,
+    Unquote(_) => true,
     _ => false,
   }
 };
@@ -1515,7 +1542,19 @@ _parseBinary = fn(minPrec, element) {
       pipelineTopic = outerTopic;
     } else if (prec == 5) {
       next();
-      if (!_assignable(left)) { _error(E0103, "invalid assignment target"); }
+
+      if (!_assignable(left)) {
+        match (left) {
+          Assign(_, _, _) => {
+            _error(E0103, "assignments do not chain; assign each target in its own statement");
+            null
+          },
+          _ => {
+            _error(E0103, "invalid assignment target");
+            null
+          },
+        };
+      }
       left = Expr.Assign(_assignOp(tok), left, _parseBinary(prec + 1, element));
     } else if (tok == Token.Is) {
       next();
@@ -1732,7 +1771,7 @@ let _path = fn(): Array<Bytes> {
 
   while (peek() == Token.Dot) {
     next();
-    parts.push(_ident());
+    parts.push(_name());
   }
   parts
 };

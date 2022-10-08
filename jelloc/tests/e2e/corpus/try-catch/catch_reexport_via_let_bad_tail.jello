@@ -1,7 +1,5 @@
 // expect: ok
-// pending: System.deepEqual
-// let-bound re-export without syntactic widening: same runtime bug as pre-fix catch (e) { e }
-let eqAtom = Atom.intern("equal");
-let v: Dynamic = try { throw 42; "bad" } catch (e) { let x = e; x };
-System.assert(Object.get(System.deepEqual(v, 42), eqAtom) == true);
+// A let-bound catch value re-exports the thrown payload when the try value is widened to Dynamic.
+let v: Dynamic = try { throw 42; "bad" as Dynamic } catch (e) { let x = e; x };
+System.assert((v as I32) == 42);
 "ok"

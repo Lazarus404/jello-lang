@@ -1,0 +1,9 @@
+// expect: 6 9 112 104
+// A module imports another's exported macros by name, and may rename them. The macro calls in
+// what a macro makes are of the macros of its own module, exported or not, and those in what it
+// is given of the macros of the caller's.
+import macro { twice as double, square as sq, quadruple } from lib.Macros;
+import { base } from lib.Macros;
+
+let hidden = fn(): I32 { 1 };
+Std.string(double(base)) + " " + Std.string(sq(base)) + " " + Std.string(quadruple(base)) + " " + Std.string(quadruple(hidden()))

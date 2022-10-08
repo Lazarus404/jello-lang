@@ -1,0 +1,6 @@
+// error: 6:1: macro m failed: $DIR/body_traps.jello:4:37: trap BOUNDS [E1003]
+macro m() {
+  let xs = [1];
+  Macro.emit(Macro.parse(Std.string(xs[5]), "expr"));
+}
+m()

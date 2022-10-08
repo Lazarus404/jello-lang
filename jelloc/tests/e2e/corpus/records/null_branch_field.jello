@@ -1,6 +1,5 @@
 // expect: ok
-// pending: std.core.List is not ported
-import { add } from std.core.List;
+import { append } from std.core.List;
 
 let at: (List<Dynamic>, I32) -> Dynamic = fn(list, idx) {
   let cur = list;
@@ -20,12 +19,12 @@ let readTileBroken: (List<Dynamic>, I32) -> I32 = fn(list, idx) {
   if (cell == null) {
     -1
   } else {
-    cell.tile
+    (cell as Object).tile as I32
   }
 };
 
 let makeGrid: () -> List<Dynamic> = fn() {
-  add(List.nil<Dynamic>(), { tile: -1 })
+  append(List.nil<Dynamic>(), { tile: -1 } as Dynamic)
 };
 
 System.assert(readTileBroken(makeGrid(), 0) == -1);

@@ -1,8 +1,7 @@
 // expect: ok
-// pending: the I8 type
 enum Tag { A; B(x: I32); C(a: I8, b: I8); }
 
-let pairSum = fn(lst) {
+let pairSum = fn(lst: List<I32>): I32 {
   match (lst) {
     [a, b] => a + b,
     _ => 0,
@@ -21,7 +20,6 @@ System.assert(arrSum([10, 32]) == 42);
 let addPair = fn(pair: Tuple<I32, I32>) {
   match (pair) {
     (a, b) => a + b,
-    _ => 0,
   }
 };
 System.assert(addPair((10, 32)) == 42);
@@ -30,11 +28,11 @@ let tag = fn(val: Tag) {
   match (val) {
     A => { 0 },
     B(x) => { x },
-    C(a, b) => { a + b },
+    C(a, b) => { (a + b) as I32 },
   }
 };
 System.assert(tag(Tag.B(9)) == 9);
-System.assert(tag(Tag.C(3i8, 4i8)) == 7i8);
+System.assert(tag(Tag.C(3i8, 4i8)) == 7);
 
 let fromCode = fn(x: I32) {
   match (x) {

@@ -20,6 +20,7 @@ export let E0105 = "E0105";
 export let E0106 = "E0106";
 export let E0107 = "E0107";
 export let E0108 = "E0108";
+export let E0109 = "E0109";
 
 export let E0200 = "E0200";
 export let E0201 = "E0201";
@@ -60,6 +61,7 @@ export let E0409 = "E0409";
 export let E0410 = "E0410";
 export let E0411 = "E0411";
 export let E0412 = "E0412";
+export let E0413 = "E0413";
 
 export let E0500 = "E0500";
 export let E0501 = "E0501";
@@ -93,6 +95,11 @@ export let E0809 = "E0809";
 export let E0900 = "E0900";
 export let E0901 = "E0901";
 
+export let E1000 = "E1000";
+export let E1001 = "E1001";
+export let E1002 = "E1002";
+export let E1003 = "E1003";
+
 let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
   (E0001, "the source is not valid UTF-8",
     "A source file must be UTF-8. The error points at the first byte that starts no valid "
@@ -106,9 +113,10 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     + "separate it from what follows."),
   (E0004, "an invalid escape",
     "A backslash in a bytes literal or a template starts an escape. The escapes are \\0, \\a, "
-    + "\\b, \\f, \\n, \\r, \\t, a quote or backslash after a backslash, \\xHH for any byte, and "
-    + "\\uHHHH or \\u{H...} (one to six hex digits) for a Unicode scalar value, which is no "
-    + "surrogate and at most 10FFFF. Write a literal backslash as \\\\."),
+    + "\\b, \\f, \\n, \\r, \\t, \\v, a quote, backslash or backtick after a backslash, "
+    + "\\xHH for any byte, and \\uHHHH or \\u{H...} (one to six hex digits) for a Unicode "
+    + "scalar value, which is no surrogate and at most 10FFFF. Write a literal backslash as "
+    + "\\\\."),
   (E0005, "an unterminated literal or comment",
     "A bytes literal, regexp literal, template or block comment runs to the end of its "
     + "line, or of the file, without its closing delimiter. A bytes literal ends on the line "
@@ -150,16 +158,19 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     + "`let [first, ..._] = xs else { return 0; };`, and the `else` must leave by `return`, "
     + "`throw`, `break` or `continue`, since the names would otherwise be unbound. A `let` "
     + "of one name cannot fail, so it takes none."),
-  (E0106, "a pipeline misused",
+  (E0106, "a pipeline topic out of place",
     "`%` names the value of a pipeline, `value |> body`, so it is only in a pipeline's "
-    + "body. A body that does not use `%` must be a call, which takes the value as its "
-    + "first argument; `5 |> double()`."),
+    + "body."),
   (E0107, "a declaration that cannot be exported",
     "`export` goes before a top-level `let`, `const`, enum, typedef, prototype or bytes "
     + "layout. Remove it from this declaration."),
   (E0108, "a chain needs parentheses",
     "`x is A is B` and `A -> B -> C` do not chain. Parenthesise to say which you mean; "
     + "a function type of two parameters is `(A, B) -> C`."),
+  (E0109, "a `let` test out of place",
+    "`let pattern = value` is a test only as the condition of an `if` or a `while`, alone or "
+    + "joined with `&&`: `if (let [first, ..._] = xs) { ... }`. Elsewhere `let` is a "
+    + "statement, which ends with `;`, so a block cannot end with one as its value."),
 
   (E0200, "a module not found",
     "An import names a module that is in no source root. The module a.b.C is the file "
@@ -194,7 +205,9 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     "A test file's name ends in .test.jello, and it is under a --path root, which gives "
     + "its module path."),
   (E0210, "a test with the wrong signature",
-    "A test is a top-level `let testName = fn(t: Test) { ... };`, or takes no parameter."),
+    "In a test file, a test is a top-level `let testName = fn(t: Test) { ... };`, taking "
+    + "std.testing's Test, and the hooks `beforeAll` and `afterAll` take no parameter: "
+    + "`let beforeAll = fn() { ... };`. Both return Null."),
   (E0211, "an invalid jello.json",
     "A project's jello.json is a JSON object. `src` is a string, `test` an object whose "
     + "`dirs` is an array of strings, `package_paths` an array of strings, and "
@@ -204,8 +217,9 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     + "`package_paths`. Run `jelloc deps.get` to fetch it."),
   (E0213, "an invalid native declaration",
     "A native is bound with a function type whose parameters and result are Bool, I32, "
-    + "Bytes or Dynamic: `let f: (Bytes) -> I32 = native_name;`. Every binding of one "
-    + "native gives it the same type."),
+    + "I64, F32, F64, Bytes or Dynamic, before it is used: "
+    + "`let f: (Bytes) -> I32 = native_name;`. Every binding of one native gives it the same "
+    + "type."),
   (E0214, "std.core exports an intrinsic",
     "A std.core module cannot export a name the compiler provides itself."),
 
@@ -214,7 +228,9 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     + "in a block, or import it."),
   (E0301, "not a value",
     "The name is a type, or `_`, which binds nothing; neither is a value. Construct a "
-    + "value of the type instead, as with an enum variant, `Shape.Circle(1.0)`."),
+    + "value of the type instead, as with an enum variant, `Shape.Circle(1.0)`. A built-in "
+    + "function, such as `Array.contains`, is only called; to pass one as a value, wrap the "
+    + "call in a function, `fn(a: Array<I32>, x: I32): Bool { Array.contains(a, x) }`."),
   (E0302, "a duplicate declaration",
     "A name is declared twice where it must be unique: two locals of one scope, two "
     + "top-level names of a module, two parameters, type parameters, fields or variants, "
@@ -233,8 +249,9 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     "`this` is the receiver of a prototype's method. A plain `fn` inside a method does "
     + "not see it; write `method fn` for one that does."),
   (E0307, "`break`, `continue` or `return` out of place",
-    "`break` and `continue` are inside a loop, and do not leave a function or a "
-    + "`try` body; `return` is inside a function."),
+    "`break` and `continue` are inside a loop of their own function, and cannot leave a "
+    + "list comprehension for a loop around it; `return` is inside a function, not at a "
+    + "module's top level."),
   (E0308, "a generic local function captures a local",
     "A generic function declared inside another cannot capture the outer function's "
     + "locals. Pass the value as an argument."),
@@ -263,9 +280,10 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     + "its empty value, nil, reads as null; nor a buffer from Bytes.new, nor a U64, or "
     + "U32 inside another type, whose large values would read as negative."),
   (E0406, "an invalid `as` or `is`",
-    "`as` converts between number types and to and from Dynamic; `is` tests a Dynamic or "
-    + "nullable value. Only Bool, I32, I64, F16, F32, F64, Atom, Bytes, enums and Object "
-    + "are checked kinds, which a Dynamic can be extracted as or tested for."),
+    "`as` converts between number types and to and from Dynamic; `x is T` tests a Dynamic "
+    + "value, and the pattern `is T` a Dynamic or nullable one. Only Bool, I32, I64, F16, F32, "
+    + "F64, Atom, Bytes, enums and Object are checked kinds, which a Dynamic can be extracted "
+    + "as or tested for."),
   (E0407, "an invalid Dynamic comparison",
     "A Dynamic compares with null, or with a value of a kind `is` can test. Two "
     + "Dynamics do not compare; extract one first with `as T`."),
@@ -285,6 +303,10 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
   (E0412, "Bytes are immutable",
     "A Bytes value cannot change. Build bytes in a buffer from Bytes.new, then copy them "
     + "out with `buffer.toString()`."),
+  (E0413, "a pipeline body that is not a call",
+    "A pipeline body that does not use `%` must be a call, which takes the pipeline's value "
+    + "as its first argument; `5 |> double()`. Use `%` to put the value anywhere else; "
+    + "`5 |> % * 2`."),
 
   (E0500, "an operator not defined for a type",
     "The operator does not apply to its operands' types. Arithmetic takes two numbers of "
@@ -379,11 +401,37 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     "The form is part of the language, but this compiler does not support it yet."),
   (E0901, "a compiler limit",
     "The program passes a limit of the compiler or VM: 256 registers in one function, "
-    + "try regions nested 16 deep, natives of more than 8 arguments, or generic instances "
-    + "nested 64 deep. Split the function, or simplify the nesting.")
+    + "try regions nested 16 deep, natives of more than 8 arguments, generic instances "
+    + "nested 64 deep, or macro expansions nested 32 deep or making more than 4096 nodes in "
+    + "one module. Split the function, or simplify the nesting."),
+
+  (E1000, "an invalid macro",
+    "A macro is defined at the top level of a module, once per name, and its body runs "
+    + "when the program compiles, so it can use only its parameters, its own locals, the "
+    + "builtins and `Macro`: it cannot import, load a native library or define a macro. "
+    + "`import macro { name } from module;` names a macro the module defines with "
+    + "`export macro`."),
+  (E1001, "a quote or unquote out of place",
+    "`quote { ... }` makes syntax in a macro body, and `unquote(value)` splices into a "
+    + "quote the syntax, or the literal, that `value` holds; neither means anything elsewhere, "
+    + "and a quote cannot hold another. In a type, `unquote(name)` names a variable of the "
+    + "macro body."),
+  (E1002, "a macro call that cannot expand",
+    "A macro call passes one argument per parameter. A call that is a statement expands to "
+    + "the statements its macro emits; a call anywhere else must expand to one expression. A "
+    + "quote passed as an argument holds no `unquote`."),
+  (E1003, "a macro that fails",
+    "The macro's body threw, trapped or ran too long while the program compiled, or emitted "
+    + "syntax that does not fit where it goes, such as a statement where an expression is "
+    + "needed, or text that `Macro.parse` cannot parse. The message says which.")
 ] };
 
 export let coded = fn(code: Bytes, message: Bytes): Bytes { message + " [" + code + "]" };
+
+export let uncoded = fn(message: Bytes): Bytes {
+  let n = message.len();
+  (n > 8) && (Bytes.slice(message, n - 8, 3) == " [E") && (Bytes.get_u8(message, n - 1) == "]".code) ? Bytes.slice(message, 0, n - 8) : message
+};
 
 export let errorCodes = fn(): Array<Bytes> {
   let explained = _explained();

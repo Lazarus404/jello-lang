@@ -14,21 +14,20 @@ let _values = Array.new<I32>(0);
 let _known = Array.new<I32>(0);
 let _copies = Array.new<I32>(0);
 let _copied = Array.new<I32>(0);
+let _copiesOf = Array.new<Array<I32>>(0);
 
 let _forget = fn(register: I32) {
   _kinds[register] = _UNKNOWN;
   _copies[register] = -1;
+  let copies = _copiesOf[register];
+  if (copies.len() == 0) { return null; }
   let i = 0;
 
-  while (i < _copied.len()) {
-    let copy = _copied[i];
-
-    if ((_copies[copy] < 0) || (_copies[copy] == register)) {
-      _copies[copy] = -1;
-      _copied[i] = _copied[_copied.len() - 1];
-      _copied.pop();
-    } else { i++; }
+  while (i < copies.len()) {
+    if (_copies[copies[i]] == register) { _copies[copies[i]] = -1; }
+    i++;
   }
+  _copiesOf[register] = Array.new<I32>(0);
   null
 };
 
@@ -88,6 +87,7 @@ let _merged = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
 
   while (i < count) {
     let joining = !gone[i] && outside[i];
+    let copied = false;
 
     while (joining) {
       joining = false;
@@ -97,7 +97,11 @@ let _merged = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
           let next = indexes[target];
 
           if ((next != i) && (entries[next] == 1) && outside[next]) {
-            code[i] = appendFrom(appendFrom(Array.new<Instruction>(0), code[i], 0), code[next], 0);
+            if (!copied) {
+              code[i] = appendFrom(Array.new<Instruction>(0), code[i], 0);
+              copied = true;
+            }
+            appendFrom(code[i], code[next], 0);
             lasts[i] = lasts[next];
             gone[next] = true;
             joined = true;
@@ -248,6 +252,7 @@ let _propagated = fn(instructions: Array<Instruction>, at: I32, terminator: Term
       if (_onlyReadAfter(dst, read[0], instructions, at, terminator)) {
         _copies[dst] = read[0];
         _copied.push(dst);
+        _copiesOf[read[0]].push(dst);
       }
     },
     _ => {},
@@ -421,9 +426,11 @@ export let cleanupFunction: (Function) -> Function = fn(function) {
     _copied = Array.new<I32>(0);
     _known = Array.new<I32>(0);
     let i = 0;
+    _copiesOf = Array.new<Array<I32>>(0);
 
     while (i < count) {
       _copies[i] = -1;
+      _copiesOf.push(Array.new<I32>(0));
       i++;
     }
     let merged = _merged(blocks, entry);

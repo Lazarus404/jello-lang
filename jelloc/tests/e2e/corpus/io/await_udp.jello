@@ -1,28 +1,22 @@
 // expect: ok
-// pending: std.io.net.Udp is not ported
-load { addr_resolve, random_int } from std;
-import { bind, sendTo, tryRecvFrom, pollFd, payload } from std.io.net.Udp;
-import { create, registerPoll, awaitFuture } from std.io.EventLoop;
-import { pending, complete } from std.concurrency.Future;
+// A process parked on a UDP receive wakes when the datagram arrives.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.net.Udp as Udp;
+import type { Socket, Datagram } from std.net.Udp;
 
-let port = 40000 + random_int(0, 19999);
-let loop = create();
-let addr = addr_resolve("127.0.0.1", port);
-let sock = bind(addr);
-let pkt = bits[8(42)];
-
-let f = pending();
-registerPoll(loop, pollFd(sock), fn(_loop) {
-  let got = tryRecvFrom(sock, 4096);
-  if (got != null) {
-    complete(f, got);
-  }
-});
-
-let _sent = sendTo(sock, pkt, addr, port);
-
-let rec = await f;
-let raw = payload(rec);
-System.assert(Bytes.len(raw) == 1);
-System.assert(Bytes.get_u8(raw, 0) == 42);
-"ok"
+let run = fn(): Bytes {
+  let got = new Inbox<Bytes>();
+  let main = Process.self<Bytes>(got);
+  let sock = Udp.bind("127.0.0.1", 0);
+  let port = sock.port();
+  Process.spawn<I32>(fn(_: Inbox<I32>) { main.send(sock.receive(4096).data); });
+  let sender = Udp.bind("127.0.0.1", 0);
+  sender.sendTo(bits[8(42)], "127.0.0.1", port);
+  let raw = got.receive();
+  sender.close();
+  System.assert(Bytes.len(raw) == 1);
+  System.assert(Bytes.get_u8(raw, 0) == 42);
+  "ok"
+};
+run()

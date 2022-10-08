@@ -76,6 +76,7 @@ export let KIND_BYTES: I32 = 4;
 export let KIND_OBJECT: I32 = 6;
 export let KIND_I64: I32 = 7;
 export let KIND_ENUM: I32 = 14;
+export let KIND_FUNCTION: I32 = 12;
 export let KIND_F64: I32 = 8;
 export let KIND_F32: I32 = 9;
 export let KIND_F16: I32 = 10;
@@ -146,12 +147,27 @@ export let childOf: (I32, I32) -> I32 = fn(id, index) { _edges[_nodes[id * _NODE
 export let wideValueOf: (I32) -> I64 = fn(id) { ((auxOf(id) as I64) << 32) | ((valueOf(id) as I64) & 4294967295) };
 export let lastChild: (I32) -> I32 = fn(id) { childOf(id, childCount(id) - 1) };
 
+let _breaksOut: (I32) -> Bool = fn(_id) { false };
+let _hasBreak: (I32) -> Bool = fn(_id) { false };
+_breaksOut = fn(id) { _hasBreak(childOf(id, 0)) || _hasBreak(childOf(id, 1)) };
+_hasBreak = fn(id) {
+  match (opOf(id)) {
+    Break => true,
+    While => _hasBreak(childOf(id, 0)),
+    _ => {
+      let i = 0;
+      while ((i < childCount(id)) && !_hasBreak(childOf(id, i))) { i++; }
+      i < childCount(id)
+    },
+  }
+};
 let _endsPath: (I32) -> Bool = fn(_id) { false };
 _endsPath = fn(id) {
   match (opOf(id)) {
     Return, Throw, Break, Continue => true,
     IfStatement => (childCount(id) == 3) && _endsPath(childOf(id, 1)) && _endsPath(childOf(id, 2)),
     TryStatement => _endsPath(childOf(id, 0)) && _endsPath(childOf(id, 1)),
+    While => match (opOf(childOf(id, 0))) { Bool => (valueOf(childOf(id, 0)) != 0) && !_breaksOut(id), _ => false },
     Block => {
       let statements = childCount(id) - auxOf(id);
       (statements > 0) && _endsPath(childOf(id, statements - 1))

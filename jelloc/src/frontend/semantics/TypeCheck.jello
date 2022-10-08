@@ -9,7 +9,7 @@ import type { Hir } from frontend.hir.Hir;
 import frontend.hir.Hir as H;
 import { Kind, Op } from frontend.hir.Hir;
 import {
-  beginDoubt, beginTouch, doubt, endDoubt, endTouch, failureCount, noteFailure, poison, poisonLocal, recordFailure, resetFailures, touch, touchLocal, touched,
+  beginDoubt, beginTouch, doubt, endDoubt, endTouch, failureCount, instanceNeed, keepNote, needInstance, noteFailure, poison, poisonLocal, recordFailure, resetFailures, touch, touchLocal, touched,
 } from frontend.semantics.Failures;
 import { internalError } from support.Internal;
 import type { Binding } from frontend.semantics.ModuleScope;
@@ -19,7 +19,9 @@ import {
 } from frontend.semantics.Narrowing;
 import type { SourceSpan, Syntax } from frontend.syntax.Source;
 import { SourceSpan, Syntax } from frontend.syntax.Source;
-import { E0007, E0102, E0103, E0106, E0108, E0213, E0300, E0301, E0302, E0303, E0304, E0305, E0306, E0307, E0308, E0400, E0401, E0402, E0403, E0404, E0408, E0409, E0410, E0411, E0500, E0501, E0600, E0601, E0602, E0603, E0604, E0605, E0701, E0705, E0800, E0809, E0804, E0900, E0901, coded } from support.Codes;
+import type { Located } from frontend.syntax.Rewrite;
+import { Located, rewrite } from frontend.syntax.Rewrite;
+import { E0007, E0102, E0103, E0108, E0109, E0213, E0300, E0301, E0302, E0303, E0304, E0305, E0306, E0307, E0308, E0400, E0401, E0402, E0403, E0404, E0408, E0409, E0410, E0411, E0413, E0500, E0501, E0600, E0601, E0602, E0603, E0604, E0605, E0701, E0705, E0800, E0809, E0804, E0900, E0901, E1000, E1001, coded } from support.Codes;
 
 load { f64_low_bits, f64_high_bits, f32_bits, f16_bits, regexp_check } from std;
 let _f64Low: (Bytes) -> I32 = f64_low_bits;
@@ -99,11 +101,12 @@ let _instances = Array.new<I32>(0);
 let _instanceGlobals = Array.new<I32>(0);
 let _instanceInits = Array.new<I32>(0);
 let _instanceNesting = Array.new<I32>(0);
+let _instanceNeeds = Array.new<Tuple<?SourceSpan, Bytes>>(0);
 let _built = 0;
-let _openReads = Array.new<Tuple<I32, I32>>(0);
+let _openReads = Array.new<Tuple<I32, I32, Tuple<?SourceSpan, Bytes>>>(0);
 let _directFields = Array.new<I32>(0);
 let _captureFloor = 0;
-let _pending = Array.new<Tuple<I32, I32, Array<I32>, I32>>(0);
+let _pending = Array.new<Tuple<I32, I32, Array<I32>, I32, Tuple<?SourceSpan, Bytes>>>(0);
 let _instanceDepth = 0;
 let _NO_NAMES = Array.new<Bytes>(0);
 let _NO_TYPES = Array.new<I32>(0);
@@ -128,6 +131,15 @@ export let currentSpan: () -> ?SourceSpan = fn() { _spanOf(_syntax) };
 export let recover: (Dynamic) -> Bool = fn(error) {
   if (!recordFailure(currentSpan(), error)) { throw error; }
   true
+};
+
+let _needHere = fn(): Tuple<?SourceSpan, Bytes> {
+  let need = instanceNeed();
+  need.0 != null ? need : (currentSpan(), "")
+};
+
+let _needing = fn(need: Tuple<?SourceSpan, Bytes>, name: Bytes): Tuple<?SourceSpan, Bytes> {
+  needInstance(need.0, need.1 != "" ? need.1 : "in " + name + ", which is needed here")
 };
 
 let _spanSyntax = fn(path: Bytes, start: I32, end: I32): Syntax { Syntax.Node(path, start, end, Array.new<Syntax>(0), Array.new<Syntax>(0)) };
@@ -244,7 +256,7 @@ let _arityMismatch = fn(name: Bytes, params: I32, count: I32): Bytes {
 export let checkTypeArgCount: (Bytes, I32, I32) -> Bool = fn(name, ty, count) {
   if (ty < 0) {
     touch(name);
-    throw coded(E0401, "unsupported type: " + name);
+    throw coded(E0401, "unknown type: " + name);
   }
   if (count != _typeParamCount(ty)) { throw _arityMismatch(name, _typeParamCount(ty), count); }
   true
@@ -350,7 +362,7 @@ checkType = fn(ty) { match (ty) {
   Generic(name, args) => match (name) {
     "Array" when (args.len() == 1) => H.arrayType(checkType(args[0])),
     "List" when (args.len() == 1) => H.listType(checkType(args[0])),
-    "Tuple" when (args.len() >= 2) => H.tupleType(_checkTypes(args)),
+    "Tuple" when (args.len() >= 1) => H.tupleType(_checkTypes(args)),
     "Null" when (args.len() == 1) => H.nullType(checkType(args[0])),
     "Array", "List", "Null" => {
       throw _arityMismatch(name, 1, args.len());
@@ -358,7 +370,7 @@ checkType = fn(ty) { match (ty) {
     },
     _ => {
       let named = _namedType(name);
-      if (named < 0) { throw coded(E0401, "unsupported generic type: " + name); }
+      if (named < 0) { throw coded(E0401, "unknown type: " + name); }
       checkTypeArgCount(name, named, args.len());
       let alias = _aliasIndex(named);
       alias >= 0 ? H.substitute(_aliasBodies[alias], _aliasParams[alias], _checkTypes(args)) : _heldFields(H.appliedType(named, _checkTypes(args)))
@@ -370,7 +382,11 @@ checkType = fn(ty) { match (ty) {
     throw coded(E0102, "T... is only the last parameter of a function type");
     -1
   },
-  _ => {
+  Unquote(_) => {
+    throw coded(E1001, "unquote is only allowed inside a quote");
+    -1
+  },
+  Tuple(_) => {
     throw coded(E0401, "tuple types are written Tuple<A, B>");
     -1
   },
@@ -1079,7 +1095,7 @@ let _capture = fn(name: Bytes): I32 {
 
 let _aheadBinding: (Bytes, Bytes) -> Binding = fn(_name, _use) { Binding.Unbound };
 
-let _instanceGlobal = fn(ty: I32, depth: I32): I32 {
+let _instanceGlobal = fn(ty: I32, depth: I32, need: Tuple<?SourceSpan, Bytes>): I32 {
   let at = indexOf(_instances, ty);
   if (at >= 0) { return _instanceGlobals[at]; }
   let global = H.declareGlobal(H.typeName(ty), ty, false);
@@ -1087,6 +1103,7 @@ let _instanceGlobal = fn(ty: I32, depth: I32): I32 {
   _instanceGlobals.push(global);
   _instanceInits.push(-1);
   _instanceNesting.push(depth + 1);
+  _instanceNeeds.push(need);
   global
 };
 
@@ -1094,14 +1111,14 @@ export let prototypeGlobal: (I32) -> I32 = fn(ty) {
   let at = indexOf(_prototypes, ty);
   if (at >= 0) { return _prototypeGlobals[at]; }
   if (H.templateOf(ty) < 0) { internalError("the module of prototype " + H.typeName(ty) + " does not run"); }
-  _instanceGlobal(ty, _instanceDepth)
+  _instanceGlobal(ty, _instanceDepth, _needHere())
 };
 
 export let prototypeValue: (I32) -> I32 = fn(ty) {
   if (_templateBody) { return H.node(Op.ObjectNew, ty, 0, 0, []); }
   if (!H.isOpen(ty)) { return _leaf(Op.Global, ty, prototypeGlobal(ty)); }
   let read = _leaf(Op.Global, ty, -1);
-  _openReads.push((read, _instanceDepth));
+  _openReads.push((read, _instanceDepth, _needHere()));
   read
 };
 
@@ -1632,7 +1649,7 @@ let _checkGenericCall = fn(t: I32, name: Bytes, typeArgs: Array<AstType>, args: 
     let call = H.opOf(made) == Op.Block ? H.lastChild(made) : made;
     if (deferred) { H.unify(H.innerOf(ty), expected); }
     _checkTypeArgs(t, name, types);
-    if (!_templateBody) { _pending.push((call, t, types, _instanceDepth + 1)); }
+    if (!_templateBody) { _pending.push((call, t, types, _instanceDepth + 1, _needHere())); }
     made
   } }
 };
@@ -1931,14 +1948,21 @@ export let takeRegexpInits: () -> Array<I32> = fn() {
 let _unsupportedExpr = fn(expr: AstExpr): Bytes {
   let feature = match (expr) {
     LetExpr(_, _, _, _) => {
-      return coded(E0900, "a `let` test can only be the condition of an `if` or a `while`");
+      return coded(E0109, "a `let` test can only be the condition of an `if` or a `while`");
       ""
     },
     Spread(_) => "a spread here is",
     TypeApply(_, _) => "type application outside a call is",
     With(_, _, _) => "`with` expressions are",
     Await(_) => "`await` is",
-    Quote(_, _), Unquote(_) => "macros are",
+    Quote(_, _) => {
+      return coded(E1001, "quote is only allowed in a macro body");
+      ""
+    },
+    Unquote(_) => {
+      return coded(E1001, "unquote is only allowed inside a quote");
+      ""
+    },
     _ => "this expression is",
   };
   coded(E0900, feature + " not supported yet")
@@ -1948,11 +1972,17 @@ export let unsupportedStatement: (Stmt) -> Bytes = fn(statement) {
   let feature = match (statement) {
     Prototype(_, _, _, _) => "prototypes declared inside a function are",
     Typedef(_, _, _, _) => "typedefs declared inside a function are",
-    Macro(_, _, _, _) => "macros are",
+    Macro(_, _, _, _) => {
+      return coded(E1000, "a macro is defined only at the top level of a module");
+      ""
+    },
     ImportModule(_, _, _), ImportFrom(_, _, _) => "imports inside a function are",
     Enum(_, _, _, _) => "enums declared inside a function are",
     LetStmt(_, _, _, _, _, _, _) => "exports inside a function are",
-    Return(_) => "`return` outside a function is",
+    Return(_) => {
+      return coded(E0307, "return outside a function");
+      ""
+    },
     Break => {
       return coded(E0307, "break outside loop");
       ""
@@ -1989,7 +2019,7 @@ let _checkPipe = fn(value: AstExpr, body: AstExpr, topic: Bool, expected: I32): 
       },
       _ => {
         enterSyntax(syntax);
-        throw coded(E0106, "a pipeline body that does not use % must be a call");
+        throw coded(E0413, "a pipeline body that does not use % must be a call");
       },
     };
   }
@@ -2419,7 +2449,7 @@ _aheadBinding = fn(name, use) {
   match (_statements[i]) {
     LetStmt(_, _, pattern, _, annotation, value, _) when (!isLoaded(value)) => {
       if (!isBindPattern(pattern)) { throw coded(E0304, name + " is " + use + " by " + _bodyName + " before the `let` that destructures it is checked; move that `let` earlier"); }
-      if (annotation == null) { throw coded(E0304, name + " is " + use + " by " + _bodyName + " before " + name + "'s initializer is checked; annotate " + name); }
+      if (annotation == null) { throw coded(E0304, name + " is " + use + " by " + _bodyName + " before " + name + "'s initialiser is checked; annotate " + name); }
       Binding.Global(annotatedGlobal(i))
     },
     _ => Binding.Unbound,
@@ -2466,12 +2496,53 @@ let _checkLocal = fn(pattern: Pattern, isConst: Bool, typeParams: Array<TypePara
   if (typeParams.len() != 0) { throw coded(E0605, "local bindings do not support type parameters"); }
   _requireFresh(name);
   let annotated = checkAnnotation(annotation);
-  let (checked, suspect) = checkInitializer(value, annotated, name);
+  let own = _literalType(value, annotated);
+  if ((own >= 0) && !_names(value, name)) { own = -1; }
+  let early = own >= 0 ? _declare(name, own, !isConst) : -1;
+  let (checked, suspect) = checkInitializer(value, own >= 0 ? own : annotated, name);
   let ty = H.typeOf(checked);
-  let binding = _declare(name, ty, !isConst);
+  let binding = early >= 0 ? early : _declare(name, ty, !isConst);
   if (suspect) { poisonLocal(binding); }
   match (H.opOf(checked)) { Present => narrow(binding, !isConst), _ => false };
   H.node(isConst ? Op.Const : Op.Let, ty, binding, H.bytesId(name), [checked])
+};
+
+let _names = fn(value: AstExpr, name: Bytes): Bool {
+  let found = false;
+  rewrite(Located.Expression(value, syntaxChild(0)), fn(node: Located): ?Located {
+    match (node) { Expression(Variable(read), _) when (read == name) => { found = true; }, _ => {} };
+    null
+  });
+  found
+};
+
+let _literalType = fn(value: AstExpr, annotated: I32): I32 {
+  let params = Array.new<Parameter>(0);
+  let result: ?AstType = null;
+  let literal = false;
+
+  match (value) {
+    Function(written, returned, _, false) => {
+      params = written;
+      result = returned;
+      literal = true;
+    }, _ => {}
+  };
+  if (!literal) { return -1; }
+  if (annotated >= 0) { return H.isKind(annotated, Kind.Function) ? annotated : -1; }
+  let types = Array.new<I32>(0);
+  let known = true;
+  let i = 0;
+
+  while (known && (i < params.len())) {
+    match (params[i]) { Parameter(_, written, kind) => {
+      if ((written == null) || (_paramRank(kind) != 0)) { known = false; } else { try { types.push(checkType(written)); } catch { known = false; } }
+    } };
+    i++;
+  }
+  if (!known) { return -1; }
+  if (result == null) { return H.functionType(types, H.newVar(false)); }
+  try { H.functionType(types, checkType(result)) } catch { -1 }
 };
 
 let _nullResult = fn(message: Bytes): I32 {
@@ -2611,6 +2682,16 @@ let _recoverStatement = fn(error: Dynamic, syntax: Syntax, scopeStart: I32, loop
   last ? _unary(Op.Throw, 0, _leaf(Op.Null, H.TYPE_NULL, 0)) : H.node(Op.Block, 0, 0, 0, [])
 };
 
+let _valueless: (AstExpr) -> Bool = fn(_expr) { false };
+_valueless = fn(expr) {
+  match (expr) {
+    BlockExpr(Block(_, tail)) => tail == null,
+    If(_, thenBranch, elseBranch) => _valueless(thenBranch) && (_isNull(elseBranch) || _valueless(elseBranch)),
+    Try(Block(_, body), _, Block(_, handler)) => (body == null) && (handler == null),
+    _ => false,
+  }
+};
+
 let _checkBlockBody = fn(prefix: Array<I32>, statements: Array<Stmt>, tail: ?AstExpr, first: I32, expected: I32, tailKind: I32): I32 {
   let outerStart = _scopeStart;
   _scopeStart = tailKind == _RESULT_TAIL ? 0 : _nameIds.len();
@@ -2650,8 +2731,7 @@ let _checkBlockBody = fn(prefix: Array<I32>, statements: Array<Stmt>, tail: ?Ast
   }
   let ty = 0;
   let hasTail = false;
-  let statementTail = (tailKind == _STATEMENT_TAIL)
-    || ((tailKind == _RESULT_TAIL) && (tail != null) && match (tail) { BlockExpr(Block(_, inner)) => inner == null, _ => false });
+  let statementTail = (tailKind == _STATEMENT_TAIL) || ((tailKind == _RESULT_TAIL) && (tail != null) && _valueless(tail));
 
   if (tail != null) {
     let index = first + (statements.len() as I32);
@@ -3200,7 +3280,7 @@ let _checkLocalTemplate = fn(name: Bytes, typeParams: Array<TypeParam>, value: A
   H.node(Op.Block, 0, 0, 0, [])
 };
 
-let _instance = fn(t: I32, types: Array<I32>, depth: I32): I32 {
+let _instance = fn(t: I32, types: Array<I32>, depth: I32, need: Tuple<?SourceSpan, Bytes>): I32 {
   match (_templates[t]) { Template(name, params, value, syntax, module, _, names, envTypes, locals, keys, functions) => match (value) {
     Function(_, _, body, _) => {
       let key = H.tupleType(types);
@@ -3208,15 +3288,21 @@ let _instance = fn(t: I32, types: Array<I32>, depth: I32): I32 {
       if (found >= 0) { return functions[found]; }
       if (depth > H.MAX_INSTANCE_DEPTH) { throw H.nestsTooDeep(name); }
       let template = _templateFunctions[t];
-      let index = generateFunction(name + "<" + H.typeArgNames(key) + ">", _functionParams[template], H.substitute(_functionTypes[template], params, types));
+      let instance = name + "<" + H.typeArgNames(key) + ">";
+      let index = generateFunction(instance, _functionParams[template], H.substitute(_functionTypes[template], params, types));
       keys.push(key);
       functions.push(index);
       let outerScope = useModuleScope(module);
       let outerDepth = _instanceDepth;
+      let outerNeed = _needing(need, instance);
+      let failure: ?Bytes = null;
       _instanceDepth = depth;
-      _checkIsolated(index, body, syntax, "", names, _joinTypes(envTypes, types), false, locals);
+      let scope = _joinTypes(envTypes, types);
+      try { _checkIsolated(index, body, syntax, "", names, scope, false, locals); } catch (e) { failure = keepNote(Std.string(e)); }
       useModuleScope(outerScope);
       _instanceDepth = outerDepth;
+      needInstance(outerNeed.0, outerNeed.1);
+      if (failure != null) { throw failure; }
       index
     },
     _ => {
@@ -3241,18 +3327,18 @@ export let instantiateTemplates: () -> Bool = fn() {
   let i = 0;
 
   while (i < _pending.len()) {
-    let (call, t, types, depth) = _pending[i];
+    let (call, t, types, depth, need) = _pending[i];
     let outer = enterNode(call);
 
     match (_templates[t]) { Template(name, params, _, _, _, _, _, _, _, _, _) => {
       _settleTypeArgs(types, params, name);
       _checkTypeArgs(t, name, types);
     } };
-    H.setCallee(call, _instance(t, types, depth));
+    H.setCallee(call, _instance(t, types, depth, need));
     enterSyntax(outer);
     i++;
   }
-  _pending = Array.new<Tuple<I32, I32, Array<I32>, I32>>(0);
+  _pending = Array.new<Tuple<I32, I32, Array<I32>, I32, Tuple<?SourceSpan, Bytes>>>(0);
   true
 };
 
@@ -3293,16 +3379,16 @@ export let resolveInstanceReads: () -> Bool = fn() {
   let any = _openReads.len() > 0;
 
   while (i < _openReads.len()) {
-    let (read, depth) = _openReads[i];
+    let (read, depth, need) = _openReads[i];
     let outer = enterNode(read);
     let template = H.templateOf(H.typeOf(read));
     let args = H.templateArgs(H.typeOf(read));
     _settleTypeArgs(args, H.enumParams(template), H.typeName(template));
-    H.setGlobal(read, _instanceGlobal(H.appliedType(template, args), depth));
+    H.setGlobal(read, _instanceGlobal(H.appliedType(template, args), depth, need));
     enterSyntax(outer);
     i++;
   }
-  _openReads = Array.new<Tuple<I32, I32>>(0);
+  _openReads = Array.new<Tuple<I32, I32, Tuple<?SourceSpan, Bytes>>>(0);
   any
 };
 
@@ -3320,6 +3406,7 @@ export let buildInstances: ((I32, Bytes, Array<PrototypeField>) -> I32) -> Bool 
     let (outerNames, outerTypes) = useTypeParams(paramNames(H.enumParams(template)), H.templateArgs(ty));
     let outerDepth = _instanceDepth;
     let failure: ?Bytes = null;
+    let outerNeed = _needing(_instanceNeeds[at], H.typeName(ty));
     _instanceDepth = _instanceNesting[at];
     _built++;
 
@@ -3328,10 +3415,11 @@ export let buildInstances: ((I32, Bytes, Array<PrototypeField>) -> I32) -> Bool 
         Prototype(_, name, _, fields) => { _instanceInits[at] = build(ty, name, fields); },
         _ => internalError("a prototype expected"),
       };
-    } catch (e) { failure = Std.string(e); }
+    } catch (e) { failure = keepNote(Std.string(e)); }
     useTypeParams(outerNames, outerTypes);
     _instanceDepth = outerDepth;
     useModuleScope(outerScope);
+    needInstance(outerNeed.0, outerNeed.1);
     if (failure != null) { throw failure; }
     enterSyntax(outer);
   }
@@ -3424,13 +3512,14 @@ export let beginCheck: () -> Bool = fn() {
   _instanceGlobals = Array.new<I32>(0);
   _instanceInits = Array.new<I32>(0);
   _instanceNesting = Array.new<I32>(0);
-  _openReads = Array.new<Tuple<I32, I32>>(0);
+  _instanceNeeds = Array.new<Tuple<?SourceSpan, Bytes>>(0);
+  _openReads = Array.new<Tuple<I32, I32, Tuple<?SourceSpan, Bytes>>>(0);
   _built = 0;
   _aliases = Array.new<I32>(0);
   _aliasParams = Array.new<Array<I32>>(0);
   _aliasBodies = Array.new<I32>(0);
   _laterType = fn(_name: Bytes): I32 { -1 };
-  _pending = Array.new<Tuple<I32, I32, Array<I32>, I32>>(0);
+  _pending = Array.new<Tuple<I32, I32, Array<I32>, I32, Tuple<?SourceSpan, Bytes>>>(0);
   _instanceDepth = 0;
   _literals = Array.new<Tuple<I32, Bytes, Bool>>(0);
   _conversions = Array.new<I32>(0);

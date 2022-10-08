@@ -1,6 +1,7 @@
 package std.core;
 
 load {
+  regexp_check,
   regexp_compile,
   regexp_source,
   regexp_flags,
@@ -19,7 +20,14 @@ load {
   regexp_find_at,
 } from std;
 
-export let compile: (Bytes, Bytes) -> Dynamic = regexp_compile;
+let _problem: (Bytes, Bytes) -> Bytes = regexp_check;
+let _compile: (Bytes, Bytes) -> Dynamic = regexp_compile;
+
+export let compile = fn(pattern: Bytes, flags: Bytes): Dynamic {
+  let re = _compile(pattern, flags);
+  if (re == null) { throw "RegExp.compile: " + _problem(pattern, flags); }
+  re
+};
 export let source: (Dynamic) -> Bytes = regexp_source;
 export let flags: (Dynamic) -> Bytes = regexp_flags;
 export let matchPrefix: (Bytes, Dynamic) -> Dynamic = regexp_match_prefix;

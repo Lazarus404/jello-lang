@@ -4,7 +4,7 @@ import type { Hir } from frontend.hir.Hir;
 import type { SourceSpan } from frontend.syntax.Source;
 import { internalError } from support.Internal;
 import {
-  KIND_ATOM, KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_I32, KIND_I64, KIND_OBJECT, Kind, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, TYPE_OBJECT, TYPE_U64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
+  KIND_ATOM, KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_FUNCTION, KIND_I32, KIND_I64, KIND_OBJECT, Kind, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, TYPE_OBJECT, TYPE_U64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
   fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, integerBits, isFloatKind, isFloatType, isKind, isNumberType, isObject, isPrototype, kindOf, memberCount, memberType, nativeCount, nativeTypeOf, nodeCount, opOf, readsExactly, rootNode, spanCount, spanEndOf, spanPathOf,
   segmentType, slotType, spanOf, spanStartOf, typeArg, typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.hir.Hir;
@@ -221,9 +221,13 @@ let _global = fn(id: I32): I32 {
 let _binding = fn(parent: I32, index: I32, programBody: Bool) {
   let binding = _child(parent, index);
   _arity(binding, 1);
+  let local = match (opOf(binding)) { Let, Const => true, _ => false };
+  let early = local && match (opOf(childOf(binding, 0))) { FunctionRef => true, _ => false };
+  if (early) { _declare(valueOf(binding), typeOf(binding), match (opOf(binding)) { Let => true, _ => false }); }
   if (_operand(binding, 0) != typeOf(binding)) { _fail("binding type mismatch"); }
 
   match (opOf(binding)) {
+    Let, Const when (early) => null,
     Let, Const => _declare(valueOf(binding), typeOf(binding), match (opOf(binding)) { Let => true, _ => false }),
     InitGlobal => {
       if (!programBody) { _fail("global initialized outside the program body"); }
@@ -425,7 +429,7 @@ _expr = fn(id) {
     },
     IsKind => {
       let code = valueOf(id);
-      let known = (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64) || (code == KIND_ATOM) || (code == KIND_OBJECT) || isFloatKind(code)
+      let known = (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64) || (code == KIND_ATOM) || (code == KIND_OBJECT) || (code == KIND_FUNCTION) || isFloatKind(code)
         || ((code == KIND_ENUM) && isKind(auxOf(id), Kind.Enum));
       if (!known) { _fail("kind test of an unknown kind"); }
       _typed(id, [TYPE_DYNAMIC], TYPE_BOOL, "kind test requires a Dynamic operand")

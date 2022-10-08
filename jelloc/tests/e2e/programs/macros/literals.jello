@@ -1,0 +1,26 @@
+// expect: 7 -7 9000000000 2.5 true hi null NaN -Infinity
+// An unquoted value that is not a Fragment is a literal; an argument written as a literal, with
+// or without a minus, has a value Macro.literal gives. NaN and Infinity, which have no literal,
+// are made as they are computed.
+macro show(value) {
+  quote.expr { Std.string(unquote(value)) };
+}
+
+macro literals(i, n, l, f, b, s) {
+  let parts = [
+    quote.expr { show(unquote(Macro.literal(i) as I32)) },
+    quote.expr { show(unquote(Macro.literal(n) as I32)) },
+    quote.expr { show(unquote(Macro.literal(l) as I64)) },
+    quote.expr { show(unquote(Macro.literal(f) as F64)) },
+    quote.expr { show(unquote(Macro.literal(b) as Bool)) },
+    quote.expr { show(unquote(Macro.literal(s) as Bytes)) },
+    quote.expr { show(unquote(null)) },
+    quote.expr { show(unquote(0.0 / 0.0)) },
+    quote.expr { show(unquote(-1.0 / 0.0)) }
+  ];
+  let out = parts[0]; let k = 1;
+  while (k < parts.len()) { out = quote.expr { unquote(out) + " " + unquote(parts[k]) }; k++; }
+  Macro.emit(out);
+}
+
+literals(7, -7, 9000000000i64, 2.5, true, "hi")

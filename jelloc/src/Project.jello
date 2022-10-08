@@ -49,6 +49,7 @@ export let findProject = fn(start: Bytes): Bytes {
 
 let _path = "";
 let _text = "";
+let _json: ?Json = null;
 
 let _fail = fn(at: I32, code: Bytes, message: Bytes) {
   throw sourceDiagnostic(_path, _text, at, coded(code, message));
@@ -56,8 +57,10 @@ let _fail = fn(at: I32, code: Bytes, message: Bytes) {
 };
 
 let _read = fn(path: Bytes): Json {
+  if ((path == _path) && (_json != null)) { return _json; }
   _path = path;
   _text = readText(path);
+  _json = null;
   let (value, message, at) = parseJson(_text);
   if (value == null) { _fail(at, E0211, "invalid JSON: " + message); }
 
@@ -67,6 +70,7 @@ let _read = fn(path: Bytes): Json {
       null
     }
   };
+  _json = value;
   value
 };
 
@@ -201,4 +205,26 @@ export let loadProject = fn(root: Bytes): Project {
     d++;
   }
   Project.Project(root, sources, tests, libraries)
+};
+
+export let compileDefaults = fn(dir: Bytes): Tuple<Bytes, Bytes> {
+  let entry = "src/Main.jello";
+  let name = "";
+  let path = inDirectory(dir, "jello.json");
+
+  if (exists(path)) {
+    let manifest = _read(path);
+    entry = _string(manifest, "entry", inDirectory(_string(manifest, "src", "src"), "Main.jello"));
+    name = _string(manifest, "name", "");
+  }
+  let base = name == "" ? baseName(_realPath(dir)) : name;
+  let file = "";
+  let i = 0;
+
+  while (i < base.len()) {
+    let c = Bytes.get_u8(base, i);
+    file = file + (((c == " ".code) || (c == "/".code)) ? "-" : Bytes.slice(base, i, 1));
+    i++;
+  }
+  (inDirectory(dir, entry), file == "" ? "main" : file)
 };

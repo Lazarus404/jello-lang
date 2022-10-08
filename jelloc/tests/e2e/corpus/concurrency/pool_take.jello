@@ -1,7 +1,6 @@
 // expect: ok
-// pending: std.concurrency.Pool is not ported
-import { create, submit, take, shutdown } from std.concurrency.Pool;
+import std.concurrent.Job as Job;
+import type { Job } from std.concurrent.Job;
 
-let pool = create(1);
-submit(pool, 42);
-(take(pool) == 42) ? "ok" : "bad"
+let job = Job.start<I32>(fn(): I32 { 42 });
+(job.join() == 42) ? "ok" : "bad"

@@ -1,7 +1,7 @@
 package frontend.semantics;
 
 import type { BinaryOp, Expr as AstExpr, Type as AstType } from frontend.syntax.Ast;
-import { BinaryOp } from frontend.syntax.Ast;
+import { BinaryOp, Type as AstType } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { internalError } from support.Internal;
 import { Kind, Op } from frontend.hir.Hir;
@@ -136,6 +136,16 @@ export let storable: (I32) -> I32 = fn(operand) {
 
 let _deferred = fn(target: I32): Bool { inTemplate() && H.isParametric(target) };
 
+let _wideLiteral = fn(id: I32): Bool {
+  match (H.opOf(id)) {
+    I32 => {
+      let value = H.wideValueOf(id);
+      (value < -2147483648) || (value > 2147483647)
+    },
+    _ => false,
+  }
+};
+
 let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   let target = checkType(targetType);
   let operand = checkOperand(value, 0, -1);
@@ -154,6 +164,14 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   if (H.typeOf(present) == target) { return present; }
 
   match ((H.kindOf(H.typeOf(present)), H.kindOf(target))) {
+    (Var, _) when (H.isIntegerType(target) && _wideLiteral(present)) => {
+      H.unify(H.typeOf(present), target);
+      present
+    },
+    (Var, _) when (H.isFloatType(target) && _wideLiteral(present)) => {
+      H.unify(H.typeOf(present), H.TYPE_I64);
+      H.node(Op.Convert, target, 0, 0, [present])
+    },
     (Var, _) when (H.isInteger(H.typeOf(present)) && H.isIntegerType(target)) => integerConversion(present, target),
     _ when (H.isIntegerType(H.typeOf(present)) && H.isIntegerType(target)) => H.node(Op.Convert, target, 0, 0, [present]),
     _ when ((H.isInteger(H.typeOf(present)) || H.isFloatType(H.typeOf(present))) && H.isNumberType(target)) => {
@@ -175,6 +193,14 @@ export let kindTest: (I32, I32) -> I32 = fn(operand, target) {
   H.node(Op.IsKind, H.TYPE_BOOL, code, code == H.KIND_ENUM ? target : 0, [operand])
 };
 
+export let isAnyFunction: (AstType) -> Bool = fn(written) {
+  match (written) { Named(name) => name == "__fn__", _ => false }
+};
+
+export let functionTest: (I32) -> I32 = fn(operand) {
+  H.node(Op.IsKind, H.TYPE_BOOL, H.KIND_FUNCTION, 0, [operand])
+};
+
 let _is = fn(value: AstExpr, targetType: AstType): I32 {
   let operand = checkOperand(value, 0, -1);
 
@@ -182,7 +208,7 @@ let _is = fn(value: AstExpr, targetType: AstType): I32 {
     enterSyntax(syntaxChild(0));
     throw coded(E0406, "is tests a Dynamic value, not " + H.typeName(H.typeOf(operand)));
   }
-  kindTest(operand, checkType(targetType))
+  isAnyFunction(targetType) ? functionTest(operand) : kindTest(operand, checkType(targetType))
 };
 
 export let checkValueExpr: (AstExpr, I32) -> I32 = fn(expr, _expected) {

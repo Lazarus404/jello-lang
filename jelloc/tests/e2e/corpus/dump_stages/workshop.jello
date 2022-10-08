@@ -1,10 +1,9 @@
 // expect: ok
-// pending: parameter types inferred from use
 // Learning-tool workshop: closures, blocks, match, while, objects, try/catch.
 
 let scale: I32 = 2;
 
-let double = fn(n) {
+let double = fn(n: I32): I32 {
   return n * scale;
 };
 
@@ -26,7 +25,7 @@ while (counter < 3) {
 }
 
 let rec = { label: "workshop", value: sum_block };
-let label: Bytes = rec.label;
+let label: Bytes = rec.label as Bytes;
 
 let trapped = try {
   if (double(1) == 0) {
@@ -34,7 +33,7 @@ let trapped = try {
   }
   "ok"
 } catch (e) {
-  e
+  e as Bytes
 };
 
 System.assert(double(21) == 42);

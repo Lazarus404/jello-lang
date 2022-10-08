@@ -118,12 +118,14 @@ export let join = fn(parts: Array<Bytes>, separator: Bytes): Bytes {
 };
 
 export let replace = fn(text: Bytes, pattern: Bytes, replacement: Bytes): Bytes {
+  if (Bytes.len(pattern) == 0) { throw "Bytes.replace requires a pattern"; }
   let at = indexOf(text, pattern);
   if (at < 0) { return text; }
   substring(text, 0, at) + replacement + substring(text, at + Bytes.len(pattern), Bytes.len(text))
 };
 
 export let replaceAll = fn(text: Bytes, pattern: Bytes, replacement: Bytes): Bytes {
+  if (Bytes.len(pattern) == 0) { throw "Bytes.replaceAll requires a pattern"; }
   join(split(text, pattern), replacement)
 };
 

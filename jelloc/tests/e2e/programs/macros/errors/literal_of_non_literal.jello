@@ -1,0 +1,6 @@
+// error: 6:1: macro m failed: Macro.literal: the fragment is not a literal [E1003]
+macro m(x) {
+  quote.expr { unquote(Macro.literal(x) as I32) };
+}
+let y = 1;
+m(y)

@@ -25,6 +25,31 @@ export enum Syntax {
 export let spanPath: (SourceSpan) -> Bytes = fn(span) { match (span) { Span(path, _, _) => path } };
 export let spanStart: (SourceSpan) -> I32 = fn(span) { match (span) { Span(_, start, _) => start } };
 export let spanEnd: (SourceSpan) -> I32 = fn(span) { match (span) { Span(_, _, end) => end } };
+export let syntaxSpan = fn(syntax: Syntax): SourceSpan { match (syntax) { Node(path, start, end, _, _) => SourceSpan.Span(path, start, end) } };
+export let syntaxChildren = fn(syntax: Syntax): Array<Syntax> { match (syntax) { Node(_, _, _, children, _) => children } };
+export let syntaxPatterns = fn(syntax: Syntax): Array<Syntax> { match (syntax) { Node(_, _, _, _, patterns) => patterns } };
+
+let _relocated: (Syntax, Bytes, I32, I32) -> Syntax = fn(syntax, _path, _start, _end) { syntax };
+_relocated = fn(syntax, path, start, end) {
+  match (syntax) { Node(_, _, _, children, patterns) => {
+    let movedChildren = Array.new<Syntax>(0);
+    let movedPatterns = Array.new<Syntax>(0);
+    let i = 0;
+
+    while (i < children.len()) {
+      movedChildren.push(_relocated(children[i], path, start, end));
+      i++;
+    }
+    i = 0;
+
+    while (i < patterns.len()) {
+      movedPatterns.push(_relocated(patterns[i], path, start, end));
+      i++;
+    }
+    Syntax.Node(path, start, end, movedChildren, movedPatterns)
+  } }
+};
+export let relocated = fn(syntax: Syntax, path: Bytes, start: I32, end: I32): Syntax { _relocated(syntax, path, start, end) };
 
 let _byteAt = fn(src: Bytes, i: I32): I32 {
   ((i < 0) || (i >= src.len())) ? -1 : Bytes.get_u8(src, i)

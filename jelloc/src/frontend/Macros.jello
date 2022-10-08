@@ -1,0 +1,803 @@
+package frontend;
+
+import type { Expr, Pattern, Program, QuoteBody, Stmt, Type } from frontend.syntax.Ast;
+import { BinaryOp, Expr, IntSize, FloatSize, Package, Pattern, Program, Stmt, Type, UnaryOp, integerValue, wideIntegerValue } from frontend.syntax.Ast;
+import type { Located } from frontend.syntax.Rewrite;
+import { Located, rewrite } from frontend.syntax.Rewrite;
+import type { SourceSpan, Syntax } from frontend.syntax.Source;
+import { SourceSpan, Syntax, relocated, sourceLocation, spanStart, syntaxChildren, syntaxPatterns, syntaxSpan } from frontend.syntax.Source;
+import { isName, lexFailure, lexFile } from frontend.syntax.Lexer;
+import { parseFailureSpan, parseProgram, programSyntax, takeSyntaxErrors } from frontend.syntax.Parser;
+import { appendFrom, indexOf } from support.Arrays;
+import { E0901, E1000, E1001, E1002, E1003, coded, uncoded } from support.Codes;
+import { internalError } from support.Internal;
+import { concatAll, hexByte, joined, startsWith } from support.Text;
+
+load { image_run } from vm;
+
+let _imageRun: (Bytes, Bytes, I64) -> Bytes = image_run;
+
+let _MAX_DEPTH = 32;
+let _MAX_NODES = 4096;
+let _FUEL: I64 = 100000000;
+
+enum Definition {
+  Definition(path: Bytes, name: Bytes, exported: Bool, index: I32, params: Array<Bytes>, quotes: Array<Tuple<QuoteBody, Syntax>>, scope: Array<Tuple<Bytes, I32>>);
+}
+
+enum Fragment {
+  Argument(index: I32);
+  Quoted(index: I32, holes: Array<Fragment>);
+  Parsed(source: Bytes, kind: Bytes);
+  Name(name: Bytes);
+  Literal(kind: I32, text: Bytes);
+}
+
+let _definitions = Array.new<Definition>(0);
+let _imagePaths = Array.new<Bytes>(0);
+let _images = Array.new<Bytes>(0);
+let _std = "";
+let _names = 0;
+let _failure: ?SourceSpan = null;
+
+let _visible = Array.new<Tuple<Bytes, I32>>(0);
+let _nodes = 0;
+let _depth = 0;
+
+let _macro = -1;
+let _arguments = Array.new<Expr>(0);
+let _placed = Array.new<Bool>(0);
+let _call = Syntax.Node("", 0, 0, [], []);
+
+export let macroFailureSpan: () -> ?SourceSpan = fn() { _failure };
+
+export let beginMacros = fn(std: Bytes) {
+  _definitions = Array.new<Definition>(0);
+  _imagePaths = Array.new<Bytes>(0);
+  _images = Array.new<Bytes>(0);
+  _std = std;
+  _names = 0;
+  _failure = null;
+  null
+};
+
+let _leaf = fn(at: Syntax): Syntax { match (at) { Node(path, start, end, _, _) => Syntax.Node(path, start, end, [], []) } };
+let _node = fn(at: Syntax, children: Array<Syntax>): Syntax { match (at) { Node(path, start, end, _, _) => Syntax.Node(path, start, end, children, []) } };
+
+let _at = fn(syntax: Syntax, message: Bytes): Bytes {
+  _failure = syntaxSpan(syntax);
+  message
+};
+
+let _failed = fn(code: Bytes, message: Bytes): Bytes {
+  let name = match (_definitions[_macro]) { Definition(_, name, _, _, _, _, _) => name };
+  _at(_call, coded(code, "macro " + name + " " + message))
+};
+
+let _body: (Located, Array<Tuple<QuoteBody, Syntax>>) -> Located = fn(body, _quotes) { body };
+
+let _quotedCall = fn(index: I32, holes: Array<Tuple<Expr, Syntax>>, syntax: Syntax): Tuple<Expr, Syntax> {
+  let values = Array.new<Expr>(0);
+  let valueSyntax = Array.new<Syntax>(0);
+  let i = 0;
+
+  while (i < holes.len()) {
+    let (value, at) = holes[i];
+    values.push(Expr.Cast(value, Type.Named("Dynamic")));
+    valueSyntax.push(_node(at, [at]));
+    i++;
+  }
+  let callee = Expr.Member(Expr.Variable("Macro"), "quoted");
+  (Expr.Call(callee, [], [Expr.Integer(Std.string(index), IntSize.Infer), Expr.Array(values)]),
+    _node(syntax, [_node(syntax, [_leaf(syntax)]), _leaf(syntax), _node(syntax, valueSyntax)]))
+};
+
+let _quoted = fn(body: QuoteBody, syntax: Syntax): Located {
+  match (body) {
+    Expression(value) => Located.Expression(value, syntaxChildren(syntax)[0]),
+    Statement(value) => Located.Statements([value], [syntaxChildren(syntax)[0]]),
+    Statements(values) => Located.Statements(values, syntaxChildren(syntax)),
+    Pattern(value) => Located.Pattern(value, syntaxPatterns(syntax)[0]),
+    Type(value) => Located.Type(value),
+  }
+};
+
+let _holes = fn(body: QuoteBody, syntax: Syntax): Array<Tuple<Expr, Syntax>> {
+  let holes = Array.new<Tuple<Expr, Syntax>>(0);
+  rewrite(_quoted(body, syntax), fn(node: Located): ?Located {
+    match (node) {
+      Expression(Unquote(value), at) => {
+        holes.push((value, syntaxChildren(at)[0]));
+        node
+      },
+      Pattern(Unquote(value), at) => {
+        holes.push((value, syntaxChildren(at)[0]));
+        node
+      },
+      Type(Unquote(name)) => {
+        holes.push((Expr.Variable(name), _leaf(syntax)));
+        node
+      },
+      Expression(Quote(_, _), at) => {
+        throw _at(at, coded(E1001, "a quote cannot hold another quote"));
+        null
+      },
+      _ => null,
+    }
+  });
+  holes
+};
+
+_body = fn(body, quotes) {
+  rewrite(body, fn(node: Located): ?Located {
+    match (node) {
+      Statements(values, syntax) => match (values[0]) {
+        ImportModule(_, _, _), ImportFrom(_, _, _) => {
+          throw _at(syntax[0], coded(E1000, "a macro body cannot import or load"));
+          null
+        },
+        Macro(_, _, _, _) => {
+          throw _at(syntax[0], coded(E1000, "a macro body cannot define a macro"));
+          null
+        },
+        Expression(Quote(_, _)) => {
+          let emit = Expr.Member(Expr.Variable("Macro"), "emit");
+
+          match (_body(Located.Expression(match (values[0]) { Expression(quoted) => quoted, _ => Expr.Null }, syntaxChildren(syntax[0])[0]), quotes)) {
+            Expression(call, at) => Located.Statements([Stmt.Expression(Expr.Call(emit, [], [call]))], [_node(syntax[0], [_node(at, [_node(at, [_leaf(at)]), at])])]),
+            _ => null,
+          }
+        },
+        _ => null,
+      },
+      Expression(Quote(_, quoted), syntax) => {
+        let index = quotes.len() as I32;
+        quotes.push((quoted, syntax));
+        let holes = _holes(quoted, syntax);
+        let made = Array.new<Tuple<Expr, Syntax>>(0);
+        let i = 0;
+
+        while (i < holes.len()) {
+          let (value, at) = holes[i];
+          match (_body(Located.Expression(value, at), quotes)) { Expression(out, outAt) => made.push((out, outAt)), _ => null };
+          i++;
+        }
+        let (call, at) = _quotedCall(index, made, syntax);
+        Located.Expression(call, at)
+      },
+      Expression(Unquote(_), syntax) => {
+        throw _at(syntax, coded(E1001, "unquote is only allowed inside a quote"));
+        null
+      },
+      _ => null,
+    }
+  })
+};
+
+let _macros = fn(statements: Array<Stmt>, syntax: Array<Syntax>): Array<Tuple<Stmt, Syntax>> {
+  let out = Array.new<Tuple<Stmt, Syntax>>(0);
+  let i = 0;
+
+  while (i < statements.len()) {
+    match (statements[i]) { Macro(_, _, _, _) => out.push((statements[i], syntax[i])), _ => null };
+    i++;
+  }
+  out
+};
+
+let _ARGUMENTS = "__arguments";
+let _BODY = "__body";
+
+export let expanderSource = fn(statements: Array<Stmt>, syntax: Array<Syntax>): Tuple<Bytes, Array<Located>> {
+  let macros = _macros(statements, syntax);
+  let functions = Array.new<Bytes>(0);
+  let bodies = Array.new<Located>(0);
+  let i = 0;
+
+  while (i < macros.len()) {
+    match (macros[i]) { (Macro(_, _, params, body), at) => {
+      bodies.push(_body(Located.Statements(body, syntaxChildren(at)), Array.new<Tuple<QuoteBody, Syntax>>(0)));
+      let bindings = Array.new<Bytes>(0);
+      let p = 0;
+
+      while (p < params.len()) {
+        bindings.push("let " + params[p] + " = " + _ARGUMENTS + "[" + Std.string(p) + "]; ");
+        p++;
+      }
+      functions.push("fn(" + _ARGUMENTS + ": Array<Fragment>): Null { " + concatAll(bindings) + _BODY + "; }");
+    }, _ => null };
+    i++;
+  }
+  ("import std.macro.Macro as Macro;\nimport type { Fragment } from std.macro.Macro;\nMacro.run([\n  " + joined(functions, ",\n  ") + "\n])\n", bodies)
+};
+
+export let spliceBodies = fn(node: Located, bodies: Array<Located>): Located {
+  let next = 0;
+  let out = rewrite(node, fn(inner: Located): ?Located {
+    match (inner) {
+      Statements([Expression(Variable(name))], _) when ((name == _BODY) && (next < bodies.len())) => {
+        next++;
+        bodies[next - 1]
+      },
+      _ => null,
+    }
+  });
+  if (next != bodies.len()) { internalError("a macro program does not hold each macro's body"); }
+  out
+};
+
+let _RAN = 0;
+let _OUT_OF_FUEL = 2;
+
+let _image = fn(path: Bytes): Bytes {
+  let known = indexOf(_imagePaths, path);
+  if (known >= 0) { return _images[known]; }
+  let args = path + "\0--expanders\0" + (_std == "" ? "" : "--std\0" + _std + "\0");
+  let out = _imageRun("", args, 0);
+  let made = Bytes.slice(out, 1, out.len() - 1);
+
+  if (Bytes.get_u8(out, 0) != _RAN) {
+    _failure = null;
+    throw made;
+  }
+  _imagePaths.push(path);
+  _images.push(made);
+  made
+};
+
+let _define = fn(path: Bytes, index: I32, statement: Stmt, syntax: Syntax) {
+  match (statement) { Macro(exported, name, params, body) => {
+    if (_visibleIndex(name) >= 0) { throw _at(syntax, coded(E1000, "macro " + name + " is already defined")); }
+    let quotes = Array.new<Tuple<QuoteBody, Syntax>>(0);
+    _body(Located.Statements(body, syntaxChildren(syntax)), quotes);
+    _definitions.push(Definition.Definition(path, name, exported, index, params, quotes, _visible));
+    _visible.push((name, (_definitions.len() - 1) as I32));
+  }, _ => null };
+  null
+};
+
+let _scopeIndex = fn(scope: Array<Tuple<Bytes, I32>>, name: Bytes): I32 {
+  let i = 0;
+
+  while (i < scope.len()) {
+    if (scope[i].0 == name) { return scope[i].1; }
+    i++;
+  }
+  -1
+};
+let _visibleIndex = fn(name: Bytes): I32 { _scopeIndex(_visible, name) };
+
+let _importMacro = fn(local: Bytes, path: Bytes, module: Bytes, name: Bytes, at: SourceSpan) {
+  _failure = at;
+  if (_visibleIndex(local) >= 0) { throw coded(E1000, "macro " + local + " is already defined"); }
+  let i = 0;
+
+  while (i < _definitions.len()) {
+    match (_definitions[i]) { Definition(file, defined, exported, _, _, _, _) when ((file == path) && (defined == name)) => {
+      if (!exported) { throw coded(E1000, "macro " + name + " is not exported by " + module); }
+      _visible.push((local, i as I32));
+      _failure = null;
+      return null;
+    }, _ => null };
+    i++;
+  }
+  throw coded(E1000, module + " defines no macro " + name);
+  null
+};
+
+let _form = fn(value: Expr): Bytes {
+  let (negative, literal) = match (value) { Unary(Negate, inner) => (true, inner), _ => (false, value) };
+  let sign = negative ? "-" : "";
+
+  try {
+    match (literal) {
+      Integer(digits, Infer), Integer(digits, I32) => "i" + Std.string(integerValue(digits, negative)),
+      Integer(digits, I64) => "l" + Std.string(wideIntegerValue(digits, negative)),
+      Float(text, Infer), Float(text, F64) => "f" + sign + text,
+      Bool(flag) when (!negative) => flag ? "b1" : "b0",
+      Null when (!negative) => "n",
+      Bytes(text) when (!negative) => {
+        let hex = Array.new<Bytes>(0);
+        let i = 0;
+
+        while (i < text.len()) {
+          hex.push(hexByte(Bytes.get_u8(text, i)));
+          i++;
+        }
+        "s" + concatAll(hex)
+      },
+      _ => "",
+    }
+  } catch { "" }
+};
+
+let _output = "";
+let _read = 0;
+
+let _find = fn(text: Bytes, c: I32, start: I32): I32 {
+  let i = start;
+  while ((i < text.len()) && (Bytes.get_u8(text, i) != c)) { i++; }
+  i
+};
+
+let _upTo = fn(end: I32): Bytes {
+  let start = _read;
+  _read = _find(_output, end, start) + 1;
+  Bytes.slice(_output, start, _read - 1 - start)
+};
+let _number = fn(): I32 { integerValue(_upTo(";".code), false) };
+
+let _text = fn(): Bytes {
+  let length = _number();
+  _read += length;
+  Bytes.slice(_output, _read - length, length)
+};
+let _fragment: () -> Fragment = fn() { Fragment.Argument(0) };
+_fragment = fn() {
+  let tag = Bytes.get_u8(_output, _read);
+  _read++;
+
+  let fragment = match (tag) {
+    "p".code => Fragment.Argument(_number()),
+    "t".code => {
+      let index = _number();
+      let count = _number();
+      let holes = Array.new<Fragment>(0);
+      while (holes.len() < count) { holes.push(_fragment()); }
+      Fragment.Quoted(index, holes)
+    },
+    "s".code => {
+      let kind = _upTo(":".code);
+      Fragment.Parsed(_text(), kind)
+    },
+    "g".code => {
+      let name = _text();
+      if (!isName(name)) { throw _failed(E1003, "emitted a Fragment.Name that is not a name"); }
+      Fragment.Name(name)
+    },
+    "i".code, "l".code => Fragment.Literal(tag, _upTo(";".code)),
+    "f".code, "y".code => Fragment.Literal(tag, _text()),
+    "b".code => {
+      _read++;
+      Fragment.Literal(tag, Bytes.slice(_output, _read - 1, 1))
+    },
+    "n".code => Fragment.Literal(tag, ""),
+    _ => {
+      internalError("a macro's output is malformed");
+      Fragment.Argument(0)
+    },
+  };
+  match (fragment) { Name(_), Literal(_, _) => _made(1), _ => null };
+  fragment
+};
+
+let _literalExpression = fn(kind: I32, text: Bytes): Tuple<Expr, Syntax> {
+  let negative = (text.len() > 0) && (Bytes.get_u8(text, 0) == "-".code);
+  let digits = negative ? Bytes.slice(text, 1, text.len() - 1) : text;
+  let at = _leaf(_call);
+
+  let quotient = fn(dividend: Bytes): Tuple<Expr, Syntax> {
+    (Expr.Binary(BinaryOp.Divide, Expr.Float(dividend, FloatSize.Infer), Expr.Float("0.0", FloatSize.Infer)), _node(_call, [at, at]))
+  };
+
+  let (value, valueAt) = match (kind) {
+    "i".code => (Expr.Integer(digits, IntSize.Infer), at),
+    "l".code => (Expr.Integer(digits, IntSize.I64), at),
+    "f".code when (digits == "NaN") => quotient("0.0"),
+    "f".code when (digits == "Infinity") => quotient("1.0"),
+    "f".code => (Expr.Float(digits, FloatSize.Infer), at),
+    "b".code => (Expr.Bool(text == "1"), at),
+    "y".code => (Expr.Bytes(text), at),
+    _ => (Expr.Null, at),
+  };
+
+  match (kind) {
+    "i".code, "l".code, "f".code when (negative) => (Expr.Unary(UnaryOp.Negate, value), _node(_call, [valueAt])),
+    _ => (value, valueAt),
+  }
+};
+
+let _parseFailure = fn(message: Bytes, source: Bytes, shift: I32): Bytes {
+  let (lexedAt, lexed) = lexFailure();
+  let span = parseFailureSpan();
+  let at = lexedAt;
+  let why = lexed;
+
+  if (lexedAt < 0) {
+    at = span == null ? -1 : spanStart(span);
+    why = Bytes.slice(message, 0, _find(message, "\n".code, 0));
+    if (startsWith(why, "ParseError: ")) { why = Bytes.slice(why, 12, why.len() - 12); }
+  }
+  why = uncoded(why);
+  if (at < 0) { return why; }
+  let offset = at - shift;
+  let (line, column) = sourceLocation(source, offset < 0 ? 0 : (offset > source.len() ? source.len() : offset));
+  "at " + Std.string(line) + ":" + Std.string(column) + ", " + why
+};
+
+let _parsed = fn(source: Bytes, kind: Bytes): Located {
+  let prefix = (kind == "auto" ? "quote" : "quote." + kind) + " { ";
+
+  let program = try { parseProgram(lexFile(prefix + source + "\n}", "Macro.parse")) } catch (e) {
+    takeSyntaxErrors();
+    throw _failed(E1003, "emitted text that does not parse: " + _parseFailure(Std.string(e), source, prefix.len()));
+    Program.Program(Package.None, [], null)
+  };
+  let syntax = match (_call) { Node(path, start, end, _, _) => syntaxChildren(relocated(programSyntax(program), path, start, end)) };
+
+  match (program) {
+    Program(_, [], Quote(_, body)) => {
+      _made(_count(syntax[0]));
+      _marked(_quoted(body, syntax[0]), match (_definitions[_macro]) { Definition(_, _, _, _, _, _, scope) => scope })
+    },
+    _ => {
+      throw _failed(E1003, "emitted text that does not parse as " + kind);
+      Located.Type(Type.Named(""))
+    },
+  }
+};
+
+let _argument = fn(index: I32): Located {
+  if ((index < 0) || (index >= _arguments.len())) { throw _failed(E1003, "emitted an argument it was not given"); }
+  if (_placed[index]) { _made(_count(syntaxChildren(_call)[index + 1])); }
+  _placed[index] = true;
+
+  match (_arguments[index]) {
+    Quote(_, body) => {
+      let quoted = _quoted(body, syntaxChildren(_call)[index + 1]);
+      rewrite(quoted, fn(node: Located): ?Located {
+        match (node) {
+          Expression(Unquote(_), at), Pattern(Unquote(_), at) => {
+            throw _at(at, coded(E1002, "a quote passed to a macro cannot unquote"));
+            null
+          },
+          Type(Unquote(_)) => {
+            throw _at(syntaxChildren(_call)[index + 1], coded(E1002, "a quote passed to a macro cannot unquote"));
+            null
+          },
+          _ => null,
+        }
+      });
+      quoted
+    },
+    value => Located.Expression(value, syntaxChildren(_call)[index + 1]),
+  }
+};
+
+let _made = fn(n: I32) {
+  _nodes += n;
+  if (_nodes > _MAX_NODES) { throw _failed(E0901, "made more than " + Std.string(_MAX_NODES) + " syntax nodes in this module"); }
+  null
+};
+
+let _MARK = "\0";
+
+let _marked: (Located, Array<Tuple<Bytes, I32>>) -> Located = fn(node, _scope) { node };
+_marked = fn(node, scope) {
+  rewrite(node, fn(inner: Located): ?Located {
+    match (inner) {
+      Expression(Unquote(_), _), Pattern(Unquote(_), _) => inner,
+      Expression(Call(Variable(name), [], args), at) when (_scopeIndex(scope, name) >= 0) => {
+        let children = syntaxChildren(at);
+        let marked = Array.new<Expr>(0);
+        let i = 0;
+
+        while (i < args.len()) {
+          match (_marked(Located.Expression(args[i], children[i + 1]), scope)) { Expression(value, _) => marked.push(value), _ => null };
+          i++;
+        }
+        Located.Expression(Expr.Call(Expr.Variable(_MARK + Std.string(_scopeIndex(scope, name))), [], marked), at)
+      },
+      _ => null,
+    }
+  })
+};
+
+let _expressionOf: (Fragment) -> Tuple<Expr, Syntax> = fn(_f) { (Expr.Null, _call) };
+let _statementsOf: (Fragment) -> Tuple<Array<Stmt>, Array<Syntax>> = fn(_f) { ([], []) };
+let _patternOf: (Fragment) -> Tuple<Pattern, Syntax> = fn(_f) { (Pattern.Null, _call) };
+let _typeOf: (Fragment) -> Type = fn(_f) { Type.Named("") };
+
+let _instantiate = fn(index: I32, holes: Array<Fragment>): Located {
+  let (quotes, scope) = match (_definitions[_macro]) { Definition(_, _, _, _, _, quotes, scope) => (quotes, scope) };
+  if ((index < 0) || (index >= quotes.len())) { throw _failed(E1003, "emitted a quote it does not have"); }
+  let (body, defined) = quotes[index];
+  let next = 0;
+  let syntax = match (_call) { Node(path, start, end, _, _) => relocated(defined, path, start, end) };
+  _made(_count(defined));
+
+  let take = fn(): Fragment {
+    if (next >= holes.len()) { throw _failed(E1003, "emitted a quote with too few unquotes"); }
+    next++;
+    holes[next - 1]
+  };
+  let out = rewrite(_marked(_quoted(body, syntax), scope), fn(node: Located): ?Located {
+    match (node) {
+      Statements([Expression(Unquote(_))], _) => {
+        let (values, at) = _statementsOf(take());
+        Located.Statements(values, at)
+      },
+      Expression(Unquote(_), _) => {
+        let (value, at) = _expressionOf(take());
+        Located.Expression(value, at)
+      },
+      Pattern(Unquote(_), _) => {
+        let (value, at) = _patternOf(take());
+        Located.Pattern(value, at)
+      },
+      Type(Unquote(_)) => Located.Type(_typeOf(take())),
+      _ => null,
+    }
+  });
+  if (next != holes.len()) { throw _failed(E1003, "emitted a quote with too many unquotes"); }
+  out
+};
+
+let _located = fn(fragment: Fragment): Located {
+  match (fragment) {
+    Argument(index) => _argument(index),
+    Quoted(index, holes) => _instantiate(index, holes),
+    Parsed(source, kind) => _parsed(source, kind),
+    Name(name) => Located.Expression(Expr.Variable(name), _leaf(_call)),
+    Literal(kind, text) => {
+      let (value, at) = _literalExpression(kind, text);
+      Located.Expression(value, at)
+    },
+  }
+};
+
+let _misplaced = fn(made: Located, needed: Bytes): Bytes {
+  let kind = match (made) { Expression(_, _) => "an expression", Statements(_, _) => "statements", Pattern(_, _) => "a pattern", Type(_) => "a type" };
+  _failed(E1003, "emitted " + kind + " where " + needed + " is needed")
+};
+
+_expressionOf = fn(fragment) {
+  match (_located(fragment)) {
+    Expression(value, at) => (value, at),
+    Statements([Expression(value)], [at]) => (value, syntaxChildren(at)[0]),
+    made => {
+      throw _misplaced(made, "an expression");
+      (Expr.Null, _call)
+    },
+  }
+};
+
+_statementsOf = fn(fragment) {
+  match (fragment) {
+    Name(_) => {
+      throw _failed(E1003, "emitted a name where a statement is needed");
+      ([], [])
+    },
+    _ => match (_located(fragment)) {
+      Expression(value, at) => ([Stmt.Expression(value)], [_node(at, [at])]),
+      Statements(values, at) => (values, at),
+      made => {
+        throw _misplaced(made, "a statement");
+        ([], [])
+      },
+    },
+  }
+};
+
+_patternOf = fn(fragment) {
+  match (_located(fragment)) {
+    Pattern(value, at) => (value, at),
+    Expression(Variable(name), at) => (Pattern.BindPattern(name), at),
+    Expression(Integer(digits, size), at) => (Pattern.Integer(digits, size), at),
+    Expression(Unary(Negate, Integer(digits, size)), at) => (Pattern.Integer("-" + digits, size), at),
+    Expression(Float(text, size), at) => (Pattern.Float(text, size), at),
+    Expression(Unary(Negate, Float(text, size)), at) => (Pattern.Float("-" + text, size), at),
+    Expression(Bool(flag), at) => (Pattern.Bool(flag), at),
+    Expression(Bytes(text), at) => (Pattern.Bytes(text), at),
+    Expression(Null, at) => (Pattern.Null, at),
+    made => {
+      throw _misplaced(made, "a pattern");
+      (Pattern.Null, _call)
+    },
+  }
+};
+
+_typeOf = fn(fragment) {
+  match (_located(fragment)) {
+    Type(value) => value,
+    Expression(Variable(name), _) => Type.Named(name),
+    made => {
+      throw _misplaced(made, "a type");
+      Type.Named("")
+    },
+  }
+};
+
+let _count: (Syntax) -> I32 = fn(_syntax) { 0 };
+_count = fn(syntax) {
+  match (syntax) { Node(_, _, _, children, patterns) => {
+    let n = 1;
+    let i = 0;
+
+    while (i < children.len()) {
+      n += _count(children[i]);
+      i++;
+    }
+    i = 0;
+
+    while (i < patterns.len()) {
+      n += _count(patterns[i]);
+      i++;
+    }
+    n
+  } }
+};
+
+let _run = fn(index: I32, call: Expr, syntax: Syntax): Array<Fragment> {
+  let args = match (call) { Call(_, _, args) => args, _ => [] };
+  _macro = index;
+  _arguments = args;
+  _call = syntax;
+  _placed = Array.new<Bool>(0);
+  while (_placed.len() < args.len()) { _placed.push(false); }
+  let (path, macroIndex, params) = match (_definitions[index]) { Definition(path, _, _, macroIndex, params, _, _) => (path, macroIndex, params) };
+
+  if (args.len() != params.len()) {
+    throw _failed(E1002, "takes " + Std.string(params.len()) + (params.len() == 1 ? " argument" : " arguments") + ", not " + Std.string(args.len()));
+  }
+  let entries = [Std.string(macroIndex), Std.string(_names)];
+  let i = 0;
+
+  while (i < args.len()) {
+    entries.push(_form(args[i]));
+    i++;
+  }
+  let image = _image(path);
+  let out = _imageRun(image, joined(entries, "\0") + "\0", _FUEL);
+  let tag = Bytes.get_u8(out, 0);
+  if (tag == _OUT_OF_FUEL) { throw _failed(E1003, "runs too long; it took more than " + Std.string(_FUEL) + " steps"); }
+  if (tag != _RAN) { throw _failed(E1003, "failed: " + Bytes.slice(out, 1, out.len() - 1)); }
+  _output = out;
+  _read = 1;
+  _names = _number();
+  let fragments = Array.new<Fragment>(0);
+  while (_read < _output.len()) { fragments.push(_fragment()); }
+  fragments
+};
+
+let _expandIn: (Located) -> Located = fn(node) { node };
+
+let _deeper = fn(node: Located): Located {
+  if (_depth >= _MAX_DEPTH) { throw _failed(E0901, "expands " + Std.string(_MAX_DEPTH) + " levels deep; does it call itself without end?"); }
+  _depth++;
+  let out = _expandIn(node);
+  _depth--;
+  out
+};
+
+let _calledMacro = fn(call: Expr): I32 {
+  match (call) {
+    Call(Variable(name), [], _) when (startsWith(name, _MARK)) => integerValue(Bytes.slice(name, 1, name.len() - 1), false),
+    Call(Variable(name), [], _) => _visibleIndex(name),
+    _ => -1,
+  }
+};
+
+let _expandStatement = fn(index: I32, call: Expr, syntax: Syntax): Located {
+  let fragments = _run(index, call, syntaxChildren(syntax)[0]);
+  let statements = Array.new<Stmt>(0);
+  let made = Array.new<Syntax>(0);
+  let i = 0;
+
+  while (i < fragments.len()) {
+    let (values, at) = _statementsOf(fragments[i]);
+    let j = 0;
+
+    while (j < values.len()) {
+      match (values[j]) {
+        ImportModule(_, _, _), ImportFrom(_, _, _) => {
+          throw _failed(E1003, "emitted an import, which a module makes itself");
+          null
+        },
+        Macro(_, _, _, _) => {
+          throw _failed(E1003, "emitted a macro definition");
+          null
+        },
+        _ => null,
+      };
+      statements.push(values[j]);
+      made.push(at[j]);
+      j++;
+    }
+    i++;
+  }
+  _deeper(Located.Statements(statements, made))
+};
+
+let _expandExpression = fn(index: I32, call: Expr, syntax: Syntax): Located {
+  let fragments = _run(index, call, syntax);
+
+  if (fragments.len() != 1) {
+    throw _failed(E1002, "is called where an expression is needed, so it must emit one expression, not " + Std.string(fragments.len()) + " fragments");
+  }
+  let (value, at) = _expressionOf(fragments[0]);
+  _deeper(Located.Expression(value, at))
+};
+
+_expandIn = fn(node) {
+  rewrite(node, fn(inner: Located): ?Located {
+    match (inner) {
+      Expression(Quote(_, _), _) => inner,
+      Statements([Expression(call)], syntax) => {
+        let index = _calledMacro(call);
+        index < 0 ? null : _expandStatement(index, call, syntax[0])
+      },
+      Expression(call, syntax) => {
+        let index = _calledMacro(call);
+        index < 0 ? null : _expandExpression(index, call, syntax)
+      },
+      _ => null,
+    }
+  })
+};
+
+export let hasMacros = fn(statements: Array<Stmt>): Bool {
+  let i = 0;
+
+  while (i < statements.len()) {
+    match (statements[i]) { Macro(_, _, _, _), ImportFrom(MacroOnly, _, _) => { return true; }, _ => null };
+    i++;
+  }
+  false
+};
+
+export let expandModule = fn(path: Bytes, statements: Array<Stmt>, syntax: Syntax, tail: ?Expr, imported: Array<Tuple<Bytes, Bytes, Bytes, Bytes, SourceSpan>>): Tuple<Array<Stmt>, Syntax, ?Expr, Array<I32>> {
+  _visible = Array.new<Tuple<Bytes, I32>>(0);
+  _nodes = 0;
+  _depth = 0;
+  let children = syntaxChildren(syntax);
+  let macros = _macros(statements, children);
+  let i = 0;
+
+  while (i < imported.len()) {
+    let (local, file, module, name, at) = imported[i];
+    _importMacro(local, file, module, name, at);
+    i++;
+  }
+  i = 0;
+
+  while (i < macros.len()) {
+    _define(path, i, macros[i].0, macros[i].1);
+    i++;
+  }
+  let out = Array.new<Stmt>(0);
+  let outSyntax = Array.new<Syntax>(0);
+  let moved = Array.new<I32>(0);
+  i = 0;
+
+  while (i < statements.len()) {
+    match (statements[i]) {
+      Macro(_, _, _, _), ImportFrom(MacroOnly, _, _) => moved.push(-1),
+      _ => {
+        moved.push(out.len() as I32);
+
+        match (_expandIn(Located.Statements([statements[i]], [children[i]]))) {
+          Statements(values, at) => {
+            appendFrom(out, values, 0);
+            appendFrom(outSyntax, at, 0);
+            null
+          },
+          _ => null,
+        };
+      },
+    };
+    i++;
+  }
+  let expandedTail = tail;
+
+  if (tail != null) {
+    match (_expandIn(Located.Expression(tail, children[children.len() - 1]))) {
+      Expression(value, at) => {
+        expandedTail = value;
+        outSyntax.push(at);
+      }, _ => null
+    };
+  }
+  let root = match (syntax) { Node(file, start, end, _, _) => Syntax.Node(file, start, end, outSyntax, []) };
+  (out, root, expandedTail, moved)
+};

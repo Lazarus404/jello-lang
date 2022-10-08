@@ -1,4 +1,4 @@
-// expect: 2,2,0,3,7,ok,42,42,(7, "ok"),(),(1,),tg,
+// expect: 2,2,0,3,7,ok,42,(7, "ok"),(),(1,),tg,
 // Tuple.len and Tuple.get, and a tuple's len and toString methods.
 let out = "";
 let put = fn(v: Bytes) { out = out + v + ","; null };
@@ -8,9 +8,8 @@ put(n(Tuple.len(t))); put(n(t.len())); put(n(Tuple.len(()))); put(n((1, 2, 3).le
 let first: Dynamic = Tuple.get(t, 0);
 let second: Dynamic = Tuple.get(t, 1);
 put(n(first as I32)); put(second as Bytes);
-// A one-field tuple's field, whatever the index.
 let single = (42,);
-put(n(Tuple.get(single, 0) as I32)); put(n(Tuple.get(single, 99) as I32));
+put(n(Tuple.get(single, 0) as I32));
 put(t.toString()); put(().toString()); put((1,).toString());
 // The tuple, then the index.
 let order = "";

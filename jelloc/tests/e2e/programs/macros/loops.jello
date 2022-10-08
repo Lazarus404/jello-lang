@@ -1,0 +1,23 @@
+// expect: 3 3 13 9
+// A macro's body runs as a program: it loops, and reads a literal argument with Macro.literal.
+macro tick() {
+  Macro.emit(Macro.parse("tickSum = tickSum + 1;", "stmt"));
+}
+
+macro repeat(n, body) {
+  let i = 0;
+  while (i < (Macro.literal(n) as I32)) {
+    Macro.emit(body);
+    i = i + 1;
+  }
+}
+
+macro define_fns() {
+  Macro.emit(Macro.parse("let add = fn() { return 1 + 2; };", "stmt"));
+  Macro.emit(Macro.parse("let sub = fn() { 10 + 3 }; let mul = fn() { 4 + 5 };", "stmts"));
+}
+
+let tickSum = 0;
+repeat(3, quote.stmt { tick(); });
+define_fns();
+Std.string(tickSum) + " " + Std.string(add()) + " " + Std.string(sub()) + " " + Std.string(mul())

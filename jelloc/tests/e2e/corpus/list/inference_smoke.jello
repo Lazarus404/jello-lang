@@ -1,5 +1,4 @@
 // expect: ok
-// pending: parameter types inferred from use
 let xs = list[1, 2, 3];
 System.assert(Std.string(xs) == "[1, 2, 3]");
 System.assert(List.head(xs) + List.head(List.tail(List.tail(xs))) == 4);
@@ -14,7 +13,7 @@ let fromAnn: List<I32> = list[];
 fromAnn = list[10, 32];
 System.assert(List.head(fromAnn) + List.head(List.tail(fromAnn)) == 42);
 
-let headSum = fn(lst) {
+let headSum = fn(lst: List<I32>): I32 {
   match (lst) {
     [a, b] => a + b,
     _ => 0,

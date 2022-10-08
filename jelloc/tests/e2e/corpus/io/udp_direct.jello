@@ -1,23 +1,16 @@
 // expect: ok
-// pending: std.io.net.Udp is not ported
-load { monotonic_ms, addr_resolve, random_int } from std;
-import { bind, sendTo, tryRecvFrom, payload } from std.io.net.Udp;
+import std.net.Udp as Udp;
+import type { Socket, Datagram } from std.net.Udp;
 
-let port = 40000 + random_int(0, 19999);
-let addr = addr_resolve("127.0.0.1", port);
-let sock = bind(addr);
-let pkt = bits[16(7), 8(9)];
-
-let _sent = sendTo(sock, pkt, addr, port);
-
-let rec = null;
-let tries = 0;
-while ((rec == null) && (tries < 1000)) {
-  rec = tryRecvFrom(sock, 4096);
-  tries = tries + 1;
-}
-
-System.assert(rec != null);
-let raw = payload(rec);
-System.assert(Bytes.readU16Le(raw, 0) == 7);
-"ok"
+let run = fn(): Bytes {
+  let sock = Udp.bind("127.0.0.1", 0);
+  let pkt = bits[16(7), 8(9)];
+  sock.sendTo(pkt, "127.0.0.1", sock.port());
+  let rec = sock.receiveWithin(4096, 5000);
+  System.assert(rec != null);
+  let raw = match (rec) { null => "", d => d.data };
+  System.assert(Bytes.readU16Le(raw, 0) == 7);
+  sock.close();
+  "ok"
+};
+run()

@@ -1,13 +1,16 @@
 // expect: ok
-// pending: parameter types inferred from use
-import { readText, writeText } from std.io.File;
+// A returned closure calls a closure it captured from its maker.
+import { readText, writeText, remove } from std.io.File;
+import { getEnv } from std.io.Env;
 
 let make = fn() {
-  let writeSeed = fn(p) { writeText(p, "seed") };
+  let writeSeed = fn(p: Bytes) { writeText(p, "seed") };
   return fn() {
-    let path = "io_infer_cap.tmp";
+    let path = getEnv("TMPDIR") + "/io_infer_cap.tmp";
     writeSeed(path);
-    readText(path)
+    let text = readText(path);
+    remove(path);
+    text
   };
 };
 

@@ -1,0 +1,30 @@
+// expect: 99
+// A macro may be called wherever a statement or an expression goes; one that emits nothing
+// removes its call.
+let whileHit = 0;
+let tailValue = 0;
+
+macro body_stmt() {
+  Macro.emit(Macro.parse("whileHit = 7;", "stmt"));
+}
+
+macro store_tail() {
+  Macro.emit(Macro.parse("tailValue = 42;", "stmt"));
+}
+
+macro answer() {
+  quote.expr { 99 };
+}
+
+macro noop() { }
+
+while (true) {
+  body_stmt();
+  break;
+}
+noop();
+store_tail();
+let f = fn(): I32 { noop(); answer() };
+System.assert((whileHit == 7) && (tailValue == 42) && (f() == answer()));
+let inner = if (whileHit > 0) { answer() } else { 0 };
+answer()

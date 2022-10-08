@@ -10,7 +10,7 @@ import { exists, makeDirs, readText, writeText } from std.io.File;
 import { dirname } from std.io.Path;
 import { result } from std.io.Command;
 import degust.Golden as G;
-import { NONE, badCommandLines, concat, finish, fresh, has, jelloc, startJelloc, stdDir, withStd } from support.Run;
+import { NONE, badCommandLines, concat, finish, fresh, has, jelloc, jellocIn, startJelloc, startVm, stdDir, withStd } from support.Run;
 import { jloTool, vmCommand, vmEnv } from degust.Programs;
 
 const _P = "tests/e2e/programs";
@@ -50,7 +50,7 @@ let _usage = fn(t: Test, cases: Array<Tuple<Array<Bytes>, Bytes>>): Null {
 let testHelp = fn(t: Test) {
   let (status, out, err) = jelloc(["--help"], NONE);
   T.equal(t, (status, err), (0, ""));
-  has(t, out, "usage: jelloc <input.jello>");
+  has(t, out, "usage: jelloc [input.jello]");
   has(t, out, "Exit status: 0 on success, 1 when the program does not compile");
 };
 
@@ -58,13 +58,11 @@ let testBadCommandLines = fn(t: Test) {
   let core = _P + "/core.jello";
   let zero = _P + "/division/zero.jello";
   _usage(t, [
-    (NONE, "no input file\nusage: jelloc"),
     ([core, "--frobnicate"], "unknown option: --frobnicate"),
     // An unknown option is never taken for an input, wherever it is.
     (["--frobnicate", core, "--out", fresh("frobnicate.jlo")], "unknown option: --frobnicate"),
     ([core, "--hir", "--frobnicate"], "unknown option: --frobnicate"),
     ([core, "--hir", "other.jello"], "unexpected argument: other.jello"),
-    ([core], "output path required; pass --out <path>"),
     ([core, "--hir", "--out", fresh("core-hir.jlo")], "--out cannot be combined with --lex, --parse, --hir or --ir"),
     ([core, "--spans"], "--spans requires --hir"),
     // A flag that takes a value needs a non-empty one.
@@ -167,7 +165,7 @@ let testJoinsATryToANullable = fn(t: Test) {
 // those and nothing after them, such as a consequence of an earlier error.
 let testReportsOnlyIndependentErrors = fn(t: Test) {
   let dir = _P + "/diagnostics";
-  let names = ["several_errors", "notes", "syntax_errors", "missing_brace", "unclosed_block", "unclosed_nested", "same_statement"];
+  let names = ["several_errors", "notes", "syntax_errors", "missing_brace", "unclosed_block", "unclosed_nested", "same_statement", "instance_notes"];
   let n = 0;
 
   while (n < names.len()) {
@@ -232,6 +230,8 @@ let testTestBinaries = fn(t: Test) {
   let strings = pass + "/Strings.test.jello";
   let hir = _dump(t, withStd(["--test", "--path", pass, strings, "--hir"]));
   T.equal(t, jelloc(["--test", "--path", pass, strings, "--hir"], ["JELLO_STD_PATH=" + stdDir()]), (0, hir, ""));
+  // A root is matched by the path it resolves to, however it is written.
+  T.equal(t, _dump(t, withStd(["--test", "--path", "./" + pass + "/", strings, "--hir"])), hir);
   has(t, hir, "            bytes \"Strings/testJoins\": bytes\n            bytes \"" + strings + ":15\": bytes");
   _rejects(t, withStd(["--test", "--path", _CLI + "/errors", "--path", pass + "/auxiliary", _CLI + "/errors/frontend/Other.test.jello"]), NONE,
     "Other.test.jello:4:1: unknown export _step in " + pass + "/auxiliary/frontend/Counter.jello");
@@ -261,7 +261,7 @@ let _project = fn(name: Bytes, files: Array<Tuple<Bytes, Bytes>>): Bytes {
 // package_paths directory holds, with a test of its module.
 let _APP = [
   ("jello.json", "{ \"name\": \"app\", \"version\": \"0.1.0\", \"license\": \"MIT\",\n  \"dependencies\": { \"greet\": \"0.1.0\" }, \"package_paths\": [\"libs\"] }\n"),
-  ("src/main.jello", "import { twice } from demo.Util;\nimport { hello } from greet.Hello;\nhello(Std.string(twice(System.args.len())) + \" \" + List.head(System.args))\n"),
+  ("src/Main.jello", "import { twice } from demo.Util;\nimport { hello } from greet.Hello;\nhello(Std.string(twice(System.args.len())) + \" \" + List.head(System.args))\n"),
   ("src/demo/Util.jello", "package demo;\nexport let twice = fn(x: I32): I32 { x * 2 };\n"),
   ("libs/greet/jello.json", "{ \"name\": \"greet\", \"version\": \"0.1.0\", \"src\": \"lib\" }\n"),
   ("libs/greet/lib/greet/Hello.jello", "package greet;\nexport let hello = fn(who: Bytes): Bytes { \"hello \" + who };\n"),
@@ -277,8 +277,8 @@ let _withVm = fn(): Array<Bytes> { concat(vmEnv(), ["JELLO_VM=" + vmCommand("", 
 // arguments after the file, as they are; it exits as the program does.
 let testRunsAProgramInItsProject = fn(t: Test) {
   let dir = _project("app", _APP);
-  T.equal(t, jelloc(["run", dir + "/src/main.jello", "--out", "-x"], _withVm()), (0, "hello 4 --out", ""));
-  T.isTrue(t, exists(dir + "/build/run/main.jlo"));
+  T.equal(t, jelloc(["run", dir + "/src/Main.jello", "--out", "-x"], _withVm()), (0, "hello 4 --out", ""));
+  T.isTrue(t, exists(dir + "/build/run/Main.jlo"));
   // Outside a project, the file is its own source root.
   let lone = _project("lone", [("lone.jello", "System.exit(3); 0\n")]);
   T.equal(t, jelloc(["run", lone + "/lone.jello"], _withVm()), (3, "", ""));
@@ -286,6 +286,54 @@ let testRunsAProgramInItsProject = fn(t: Test) {
   let (status, out, err) = jelloc(["run", broken + "/broken.jello"], _withVm());
   T.equal(t, (status, out), (1, ""));
   has(t, err, "broken.jello:1:14: x is annotated I32, but its value is Bytes");
+};
+
+/* A compile that names no input compiles jello.json's "entry", or else
+ * src/Main.jello, with the project's sources, as run does; one that names no
+ * --out writes build/<name>.jlo, named by jello.json's "name", or else the
+ * directory's, a space or / in it made a -. Both are found in the project at or
+ * above the current directory, or else in the current directory. */
+let testAssumesTheEntryAndTheModule = fn(t: Test) {
+  let ran = fn(module: Bytes): Tuple<I32, Bytes, Bytes> { finish(startVm("", [module])) };
+  let lone = _project("my app", [("src/Main.jello", "\"alone\"\n")]);
+  T.equal(t, jellocIn(lone, NONE, NONE), (0, "", ""));
+  T.equal(t, ran(lone + "/build/my-app.jlo"), (0, "alone", ""));
+  let app = _project("assumed", [
+    ("jello.json", "{ \"name\": \"my/app\", \"entry\": \"bin/start.jello\" }\n"),
+    ("bin/start.jello", "import { twice } from demo.Util;\nStd.string(twice(21))\n"),
+    ("bin/other.jello", "\"other\"\n"),
+    ("src/demo/Util.jello", "package demo;\nexport let twice = fn(x: I32): I32 { x * 2 };\n")]);
+  T.equal(t, jellocIn(app + "/src/demo", NONE, NONE), (0, "", ""));
+  T.equal(t, ran(app + "/build/my-app.jlo"), (0, "42", ""));
+  T.equal(t, jellocIn(app, ["run"], _withVm()), (0, "42", ""));
+  // A named input is compiled on its own, into the module the project names.
+  T.equal(t, jellocIn(app, ["bin/other.jello"], NONE), (0, "", ""));
+  T.equal(t, ran(app + "/build/my-app.jlo"), (0, "other", ""));
+  // A listing writes no module.
+  has(t, jellocIn(lone, ["--jlo"], NONE).1, "fn @");
+  let badEntry = _project("bad-entry", [("jello.json", "{ \"entry\": 3 }\n")]);
+  T.equal(t, jellocIn(badEntry, ["src/Main.jello"], NONE),
+    (1, "", "jello.json:1:12: \"entry\" must be a string [E0211]\n{ \"entry\": 3 }\n           ^"));
+  let none = _project("none", [("README", "")]);
+  let (status, out, err) = jellocIn(none, NONE, NONE);
+  T.equal(t, (status, out), (2, ""));
+  has(t, err, "jelloc: no input file, and no src/Main.jello to compile");
+  has(t, jellocIn(none, ["run"], _withVm()).2, "jelloc: no input file, and no src/Main.jello to compile");
+};
+
+/* An uncaught throw shows the thrown value: a number as itself, and a value
+ * the VM keeps no type for by its kind, the same on every run. */
+let testShowsAThrownValue = fn(t: Test) {
+  let shown = fn(name: Bytes, source: Bytes): Bytes {
+    let dir = _project(name, [(name + ".jello", source)]);
+    let (status, out, err) = jelloc(["run", dir + "/" + name + ".jello"], _withVm());
+    T.equal(t, (status, out), (1, ""));
+    let lines = split(err, "\n");
+    lines.len() > 1 ? lines[1] : err
+  };
+  T.equal(t, shown("enum", "enum P { A; }\nthrow P.A;\n"), "jellovm: thrown: <enum value>");
+  T.equal(t, shown("tuple", "throw (1, 2);\n"), "jellovm: thrown: <tuple or record>");
+  T.equal(t, shown("wide", "let n: I64 = 5000000000;\nthrow n;\n"), "jellovm: thrown: 5000000000");
 };
 
 // jelloc test builds one test binary of every test file under the project's
@@ -301,7 +349,7 @@ let testRunsAProjectsTests = fn(t: Test) {
   T.isTrue(t, exists(dir + "/build/test.jlo"));
 };
 
-// run and test pass jellovm the native library directories of the project
+// run and test pass jello the native library directories of the project
 // and its packages that exist: each one's jdll/, or the one its "jdll" names.
 let testPassesTheNativeLibraryDirectories = fn(t: Test) {
   let dir = _project("native-app", _APP);
@@ -310,10 +358,10 @@ let testPassesTheNativeLibraryDirectories = fn(t: Test) {
   writeText(dir + "/libs/greet/jello.json", "{ \"src\": \"lib\", \"jdll\": \"native\" }\n");
   let echo = concat(_withVm(), ["JELLO_VM=/bin/echo"]);
   let search = "--jdll-path " + dir + "/jdll:" + dir + "/libs/greet/native ";
-  T.equal(t, jelloc(["run", dir + "/src/main.jello", "x"], echo), (0, search + dir + "/build/run/main.jlo x", ""));
+  T.equal(t, jelloc(["run", dir + "/src/Main.jello", "x"], echo), (0, search + dir + "/build/run/Main.jlo x", ""));
   T.equal(t, jelloc(["test", dir + "/tests", "--", "-v"], echo), (0, search + dir + "/build/test.jlo -v", ""));
   let plain = _project("plain-app", _APP);
-  T.equal(t, jelloc(["run", plain + "/src/main.jello"], echo), (0, plain + "/build/run/main.jlo", ""));
+  T.equal(t, jelloc(["run", plain + "/src/Main.jello"], echo), (0, plain + "/build/run/Main.jlo", ""));
 };
 
 // A manifest's errors point into it.
@@ -336,16 +384,15 @@ let testRejectsABadManifest = fn(t: Test) {
 let testGetsDependencies = fn(t: Test) {
   let lib = _project("deps-lib", [("jello.json", "{ \"name\": \"lib\", \"version\": \"0.1.0\" }\n"), ("src/lib/Name.jello", "package lib;\nexport let NAME = \"lib\";\n")]);
   let app = _project("deps-app", [("jello.json", "{ \"name\": \"app\", \"version\": \"0.1.0\", \"dependencies\": { \"lib\": { \"path\": \"" + lib + "\" } } }\n"),
-    ("src/main.jello", "import { NAME } from lib.Name;\nNAME\n")]);
+    ("src/Main.jello", "import { NAME } from lib.Name;\nNAME\n")]);
   let env = concat(_withVm(), ["JELLO_JLO_TOOL=" + jloTool()]);
   let (status, _, _) = jelloc(["deps.get", app], env);
   T.equal(t, status, 0);
-  T.equal(t, jelloc(["run", app + "/src/main.jello"], env), (0, "lib", ""));
+  T.equal(t, jelloc(["run", app + "/src/Main.jello"], env), (0, "lib", ""));
 };
 
 let testBadSubcommandLines = fn(t: Test) {
   _usage(t, [
-    (["run"], "run needs a file"),
     (["run", "--frobnicate", "x.jello"], "unknown option: --frobnicate"),
     (["run", "--path"], "--path requires a directory"),
     (["run", _P + "/testing"], "run takes a .jello file, not " + _P + "/testing"),

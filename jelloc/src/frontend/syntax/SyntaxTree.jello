@@ -89,6 +89,10 @@ _pattern = fn(value) {
       }
       null
     },
+    Unquote(inner) => {
+      out.push(_expr(inner));
+      null
+    },
   };
   _take(SyntaxKind.Pattern, patternTag(value), out)
 };

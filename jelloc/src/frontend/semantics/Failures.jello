@@ -11,6 +11,8 @@ let _failures = Array.new<Tuple<?SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
 let _noteSpan: ?SourceSpan = null;
 let _note = "";
 let _noted = "";
+let _neededAt: ?SourceSpan = null;
+let _needed = "";
 let _poisoned = Array.new<Bytes>(0);
 let _poisonedLocals = Array.new<I32>(0);
 let _given = 0;
@@ -22,6 +24,8 @@ export let resetFailures = fn(): Bool {
   _failures = Array.new<Tuple<?SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
   _noteSpan = null;
   _noted = "";
+  _neededAt = null;
+  _needed = "";
   _poisoned = Array.new<Bytes>(0);
   _poisonedLocals = Array.new<I32>(0);
   _given = 0;
@@ -32,7 +36,21 @@ export let resetFailures = fn(): Bool {
 };
 
 export let pendingNote = fn(message: Bytes): Tuple<?SourceSpan, Bytes> {
-  message == _noted ? (_noteSpan, _note) : (null, "")
+  message == _noted ? (_noteSpan, _note) : (_neededAt, _needed)
+};
+
+export let needInstance = fn(span: ?SourceSpan, note: Bytes): Tuple<?SourceSpan, Bytes> {
+  let outer = (_neededAt, _needed);
+  _neededAt = span;
+  _needed = note;
+  outer
+};
+
+export let instanceNeed = fn(): Tuple<?SourceSpan, Bytes> { (_neededAt, _needed) };
+
+export let keepNote = fn(message: Bytes): Bytes {
+  let (span, note) = pendingNote(message);
+  noteFailure(span, note, message)
 };
 
 export let recordFailure = fn(span: ?SourceSpan, error: Dynamic): Bool {

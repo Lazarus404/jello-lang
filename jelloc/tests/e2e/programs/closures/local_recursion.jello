@@ -1,0 +1,16 @@
+// expect: 120 55 false 6 100
+let outer = fn(base: I32): Bytes {
+  let fact = fn(n: I32): I32 { n <= 1 ? base : n * fact(n - 1) };
+  const fib: (I32) -> I32 = fn(n) { n < 2 ? n : fib(n - 1) + fib(n - 2) };
+  let even = fn(n: I32): Bool { n == 0 ? true : !even(n - 1) };
+  let g = fact;
+  Std.string(fact(5)) + " " + Std.string(fib(10)) + " " + Std.string(even(7)) + " " + Std.string(g(3))
+};
+/* A local function names itself, not the outer one it shadows, whether or not its result type
+ * is written. */
+let f = fn(x: I32): I32 { x + 1 };
+let shadows = fn(): I32 {
+  let f = fn(x: I32) { x > 3 ? 100 : f(x + 10) };
+  f(1)
+};
+outer(1) + " " + Std.string(shadows())

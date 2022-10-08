@@ -66,7 +66,7 @@ let spillCount = fn(function: Function, push: Bool): I32 {
 let modulesOf = fn(path: Bytes): Array<Module> { loadModules(path, "", Array.new<Bytes>(0), Array.new<Bytes>(0)) };
 let checkFile = fn(path: Bytes): Hir { checkedFile(path, Array.new<Bytes>(0)) };
 
-// The paths of MODULES, in initialization order.
+// The paths of MODULES, in initialisation order.
 let initializationOrder = fn(modules: Array<Module>): Array<Bytes> {
   let paths = Array.new<Bytes>(0);
   let i = 0;
@@ -926,7 +926,7 @@ let testInitializesImportedPrimitiveConstantsBeforeTheEntryTail = fn(t: Test) {
   T.equal(t, initialization.len(), 2);
   T.isTrue(t, contains(initialization[0], "/math/Constants.jello"));
   T.equal(t, initialization[1], path);
-  // Imported constants are immutable globals, initialized in module order.
+  // Imported constants are immutable globals, initialised in module order.
   T.equal(t, printIr(lowerProgram(hir)), "global g0: i32\n"
     + "global g1: i32\n"
     + "\n"

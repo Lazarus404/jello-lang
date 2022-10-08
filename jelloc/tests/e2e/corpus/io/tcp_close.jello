@@ -1,14 +1,16 @@
 // expect: ok
-// pending: std.io.net.Tcp is not ported
-load { addr_resolve } from std;
-import { listen, connect, close, boundPort } from std.io.net.Tcp;
+// Closing a listener frees its port for a new listener.
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
 
-let bindAddr = addr_resolve("127.0.0.1", 0);
-let listener = listen(bindAddr, 1);
-let port = boundPort(listener);
-System.assert(close(listener));
-let bindAddr2 = addr_resolve("127.0.0.1", port);
-let listener2 = listen(bindAddr2, 1);
-System.assert(boundPort(listener2) == port);
-System.assert(close(listener2));
-"ok"
+let run = fn(): Bytes {
+  let listener = Tcp.listen("127.0.0.1", 0);
+  let port = listener.port();
+  System.assert(listener.close());
+  let listener2 = Tcp.listen("127.0.0.1", port);
+  System.assert(listener2.port() == port);
+  System.assert(listener2.close());
+  System.assert(listener2.close() == false);
+  "ok"
+};
+run()

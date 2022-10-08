@@ -1,0 +1,9 @@
+// error: 9:1: macro many made more than 4096 syntax nodes in this module [E0901]
+// Each use of an argument counts, though its syntax is written once.
+macro many(statement) {
+  let made = Array.new<Fragment>(0);
+  while (made.len() < 5000) { made.push(statement); }
+  Macro.emit_all(made);
+}
+let n = [0];
+many(n[0] = n[0] + 1);

@@ -1,0 +1,24 @@
+// expect: ten other
+// A quote holds an expression, statements, a pattern or a type, and Macro.parse reads any of
+// them; a literal argument unquoted in a pattern matches its value.
+macro classify(value, expected) {
+  let equal = quote.pat { unquote(expected) };
+  let other = Macro.parse("_", "pat");
+  quote.expr { match (unquote(value)) { unquote(equal) => "ten", unquote(other) => "other" } };
+}
+
+macro typed(name, ty) {
+  let t = quote.type { Array<unquote(ty)> };
+  quote.stmt { let unquote(name): unquote(t) = []; };
+}
+
+macro parsedType(name) {
+  let t = Macro.parse("?Bytes", "type");
+  quote.stmt { let unquote(name): unquote(t) = null; };
+}
+
+typed(xs, I32);
+xs.push(5);
+parsedType(nothing);
+System.assert(nothing == null);
+classify(xs[0] * 2, 10) + " " + classify(xs[0], 10)

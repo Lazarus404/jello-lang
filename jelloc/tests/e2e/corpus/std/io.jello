@@ -1,14 +1,13 @@
 // expect: ok
-// pending: std.io.File.open
-import { readText, writeText, exists, open, close, readFromHandle } from std.io.File;
+import { readText, writeText, exists, remove } from std.io.File;
+import { getEnv } from std.io.Env;
 
-let path = "std_io_ctest.tmp";
+let path = getEnv("TMPDIR") + "/std_io_ctest.tmp";
 let data = "hello std.File";
 System.assert(writeText(path, data));
 System.assert(exists(path));
 let got = readText(path);
 System.assert(got == data);
-let h = open(path);
-System.assert(readFromHandle(h) == data);
-System.assert(close(h));
+System.assert(remove(path));
+System.assert(exists(path) == false);
 "ok"

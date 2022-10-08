@@ -1,0 +1,6 @@
+// error: 6:1: macro m emitted statements where a pattern is needed [E1003]
+macro m() {
+  let p = quote.stmts { 1; 2; };
+  quote.expr { match (1) { unquote(p) => 0 } };
+}
+m()

@@ -1,11 +1,19 @@
 // expect: ok
-// pending: std.io.net.Tcp is not ported
-load { addr_resolve } from std;
-import { host } from std.io.net.Tcp;
-import { listen, localAddr, boundPort } from std.io.net.Tcp;
+// Both ends of a loopback connection report the numeric host 127.0.0.1.
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
 
-let bindAddr = addr_resolve("127.0.0.1", 0);
-let listener = listen(bindAddr, 1);
-let a = localAddr(listener);
-System.assert(Bytes.eq(host(a), "127.0.0.1"));
-"ok"
+let run = fn(): Bytes {
+  let listener = Tcp.listen("127.0.0.1", 0);
+  let client = Tcp.connect("127.0.0.1", listener.port());
+  let server = listener.accept();
+  System.assert(Bytes.eq(server.peerHost(), "127.0.0.1"));
+  System.assert(Bytes.eq(client.peerHost(), "127.0.0.1"));
+  System.assert(client.peerPort() == listener.port());
+  System.assert(server.peerPort() == client.localPort());
+  client.close();
+  server.close();
+  listener.close();
+  "ok"
+};
+run()

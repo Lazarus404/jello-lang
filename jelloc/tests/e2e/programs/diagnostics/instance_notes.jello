@@ -1,0 +1,23 @@
+// error: 18:14: cannot extract Array<I32> from Dynamic: only Bool, I32, I64, F16, F32, F64, Atom, Bytes, enums and Object are checked [E0406]
+// error:   get(): T { this.value as T };
+// error:              ^
+// error: $DIR/instance_notes.jello:22:15: note: in Box<Array<I32>>, which is needed here
+// error: let box = new Box<Array<I32>>(1 as Dynamic);
+// error:               ^
+// error: $DIR/instance_notes.jello:20:41: cannot extract Array<I32> from Dynamic: only Bool, I32, I64, F16, F32, F64, Atom, Bytes, enums and Object are checked [E0406]
+// error: let unwrap<T> = fn(value: Dynamic): T { value as T };
+// error:                                         ^
+// error: $DIR/instance_notes.jello:23:15: note: in unwrap<Array<I32>>, which is needed here
+// error: let numbers = unwrap<Array<I32>>(1 as Dynamic);
+// error:               ^
+/* An error in an instance of a generic, which may be declared in another
+ * module, notes where the instance is needed. */
+typedef Box<T> = { let value: Dynamic; };
+prototype Box<T> {
+  init(value: Dynamic) { this.value = value; };
+  get(): T { this.value as T };
+};
+let unwrap<T> = fn(value: Dynamic): T { value as T };
+
+let box = new Box<Array<I32>>(1 as Dynamic);
+let numbers = unwrap<Array<I32>>(1 as Dynamic);

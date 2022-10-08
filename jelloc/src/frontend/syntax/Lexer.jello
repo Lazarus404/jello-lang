@@ -168,7 +168,7 @@ let _skipSpace = fn(src: Bytes, at: I32): I32 {
     } else if ((c == "#".code) || ((c == "/".code) && (_byteAt(src, pos + 1) == "/".code))) {
       while ((next < src.len()) && (Bytes.get_u8(src, next) != "\n".code)) { next++; }
     } else if ((c == "/".code) && (_byteAt(src, pos + 1) == "*".code)) {
-      let close = _find(src, "*/", pos + 1);
+      let close = _find(src, "*/", pos + 2);
       if (close >= 0) { next = close + 2; }
     }
     cont = next != pos;
@@ -299,9 +299,18 @@ let _dotStartsMember = fn(src: Bytes, dot: I32): Bool {
   _isWordChar(next) && !_isDigit(next) && (_floatSuffix(src, dot + 1).len() == 0)
 };
 
-let _checkConstantEnd = fn(src: Bytes, end: I32, text: Bytes) {
+let _checkConstantEnd = fn(src: Bytes, start: I32, end: I32) {
   let c = _byteAt(src, end);
-  if (_isWordChar(c) || ((c == ".".code) && !_dotStartsMember(src, end))) { throw coded(E0003, "invalid constant: " + text); }
+
+  if (_isWordChar(c) || ((c == ".".code) && !_dotStartsMember(src, end))) {
+    let stop = end;
+
+    let more = fn(at: I32): Bool {
+      _isWordChar(_byteAt(src, at)) || ((_byteAt(src, at) == ".".code) && _isWordChar(_byteAt(src, at + 1)))
+    };
+    while (more(stop)) { stop++; }
+    throw coded(E0003, "invalid constant: " + Bytes.slice(src, start, stop - start));
+  }
   null
 };
 
@@ -312,7 +321,7 @@ let _lexConstant = fn(src: Bytes, digits: Bytes, i: I32): Tuple<Token, I32> {
     ? Token.IntegerConstant(digits, _integerSize(integer))
     : (float.len() > 0) ? Token.FloatConstant(digits, _floatSize(float)) : Token.IntegerConstant(digits, IntegerSize.Infer);
   let end = i + integer.len() + float.len();
-  _checkConstantEnd(src, end, digits);
+  _checkConstantEnd(src, i - digits.len(), end);
   (token, end)
 };
 
@@ -395,7 +404,7 @@ let _lexFloat = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
   let lit = Bytes.slice(src, i, end - i);
   let suffix = _floatSuffix(src, end);
   let cur = end + suffix.len();
-  _checkConstantEnd(src, cur, lit);
+  _checkConstantEnd(src, i, cur);
   (Token.FloatConstant(lit, _floatSize(suffix)), cur)
 };
 
@@ -557,6 +566,17 @@ let _isLetter = fn(c: I32) {
     || ((c >= "a".code) && (c <= "z".code))
 };
 
+export let isName = fn(text: Bytes): Bool {
+  if ((text.len() == 0) || !(_isLetter(Bytes.get_u8(text, 0)) || (Bytes.get_u8(text, 0) == "_".code))) { return false; }
+  let i = 1;
+
+  while (i < text.len()) {
+    if (!_isWordChar(Bytes.get_u8(text, i))) { return false; }
+    i++;
+  }
+  true
+};
+
 let _lexRegExpLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
   let i = at + 3;
   let close = -1;
@@ -713,6 +733,15 @@ let _invalidUtf8 = fn(src: Bytes): I32 {
   bad
 };
 
+let _failure: Tuple<I32, Bytes> = (-1, "");
+
+export let lexFailure: () -> Tuple<I32, Bytes> = fn() { _failure };
+
+let _failed = fn(filename: Bytes, src: Bytes, at: I32, message: Bytes): Bytes {
+  _failure = (at, message);
+  sourceDiagnostic(filename, src, at, message)
+};
+
 export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>> = fn(src, filename) {
   let toks = Array.new<Token>(64);
   let starts = Array.new<I32>(64);
@@ -721,7 +750,8 @@ export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Arr
   let cap = 64;
   let pos = 0;
   let invalid = _invalidUtf8(src);
-  if (invalid >= 0) { throw sourceDiagnostic(filename, src, invalid, coded(E0001, "invalid UTF-8")); }
+  _failure = (-1, "");
+  if (invalid >= 0) { throw _failed(filename, src, invalid, coded(E0001, "invalid UTF-8")); }
   let depth = -1;
   Array.resize(_holes, 0);
   let done = false;
@@ -743,7 +773,7 @@ export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Arr
         pos = _failAt;
         _failAt = -1;
       }
-      throw sourceDiagnostic(filename, src, pos, Std.string(e));
+      throw _failed(filename, src, pos, Std.string(e));
       (Token.Eof, pos)
     };
     let (t, next) = result;
@@ -783,7 +813,7 @@ export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Arr
       _ => false,
     };
   }
-  if (depth >= 0) { throw sourceDiagnostic(filename, src, _holes[_holes.len() - 1], coded(E0005, "unterminated template")); }
+  if (depth >= 0) { throw _failed(filename, src, _holes[_holes.len() - 1], coded(E0005, "unterminated template")); }
   Array.resize(toks, count);
   Array.resize(starts, count);
   Array.resize(ends, count);

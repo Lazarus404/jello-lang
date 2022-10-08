@@ -1,15 +1,18 @@
 // expect: ok
-// pending: native channel_new without a typed binding
-load { channel_new, channel_send, channel_recv, channel_try_recv, channel_close } from std;
+/* An inbox delivers in order, tryReceive gives null when it is empty, and a finished process
+ * takes no more messages. */
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
 
-let ch = channel_new();
-System.assert(channel_try_recv(ch) == null);
-System.assert(channel_send(ch, 99));
-System.assert(channel_recv(ch) == 99);
-System.assert(channel_send(ch, 7));
-System.assert(channel_try_recv(ch) == 7);
-System.assert(channel_close(ch));
-System.assert(channel_recv(ch) == null);
-System.assert(channel_close(ch) == false);
-System.assert(channel_send(ch, 1) == false);
+let inbox = new Inbox<I32>();
+let me = Process.self<I32>(inbox);
+System.assert(inbox.tryReceive() == null);
+System.assert(me.send(99));
+System.assert(inbox.receive() == 99);
+System.assert(me.send(7));
+System.assert(inbox.tryReceive() == 7);
+
+let done = Process.spawn<I32>(fn(_: Inbox<I32>) { });
+done.join();
+System.assert(done.send(1) == false);
 "ok"

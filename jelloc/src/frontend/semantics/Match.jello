@@ -4,7 +4,7 @@ import type { Block as AstBlock, Expr as AstExpr, MatchArm, MatchArms, Pattern, 
 import { warn } from frontend.semantics.Failures;
 import { BinaryOp, Pattern, unsignedWideValue, wideIntegerValue } from frontend.syntax.Ast;
 import { appendFrom, indexOf } from support.Arrays;
-import { E0105, E0400, E0406, E0410, E0605, E0700, E0701, E0702, E0703, E0704, E0705, E0706, E0800, E0802, E0803, coded } from support.Codes;
+import { E0105, E0400, E0406, E0410, E0605, E0700, E0701, E0702, E0703, E0704, E0705, E0706, E0800, E0802, E0803, E1001, coded } from support.Codes;
 import {
   Kind, Op, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, TYPE_OBJECT, auxOf, bindingNode, bytesId, bytesOf, childCount, childOf, declareBinding, endsPath, fieldCount, fieldType, innerOf, isEnum, isFloatType, isInteger,
   isKind, isLayout, isLinked, isObject, isRecord, local, memberCount, memberType, node, noValueType, nullable, nullType, opOf, recordField, resolve, segmentType, segmentWidth, stdNative, tupleType, typeArg, typeArgCount, typeName, typeOf, unify, variantCount,
@@ -14,7 +14,7 @@ import type { Syntax } from frontend.syntax.Source;
 import { checkSegmentLiteral, layoutField, layoutFits, layoutRecord, placeSegments, restOf, segmentCode } from frontend.semantics.Bits;
 import { scopedType } from frontend.semantics.ModuleScope;
 import { expressionOf, i32Of, lengthTest } from frontend.semantics.Derived;
-import { equalValues, kindTest, toDynamic } from frontend.semantics.Values;
+import { equalValues, functionTest, isAnyFunction, kindTest, toDynamic } from frontend.semantics.Values;
 import { namedKey, readTyped } from frontend.semantics.Objects;
 import {
   branchMismatch, bufferHint, checkArm, joinBranches, checkKnown, checkOperand, checkPatternName, checkPresent, checkType, coerceTail, enterSyntax, floatLiteral, integerLiteral, joinTypes, newBinding, regexpGlobal, sizedType,
@@ -269,6 +269,13 @@ let _bind = fn(bound: Bound, name: Bytes, path: Array<I32>, place: Syntax) {
 };
 let _boundReads = fn(subject: Subject, bound: Bound): Array<I32> { match (bound) { Bound(_, paths, places, _) => _reads(subject, paths, places) } };
 
+export let payloadMismatch = fn(name: Bytes, count: I32, given: I32, called: Bool): Bytes {
+  if (called && (count == 0)) { return coded(E0803, name + " has no fields, so it is written without parentheses"); }
+  let fields = Std.string(count) + (count == 1 ? " field" : " fields");
+  if (!called) { return coded(E0803, name + " has " + fields + ", so it needs parentheses: " + name + "(...)"); }
+  coded(E0803, name + " has " + fields + ", not " + Std.string(given))
+};
+
 let _test: (Subject, Pattern, Syntax, Array<I32>, I32, Array<I32>, Bound) -> Bool = fn(_s, _p, _syntax, _path, _ty, _tests, _bound) { false };
 
 let _spreadOf = fn(items: Array<Pattern>, syntax: Syntax): I32 {
@@ -309,6 +316,10 @@ _test = fn(subject, pattern, syntax, path, ty, tests, bound) {
 
   if (inner >= 0) {
     match (pattern) {
+      IsType(written, _) when (isAnyFunction(written)) => {
+        if (!isKind(resolve(inner), Kind.Function)) { throw coded(E0703, "is fn cannot match a value of type " + typeName(ty)); }
+        null
+      },
       IsType(written, _) => {
         let target = checkType(written);
         if (!unify(target, inner)) { throw coded(E0703, "is " + typeName(target) + " cannot match a value of type " + typeName(ty)); }
@@ -336,7 +347,7 @@ _test = fn(subject, pattern, syntax, path, ty, tests, bound) {
 
       if (constant >= 0) { _equalTo(subject, path, ty, constant, name, tests); } else {
         let tag = known >= 0 ? known : _tagOf(present >= 0 ? present : ty, name);
-        if (args.len() != fieldCount(ty, tag)) { throw coded(E0803, "wrong payload count for enum variant pattern " + name); }
+        if (args.len() != fieldCount(ty, tag)) { throw payloadMismatch(name, fieldCount(ty, tag), args.len(), args.len() != 0); }
 
         if (variantCount(ty) > 1) {
           let read = match (subject) { Subject(_, _, _, tagBinding) => (path.len() == 1) && (tagBinding >= 0) ? local(tagBinding, TYPE_I32) : node(Op.EnumTag, TYPE_I32, 0, 0, [_read(subject, path)]) };
@@ -414,9 +425,19 @@ _test = fn(subject, pattern, syntax, path, ty, tests, bound) {
     },
     IsType(written, binding) => {
       if (resolve(ty) != TYPE_DYNAMIC) { throw coded(E0406, "is tests a Dynamic or nullable value, not " + typeName(ty)); }
-      let target = checkType(written);
-      tests.push(kindTest(_read(subject, path), target));
-      if (binding != null) { _bind(bound, binding, _step(path, _FROM_DYNAMIC, target), syntax); }
+
+      if (isAnyFunction(written)) {
+        if (binding != null) { throw coded(E0406, "is fn binds no name, since it does not fix the function's type"); }
+        tests.push(functionTest(_read(subject, path)));
+      } else {
+        let target = checkType(written);
+        tests.push(kindTest(_read(subject, path), target));
+        if (binding != null) { _bind(bound, binding, _step(path, _FROM_DYNAMIC, target), syntax); }
+      }
+      null
+    },
+    Unquote(_) => {
+      throw coded(E1001, "unquote is only allowed inside a quote");
       null
     },
     Array(items) => {
@@ -576,9 +597,10 @@ _describe = fn(pattern) {
     Atom(name) => ":" + name,
     Pin(name) => "^" + name,
     Null => "null",
-    IsType(written, _) => "is " + typeName(checkType(written)),
+    IsType(written, _) => "is " + (isAnyFunction(written) ? "fn" : typeName(checkType(written))),
     Bytes(value) => "\"" + value + "\"",
     RegExp(source, flags, _) => "~r/" + source + "/" + flags,
+    Unquote(_) => "unquote(…)",
   }
 };
 
@@ -598,7 +620,8 @@ let _same = fn(a: Pattern, b: Pattern): Bool {
     (Float(x, _), Float(y, _)) => x == y,
     (Bytes(x), Bytes(y)) => x == y,
     (Atom(x), Atom(y)) => x == y,
-    (IsType(x, _), IsType(y, _)) => checkType(x) == checkType(y),
+    (IsType(x, _), IsType(y, _)) =>
+      isAnyFunction(x) || isAnyFunction(y) ? isAnyFunction(x) && isAnyFunction(y) : checkType(x) == checkType(y),
     (Null, Null), (Tuple(_), Tuple(_)) => true,
     _ => false,
   }

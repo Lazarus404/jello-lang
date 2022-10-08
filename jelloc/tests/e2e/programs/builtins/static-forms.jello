@@ -1,0 +1,6 @@
+// expect: x (1, "a") 1 S.A 0 y
+enum S { A; B(n: I32); }
+enum Box<T> { Full(value: T); Empty; }
+let b: Box<I32> = Box<I32>.Full(3);
+[Atom.toString(:x), Tuple.toString((1, "a")), Std.string(Enum.tag(S.B(2))), Enum.toString(S.A),
+  Std.string(Enum.tag(b)), (:y).toString()].join(" ")

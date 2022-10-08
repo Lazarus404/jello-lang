@@ -1,0 +1,107 @@
+/* The language reference's examples as program fixtures. Each ```jello block
+ * of a page under ../docs is written out as a fixture, named after the page
+ * and the line its block starts at, and run as degust.Programs runs the
+ * compiler's own; the comment lines it starts with are its directives, so an
+ * example states what it prints or the error it gives. A block fenced as
+ * ```jello file=PATH is a module of the example that follows it, which then
+ * becomes a directory fixture: its block is main.jello, beside PATH. */
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { outDir, run } from degust.Programs;
+import { makeDirs, readText, writeText } from std.io.File;
+import { dirname, filesUnder } from std.io.Path;
+import { first } from std.core.Array;
+import { contains, join, split, startsWith, substring } from std.core.Bytes;
+
+// The pages, from the compiler's directory, where the tests run.
+let _DOCS = "../docs";
+// The fences of an example and of a module, which names its file after it.
+let _EXAMPLE = "```jello";
+let _MODULE = "```jello file=";
+
+// Writes TEXT to PATH, making its directory first.
+let _write = fn(path: Bytes, text: Bytes): Null {
+  makeDirs(dirname(path));
+  if (!writeText(path, text)) { throw "cannot write " + path; }
+  null
+};
+
+// The place, PATH:LINE, an error in a page names.
+let _at = fn(path: Bytes, line: I32): Bytes { path + ":" + Std.string(line) };
+
+/* Writes the examples of the page at PATH, NAME under the pages, under OUT;
+ * how many it wrote. */
+let _extract = fn(path: Bytes, name: Bytes, out: Bytes): I32 {
+  let lines = split(readText(path), "\n");
+  let modules = Array.new<Tuple<Bytes, Bytes>>(0);
+  let count = 0;
+  let i = 0;
+
+  while (i < lines.len()) {
+    let line = lines[i];
+    let start = i + 1;
+    let module = startsWith(line, _MODULE);
+
+    if ((line != _EXAMPLE) && !module && startsWith(line, _EXAMPLE)) {
+      throw _at(path, start) + ": a fence of " + _EXAMPLE + " is neither an example"
+        + " nor a module (" + _MODULE + "PATH)";
+    }
+
+    if ((line == _EXAMPLE) || module) {
+      let body = Array.new<Bytes>(0);
+      i++;
+
+      while ((i < lines.len()) && (lines[i] != "```")) {
+        body.push(lines[i]);
+        i++;
+      }
+      if (i == lines.len()) { throw _at(path, start) + ": an example is not closed"; }
+      let text = join(body, "\n") + "\n";
+
+      if (module) {
+        // A module stays inside its example's directory, as one file.
+        let file = substring(line, _MODULE.len(), line.len());
+
+        if (startsWith(file, "/") || contains(file, "..")
+          || (first(modules, fn(m: Tuple<Bytes, Bytes>): Bool { m.0 == file }) != null)) {
+          throw _at(path, start) + ": module " + file + " is repeated or leaves its example";
+        }
+        modules.push((file, text));
+      } else {
+        let fixture = out + "/" + name + "/line" + Std.string(start);
+
+        if (modules.len() == 0) { _write(fixture + ".jello", text); } else {
+          _write(fixture + "/main.jello", text);
+          let j = 0;
+
+          while (j < modules.len()) {
+            let (file, source) = modules[j];
+            _write(fixture + "/" + file, source);
+            j++;
+          }
+          modules = Array.new<Tuple<Bytes, Bytes>>(0);
+        }
+        count++;
+      }
+    }
+    i++;
+  }
+  if (modules.len() > 0) { throw path + ": a module block is followed by no example"; }
+  count
+};
+
+let testDocs = fn(t: Test) {
+  let out = outDir() + "/docs";
+  let pages = filesUnder(_DOCS, ".md");
+  let count = 0;
+  let i = 0;
+
+  while (i < pages.len()) {
+    let page = pages[i];
+    count += _extract(page, substring(page, _DOCS.len() + 1, page.len() - ".md".len()), out);
+    i++;
+  }
+  if (count == 0) { T.fatal(t, "no examples under " + _DOCS); }
+  run(t, out);
+};

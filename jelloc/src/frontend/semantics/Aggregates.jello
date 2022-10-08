@@ -21,7 +21,7 @@ import { checkPrototypeCall, checkPrototypeExpr, checkSuperCall } from frontend.
 import { appendFrom, indexOf, internIndex } from support.Arrays;
 import { closestNames, joined, startsWith } from support.Text;
 import { binaryValues, bufferHint, checkArity, checkFunctionCall, checkIndirectCall, checkInstance, checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, hasSpread, hideValue, fieldMismatch, isBound, joinArrays, linkedMember, newBinding, objectValue, one, prototypeField, prototypeMethod, receiverMethodType, rejectAt, spreadArray, spreadOperand, syntaxChild, tupleFields, widened, withoutCallee } from frontend.semantics.TypeCheck;
-import { E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0600, E0800, E0801, E0807, E0808, E0900, coded } from support.Codes;
+import { E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0600, E0601, E0800, E0801, E0807, E0808, E0900, coded } from support.Codes;
 
 let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   let checked = checkOperand(expr, index, H.TYPE_I32);
@@ -73,7 +73,11 @@ let _codePoint = fn(value: Bytes): I32 {
 };
 
 let _builtin = fn(space: Bytes): Bool {
-  match (space) { "Array", "Atom", "Bytes", "Float", "Function", "Integer", "List", "Math", "Object", "Std", "System", "Tuple" => !isBound(space), _ => false }
+  match (space) {
+    "Array", "Atom", "Bytes", "Float", "Function", "Integer", "List", "Math", "Object", "Std", "System", "Tuple" => !isBound(space),
+    "Enum" => !isBound(space) && (scopedType(space) < 0),
+    _ => false,
+  }
 };
 
 let _args = fn(): I32 {
@@ -104,6 +108,9 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
       return H.node(Op.I32, H.TYPE_I32, code, 0, []);
     },
     Variable(space) when ((space == "System") && (member == "args") && _builtin(space)) => { return _args(); },
+    Variable(space) when (_builtin(space)) => {
+      throw coded(E0301, space + "." + member + " is built in, so it can only be called; to pass it as a value, wrap the call in a function");
+    },
     _ => null,
   };
   let checked = checkPresent(base, 0);
@@ -451,10 +458,7 @@ let _tupleField = fn(tuple: I32, index: I32): I32 {
   }
   let known = match (H.opOf(index)) { I32 => H.valueOf(index), _ => -1 };
 
-  if (fields.len() == 1) {
-    statements.push(expressionOf(index));
-    statements.push(fields[0]);
-  } else if ((known >= 0) && (known < fields.len())) {
+  if ((known >= 0) && (known < fields.len())) {
     statements.push(fields[known]);
   } else {
     let array = H.node(Op.ArrayLiteral, H.arrayType(H.TYPE_DYNAMIC), 0, 0, fields);
@@ -697,6 +701,25 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
       checkArity(args, 2, qualified);
       let tuple = _of(args[0], 1, Kind.Tuple, -1, "Tuple.get requires a tuple");
       _tupleField(tuple, _i32(args[1], 2, "Tuple.get index"))
+    },
+    "System.args" => {
+      throw coded(E0601, "System.args is a value, not a function; read it without parentheses");
+      -1
+    },
+    "Atom.toString", "Tuple.toString" => {
+      checkArity(args, 1, qualified);
+      let kind = space == "Atom" ? Kind.Atom : Kind.Tuple;
+      printed(_of(args[0], 1, kind, -1, qualified + " requires " + (space == "Atom" ? "an Atom" : "a tuple")), qualified, 1)
+    },
+    "Enum.tag", "Enum.toString" => {
+      checkArity(args, 1, qualified);
+      let value = checkPresentAs(args[0], 1, -1);
+
+      if (!H.isEnum(H.typeOf(value))) {
+        enterSyntax(syntaxChild(1));
+        throw coded(E0400, qualified + " requires an enum value");
+      }
+      name == "tag" ? H.node(Op.EnumTag, H.TYPE_I32, 0, 0, [value]) : printed(value, qualified, 1)
     },
     "System.assert" => checkSystemAssertion("assert", qualified, args),
     "System.assertEq" => checkSystemAssertion("assertEq", qualified, args),

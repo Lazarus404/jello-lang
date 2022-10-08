@@ -1,0 +1,17 @@
+// expect: 2 1 3
+// Macro.gensym makes a name nothing else uses, and unquote binds a name in a pattern or assigns
+// to one.
+macro swap(a, b) {
+  let t = Macro.gensym("t");
+  quote.stmts { let unquote(t) = unquote(a); unquote(a) = unquote(b); unquote(b) = unquote(t); };
+}
+
+macro define(name, value) {
+  quote.stmt { let unquote(name) = unquote(value); };
+}
+
+let p = 1; let q = 2;
+let t = 3;
+swap(p, q);
+define(r, t);
+Std.string(p) + " " + Std.string(q) + " " + Std.string(r)

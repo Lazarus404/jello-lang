@@ -1,11 +1,12 @@
 // expect: ok
-// pending: native thread_id without a typed binding
-load { thread_spawn, thread_join, thread_id } from std;
+import std.concurrent.Job as Job;
+import type { Job } from std.concurrent.Job;
+import std.concurrent.Process as Process;
 
 let add: (I32, I32) -> I32 = fn(a, b) { return a + b; };
-System.assert(thread_id() >= 1);
-let t1 = thread_spawn(add, 10, 20);
-let t2 = thread_spawn(add, 30, 40);
-System.assert(thread_join(t1) == 30);
-System.assert(thread_join(t2) == 70);
+System.assert(Process.onMain());
+let t1 = Job.start<I32>(fn(): I32 { add(10, 20) });
+let t2 = Job.start<I32>(fn(): I32 { add(30, 40) });
+System.assert(t1.join() == 30);
+System.assert(t2.join() == 70);
 "ok"

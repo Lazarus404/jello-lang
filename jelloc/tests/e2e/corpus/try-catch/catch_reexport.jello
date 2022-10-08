@@ -1,7 +1,5 @@
 // expect: ok
-// pending: System.deepEqual
-// catch (e) { e } must re-export the thrown payload
-let eqAtom = Atom.intern("equal");
-let v: Dynamic = try { throw 42; "bad" } catch (e) { e };
-System.assert(Object.get(System.deepEqual(v, 42), eqAtom) == true);
+// catch (e) { e } re-exports the thrown payload.
+let v: Dynamic = try { throw 42; "bad" as Dynamic } catch (e) { e };
+System.assert((v as I32) == 42);
 "ok"

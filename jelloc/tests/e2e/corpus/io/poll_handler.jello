@@ -1,28 +1,28 @@
 // expect: ok
-// pending: std.io.net.Udp is not ported
-load { addr_resolve, random_int } from std;
-import { bind, sendTo, tryRecvFrom, pollFd } from std.io.net.Udp;
-import { create, registerPoll, runOnce } from std.io.EventLoop;
+// A handler process runs once for each datagram its socket receives.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.net.Udp as Udp;
+import type { Socket, Datagram } from std.net.Udp;
 
-let port = 40000 + random_int(0, 19999);
-let loop = create();
-let addr = addr_resolve("127.0.0.1", port);
-let sock = bind(addr);
-let pkt = bits[16(7), 8(9)];
-
-let state = { hits: 0 };
-registerPoll(loop, pollFd(sock), fn(_loop) {
-  let _got = tryRecvFrom(sock, 64);
-  state.hits = state.hits + 1;
-});
-
-let _sent = sendTo(sock, pkt, addr, port);
-
-let tries = 0;
-while ((state.hits == 0) && (tries < 20)) {
-  runOnce(loop, 100);
-  tries = tries + 1;
-}
-
-System.assert(state.hits > 0);
-"ok"
+let run = fn(): Bytes {
+  let hits = new Inbox<I32>();
+  let main = Process.self<I32>(hits);
+  let sock = Udp.bind("127.0.0.1", 0);
+  let port = sock.port();
+  Process.spawn<I32>(fn(_: Inbox<I32>) {
+    let n = 0;
+    while (true) {
+      sock.receive(64);
+      n = n + 1;
+      main.send(n);
+    }
+  });
+  let sender = Udp.bind("127.0.0.1", 0);
+  sender.sendTo(bits[16(7), 8(9)], "127.0.0.1", port);
+  let seen = hits.receiveWithin(5000);
+  sender.close();
+  System.assert(seen == 1);
+  "ok"
+};
+run()

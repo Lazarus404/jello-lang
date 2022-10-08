@@ -4,18 +4,20 @@ import type { Test } from std.testing;
 import std.testing as T;
 import { coded, errorCodes, explain } from support.Codes;
 import { joined } from support.Text;
+import degust.Golden as G;
 
 // The codes, in order. A code is never renumbered or removed, so this list only grows.
 const _CODES = "E0001 E0002 E0003 E0004 E0005 E0006 E0007 E0008 "
-  + "E0100 E0101 E0102 E0103 E0104 E0105 E0106 E0107 E0108 "
+  + "E0100 E0101 E0102 E0103 E0104 E0105 E0106 E0107 E0108 E0109 "
   + "E0200 E0201 E0202 E0203 E0204 E0205 E0206 E0207 E0208 E0209 E0210 E0211 E0212 E0213 E0214 "
   + "E0300 E0301 E0302 E0303 E0304 E0305 E0306 E0307 E0308 "
-  + "E0400 E0401 E0402 E0403 E0404 E0405 E0406 E0407 E0408 E0409 E0410 E0411 E0412 "
+  + "E0400 E0401 E0402 E0403 E0404 E0405 E0406 E0407 E0408 E0409 E0410 E0411 E0412 E0413 "
   + "E0500 E0501 "
   + "E0600 E0601 E0602 E0603 E0604 E0605 "
   + "E0700 E0701 E0702 E0703 E0704 E0705 E0706 "
   + "E0800 E0801 E0802 E0803 E0804 E0805 E0806 E0807 E0808 E0809 "
-  + "E0900 E0901";
+  + "E0900 E0901 "
+  + "E1000 E1001 E1002 E1003";
 
 let testKeepsEveryCode = fn(t: Test) { T.equal(t, joined(errorCodes(), " "), _CODES); };
 
@@ -49,4 +51,21 @@ let testExplainsNoUnknownCode = fn(t: Test) {
   T.equal(t, explain("E9999"), "");
   T.equal(t, explain("e0302"), "");
   T.equal(t, explain(""), "");
+};
+
+/* The language reference's page of error codes, which holds what jelloc --explain says of each;
+ * -- --update rewrites it. */
+let testTheReferenceListsEachCode = fn(t: Test) {
+  let parts = ["# Compile errors\n\n"
+    + "Each error the compiler reports ends with its code, as in `unknown name: x [E0300]`.\n"
+    + "A code is never renumbered or reused. `jelloc --explain E0300` prints what this page says\n"
+    + "of it. This page is generated from the compiler's own explanations.\n"];
+  let codes = errorCodes();
+  let i = 0;
+
+  while (i < codes.len()) {
+    parts.push("\n## " + explain(codes[i]));
+    i++;
+  }
+  G.equal(t, "../docs/08-errors/01-compile-errors.md", joined(parts, ""));
 };

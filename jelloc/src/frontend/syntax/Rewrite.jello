@@ -1,0 +1,551 @@
+package frontend.syntax;
+
+import type { Block, Expr, ListLiteral, MatchArm, Parameter, Pattern, Stmt, Type } from frontend.syntax.Ast;
+import { Block, BitExprSegment, BitPatternSegment, Expr, ListGenerator, ListLiteral, MatchAlternative, MatchArm, MatchArms, ObjectEntry, Parameter, ParameterKind, Pattern, PrototypeField, QuoteBody, Stmt, StructField, EnumConstructor, Type, TypedefBody, WithClause } from frontend.syntax.Ast;
+import type { Syntax } from frontend.syntax.Source;
+import { Syntax } from frontend.syntax.Source;
+import { internalError } from support.Internal;
+
+export enum Located {
+  Expression(value: Expr, syntax: Syntax);
+  Statements(values: Array<Stmt>, syntax: Array<Syntax>);
+  Pattern(value: Pattern, syntax: Syntax);
+  Type(value: Type);
+}
+
+let _hook: (Located) -> ?Located = fn(_node) { null };
+
+enum Cursor {
+  Cursor(children: Array<Syntax>, patterns: Array<Syntax>, at: Array<I32>, made: Array<Syntax>, madePatterns: Array<Syntax>);
+}
+
+let _cursor = fn(syntax: Syntax): Cursor {
+  match (syntax) { Node(_, _, _, children, patterns) => Cursor.Cursor(children, patterns, [0, 0], [], []) }
+};
+
+let _made = fn(syntax: Syntax, cursor: Cursor): Syntax {
+  match ((syntax, cursor)) { (Node(path, start, end, _, _), Cursor(_, _, _, made, madePatterns)) => Syntax.Node(path, start, end, made, madePatterns) }
+};
+
+let _nextChild = fn(cursor: Cursor): Syntax {
+  match (cursor) { Cursor(children, _, at, _, _) => {
+    if (at[0] >= children.len()) { internalError("a rewrite ran out of syntax"); }
+    at[0] = at[0] + 1;
+    children[at[0] - 1]
+  } }
+};
+
+let _nextPattern = fn(cursor: Cursor): Syntax {
+  match (cursor) { Cursor(_, patterns, at, _, _) => {
+    if (at[1] >= patterns.len()) { internalError("a rewrite ran out of pattern syntax"); }
+    at[1] = at[1] + 1;
+    patterns[at[1] - 1]
+  } }
+};
+
+let _addChild = fn(cursor: Cursor, syntax: Syntax) {
+  match (cursor) { Cursor(_, _, _, made, _) => made.push(syntax) };
+  null
+};
+
+let _addPattern = fn(cursor: Cursor, syntax: Syntax) {
+  match (cursor) { Cursor(_, _, _, _, made) => made.push(syntax) };
+  null
+};
+
+let _expression: (Expr, Syntax) -> Tuple<Expr, Syntax> = fn(value, syntax) { (value, syntax) };
+let _statement: (Stmt, Syntax) -> Tuple<Array<Stmt>, Array<Syntax>> = fn(value, syntax) { ([value], [syntax]) };
+let _pattern: (Pattern, Syntax) -> Tuple<Pattern, Syntax> = fn(value, syntax) { (value, syntax) };
+let _type: (Type) -> Type = fn(value) { value };
+
+let _types = fn(values: Array<Type>): Array<Type> {
+  let out = Array.new<Type>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    out.push(_type(values[i]));
+    i++;
+  }
+  out
+};
+let _optionalType = fn(value: ?Type): ?Type { value == null ? null : _type(value) };
+
+_type = fn(value) {
+  let replaced = _hook(Located.Type(value));
+
+  if (replaced != null) {
+    return match (replaced) {
+      Type(ty) => ty, _ => {
+        internalError("a type's rewrite is no type");
+        value
+      }
+    };
+  }
+
+  match (value) {
+    Named(_), Unquote(_) => value,
+    Generic(name, args) => Type.Generic(name, _types(args)),
+    OptionalArg(inner) => Type.OptionalArg(_type(inner)),
+    VarargsArg(inner) => Type.VarargsArg(_type(inner)),
+    Function(args, result) => Type.Function(_types(args), _type(result)),
+    Tuple(items) => Type.Tuple(_types(items)),
+  }
+};
+
+let _fields = fn(fields: Array<StructField>): Array<StructField> {
+  let out = Array.new<StructField>(0);
+  let i = 0;
+
+  while (i < fields.len()) {
+    match (fields[i]) { Field(name, ty) => out.push(StructField.Field(name, _type(ty))) };
+    i++;
+  }
+  out
+};
+
+let _subPattern = fn(cursor: Cursor, value: Pattern): Pattern {
+  let (out, syntax) = _pattern(value, _nextChild(cursor));
+  _addChild(cursor, syntax);
+  out
+};
+
+let _subPatterns = fn(cursor: Cursor, values: Array<Pattern>): Array<Pattern> {
+  let out = Array.new<Pattern>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    out.push(_subPattern(cursor, values[i]));
+    i++;
+  }
+  out
+};
+
+let _child = fn(cursor: Cursor, value: Expr): Expr {
+  let (out, syntax) = _expression(value, _nextChild(cursor));
+  _addChild(cursor, syntax);
+  out
+};
+let _optionalChild = fn(cursor: Cursor, value: ?Expr): ?Expr { value == null ? null : _child(cursor, value) };
+
+let _children = fn(cursor: Cursor, values: Array<Expr>): Array<Expr> {
+  let out = Array.new<Expr>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    out.push(_child(cursor, values[i]));
+    i++;
+  }
+  out
+};
+
+let _statements = fn(cursor: Cursor, values: Array<Stmt>): Array<Stmt> {
+  let out = Array.new<Stmt>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    let (made, syntax) = _statement(values[i], _nextChild(cursor));
+    let j = 0;
+
+    while (j < made.len()) {
+      out.push(made[j]);
+      _addChild(cursor, syntax[j]);
+      j++;
+    }
+    i++;
+  }
+  out
+};
+
+let _block = fn(cursor: Cursor, block: Block): Block {
+  match (block) {
+    Block(statements, tail) => {
+      let made = _statements(cursor, statements);
+      Block.Block(made, _optionalChild(cursor, tail))
+    }
+  }
+};
+
+let _patternChild = fn(cursor: Cursor, value: Pattern): Pattern {
+  let (out, syntax) = _pattern(value, _nextPattern(cursor));
+  _addPattern(cursor, syntax);
+  out
+};
+
+let _annotation = fn(cursor: Cursor, value: ?Type): ?Type {
+  if (value == null) { return null; }
+  _addPattern(cursor, _nextPattern(cursor));
+  _type(value)
+};
+
+let _parameters = fn(cursor: Cursor, params: Array<Parameter>): Array<Parameter> {
+  let out = Array.new<Parameter>(0);
+  let i = 0;
+
+  while (i < params.len()) {
+    let syntax = _nextChild(cursor);
+    let inner = _cursor(syntax);
+
+    match (params[i]) { Parameter(name, annotation, kind) => {
+      let made = match (kind) {
+        Default(value) => ParameterKind.Default(_child(inner, value)),
+        Optional(value) => ParameterKind.Optional(_optionalChild(inner, value)),
+        _ => kind,
+      };
+      out.push(Parameter.Parameter(name, _optionalType(annotation), made));
+    } };
+    _addChild(cursor, _made(syntax, inner));
+    i++;
+  }
+  out
+};
+
+let _arms = fn(cursor: Cursor, arms: Array<MatchArm>): Array<MatchArm> {
+  let out = Array.new<MatchArm>(0);
+  let i = 0;
+
+  while (i < arms.len()) {
+    match (arms[i]) { Arm(alternatives, guard, body) => {
+      let made = Array.new<MatchAlternative>(0);
+      let j = 0;
+
+      while (j < alternatives.len()) {
+        match (alternatives[j]) {
+          Alternative(pattern, own) => {
+            let p = _patternChild(cursor, pattern);
+            made.push(MatchAlternative.Alternative(p, _optionalChild(cursor, own)))
+          }
+        };
+        j++;
+      }
+      let g = _optionalChild(cursor, guard);
+      out.push(MatchArm.Arm(made, g, _block(cursor, body)));
+    } };
+    i++;
+  }
+  out
+};
+
+let _list = fn(cursor: Cursor, value: ListLiteral): ListLiteral {
+  match (value) {
+    Empty => value,
+    Elements(items) => ListLiteral.Elements(_children(cursor, items)),
+    Cons(prefix, tail) => {
+      let p = _children(cursor, prefix);
+      ListLiteral.Cons(p, _child(cursor, tail))
+    },
+    Spread(prefix, rest, suffix) => {
+      let p = _children(cursor, prefix);
+      let r = _child(cursor, rest);
+      ListLiteral.Spread(p, r, _children(cursor, suffix))
+    },
+    Comprehension(generators, body) => {
+      let made = Array.new<ListGenerator>(0);
+      let i = 0;
+
+      while (i < generators.len()) {
+        match (generators[i]) { Generator(pattern, source, guard) => {
+          let p = _patternChild(cursor, pattern);
+          let s = _child(cursor, source);
+          made.push(ListGenerator.Generator(p, s, _optionalChild(cursor, guard)));
+        } };
+        i++;
+      }
+      ListLiteral.Comprehension(made, _child(cursor, body))
+    },
+  }
+};
+
+let _expressionChildren = fn(cursor: Cursor, value: Expr): Expr {
+  match (value) {
+    Bytes(_), RegExp(_, _), Atom(_), Bool(_), Integer(_, _), Float(_, _), Null, This, Super, Variable(_), Topic => value,
+    Array(items) => Expr.Array(_children(cursor, items)),
+    Tuple(items) => Expr.Tuple(_children(cursor, items)),
+    Interpolation(texts, holes) => Expr.Interpolation(texts, _children(cursor, holes)),
+    List(list) => Expr.List(_list(cursor, list)),
+    Object(entries) => {
+      let made = Array.new<ObjectEntry>(0);
+      let i = 0;
+
+      while (i < entries.len()) {
+        made.push(match (entries[i]) {
+          Field(name, entry) => ObjectEntry.Field(name, _child(cursor, entry)),
+          Computed(key, entry) => {
+            let k = _child(cursor, key);
+            ObjectEntry.Computed(k, _child(cursor, entry))
+          },
+          Spread(entry) => ObjectEntry.Spread(_child(cursor, entry)),
+        });
+        i++;
+      }
+      Expr.Object(made)
+    },
+    Spread(inner) => Expr.Spread(_child(cursor, inner)),
+    Unary(op, inner) => Expr.Unary(op, _child(cursor, inner)),
+    Await(inner) => Expr.Await(_child(cursor, inner)),
+    Unquote(inner) => Expr.Unquote(_child(cursor, inner)),
+    Member(inner, name) => Expr.Member(_child(cursor, inner), name),
+    TypeApply(inner, args) => Expr.TypeApply(_child(cursor, inner), _types(args)),
+    IncDec(op, prefix, inner) => Expr.IncDec(op, prefix, _child(cursor, inner)),
+    Cast(inner, ty) => Expr.Cast(_child(cursor, inner), _type(ty)),
+    Is(inner, ty) => Expr.Is(_child(cursor, inner), _type(ty)),
+    LetExpr(pattern, typeParams, annotation, inner) => {
+      let p = _patternChild(cursor, pattern);
+      let a = _annotation(cursor, annotation);
+      Expr.LetExpr(p, typeParams, a, _child(cursor, inner))
+    },
+    Bits(segments) => {
+      let made = Array.new<BitExprSegment>(0);
+      let i = 0;
+
+      while (i < segments.len()) {
+        match (segments[i]) { Segment(width, endian, signed, kind, segment) => made.push(BitExprSegment.Segment(width, endian, signed, kind, _child(cursor, segment))) };
+        i++;
+      }
+      Expr.Bits(made)
+    },
+    Index(left, right) => {
+      let l = _child(cursor, left);
+      Expr.Index(l, _child(cursor, right))
+    },
+    Binary(op, left, right) => {
+      let l = _child(cursor, left);
+      Expr.Binary(op, l, _child(cursor, right))
+    },
+    Pipe(left, right, topic) => {
+      let l = _child(cursor, left);
+      Expr.Pipe(l, _child(cursor, right), topic)
+    },
+    Assign(op, left, right) => {
+      let l = _child(cursor, left);
+      Expr.Assign(op, l, _child(cursor, right))
+    },
+    Call(callee, typeArgs, args) => {
+      let c = _child(cursor, callee);
+      Expr.Call(c, _types(typeArgs), _children(cursor, args))
+    },
+    New(base, args) => {
+      let b = _child(cursor, base);
+      Expr.New(b, _children(cursor, args))
+    },
+    Function(params, result, body, isMethod) => {
+      let p = _parameters(cursor, params);
+      Expr.Function(p, _optionalType(result), _block(cursor, body), isMethod)
+    },
+    BlockExpr(body) => Expr.BlockExpr(_block(cursor, body)),
+    If(condition, thenBranch, elseBranch) => {
+      let c = _child(cursor, condition);
+      let t = _child(cursor, thenBranch);
+      Expr.If(c, t, _child(cursor, elseBranch))
+    },
+    Conditional(condition, thenBranch, elseBranch) => {
+      let c = _child(cursor, condition);
+      let t = _child(cursor, thenBranch);
+      Expr.Conditional(c, t, _child(cursor, elseBranch))
+    },
+    Match(subject, arms) => {
+      let s = _child(cursor, subject);
+      Expr.Match(s, _arms(cursor, arms))
+    },
+    With(clauses, body, elseArms) => {
+      let made = Array.new<WithClause>(0);
+      let i = 0;
+
+      while (i < clauses.len()) {
+        made.push(match (clauses[i]) {
+          Clause(pattern, guard, clause) => {
+            let p = _patternChild(cursor, pattern);
+            let g = _optionalChild(cursor, guard);
+            WithClause.Clause(p, g, _child(cursor, clause))
+          },
+          Let(pattern, clause) => {
+            let p = _patternChild(cursor, pattern);
+            WithClause.Let(p, _child(cursor, clause))
+          },
+        });
+        i++;
+      }
+      let b = _block(cursor, body);
+      Expr.With(made, b, match (elseArms) { Some(arms) => MatchArms.Some(_arms(cursor, arms)), None => elseArms })
+    },
+    Try(body, name, catchBody) => {
+      let b = _block(cursor, body);
+      Expr.Try(b, name, _block(cursor, catchBody))
+    },
+    Quote(kind, body) => Expr.Quote(kind, match (body) {
+      Expression(inner) => QuoteBody.Expression(_child(cursor, inner)),
+      Statement(inner) => {
+        let made = _statements(cursor, [inner]);
+        made.len() == 1 ? QuoteBody.Statement(made[0]) : QuoteBody.Statements(made)
+      },
+      Statements(inner) => QuoteBody.Statements(_statements(cursor, inner)),
+      Pattern(pattern) => QuoteBody.Pattern(_patternChild(cursor, pattern)),
+      Type(ty) => QuoteBody.Type(_type(ty)),
+    }),
+  }
+};
+
+_expression = fn(value, syntax) {
+  let replaced = _hook(Located.Expression(value, syntax));
+
+  if (replaced != null) {
+    return match (replaced) {
+      Expression(out, made) => (out, made), _ => {
+        internalError("an expression's rewrite is no expression");
+        (value, syntax)
+      }
+    };
+  }
+  let cursor = _cursor(syntax);
+  let out = _expressionChildren(cursor, value);
+  (out, _made(syntax, cursor))
+};
+
+let _statementChildren = fn(cursor: Cursor, value: Stmt): Stmt {
+  match (value) {
+    LetStmt(isConst, exported, pattern, typeParams, annotation, inner, otherwise) => {
+      let p = _patternChild(cursor, pattern);
+      let a = _annotation(cursor, annotation);
+      let v = _child(cursor, inner);
+      Stmt.LetStmt(isConst, exported, p, typeParams, a, v, otherwise == null ? null : _block(cursor, otherwise))
+    },
+    Throw(inner) => Stmt.Throw(_child(cursor, inner)),
+    Expression(inner) => Stmt.Expression(_child(cursor, inner)),
+    Prototype(exported, name, typeParams, fields) => {
+      let made = Array.new<PrototypeField>(0);
+      let i = 0;
+
+      while (i < fields.len()) {
+        match (fields[i]) { Field(field, entry) => made.push(PrototypeField.Field(field, _child(cursor, entry))) };
+        i++;
+      }
+      Stmt.Prototype(exported, name, typeParams, made)
+    },
+    Macro(exported, name, params, body) => Stmt.Macro(exported, name, params, _statements(cursor, body)),
+    While(condition, body) => {
+      let c = _child(cursor, condition);
+      Stmt.While(c, _statements(cursor, body))
+    },
+    DoWhile(body, condition) => {
+      let b = _statements(cursor, body);
+      Stmt.DoWhile(b, _child(cursor, condition))
+    },
+    Return(inner) => Stmt.Return(_optionalChild(cursor, inner)),
+    Typedef(exported, name, typeParams, body) => Stmt.Typedef(exported, name, typeParams, match (body) {
+      Alias(ty) => TypedefBody.Alias(_type(ty)),
+      Struct(fields) => TypedefBody.Struct(_fields(fields)),
+      BytesLayout(_) => body,
+    }),
+    Enum(exported, name, typeParams, constructors) => {
+      let made = Array.new<EnumConstructor>(0);
+      let i = 0;
+
+      while (i < constructors.len()) {
+        match (constructors[i]) { Constructor(variant, fields) => made.push(EnumConstructor.Constructor(variant, _fields(fields))) };
+        i++;
+      }
+      Stmt.Enum(exported, name, typeParams, made)
+    },
+    ImportModule(_, _, _), ImportFrom(_, _, _), Break, Continue => value,
+  }
+};
+
+_statement = fn(value, syntax) {
+  let replaced = _hook(Located.Statements([value], [syntax]));
+
+  if (replaced != null) {
+    return match (replaced) {
+      Statements(out, made) => (out, made), _ => {
+        internalError("a statement's rewrite is no statement");
+        ([value], [syntax])
+      }
+    };
+  }
+  let cursor = _cursor(syntax);
+  let out = _statementChildren(cursor, value);
+  ([out], [_made(syntax, cursor)])
+};
+
+_pattern = fn(value, syntax) {
+  let replaced = _hook(Located.Pattern(value, syntax));
+
+  if (replaced != null) {
+    return match (replaced) {
+      Pattern(out, made) => (out, made), _ => {
+        internalError("a pattern's rewrite is no pattern");
+        (value, syntax)
+      }
+    };
+  }
+  let cursor = _cursor(syntax);
+
+  let out = match (value) {
+    Wildcard, BindPattern(_), Pin(_), Bool(_), Integer(_, _), Float(_, _), Bytes(_), Atom(_), RegExp(_, _, _), Null, Spread(_) => value,
+    IsType(ty, binding) => Pattern.IsType(_type(ty), binding),
+    Object(fields) => {
+      let made = Array.new<Tuple<Bytes, Pattern>>(0);
+      let i = 0;
+
+      while (i < fields.len()) {
+        made.push((fields[i].0, _subPattern(cursor, fields[i].1)));
+        i++;
+      }
+      Pattern.Object(made)
+    },
+    Tuple(items) => Pattern.Tuple(_subPatterns(cursor, items)),
+    Array(items) => Pattern.Array(_subPatterns(cursor, items)),
+    Enum(name, args) => Pattern.Enum(name, _subPatterns(cursor, args)),
+    Bits(segments) => {
+      let made = Array.new<BitPatternSegment>(0);
+      let i = 0;
+
+      while (i < segments.len()) {
+        match (segments[i]) { Segment(width, endian, signed, kind, segment) => made.push(BitPatternSegment.Segment(width, endian, signed, kind, _subPattern(cursor, segment))) };
+        i++;
+      }
+      Pattern.Bits(made)
+    },
+    Unquote(inner) => Pattern.Unquote(_child(cursor, inner)),
+  };
+  (out, _made(syntax, cursor))
+};
+
+export let rewrite: (Located, (Located) -> ?Located) -> Located = fn(node, hook) {
+  let outer = _hook;
+  _hook = hook;
+
+  let out = try { match (node) {
+    Expression(value, syntax) => {
+      let (made, at) = _expression(value, syntax);
+      Located.Expression(made, at)
+    },
+    Statements(values, syntax) => {
+      let made = Array.new<Stmt>(0);
+      let madeSyntax = Array.new<Syntax>(0);
+      let i = 0;
+
+      while (i < values.len()) {
+        let (out, at) = _statement(values[i], syntax[i]);
+        let j = 0;
+
+        while (j < out.len()) {
+          made.push(out[j]);
+          madeSyntax.push(at[j]);
+          j++;
+        }
+        i++;
+      }
+      Located.Statements(made, madeSyntax)
+    },
+    Pattern(value, syntax) => {
+      let (made, at) = _pattern(value, syntax);
+      Located.Pattern(made, at)
+    },
+    Type(value) => Located.Type(_type(value)),
+  } } catch (e) {
+    _hook = outer;
+    throw e;
+    node
+  };
+  _hook = outer;
+  out
+};

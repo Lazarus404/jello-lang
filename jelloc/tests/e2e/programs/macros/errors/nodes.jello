@@ -1,0 +1,8 @@
+// error: 8:1: macro grow made more than 4096 syntax nodes in this module [E0901]
+macro grow(n) {
+  let k = Macro.literal(n) as I32;
+  if (k > 0) {
+    quote.stmts { grow(unquote(k - 1)); grow(unquote(k - 1)); };
+  }
+}
+grow(20);

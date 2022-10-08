@@ -1,0 +1,20 @@
+package lib;
+
+// A module's exported macros, and a private one that they call.
+export macro twice(x) {
+  quote.expr { unquote(x) + unquote(x) };
+}
+
+export macro square(x) {
+  quote.expr { unquote(x) * unquote(x) };
+}
+
+export macro quadruple(x) {
+  quote.expr { twice(twice(unquote(x))) + hidden() };
+}
+
+macro hidden() {
+  quote.expr { 100 };
+}
+
+export let base = 3;

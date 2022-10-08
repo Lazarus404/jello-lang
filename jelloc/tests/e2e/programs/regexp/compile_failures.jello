@@ -1,0 +1,7 @@
+// expect: ["RegExp.compile: unknown regexp flag q; the flags are i, m, s, x and U", "RegExp.compile: invalid regexp pattern: missing closing parenthesis, at byte 1"]
+// compile rejects at run time what a literal's check would, by throwing what is wrong.
+import { compile } from std.core.RegExp;
+let problems = Array.new<Bytes>(0);
+try { compile("a", "q"); } catch (e) { problems.push(e as Bytes); }
+try { compile("(", ""); } catch (e) { problems.push(e as Bytes); }
+Std.string(problems)
