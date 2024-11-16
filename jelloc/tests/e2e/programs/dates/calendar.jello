@@ -1,0 +1,43 @@
+// expect: 0001-01-01T00:00:00Z|9999-12-31T23:59:59.999Z|1969-12-31T23:59:59.999Z|1900-03-01T00:00:00Z
+// expect: 2000-02-29 2100-02-28 366 365 6 7 1|2024-01-31T00:00:00Z 2023-12-31T00:00:00Z 2024-01-01T00:00:00Z
+// expect: 2024-02-24T09:30:00Z|2024-02-24T09:30:00.123Z|2024-02-24T09:30:00-05:00|2024-02-24T14:00:00+05:30|2024-02-24T09:30:00+05:00
+// expect: 24 Sat Saturday 6 24 24 AM 12 000 % 2 062|true false true -3600000
+// expect: day 29 is not from 1 to 28|minute 60 is not from 0 to 59|not an ISO 8601 date: 2024-2-24
+// expect: not an ISO 8601 date: 2024-02-24T09:30+0100x|not an ISO 8601 date: 2024-02-24Z|unknown code %Q
+// Dates in UTC and at fixed offsets, which print the same in every time zone: the ends of the
+// supported years, times before 1970, leap years, month arithmetic at both ends of the year,
+// every form parse reads and each kind of text it rejects, and the format codes.
+import std.sys.Date as Date;
+import type { Date } from std.sys.Date;
+
+let error = fn(f: () -> Bytes): Bytes {
+  try { f() } catch (e) {
+    let text = Std.string(e); let colon = text.indexOf(": ");
+    Bytes.slice(text, colon + 2, text.len() - colon - 2)
+  }
+};
+let iso = fn(text: Bytes): Bytes { Date.parse(text).iso() };
+let saturday = Date.utc(2024, 2, 24);
+let noon = Date.utc(2024, 2, 24, 12);
+Bytes.join([
+  Bytes.join([Date.utc(1, 1, 1).iso(), Date.utc(9999, 12, 31, 23, 59, 59, 999).iso(),
+    Date.fromTime(-1).toUtc().iso(), Date.utc(1900, 2, 28).addDays(1).iso()], "|"),
+  Bytes.join([Date.utc(2000, 1, 31).addMonths(1).format("%F") + " "
+    + Date.utc(2100, 3, 31).addMonths(-1).format("%F") + " "
+    + Std.string(Date.utc(2000, 12, 31).dayOfYear()) + " "
+    + Std.string(Date.utc(2100, 12, 31).dayOfYear()) + " " + Std.string(saturday.weekday()) + " "
+    + Std.string(saturday.addDays(1).weekday()) + " " + Std.string(saturday.addDays(2).weekday()),
+    Date.utc(2023, 12, 31).addMonths(1).iso() + " " + Date.utc(2024, 1, 31).addMonths(-1).iso() + " "
+    + Date.utc(2023, 12, 31, 23, 59, 59, 999).addMilliseconds(1).iso()], "|"),
+  Bytes.join([iso("2024-02-24T09:30Z"), iso("2024-02-24 09:30:00.1234z"),
+    iso("2024-02-24T09:30:00-0500"), iso("2024-02-24T14:00:00,0+05:30"), iso("2024-02-24T09:30+05")], "|"),
+  Bytes.join([saturday.format("%y %a %A %u %e %d %p %I %L %%") + saturday.addDays(7).format("%e %j"),
+    Std.string(noon.isBefore(noon.addSeconds(1))) + " "
+    + Std.string(noon.isAfter(noon.withOffset(60))) + " "
+    + Std.string(noon.isSame(noon.withOffset(-300))) + " "
+    + Std.string(noon.since(noon.addHours(1)))], "|"),
+  Bytes.join([error(fn() { iso("2023-02-29") }), error(fn() { iso("2024-02-24T09:60") }),
+    error(fn() { iso("2024-2-24") })], "|"),
+  Bytes.join([error(fn() { iso("2024-02-24T09:30+0100x") }), error(fn() { iso("2024-02-24Z") }),
+    error(fn() { noon.format("%Q") })], "|")
+], "\n")

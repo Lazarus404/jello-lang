@@ -1,10 +1,11 @@
 package frontend.semantics;
 
-import { Op, childCount, childOf, globalCount, lastChild, opOf, rootNode, valueOf } from frontend.hir.Hir;
+import {
+  Op, childCount, childOf, globalCount, lastChild, opOf, rootNode, valueOf
+} from frontend.hir.Hir;
 import { bitsAdd, bitsHas, bitsMembers, bitsNew, bitsUnion } from frontend.BitSets;
 
-let _scan: (I32, Array<I32>, Array<I32>, Array<I32>) -> Bool = fn(_id, _reads, _calls, _refs) { false };
-_scan = fn(id, reads, calls, refs) {
+let _scan = fn(id: I32, reads: Array<I32>, calls: Array<I32>, refs: Array<I32>): Bool {
   let indirect = match (opOf(id)) {
     Global => {
       bitsAdd(reads, valueOf(id));
@@ -21,6 +22,7 @@ _scan = fn(id, reads, calls, refs) {
     CallIndirect => true,
     _ => false,
   };
+
   let i = 0;
 
   while (i < childCount(id)) {
@@ -49,8 +51,8 @@ let _propagate = fn(nodes: Array<I32>) {
 
   while (pending.len() > 0) {
     let next = pending.pop();
-    let c = 0;
     _queued[next] = false;
+    let c = 0;
 
     while (c < _callers[next].len()) {
       let caller = _callers[next][c];
@@ -71,13 +73,13 @@ let _low = Array.new<I32>(0);
 let _stack = Array.new<I32>(0);
 let _visits = 0;
 
-let _settle: (I32) -> I32 = fn(_node) { 0 };
-_settle = fn(node) {
+let _settle = fn(node: I32): I32 {
   let start = _stack.len();
   _visit[node] = _visits;
   _low[node] = _visits;
   _visits++;
   _stack.push(node);
+
   let c = 0;
 
   while (c < _callees[node].len()) {
@@ -87,13 +89,14 @@ _settle = fn(node) {
     c++;
   }
   if (_low[node] != _visit[node]) { return 0; }
+
   let i = start;
 
   while (i < _stack.len()) {
     let member = _stack[i];
+    if (member != node) { bitsUnion(_reach[node], _reach[member]); }
     let callees = _callees[member];
     let k = 0;
-    if (member != node) { bitsUnion(_reach[node], _reach[member]); }
 
     while (k < callees.len()) {
       bitsUnion(_reach[node], _reach[callees[k]]);
@@ -104,7 +107,7 @@ _settle = fn(node) {
 
   while (_stack.len() > start) {
     let member = _stack.pop();
-    _low[member] = _visit.len() as I32;
+    _low[member] = _visit.len();
     if (member != node) { bitsUnion(_reach[member], _reach[node]); }
   }
   0
@@ -115,6 +118,7 @@ let _settleAll = fn() {
   _low = Array.new<I32>(0);
   _stack = Array.new<I32>(0);
   _visits = 0;
+
   let n = 0;
 
   while (n < _callees.len()) {
@@ -122,10 +126,11 @@ let _settleAll = fn() {
     _low.push(0);
     n++;
   }
+
   n = 0;
 
   while (n < _callees.len()) {
-    if (_visit[n] < 0) { _settle(n as I32); }
+    if (_visit[n] < 0) { _settle(n); }
     n++;
   }
   null
@@ -153,11 +158,12 @@ let _offerAll = fn(functions: Array<I32>, sink: I32) {
   null
 };
 
-export let firstUninitializedRead: () -> Tuple<I32, I32> = fn() {
+export let firstUninitializedRead = fn(): Tuple<I32, I32> {
   let root = rootNode();
   let functions = childCount(root) - 1;
   let sink = functions + 1;
   let nodes = sink + 1;
+
   _reach = Array.new<Array<I32>>(0);
   _callers = Array.new<Array<I32>>(0);
   _queued = Array.new<Bool>(0);
@@ -172,6 +178,7 @@ export let firstUninitializedRead: () -> Tuple<I32, I32> = fn() {
     _queued.push(false);
     f++;
   }
+
   let refs = bitsNew(nodes);
   f = 1;
 
@@ -190,6 +197,7 @@ export let firstUninitializedRead: () -> Tuple<I32, I32> = fn() {
   _offer(bitsMembers(refs), sink);
   _callees[sink] = bitsMembers(_offered);
   _settleAll();
+
   let body = lastChild(root);
   let initialized = bitsNew(globalCount());
   let i = 0;
@@ -201,6 +209,7 @@ export let firstUninitializedRead: () -> Tuple<I32, I32> = fn() {
     let taken = bitsNew(nodes);
     if (_scan(binding, reads, calls, taken)) { bitsAdd(calls, sink); }
     _offerAll(bitsMembers(taken), sink);
+
     let called = bitsMembers(calls);
     let c = 0;
 

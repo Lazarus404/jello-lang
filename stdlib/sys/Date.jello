@@ -1,0 +1,332 @@
+package std.sys;
+
+load { date_now, date_offset } from std;
+
+let _now: () -> I64 = date_now;
+let _localOffset: (I64) -> I32 = date_offset;
+
+let _MINUTE: I64 = 60000;
+let _DAY: I64 = 86400000;
+let _MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
+  "September", "October", "November", "December"];
+let _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+let _floorDiv = fn(a: I64, b: I64): I64 {
+  let q = a / b;
+  (a % b != 0) && ((a < 0) != (b < 0)) ? q - 1 : q
+};
+let _floorMod = fn(a: I64, b: I64): I64 { a - _floorDiv(a, b) * b };
+
+let _isLeap = fn(year: I32): Bool { (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0)) };
+
+let _monthDays = fn(year: I32, month: I32): I32 {
+  if (month == 2) { return _isLeap(year) ? 29 : 28; }
+  (month == 4) || (month == 6) || (month == 9) || (month == 11) ? 30 : 31
+};
+
+let _days = fn(year: I32, month: I32, day: I32): I64 {
+  let y = (month <= 2 ? year - 1 : year) as I64;
+  let era = _floorDiv(y, 400);
+  let yoe = y - era * 400;
+  let m = month as I64;
+  let doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + (day as I64) - 1;
+  era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468
+};
+
+let _civil = fn(days: I64): Tuple<I32, I32, I32> {
+  let z = days + 719468;
+  let era = _floorDiv(z, 146097);
+  let doe = z - era * 146097;
+  let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  let mp = (5 * doy + 2) / 153;
+  let month = (mp < 10 ? mp + 3 : mp - 9) as I32;
+  let year = (yoe + era * 400) as I32 + (month <= 2 ? 1 : 0);
+  (year, month, (doy - (153 * mp + 2) / 5 + 1) as I32)
+};
+
+let _weekday = fn(days: I64): I32 { (_floorMod(days + 3, 7) + 1) as I32 };
+
+let _dayOfYear = fn(days: I64, year: I32): I32 { (days - _days(year, 1, 1)) as I32 + 1 };
+
+let _wall = fn(year: I32, month: I32, day: I32, hour: I32, minute: I32, second: I32,
+  ms: I32): I64 {
+  _days(year, month, day) * _DAY + (((hour * 60 + minute) * 60 + second) * 1000 + ms) as I64
+};
+
+let _local = fn(time: I64): Date { new Date(time, _localOffset(time), true) };
+
+let _localWall = fn(wall: I64): Date {
+  let before = _localOffset(wall - _DAY);
+  let after = _localOffset(wall + _DAY);
+  let early = wall - (before as I64) * _MINUTE;
+  if (before == after) { return _local(early); }
+  let late = wall - (after as I64) * _MINUTE;
+  let earlyReads = _localOffset(early) == before;
+  let lateReads = _localOffset(late) == after;
+  _local(lateReads && (!earlyReads || (late < early)) ? late : early)
+};
+
+let _fromWall = fn(wall: I64, offset: I32, local: Bool): Date {
+  local ? _localWall(wall) : new Date(wall - (offset as I64) * _MINUTE, offset, false)
+};
+
+let _field = fn(who: Bytes, name: Bytes, value: I32, low: I32, high: I32) {
+  if ((value < low) || (value > high)) {
+    throw who + ": " + name + " " + Std.string(value) + " is not from " + Std.string(low)
+      + " to " + Std.string(high);
+  }
+  null
+};
+
+let _check = fn(who: Bytes, year: I32, month: I32, day: I32, hour: I32, minute: I32,
+  second: I32, ms: I32) {
+  _field(who, "year", year, 1, 9999);
+  _field(who, "month", month, 1, 12);
+  _field(who, "day", day, 1, _monthDays(year, month));
+  _field(who, "hour", hour, 0, 23);
+  _field(who, "minute", minute, 0, 59);
+  _field(who, "second", second, 0, 59);
+  _field(who, "millisecond", ms, 0, 999);
+  null
+};
+
+let _pad = fn(n: I32, width: I32): Bytes {
+  let text = Std.string(n < 0 ? -n : n);
+  while (text.len() < width) { text = "0" + text; }
+  n < 0 ? "-" + text : text
+};
+
+let _dateText = fn(year: I32, month: I32, day: I32): Bytes {
+  _pad(year, 4) + "-" + _pad(month, 2) + "-" + _pad(day, 2)
+};
+
+let _timeText = fn(ofDay: I32): Bytes {
+  _pad(ofDay / 3600000, 2) + ":" + _pad(ofDay / 60000 % 60, 2) + ":" + _pad(ofDay / 1000 % 60, 2)
+};
+
+let _offsetText = fn(minutes: I32, separator: Bytes): Bytes {
+  let size = minutes < 0 ? -minutes : minutes;
+  (minutes < 0 ? "-" : "+") + _pad(size / 60, 2) + separator + _pad(size % 60, 2)
+};
+
+export typedef Date = {
+  let time: I64;
+  let offset: I32;
+  let local: Bool;
+};
+
+export prototype Date {
+  init(time: I64, offset: I32, local: Bool) {
+    this.time = time;
+    this.offset = offset;
+    this.local = local;
+  };
+
+  _clock(): I64 { this.time + (this.offset as I64) * _MINUTE };
+  _day(): I64 { _floorDiv(this._clock(), _DAY) };
+  _date(): Tuple<I32, I32, I32> { _civil(this._day()) };
+  _ofDay(): I32 { _floorMod(this._clock(), _DAY) as I32 };
+  _atClock(clock: I64): Date { _fromWall(clock, this.offset, this.local) };
+  _at(time: I64): Date { this.local ? _local(time) : new Date(time, this.offset, false) };
+  _zone(): Bytes { this.offset == 0 && !this.local ? "Z" : _offsetText(this.offset, ":") };
+
+  year(): I32 { this._date().0 };
+  month(): I32 { this._date().1 };
+  day(): I32 { this._date().2 };
+  hour(): I32 { this._ofDay() / 3600000 };
+  minute(): I32 { this._ofDay() / 60000 % 60 };
+  second(): I32 { this._ofDay() / 1000 % 60 };
+  millisecond(): I32 { this._ofDay() % 1000 };
+  weekday(): I32 { _weekday(this._day()) };
+  dayOfYear(): I32 {
+    let day = this._day();
+    _dayOfYear(day, _civil(day).0)
+  };
+
+  toUtc(): Date { new Date(this.time, 0, false) };
+  toLocal(): Date { _local(this.time) };
+  withOffset(minutes: I32): Date { new Date(this.time, minutes, false) };
+
+  addMilliseconds(n: I64): Date { this._at(this.time + n) };
+  addSeconds(n: I32): Date { this._at(this.time + (n as I64) * 1000) };
+  addMinutes(n: I32): Date { this._at(this.time + (n as I64) * _MINUTE) };
+  addHours(n: I32): Date { this._at(this.time + (n as I64) * 60 * _MINUTE) };
+  addDays(n: I32): Date { this._atClock(this._clock() + (n as I64) * _DAY) };
+  addMonths(n: I32): Date {
+    let (y, m, d) = this._date();
+    let months = (y as I64) * 12 + (m - 1) as I64 + (n as I64);
+    let year = _floorDiv(months, 12) as I32;
+    let month = _floorMod(months, 12) as I32 + 1;
+    let last = _monthDays(year, month);
+    this._atClock(_days(year, month, d < last ? d : last) * _DAY + (this._ofDay() as I64))
+  };
+  addYears(n: I32): Date { this.addMonths(n * 12) };
+  startOfDay(): Date { this._atClock(this._day() * _DAY) };
+
+  isBefore(other: Date): Bool { this.time < other.time };
+  isAfter(other: Date): Bool { this.time > other.time };
+  isSame(other: Date): Bool { this.time == other.time };
+  since(other: Date): I64 { this.time - other.time };
+
+  iso(): Bytes {
+    let (y, m, d) = this._date();
+    let ofDay = this._ofDay();
+    let ms = ofDay % 1000;
+    _dateText(y, m, d) + "T" + _timeText(ofDay) + (ms == 0 ? "" : "." + _pad(ms, 3)) + this._zone()
+  };
+
+  format(pattern: Bytes): Bytes {
+    let day = this._day();
+    let (y, m, d) = _civil(day);
+    let ofDay = this._ofDay();
+    let hour = ofDay / 3600000;
+    let out = "";
+    let i = 0;
+    let done = 0;
+
+    while (i < pattern.len()) {
+      if (Bytes.get_u8(pattern, i) != "%".code) {
+        i++;
+        continue;
+      }
+      if (i + 1 >= pattern.len()) { throw "Date.format: a pattern cannot end with %"; }
+      out = out + Bytes.slice(pattern, done, i - done) + match (Bytes.get_u8(pattern, i + 1)) {
+        "Y".code => _pad(y, 4),
+        "y".code => _pad(_floorMod(y as I64, 100) as I32, 2),
+        "m".code => _pad(m, 2),
+        "B".code => _MONTHS[m - 1],
+        "b".code => Bytes.slice(_MONTHS[m - 1], 0, 3),
+        "d".code => _pad(d, 2),
+        "e".code => d < 10 ? " " + Std.string(d) : Std.string(d),
+        "j".code => _pad(_dayOfYear(day, y), 3),
+        "A".code => _WEEKDAYS[_weekday(day) - 1],
+        "a".code => Bytes.slice(_WEEKDAYS[_weekday(day) - 1], 0, 3),
+        "u".code => Std.string(_weekday(day)),
+        "H".code => _pad(hour, 2),
+        "I".code => _pad(hour % 12 == 0 ? 12 : hour % 12, 2),
+        "p".code => hour < 12 ? "AM" : "PM",
+        "M".code => _pad(ofDay / 60000 % 60, 2),
+        "S".code => _pad(ofDay / 1000 % 60, 2),
+        "L".code => _pad(ofDay % 1000, 3),
+        "z".code => _offsetText(this.offset, ""),
+        "Z".code => this._zone(),
+        "F".code => _dateText(y, m, d),
+        "T".code => _timeText(ofDay),
+        "%".code => "%",
+        _ => { throw "Date.format: unknown code %" + Bytes.slice(pattern, i + 1, 1); },
+      };
+      i += 2;
+      done = i;
+    }
+    out + Bytes.slice(pattern, done, pattern.len() - done)
+  };
+};
+
+export let fromTime = fn(time: I64): Date { _local(time) };
+
+export let now = fn(): Date { fromTime(_now()) };
+
+export let utc = fn(year: I32, month: I32, day: I32, hour: I32 = 0, minute: I32 = 0,
+  second: I32 = 0, millisecond: I32 = 0): Date {
+  _check("Date.utc", year, month, day, hour, minute, second, millisecond);
+  _fromWall(_wall(year, month, day, hour, minute, second, millisecond), 0, false)
+};
+
+export let local = fn(year: I32, month: I32, day: I32, hour: I32 = 0, minute: I32 = 0,
+  second: I32 = 0, millisecond: I32 = 0): Date {
+  _check("Date.local", year, month, day, hour, minute, second, millisecond);
+  _localWall(_wall(year, month, day, hour, minute, second, millisecond))
+};
+
+export let parse = fn(text: Bytes): Date {
+  let at = 0;
+  let fail = fn() { throw "Date.parse: not an ISO 8601 date: " + text; };
+  let isDigit = fn(c: I32): Bool { (c >= "0".code) && (c <= "9".code) };
+
+  let digits = fn(count: I32): I32 {
+    let value = 0;
+    let k = 0;
+
+    while (k < count) {
+      let c = at + k < text.len() ? Bytes.get_u8(text, at + k) : 0;
+      if (!isDigit(c)) { fail(); }
+      value = value * 10 + c - "0".code;
+      k++;
+    }
+    at += count;
+    value
+  };
+  let next = fn(): I32 { at < text.len() ? Bytes.get_u8(text, at) : -1 };
+
+  let expect = fn(c: I32) {
+    if (next() != c) { fail(); }
+    at++;
+    null
+  };
+  let year = digits(4);
+  expect("-".code);
+  let month = digits(2);
+  expect("-".code);
+  let day = digits(2);
+  let hour = 0;
+  let minute = 0;
+  let second = 0;
+  let ms = 0;
+  let zone: ?I32 = null;
+  let c = next();
+
+  if ((c == "T".code) || (c == "t".code) || (c == " ".code)) {
+    at++;
+    hour = digits(2);
+    expect(":".code);
+    minute = digits(2);
+
+    if (next() == ":".code) {
+      at++;
+      second = digits(2);
+      c = next();
+
+      if ((c == ".".code) || (c == ",".code)) {
+        at++;
+        c = next();
+        let places = 0;
+
+        while (isDigit(c)) {
+          if (places < 3) { ms = ms * 10 + c - "0".code; }
+          places++;
+          at++;
+          c = next();
+        }
+        if (places == 0) { fail(); }
+
+        while (places < 3) {
+          ms *= 10;
+          places++;
+        }
+      }
+    }
+    c = next();
+
+    if ((c == "Z".code) || (c == "z".code)) {
+      at++;
+      zone = 0;
+    } else if ((c == "+".code) || (c == "-".code)) {
+      at++;
+      let hours = digits(2);
+      let minutes = 0;
+
+      if (next() == ":".code) {
+        at++;
+        minutes = digits(2);
+      } else if (isDigit(next())) { minutes = digits(2); }
+      if ((hours > 23) || (minutes > 59)) { fail(); }
+      zone = (c == "-".code ? -1 : 1) * (hours * 60 + minutes);
+    }
+  }
+  if (at != text.len()) { fail(); }
+  _check("Date.parse", year, month, day, hour, minute, second, ms);
+  let wall = _wall(year, month, day, hour, minute, second, ms);
+  if (zone == null) { return _localWall(wall); }
+  _fromWall(wall, zone, false)
+};

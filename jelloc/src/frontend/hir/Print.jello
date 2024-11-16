@@ -2,8 +2,9 @@ package frontend.hir;
 
 import type { Hir } from frontend.hir.Hir;
 import {
-  KIND_ENUM, auxOf, bytesOf, childCount, childOf, globalNameOf, hirTypeName, innerOf, isFloatType, isUnsigned, lastChild, nativeLibraryOf, nativeNameOf, opOf, rootNode,
-  spanEndOf, spanOf, spanPathOf, spanStartOf, typeArgCount, typeOf, useHir, valueOf, variantName, wideValueOf,
+  KIND_ENUM, auxOf, bytesOf, childCount, childOf, globalNameOf, hirTypeName, innerOf, isFloatType,
+  isUnsigned, lastChild, nativeLibraryOf, nativeNameOf, opOf, rootNode, spanEndOf, spanOf,
+  spanPathOf, spanStartOf, typeArgCount, typeOf, useHir, valueOf, variantName, wideValueOf,
 } from frontend.hir.Hir;
 import { internalError } from support.Internal;
 import { bytesLiteral, concatAll } from support.Text;
@@ -12,22 +13,24 @@ let _withSpans = false;
 
 let _at = fn(id: I32): Bytes {
   if (!_withSpans) { return ""; }
-  let range = " @" + Std.string(spanStartOf(id)) + ".." + Std.string(spanEndOf(id));
+
+  let range = ` @${spanStartOf(id)}..${spanEndOf(id)}`;
   if (spanPathOf(id) == spanPathOf(rootNode())) { return range; }
-  range + " " + match (spanOf(id)) { Span(path, _, _) => path }
+  `${range} ${spanOf(id).path}`
 };
-let _typed = fn(id: I32): Bytes { ": " + hirTypeName(typeOf(id)) + _at(id) + "\n" };
+
+let _typed = fn(id: I32): Bytes { `: ${hirTypeName(typeOf(id))}${_at(id)}\n` };
+
 let _id = fn(id: I32): Bytes { Std.string(valueOf(id)) };
 
-let _expr: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
-let _statements: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
+let _childType = fn(id: I32): Bytes { hirTypeName(typeOf(childOf(id, 0))) };
 
 let _children = fn(parent: I32, start: I32, end: I32, indent: Bytes): Bytes {
   let output = Array.new<Bytes>(0);
   let i = start;
 
   while (i < end) {
-    output.push(_expr(childOf(parent, i), indent + "  "));
+    output.push(_expr(childOf(parent, i), `${indent}  `));
     i++;
   }
   concatAll(output)
@@ -35,55 +38,73 @@ let _children = fn(parent: I32, start: I32, end: I32, indent: Bytes): Bytes {
 
 let _binding = fn(id: I32, indent: Bytes): Bytes {
   let header = match (opOf(id)) {
-    Let => "let %" + _id(id) + " " + bytesOf(auxOf(id)),
-    InitGlobal => "global g" + _id(id) + " " + globalNameOf(valueOf(id)),
-    _ => "const %" + _id(id) + " " + bytesOf(auxOf(id)),
+    Let => `let %${_id(id)} ${bytesOf(auxOf(id))}`,
+    InitGlobal => `global g${_id(id)} ${globalNameOf(valueOf(id))}`,
+    _ => `const %${_id(id)} ${bytesOf(auxOf(id))}`,
   };
-  indent + header + _typed(id) + _expr(childOf(id, 0), indent + "  ")
+  `${indent}${header}${_typed(id)}${_expr(childOf(id, 0), indent + "  ")}`
 };
 
-let _signed = fn(ty: I32): Bytes { (isFloatType(ty) ? "." : isUnsigned(ty) ? ".u." : ".s.") + hirTypeName(ty) };
+let _signed = fn(ty: I32): Bytes {
+  let signedness = isFloatType(ty) ? "." : isUnsigned(ty) ? ".u." : ".s.";
+  signedness + hirTypeName(ty)
+};
 
-let _operation = fn(name: Bytes, id: I32, indent: Bytes): Bytes { indent + name + _typed(id) + _children(id, 0, childCount(id), indent) };
+let _operation = fn(name: Bytes, id: I32, indent: Bytes): Bytes {
+  `${indent}${name}${_typed(id)}${_children(id, 0, childCount(id), indent)}`
+};
 
 let _section = fn(name: Bytes, id: I32, index: I32, indent: Bytes): Bytes {
-  indent + "  " + name + "\n" + _expr(childOf(id, index), indent + "    ")
+  `${indent}  ${name}\n${_expr(childOf(id, index), indent + "    ")}`
 };
 
-let _key = fn(id: I32): Bytes { valueOf(id) < 0 ? "" : " :" + bytesOf(valueOf(id)) };
+let _key = fn(id: I32): Bytes { valueOf(id) < 0 ? "" : ` :${bytesOf(valueOf(id))}` };
 
-let _catch = fn(id: I32): Bytes { valueOf(id) < 0 ? "catch" : "catch %" + _id(id) + " " + bytesOf(auxOf(id)) + ": Dynamic" };
+let _catch = fn(id: I32): Bytes {
+  valueOf(id) < 0 ? "catch" : `catch %${_id(id)} ${bytesOf(auxOf(id))}: Dynamic`
+};
 
-_expr = fn(id, indent) {
+let _isKind = fn(id: I32): Bytes {
+  let enumType = valueOf(id) == KIND_ENUM ? ` ${hirTypeName(auxOf(id))}` : "";
+  `is_kind ${_id(id)}${enumType}`
+};
+
+let _expr = fn(id: I32, indent: Bytes): Bytes {
   match (opOf(id)) {
-    Bool => indent + "bool " + (valueOf(id) == 1 ? "true" : "false") + _typed(id),
-    I32 => indent + "i32 " + _id(id) + _typed(id),
-    I64 => indent + "i64 " + Std.string(wideValueOf(id)) + _typed(id),
-    Float => indent + hirTypeName(typeOf(id)) + " bits " + Std.string(wideValueOf(id)) + _typed(id),
-    Bytes => indent + "bytes " + bytesLiteral(bytesOf(valueOf(id))) + _typed(id),
-    Atom => indent + "atom :" + bytesOf(valueOf(id)) + _typed(id),
-    Null => indent + "null" + _typed(id),
-    Local => indent + "local %" + _id(id) + _typed(id),
-    Global => indent + "global g" + _id(id) + _typed(id),
-    SetGlobal => _operation("global.set g" + _id(id), id, indent),
-    FunctionRef => _operation("function @" + _id(id), id, indent),
-    Assign => _operation("assign %" + _id(id), id, indent),
-    TupleField => _operation("tuple.get " + _id(id), id, indent),
-    SetField => _operation("field.set " + _id(id), id, indent),
-    EnumNew => _operation("enum.new " + variantName(typeOf(id), valueOf(id)), id, indent),
+    Bool => `${indent}bool ${valueOf(id) == 1 ? "true" : "false"}${_typed(id)}`,
+    I32 => `${indent}i32 ${_id(id)}${_typed(id)}`,
+    I64 => `${indent}i64 ${wideValueOf(id)}${_typed(id)}`,
+    Float => `${indent}${hirTypeName(typeOf(id))} bits ${wideValueOf(id)}${_typed(id)}`,
+    Bytes => `${indent}bytes ${bytesLiteral(bytesOf(valueOf(id)))}${_typed(id)}`,
+    Atom => `${indent}atom :${bytesOf(valueOf(id))}${_typed(id)}`,
+    Null => `${indent}null${_typed(id)}`,
+    Local => `${indent}local %${_id(id)}${_typed(id)}`,
+    Global => `${indent}global g${_id(id)}${_typed(id)}`,
+    SetGlobal => _operation(`global.set g${_id(id)}`, id, indent),
+    FunctionRef => _operation(`function @${_id(id)}`, id, indent),
+    Assign => _operation(`assign %${_id(id)}`, id, indent),
+    TupleField => _operation(`tuple.get ${_id(id)}`, id, indent),
+    SetField => _operation(`field.set ${_id(id)}`, id, indent),
+    EnumNew => _operation(`enum.new ${variantName(typeOf(id), valueOf(id))}`, id, indent),
     EnumTag => _operation("enum.tag", id, indent),
     ObjectNew => _operation("object.new", id, indent),
-    ObjectGet => _operation("object.get" + _key(id), id, indent),
-    ObjectSet => _operation("object.set" + _key(id), id, indent),
-    ObjectHas => _operation("object.has" + _key(id), id, indent),
+    ObjectGet => _operation(`object.get${_key(id)}`, id, indent),
+    ObjectSet => _operation(`object.set${_key(id)}`, id, indent),
+    ObjectHas => _operation(`object.has${_key(id)}`, id, indent),
     ObjectRemove => _operation("object.remove", id, indent),
     ObjectClear => _operation("object.clear", id, indent),
     ObjectCopy => _operation("object.copy", id, indent),
     ObjectKeys => _operation("object.keys", id, indent),
-    EnumField => _operation("enum.field " + variantName(typeOf(childOf(id, 0)), auxOf(id)) + "." + _id(id), id, indent),
-    Call => _operation("call @" + _id(id), id, indent),
+    EnumField => {
+      let variant = variantName(typeOf(childOf(id, 0)), auxOf(id));
+      _operation(`enum.field ${variant}.${_id(id)}`, id, indent)
+    },
+    Call => _operation(`call @${_id(id)}`, id, indent),
     CallIndirect => _operation("call.indirect", id, indent),
-    CallNative => _operation("call.native " + nativeLibraryOf(valueOf(id)) + "." + nativeNameOf(valueOf(id)), id, indent),
+    CallNative => {
+      let native = valueOf(id);
+      _operation(`call.native ${nativeLibraryOf(native)}.${nativeNameOf(native)}`, id, indent)
+    },
     Add => _operation("add.wrap", id, indent),
     Sub => _operation("sub.wrap", id, indent),
     Mul => _operation("mul.wrap", id, indent),
@@ -98,19 +119,19 @@ _expr = fn(id, indent) {
     Not => _operation("not.bool", id, indent),
     And => _operation("and", id, indent),
     Or => _operation("or", id, indent),
-    Eq => _operation("eq." + hirTypeName(typeOf(childOf(id, 0))), id, indent),
-    Lt => _operation("lt" + _signed(typeOf(childOf(id, 0))), id, indent),
-    Gt => _operation("gt" + _signed(typeOf(childOf(id, 0))), id, indent),
-    Le => _operation("le." + hirTypeName(typeOf(childOf(id, 0))), id, indent),
-    Ge => _operation("ge." + hirTypeName(typeOf(childOf(id, 0))), id, indent),
-    Convert => _operation("convert." + hirTypeName(typeOf(childOf(id, 0))) + "." + hirTypeName(typeOf(id)), id, indent),
+    Eq => _operation(`eq.${_childType(id)}`, id, indent),
+    Lt => _operation(`lt${_signed(typeOf(childOf(id, 0)))}`, id, indent),
+    Gt => _operation(`gt${_signed(typeOf(childOf(id, 0)))}`, id, indent),
+    Le => _operation(`le.${_childType(id)}`, id, indent),
+    Ge => _operation(`ge.${_childType(id)}`, id, indent),
+    Convert => _operation(`convert.${_childType(id)}.${hirTypeName(typeOf(id))}`, id, indent),
     Present => _operation("present", id, indent),
     IsNull => _operation("is_null", id, indent),
     IsPresent => _operation("is_present", id, indent),
     Unwrap => _operation(valueOf(id) == 1 ? "unwrap" : "unwrap.known", id, indent),
     ToDynamic => _operation("to_dynamic", id, indent),
     FromDynamic => _operation("from_dynamic", id, indent),
-    IsKind => _operation("is_kind " + _id(id) + (valueOf(id) == KIND_ENUM ? " " + hirTypeName(auxOf(id)) : ""), id, indent),
+    IsKind => _operation(_isKind(id), id, indent),
     ArrayNew => _operation("array.new", id, indent),
     ArrayLen => _operation("array.len", id, indent),
     ArrayGet => _operation("array.get", id, indent),
@@ -128,8 +149,8 @@ _expr = fn(id, indent) {
     BytesNew => _operation("bytes.new", id, indent),
     BytesSet => _operation("bytes.set_u8", id, indent),
     BitsPack => _operation("bits.pack", id, indent),
-    BitsField => _operation("bits.field " + _id(id) + " " + Std.string(auxOf(id)), id, indent),
-    BitsRead => _operation("bits.read " + _id(id) + " " + Std.string(auxOf(id)), id, indent),
+    BitsField => _operation(`bits.field ${_id(id)} ${auxOf(id)}`, id, indent),
+    BitsRead => _operation(`bits.read ${_id(id)} ${auxOf(id)}`, id, indent),
     BytesLen => _operation("bytes.len", id, indent),
     BytesGet => _operation("bytes.get_u8", id, indent),
     BytesSlice => _operation("bytes.slice", id, indent),
@@ -137,9 +158,22 @@ _expr = fn(id, indent) {
     BytesConcatMany => _operation("bytes.concat_many", id, indent),
     BytesEq => _operation("bytes.eq", id, indent),
     Tuple => _operation("tuple", id, indent),
-    Block => indent + "block" + _typed(id) + _statements(id, indent + "  ") + (auxOf(id) == 1 ? _expr(lastChild(id), indent + "  ") : ""),
-    If => indent + "if" + _typed(id) + _section("condition", id, 0, indent) + _section("then", id, 1, indent) + _section("else", id, 2, indent),
-    Try => indent + "try" + _typed(id) + _section("body", id, 0, indent) + _section(_catch(id), id, 1, indent),
+    Block => {
+      let deeper = `${indent}  `;
+      let tail = auxOf(id) == 1 ? _expr(lastChild(id), deeper) : "";
+      `${indent}block${_typed(id)}${_statements(id, deeper)}${tail}`
+    },
+    If => {
+      `${indent}if${_typed(id)}`
+        + _section("condition", id, 0, indent)
+        + _section("then", id, 1, indent)
+        + _section("else", id, 2, indent)
+    },
+    Try => {
+      `${indent}try${_typed(id)}`
+        + _section("body", id, 0, indent)
+        + _section(_catch(id), id, 1, indent)
+    },
     _ => {
       internalError("invalid HIR expression op");
       ""
@@ -147,8 +181,18 @@ _expr = fn(id, indent) {
   }
 };
 
-let _statement: (I32, Bytes) -> Bytes = fn(_id, _indent) { "" };
-_statement = fn(id, indent) {
+let _otherwise = fn(id: I32, indent: Bytes): Bytes {
+  let otherwise = childOf(id, 2);
+
+  match (opOf(otherwise)) {
+    IfStatement => _statement(otherwise, `${indent}    `),
+    _ => _statements(otherwise, `${indent}    `),
+  }
+};
+
+let _statement = fn(id: I32, indent: Bytes): Bytes {
+  let deeper = `${indent}  `;
+
   match (opOf(id)) {
     Declare => {
       let output = Array.new<Bytes>(0);
@@ -160,22 +204,29 @@ _statement = fn(id, indent) {
       }
       concatAll(output)
     },
-    Expression => indent + "expression" + _at(id) + "\n" + _expr(childOf(id, 0), indent + "  "),
-    Block => indent + "block" + _at(id) + "\n" + _statements(id, indent + "  "),
-    Return => indent + "return" + _at(id) + "\n" + _expr(childOf(id, 0), indent + "  "),
-    Throw => indent + "throw" + _at(id) + "\n" + _expr(childOf(id, 0), indent + "  "),
-    Break => indent + "break" + _at(id) + "\n",
-    Continue => indent + "continue" + _at(id) + "\n",
-    While => indent + (auxOf(id) == 0 ? "while" : "do-while") + _at(id) + "\n" + _section("condition", id, 0, indent) + indent + "  body\n" + _statements(childOf(id, 1), indent + "    "),
+    Expression => `${indent}expression${_at(id)}\n${_expr(childOf(id, 0), deeper)}`,
+    Block => `${indent}block${_at(id)}\n${_statements(id, deeper)}`,
+    Return => `${indent}return${_at(id)}\n${_expr(childOf(id, 0), deeper)}`,
+    Throw => `${indent}throw${_at(id)}\n${_expr(childOf(id, 0), deeper)}`,
+    Break => `${indent}break${_at(id)}\n`,
+    Continue => `${indent}continue${_at(id)}\n`,
+    While => {
+      let keyword = auxOf(id) == 0 ? "while" : "do-while";
+      `${indent}${keyword}${_at(id)}\n`
+        + _section("condition", id, 0, indent)
+        + `${indent}  body\n${_statements(childOf(id, 1), indent + "    ")}`
+    },
     IfStatement => {
-      let output = indent + "if" + _at(id) + "\n" + _section("condition", id, 0, indent) + indent + "  then\n" + _statements(childOf(id, 1), indent + "    ");
+      let output = `${indent}if${_at(id)}\n`
+        + _section("condition", id, 0, indent)
+        + `${indent}  then\n${_statements(childOf(id, 1), indent + "    ")}`;
       if (childCount(id) < 3) { return output; }
-      let otherwise = childOf(id, 2);
-      output + indent + "  else\n" + match (opOf(otherwise)) { IfStatement => _statement(otherwise, indent + "    "), _ => _statements(otherwise, indent + "    ") }
+
+      `${output}${indent}  else\n${_otherwise(id, indent)}`
     },
     TryStatement => {
-      indent + "try" + _at(id) + "\n" + indent + "  body\n" + _statements(childOf(id, 0), indent + "    ")
-        + indent + "  " + _catch(id) + "\n" + _statements(childOf(id, 1), indent + "    ")
+      `${indent}try${_at(id)}\n${indent}  body\n${_statements(childOf(id, 0), indent + "    ")}`
+        + `${indent}  ${_catch(id)}\n${_statements(childOf(id, 1), indent + "    ")}`
     },
     _ => {
       internalError("invalid HIR statement op");
@@ -184,7 +235,7 @@ _statement = fn(id, indent) {
   }
 };
 
-_statements = fn(id, indent) {
+let _statements = fn(id: I32, indent: Bytes): Bytes {
   let output = Array.new<Bytes>(0);
   let i = 0;
 
@@ -196,45 +247,46 @@ _statements = fn(id, indent) {
 };
 
 let _function = fn(id: I32, functionId: I32): Bytes {
-  let output = "  fn @" + Std.string(functionId) + " " + bytesOf(valueOf(id)) + "(";
+  let output = `  fn @${functionId} ${bytesOf(valueOf(id))}(`;
   let params = typeArgCount(typeOf(id));
   let i = 0;
 
   while (i < childCount(id) - 1) {
     let param = childOf(id, i);
     if (i == params) { output += ") captures("; } else if (i > 0) { output += ", "; }
-    output += "%" + _id(param) + " " + bytesOf(auxOf(param)) + ": " + hirTypeName(typeOf(param)) + _at(param);
+    output += `%${_id(param)} ${bytesOf(auxOf(param))}: ${hirTypeName(typeOf(param))}${_at(param)}`;
     i++;
   }
+
   let body = lastChild(id);
-  output += ") -> " + hirTypeName(innerOf(typeOf(id))) + _at(id) + "\n" + _statements(body, "    ");
-  if (auxOf(body) == 1) { output += "    tail\n" + _expr(lastChild(body), "      "); }
+  output += `) -> ${hirTypeName(innerOf(typeOf(id)))}${_at(id)}\n${_statements(body, "    ")}`;
+  if (auxOf(body) == 1) { output += `    tail\n${_expr(lastChild(body), "      ")}`; }
   output
 };
 
 let _print = fn(program: Hir): Bytes {
   useHir(program);
   let root = rootNode();
-  let output = Array.new<Bytes>(0);
-  output.push("program\n");
+  let output = ["program\n"];
   let i = 0;
 
   while (i < childCount(root) - 1) {
     output.push(_function(childOf(root, i), i + 1));
     i++;
   }
+
   let body = lastChild(root);
   output.push(_statements(body, "  "));
   output.push(_expr(lastChild(body), "  "));
   concatAll(output)
 };
 
-export let printHir: (Hir) -> Bytes = fn(program) {
+export let printHir = fn(program: Hir): Bytes {
   _withSpans = false;
   _print(program)
 };
 
-export let printHirWithSpans: (Hir) -> Bytes = fn(program) {
+export let printHirWithSpans = fn(program: Hir): Bytes {
   _withSpans = true;
   _print(program)
 };

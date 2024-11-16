@@ -4,20 +4,19 @@ import { lexFile } from frontend.syntax.Lexer;
 import type { Token } from frontend.syntax.Lexer;
 import { parseFailureSpan, parseProgram, programSyntax } from frontend.syntax.Parser;
 import type { Syntax } from frontend.syntax.Source;
-import { sourceDiagnostic, spanStart } from frontend.syntax.Source;
+import { sourceDiagnostic } from frontend.syntax.Source;
 import { readText } from std.io.File;
 
 // A hash of a syntax tree: every node's span and child and pattern counts,
 // in order.
 let _digest: (Syntax, I32) -> I32 = fn(syntax, hash) {
-  match (syntax) { Node(_, start, end, children, patterns) => {
-    let h = (((hash * 31 + start) * 31 + end) * 31 + children.len() as I32) * 31 + patterns.len() as I32;
-    let i = 0;
-    while (i < children.len()) { h = _digest(children[i], h); i++; }
-    i = 0;
-    while (i < patterns.len()) { h = _digest(patterns[i], h); i++; }
-    h
-  } }
+  let { start, end, children, patterns } = syntax;
+  let h = (((hash * 31 + start) * 31 + end) * 31 + children.len() as I32) * 31 + patterns.len() as I32;
+  let i = 0;
+  while (i < children.len()) { h = _digest(children[i], h); i++; }
+  i = 0;
+  while (i < patterns.len()) { h = _digest(patterns[i], h); i++; }
+  h
 };
 
 // SOURCE at PATH: `lexer <error>`, `parser <located error>`, or `accepted
@@ -29,7 +28,7 @@ export let parseReport: (Bytes, Bytes) -> Bytes = fn(source, path) {
   try { "accepted " + Std.string(lexed.0.len()) + " " + Std.string(_digest(programSyntax(parseProgram(lexed)), 0)) }
   catch (e) {
     let at = parseFailureSpan();
-    "parser " + (at == null ? Std.string(e) : sourceDiagnostic(path, source, spanStart(at), Std.string(e)))
+    "parser " + (at == null ? Std.string(e) : sourceDiagnostic(path, source, at.start, Std.string(e)))
   }
 };
 

@@ -1,9 +1,10 @@
 package frontend.syntax;
 
-import type { Token, IntegerSize, FloatSize } from frontend.syntax.Lexer;
+import type { FloatSize, IntSize } from frontend.syntax.Ast;
+import type { Token } from frontend.syntax.Lexer;
 import { bytesLiteral, concatAll } from support.Text;
 
-let _integerSize = fn(size: IntegerSize) {
+let _integerSize = fn(size: IntSize): Bytes {
   match (size) {
     Infer => "Infer",
     I8 => "I8",
@@ -17,33 +18,64 @@ let _integerSize = fn(size: IntegerSize) {
   }
 };
 
-let _floatSize = fn(size: FloatSize) {
+let _floatSize = fn(size: FloatSize): Bytes {
   match (size) {
     Infer => "Infer",
     F16 => "F16",
     F32 => "F32",
-    F64 => "F64"
+    F64 => "F64",
   }
 };
 
 let _tokenName = fn(token: Token): Bytes {
   match (token) {
-    Ident(name) => "Ident(" + bytesLiteral(name) + ")",
-    IntegerConstant(digits, size) => "IntegerConstant(" + digits + ", " + _integerSize(size) + ")",
-    FloatConstant(literal, size) => "FloatConstant(" + literal + ", " + _floatSize(size) + ")",
-    BytesLiteral(value) => "BytesLiteral(" + bytesLiteral(value) + ")",
-    RegExpLiteral(pattern, flags) => "RegExpLiteral(" + bytesLiteral(pattern) + ", " + bytesLiteral(flags) + ")",
-    TemplateHead(text) => "TemplateHead(" + bytesLiteral(text) + ")",
-    TemplateMiddle(text) => "TemplateMiddle(" + bytesLiteral(text) + ")",
-    TemplateTail(text) => "TemplateTail(" + bytesLiteral(text) + ")",
-    As => "As", Await => "Await", Bits => "Bits", Break => "Break", Catch => "Catch", Const => "Const",
-    Continue => "Continue", Do => "Do",
-    Else => "Else", EnumDecl => "EnumDecl", Export => "Export", False => "False", Fn => "Fn",
-    For => "For", From => "From", If => "If", Import => "Import", Is => "Is", Let => "Let",
-    ListLiteral => "ListLiteral", Load => "Load", Macro => "Macro", Match => "Match", New => "New", Null => "Null",
-    Package => "Package", Prototype => "Prototype", Return => "Return",
-    Super => "Super", This => "This", Throw => "Throw",
-    True => "True", Try => "Try", Type => "Type", Typedef => "Typedef", When => "When", While => "While", With => "With",
+    Ident(name) => `Ident(${bytesLiteral(name)})`,
+    IntegerConstant(digits, size) => `IntegerConstant(${digits}, ${_integerSize(size)})`,
+    FloatConstant(literal, size) => `FloatConstant(${literal}, ${_floatSize(size)})`,
+    BytesLiteral(value) => `BytesLiteral(${bytesLiteral(value)})`,
+    RegExpLiteral(pattern, flags) =>
+      `RegExpLiteral(${bytesLiteral(pattern)}, ${bytesLiteral(flags)})`,
+    TemplateHead(text) => `TemplateHead(${bytesLiteral(text)})`,
+    TemplateMiddle(text) => `TemplateMiddle(${bytesLiteral(text)})`,
+    TemplateTail(text) => `TemplateTail(${bytesLiteral(text)})`,
+    As => "As",
+    Await => "Await",
+    Bits => "Bits",
+    Break => "Break",
+    Catch => "Catch",
+    Const => "Const",
+    Continue => "Continue",
+    Do => "Do",
+    Else => "Else",
+    EnumDecl => "EnumDecl",
+    Export => "Export",
+    False => "False",
+    Fn => "Fn",
+    For => "For",
+    From => "From",
+    If => "If",
+    Import => "Import",
+    Is => "Is",
+    Let => "Let",
+    ListLiteral => "ListLiteral",
+    Load => "Load",
+    Macro => "Macro",
+    Match => "Match",
+    New => "New",
+    Null => "Null",
+    Package => "Package",
+    Prototype => "Prototype",
+    Return => "Return",
+    Super => "Super",
+    This => "This",
+    Throw => "Throw",
+    True => "True",
+    Try => "Try",
+    Type => "Type",
+    Typedef => "Typedef",
+    When => "When",
+    While => "While",
+    With => "With",
     LParen => "LParen",
     RParen => "RParen",
     LBrace => "LBrace",
@@ -96,34 +128,107 @@ let _tokenName = fn(token: Token): Bytes {
   }
 };
 
-export let tokenText: (Token) -> Bytes = fn(token) {
+export let tokenText = fn(token: Token): Bytes {
   match (token) {
     Ident(name) => name,
     IntegerConstant(digits, _) => digits,
     FloatConstant(literal, _) => literal,
     BytesLiteral(value) => bytesLiteral(value),
-    RegExpLiteral(pattern, flags) => "~r/" + pattern + "/" + flags,
-    TemplateHead(text) => "`" + text + "${", TemplateMiddle(text) => "}" + text + "${", TemplateTail(text) => "}" + text + "`",
-    As => "as", Await => "await", Bits => "bits", Break => "break", Catch => "catch", Const => "const",
-    Continue => "continue", Do => "do", Else => "else", EnumDecl => "enum", Export => "export",
-    False => "false", Fn => "fn", For => "for", From => "from", If => "if", Import => "import",
-    Is => "is", Let => "let", ListLiteral => "list", Load => "load", Macro => "macro", Match => "match",
-    New => "new", Null => "null", Package => "package", Prototype => "prototype", Return => "return",
-    Super => "super", This => "this", Throw => "throw", True => "true", Try => "try", Type => "type",
-    Typedef => "typedef", When => "when", While => "while", With => "with",
-    LParen => "(", RParen => ")", LBrace => "{", RBrace => "}", LBracket => "[", RBracket => "]",
-    Semicolon => ";", Colon => ":", Comma => ",", Question => "?", Dot => ".", DotDotDot => "...",
-    Equal => "=", EqualEqual => "==", FatArrow => "=>", Not => "!", NotEqual => "!=",
-    Less => "<", LessEqual => "<=", LessMinus => "<-", Greater => ">", GreaterEqual => ">=",
-    Plus => "+", PlusPlus => "++", PlusEqual => "+=", Minus => "-", MinusMinus => "--", MinusEqual => "-=",
-    Arrow => "->", Star => "*", StarEqual => "*=", Slash => "/", SlashEqual => "/=", Percent => "%",
-    PercentEqual => "%=", LessLess => "<<", LessLessEqual => "<<=", GreaterGreater => ">>",
-    GreaterGreaterEqual => ">>=", Ampersand => "&", AmpersandEqual => "&=", And => "&&", Pipe => "|",
-    PipeEqual => "|=", PipePipe => "||", PipeGreater => "|>", Caret => "^", CaretEqual => "^=", Eof => "",
+    RegExpLiteral(pattern, flags) => `~r/${pattern}/${flags}`,
+    TemplateHead(text) => "`" + text + "${",
+    TemplateMiddle(text) => "}" + text + "${",
+    TemplateTail(text) => "}" + text + "`",
+    As => "as",
+    Await => "await",
+    Bits => "bits",
+    Break => "break",
+    Catch => "catch",
+    Const => "const",
+    Continue => "continue",
+    Do => "do",
+    Else => "else",
+    EnumDecl => "enum",
+    Export => "export",
+    False => "false",
+    Fn => "fn",
+    For => "for",
+    From => "from",
+    If => "if",
+    Import => "import",
+    Is => "is",
+    Let => "let",
+    ListLiteral => "list",
+    Load => "load",
+    Macro => "macro",
+    Match => "match",
+    New => "new",
+    Null => "null",
+    Package => "package",
+    Prototype => "prototype",
+    Return => "return",
+    Super => "super",
+    This => "this",
+    Throw => "throw",
+    True => "true",
+    Try => "try",
+    Type => "type",
+    Typedef => "typedef",
+    When => "when",
+    While => "while",
+    With => "with",
+    LParen => "(",
+    RParen => ")",
+    LBrace => "{",
+    RBrace => "}",
+    LBracket => "[",
+    RBracket => "]",
+    Semicolon => ";",
+    Colon => ":",
+    Comma => ",",
+    Question => "?",
+    Dot => ".",
+    DotDotDot => "...",
+    Equal => "=",
+    EqualEqual => "==",
+    FatArrow => "=>",
+    Not => "!",
+    NotEqual => "!=",
+    Less => "<",
+    LessEqual => "<=",
+    LessMinus => "<-",
+    Greater => ">",
+    GreaterEqual => ">=",
+    Plus => "+",
+    PlusPlus => "++",
+    PlusEqual => "+=",
+    Minus => "-",
+    MinusMinus => "--",
+    MinusEqual => "-=",
+    Arrow => "->",
+    Star => "*",
+    StarEqual => "*=",
+    Slash => "/",
+    SlashEqual => "/=",
+    Percent => "%",
+    PercentEqual => "%=",
+    LessLess => "<<",
+    LessLessEqual => "<<=",
+    GreaterGreater => ">>",
+    GreaterGreaterEqual => ">>=",
+    Ampersand => "&",
+    AmpersandEqual => "&=",
+    And => "&&",
+    Pipe => "|",
+    PipeEqual => "|=",
+    PipePipe => "||",
+    PipeGreater => "|>",
+    Caret => "^",
+    CaretEqual => "^=",
+    Eof => "",
   }
 };
 
-export let isKeyword: (Token) -> Bool = fn(token) {
+export let isKeyword = fn(token: Token): Bool {
   match (token) {
     As, Await, Bits, Break, Catch, Const, Continue, Do, Else, EnumDecl, Export, False, Fn, For,
     From, If, Import, Is, Let, ListLiteral, Load, Macro, Match, New, Null, Package, Prototype,
@@ -132,13 +237,6 @@ export let isKeyword: (Token) -> Bool = fn(token) {
   }
 };
 
-export let printTokens: (Array<Token>) -> Bytes = fn(tokens) {
-  let lines = Array.new<Bytes>(0);
-  let i = 0;
-
-  while (i < tokens.len()) {
-    lines.push(_tokenName(tokens[i]) + "\n");
-    i++;
-  }
-  concatAll(lines)
+export let printTokens = fn(tokens: Array<Token>): Bytes {
+  concatAll(tokens.map(fn(token: Token): Bytes { `${_tokenName(token)}\n` }))
 };

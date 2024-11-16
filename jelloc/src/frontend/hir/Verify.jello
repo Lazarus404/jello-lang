@@ -4,9 +4,14 @@ import type { Hir } from frontend.hir.Hir;
 import type { SourceSpan } from frontend.syntax.Source;
 import { internalError } from support.Internal;
 import {
-  KIND_ATOM, KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_FUNCTION, KIND_I32, KIND_I64, KIND_OBJECT, Kind, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, TYPE_OBJECT, TYPE_U64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds, endsPath, fieldCount,
-  fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf, integerBits, isFloatKind, isFloatType, isKind, isNumberType, isObject, isPrototype, kindOf, memberCount, memberType, nativeCount, nativeTypeOf, nodeCount, opOf, readsExactly, rootNode, spanCount, spanEndOf, spanPathOf,
-  segmentType, slotType, spanOf, spanStartOf, typeArg, typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
+  KIND_ATOM, KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_FUNCTION, KIND_I32, KIND_I64, KIND_OBJECT,
+  Kind, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64,
+  TYPE_OBJECT, TYPE_U64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds,
+  endsPath, fieldCount, fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf,
+  integerBits, isFloatKind, isFloatType, isKind, isNumberType, isObject, isPrototype, kindOf,
+  memberCount, memberType, nativeCount, nativeTypeOf, nodeCount, opOf, readsExactly, rootNode,
+  segmentType, slotType, spanCount, spanEndOf, spanOf, spanPathOf, spanStartOf, typeArg,
+  typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.hir.Hir;
 
 let _used = Array.new<Bool>(0);
@@ -23,63 +28,92 @@ let _loops = 0;
 
 let _at = -1;
 
-let _fail = fn(message: Bytes) {
-  internalError("invalid HIR: " + message);
-  null
-};
+let _fail = fn(message: Bytes): Null { internalError(`invalid HIR: ${message}`) };
 
 let _child = fn(parent: I32, index: I32): I32 {
-  if (!childrenInBounds(parent) || (index < 0) || (index >= childCount(parent))) { _fail("missing operand"); }
+  if (!childrenInBounds(parent) || (index < 0) || (index >= childCount(parent))) {
+    _fail("missing operand");
+  }
+
   let child = childOf(parent, index);
   if ((child < 0) || (child >= parent)) { _fail("node reference out of order"); }
   if (_used[child]) { _fail("node referenced twice"); }
+
   _used[child] = true;
   child
 };
 
-let _arity = fn(id: I32, count: I32) { if (childCount(id) != count) { _fail("wrong operand count"); } null };
-let _fieldCount = fn(ty: I32): I32 { (isKind(ty, Kind.Tuple) || isKind(ty, Kind.Record)) ? memberCount(ty) : -1 };
+let _arity = fn(id: I32, count: I32) {
+  if (childCount(id) != count) { _fail("wrong operand count"); }
+  null
+};
+
+let _fieldCount = fn(ty: I32): I32 {
+  (isKind(ty, Kind.Tuple) || isKind(ty, Kind.Record)) ? memberCount(ty) : -1
+};
 
 let _spanProblem = fn(id: I32): Bytes {
   let path = spanPathOf(id);
-  if ((path < 0) || (path >= bytesCount()) || (bytesOf(path).len() == 0)) { return "source span without a path"; }
+
+  if ((path < 0) || (path >= bytesCount()) || (bytesOf(path).len() == 0)) {
+    return "source span without a path";
+  }
+
   let start = spanStartOf(id);
   (start < 0) || (spanEndOf(id) <= start) ? "empty source span" : ""
 };
 
 let _spans = fn() {
   if (spanCount() != nodeCount()) { _fail("every node needs a source span"); }
+
   let id = 0;
 
   while (id < nodeCount()) {
     _at = id;
     let problem = _spanProblem(id);
     if (problem != "") { _fail(problem); }
+
     let path = spanPathOf(id);
     let i = 0;
 
     while (i < childCount(id)) {
       let child = childOf(id, i);
-
-      if ((spanPathOf(child) == path) && ((spanStartOf(child) < spanStartOf(id)) || (spanEndOf(child) > spanEndOf(id)))) {
-        _fail("child span outside its parent");
-      }
+      let outside = (spanStartOf(child) < spanStartOf(id)) || (spanEndOf(child) > spanEndOf(id));
+      if ((spanPathOf(child) == path) && outside) { _fail("child span outside its parent"); }
       i++;
     }
+
     id++;
   }
+
   _at = -1;
+  null
+};
+
+let _reachArgs = fn(ty: I32, reached: Array<I32>) {
+  let i = 0;
+
+  while (i < typeArgCount(ty)) {
+    reached.push(typeArg(ty, i));
+    i++;
+  }
+
   null
 };
 
 let _closedTypes = fn() {
   let open = Array.new<Bool>(0);
-  let seen = Array.new<Bool>(0);
-  let queued = Array.new<Bool>(0);
+  let seen = Array.new<Bool>(typeCount());
+  let queued = Array.new<Bool>(typeCount());
   let ty = 0;
 
   while (ty < typeCount()) {
-    let held = match (kindOf(ty)) { Var, Param, Applied => true, Array, List, Null, Function, Optional, Rest => (innerOf(ty) >= 0) && open[innerOf(ty)], _ => false };
+    let held = match (kindOf(ty)) {
+      Var, Param, Applied => true,
+      Array, List, Null, Function, Optional, Rest => (innerOf(ty) >= 0) && open[innerOf(ty)],
+      _ => false,
+    };
+
     let i = 0;
     let args = match (kindOf(ty)) { Tuple, Function => typeArgCount(ty), _ => 0 };
 
@@ -87,11 +121,11 @@ let _closedTypes = fn() {
       held = held || open[typeArg(ty, i)];
       i++;
     }
+
     open.push(held);
-    seen.push(false);
-    queued.push(false);
     ty++;
   }
+
   let reached = Array.new<I32>(0);
   let root = rootNode();
   let id = 0;
@@ -109,8 +143,10 @@ let _closedTypes = fn() {
         reached.push(ty);
       }
     }
+
     id++;
   }
+
   _at = -1;
   let global = 0;
 
@@ -120,6 +156,7 @@ let _closedTypes = fn() {
     reached.push(ty);
     global++;
   }
+
   let native = 0;
 
   while (native < nativeCount()) {
@@ -128,6 +165,7 @@ let _closedTypes = fn() {
     reached.push(ty);
     native++;
   }
+
   let next = 0;
 
   while (next < reached.len()) {
@@ -141,21 +179,9 @@ let _closedTypes = fn() {
         Array, List, Null, Optional, Rest => reached.push(innerOf(ty)),
         Function => {
           reached.push(innerOf(ty));
-          let i = 0;
-
-          while (i < typeArgCount(ty)) {
-            reached.push(typeArg(ty, i));
-            i++;
-          }
+          _reachArgs(ty, reached)
         },
-        Tuple => {
-          let i = 0;
-
-          while (i < typeArgCount(ty)) {
-            reached.push(typeArg(ty, i));
-            i++;
-          }
-        },
+        Tuple => _reachArgs(ty, reached),
         Enum, Record => {
           let tag = 0;
 
@@ -169,6 +195,7 @@ let _closedTypes = fn() {
               reached.push(fieldTy);
               field++;
             }
+
             tag++;
           }
         },
@@ -176,6 +203,7 @@ let _closedTypes = fn() {
       };
     }
   }
+
   null
 };
 
@@ -191,9 +219,10 @@ let _declare = fn(id: I32, ty: I32, mutable: Bool) {
     _declared.push(false);
     _places.push(-1);
   }
+
   if (_declared[id]) { _fail("binding declared twice"); }
   _declared[id] = true;
-  _places[id] = _visibleIds.len() as I32;
+  _places[id] = _visibleIds.len();
   _visibleIds.push(id);
   _visibleTypes.push(ty);
   _visibleMutable.push(mutable);
@@ -207,10 +236,10 @@ let _popTo = fn(start: I32) {
     _visibleTypes.pop();
     _visibleMutable.pop();
   }
+
   null
 };
 
-let _expr: (I32) -> I32 = fn(_id) { -1 };
 let _operand = fn(parent: I32, index: I32): I32 { _expr(_child(parent, index)) };
 
 let _global = fn(id: I32): I32 {
@@ -221,16 +250,19 @@ let _global = fn(id: I32): I32 {
 let _binding = fn(parent: I32, index: I32, programBody: Bool) {
   let binding = _child(parent, index);
   _arity(binding, 1);
+
   let local = match (opOf(binding)) { Let, Const => true, _ => false };
+  let mutable = match (opOf(binding)) { Let => true, _ => false };
   let early = local && match (opOf(childOf(binding, 0))) { FunctionRef => true, _ => false };
-  if (early) { _declare(valueOf(binding), typeOf(binding), match (opOf(binding)) { Let => true, _ => false }); }
+  if (early) { _declare(valueOf(binding), typeOf(binding), mutable); }
   if (_operand(binding, 0) != typeOf(binding)) { _fail("binding type mismatch"); }
 
   match (opOf(binding)) {
     Let, Const when (early) => null,
-    Let, Const => _declare(valueOf(binding), typeOf(binding), match (opOf(binding)) { Let => true, _ => false }),
+    Let, Const => _declare(valueOf(binding), typeOf(binding), mutable),
     InitGlobal => {
       if (!programBody) { _fail("global initialized outside the program body"); }
+
       let global = valueOf(binding);
       let ty = _global(global);
       if (_initialized[global]) { _fail("global initialized twice"); }
@@ -238,10 +270,7 @@ let _binding = fn(parent: I32, index: I32, programBody: Bool) {
       if (ty != typeOf(binding)) { _fail("global type mismatch"); }
       null
     },
-    _ => {
-      _fail("expected binding");
-      null
-    },
+    _ => _fail("expected binding"),
   };
   null
 };
@@ -252,18 +281,26 @@ let _functionType = fn(functionId: I32): I32 {
 };
 
 let _arguments = fn(id: I32, functionType: I32, first: I32, message: Bytes): I32 {
-  if (!isKind(functionType, Kind.Function) || (typeArgCount(functionType) != childCount(id) - first)) { _fail(message); }
+  let arity = childCount(id) - first;
+
+  if (!isKind(functionType, Kind.Function) || (typeArgCount(functionType) != arity)) {
+    _fail(message);
+  }
+
   let i = 0;
 
   while (i < typeArgCount(functionType)) {
     if (_operand(id, first + i) != slotType(typeArg(functionType, i))) { _fail(message); }
     i++;
   }
+
   innerOf(functionType)
 };
 
+let _firstType = fn(id: I32): I32 { childCount(id) > 0 ? typeOf(childOf(id, 0)) : -1 };
+
 let _readable = fn(id: I32): I32 {
-  (childCount(id) > 0) && (typeOf(childOf(id, 0)) == TYPE_BYTE_BUFFER) ? TYPE_BYTE_BUFFER : TYPE_BYTES
+  _firstType(id) == TYPE_BYTE_BUFFER ? TYPE_BYTE_BUFFER : TYPE_BYTES
 };
 
 let _boxable = fn(ty: I32, what: Bytes): Bool {
@@ -271,7 +308,12 @@ let _boxable = fn(ty: I32, what: Bytes): Bool {
   true
 };
 
-let _extractable = fn(ty: I32): Bool { match (kindOf(ty)) { Bool, I32, I64, F16, F32, F64, Atom, Bytes, Enum, Object => true, _ => false } };
+let _extractable = fn(ty: I32): Bool {
+  match (kindOf(ty)) {
+    Bool, I32, I64, F16, F32, F64, Atom, Bytes, Enum, Object => true,
+    _ => false,
+  }
+};
 
 let _upcast = fn(ty: I32, source: I32): Bool { isObject(ty) && isPrototype(source) };
 
@@ -284,6 +326,7 @@ let _objectOperand = fn(id: I32, count: I32) {
 let _objectAccess = fn(id: I32, extra: I32): I32 {
   let keyed = valueOf(id) < 0;
   if (!keyed && (valueOf(id) >= bytesCount())) { _fail("object key name index"); }
+
   _arity(id, (keyed ? 2 : 1) + extra);
   if (!isObject(_operand(id, 0))) { _fail("object access of a non-object"); }
   if (keyed && (_operand(id, 1) != TYPE_ATOM)) { _fail("object key type"); }
@@ -293,39 +336,69 @@ let _objectAccess = fn(id: I32, extra: I32): I32 {
 let _width = fn(ty: I32): I32 { isNumberType(ty) ? ty : TYPE_I32 };
 
 let _typed = fn(id: I32, operands: Array<I32>, result: I32, message: Bytes): I32 {
-  _arity(id, operands.len() as I32);
+  _arity(id, operands.len());
+
   let i = 0;
 
   while (i < operands.len()) {
     if (_operand(id, i) != operands[i]) { _fail(message); }
     i++;
   }
+
   result
+};
+
+let _uniform = fn(id: I32, ty: I32, message: Bytes) {
+  let i = 0;
+
+  while (i < childCount(id)) {
+    if (_operand(id, i) != ty) { _fail(message); }
+    i++;
+  }
+
+  null
 };
 
 let _array = fn(id: I32, operands: I32): I32 {
   _arity(id, operands);
+
   let array = _operand(id, 0);
-  if (!isKind(array, Kind.Array) || (_operand(id, 1) != TYPE_I32)) { _fail("array access operand type"); }
+
+  if (!isKind(array, Kind.Array) || (_operand(id, 1) != TYPE_I32)) {
+    _fail("array access operand type");
+  }
+
   if ((operands == 3) && (_operand(id, 2) != innerOf(array))) { _fail("array set value type"); }
   innerOf(array)
 };
 
-let _block: (I32, Bool) -> I32 = fn(_id, _programBody) { -1 };
-
 let _try = fn(id: I32, value: Bool) {
   _arity(id, 2);
+
   let ty = typeOf(id);
   let body = _block(_child(id, 0), false);
   let scope = _visibleIds.len();
   if (valueOf(id) >= 0) { _declare(valueOf(id), TYPE_DYNAMIC, false); }
+
   let handler = _block(_child(id, 1), false);
   _popTo(scope);
   if (value && ((body != ty) || (handler != ty))) { _fail("try operand type"); }
   null
 };
 
-_expr = fn(id) {
+let _bytesIndex = fn(id: I32, message: Bytes) {
+  if ((valueOf(id) < 0) || (valueOf(id) >= bytesCount())) { _fail(message); }
+  null
+};
+
+let _knownKind = fn(code: I32, aux: I32): Bool {
+  (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64)
+    || (code == KIND_ATOM) || (code == KIND_OBJECT) || (code == KIND_FUNCTION)
+    || isFloatKind(code)
+    || ((code == KIND_ENUM) && isKind(aux, Kind.Enum))
+};
+
+let _expr = fn(id: I32): I32 {
   let outer = _at;
   _at = id;
   let ty = typeOf(id);
@@ -342,7 +415,7 @@ _expr = fn(id) {
       _typed(id, [], ty, "")
     },
     Bytes => {
-      if ((valueOf(id) < 0) || (valueOf(id) >= bytesCount())) { _fail("bytes index"); }
+      _bytesIndex(id, "bytes index");
       _typed(id, [], TYPE_BYTES, "")
     },
     Null => {
@@ -369,8 +442,10 @@ _expr = fn(id) {
     },
     FunctionRef => {
       let function = _functionType(valueOf(id));
-      _typed(id, _captureTypes[valueOf(id) - 1], function, "closure capture type mismatch")
+      let captures = _captureTypes[valueOf(id) - 1];
+      _typed(id, captures, function, "closure capture type mismatch")
     },
+
     Rem, Shl, Shr, BitAnd, BitOr, BitXor when (isFloatType(ty)) => {
       _fail("integer operation on a float");
       ty
@@ -379,38 +454,50 @@ _expr = fn(id) {
       let width = _width(ty);
       _typed(id, [width, width], width, "number operation requires operands of its type")
     },
-    Eq when ((childCount(id) > 0) && (typeOf(childOf(id, 0)) == TYPE_BOOL)) => _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "bool equality requires bool operands"),
-    Eq when ((childCount(id) > 0) && ((typeOf(childOf(id, 0)) == TYPE_ATOM) || isObject(typeOf(childOf(id, 0))))) => {
-      let t = typeOf(childOf(id, 0));
+    Eq when (_firstType(id) == TYPE_BOOL) => {
+      _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "bool equality requires bool operands")
+    },
+    Eq when ((_firstType(id) == TYPE_ATOM) || isObject(_firstType(id))) => {
+      let t = _firstType(id);
       _typed(id, [t, t], TYPE_BOOL, "identity equality requires operands of one type")
     },
-    Eq when ((childCount(id) > 0) && isKind(typeOf(childOf(id, 0)), Kind.Function)) => {
-      let f = typeOf(childOf(id, 0));
+    Eq when (isKind(_firstType(id), Kind.Function)) => {
+      let f = _firstType(id);
       _typed(id, [f, f], TYPE_BOOL, "function equality requires operands of one function type")
     },
-    Le, Ge when ((childCount(id) == 0) || !isFloatType(typeOf(childOf(id, 0)))) => {
+    Le, Ge when (!isFloatType(_firstType(id))) => {
       _fail("float comparison of no float");
       TYPE_BOOL
     },
     Eq, Lt, Gt, Le, Ge => {
-      let width = _width(childCount(id) > 0 ? typeOf(childOf(id, 0)) : TYPE_I32);
-      _typed(id, [width, width], TYPE_BOOL, "number comparison requires operands of one number type")
+      let width = _width(_firstType(id));
+      let message = "number comparison requires operands of one number type";
+      _typed(id, [width, width], TYPE_BOOL, message)
     },
     Neg => {
       let width = _width(ty);
       _typed(id, [width], width, "number negation requires an operand of its type")
     },
     Not => _typed(id, [TYPE_BOOL], TYPE_BOOL, "bool not requires bool operand"),
-    And, Or => _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "logical operation requires bool operands"),
+    And, Or => {
+      _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "logical operation requires bool operands")
+    },
+
     Convert => {
       _arity(id, 1);
       let source = _operand(id, 0);
-      let objects = (isKind(ty, Kind.Null) && isKind(source, Kind.Null)) ? _upcast(innerOf(ty), innerOf(source)) : _upcast(ty, source);
+
+      let objects = (isKind(ty, Kind.Null) && isKind(source, Kind.Null))
+        ? _upcast(innerOf(ty), innerOf(source))
+        : _upcast(ty, source);
       if (!(isNumberType(ty) && isNumberType(source)) && !objects) { _fail("conversion type"); }
       ty
     },
     Present => {
-      if (!isKind(ty, Kind.Null) || (innerOf(ty) < 0)) { _fail("present requires a nullable type"); }
+      if (!isKind(ty, Kind.Null) || (innerOf(ty) < 0)) {
+        _fail("present requires a nullable type");
+      }
+
       _typed(id, [innerOf(ty)], ty, "present requires the inner type")
     },
     IsNull, IsPresent => {
@@ -428,30 +515,27 @@ _expr = fn(id) {
       _typed(id, [TYPE_DYNAMIC], ty, "extraction requires a Dynamic operand")
     },
     IsKind => {
-      let code = valueOf(id);
-      let known = (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64) || (code == KIND_ATOM) || (code == KIND_OBJECT) || (code == KIND_FUNCTION) || isFloatKind(code)
-        || ((code == KIND_ENUM) && isKind(auxOf(id), Kind.Enum));
-      if (!known) { _fail("kind test of an unknown kind"); }
+      if (!_knownKind(valueOf(id), auxOf(id))) { _fail("kind test of an unknown kind"); }
       _typed(id, [TYPE_DYNAMIC], TYPE_BOOL, "kind test requires a Dynamic operand")
     },
     Unwrap => {
       _arity(id, 1);
       let operand = _operand(id, 0);
-      if (!isKind(operand, Kind.Null) || (innerOf(operand) != ty)) { _fail("unwrap requires a Null<T> operand and a T result"); }
+
+      if (!isKind(operand, Kind.Null) || (innerOf(operand) != ty)) {
+        _fail("unwrap requires a Null<T> operand and a T result");
+      }
+
       ty
     },
+
     ArrayNew => {
       if (!isKind(ty, Kind.Array)) { _fail("array type"); }
       _typed(id, [TYPE_I32], ty, "array length must be i32")
     },
     ArrayLiteral => {
       if (!isKind(ty, Kind.Array)) { _fail("array type"); }
-      let i = 0;
-
-      while (i < childCount(id)) {
-        if (_operand(id, i) != innerOf(ty)) { _fail("array element type"); }
-        i++;
-      }
+      _uniform(id, innerOf(ty), "array element type");
       ty
     },
     ArrayConcat => {
@@ -461,7 +545,11 @@ _expr = fn(id) {
     ArrayPush => {
       _arity(id, 2);
       let array = _operand(id, 0);
-      if (!isKind(array, Kind.Array) || (_operand(id, 1) != innerOf(array))) { _fail("array push operand type"); }
+
+      if (!isKind(array, Kind.Array) || (_operand(id, 1) != innerOf(array))) {
+        _fail("array push operand type");
+      }
+
       TYPE_I32
     },
     ArrayPop => {
@@ -473,51 +561,13 @@ _expr = fn(id) {
     ArrayResize => {
       _arity(id, 2);
       let array = _operand(id, 0);
-      if (!isKind(array, Kind.Array) || (_operand(id, 1) != TYPE_I32)) { _fail("array resize operand type"); }
+
+      if (!isKind(array, Kind.Array) || (_operand(id, 1) != TYPE_I32)) {
+        _fail("array resize operand type");
+      }
+
       array
     },
-    ListNil, ListCons => {
-      if (!isKind(ty, Kind.List)) { _fail("list type"); }
-      _typed(id, match (opOf(id)) { ListNil => Array.new<I32>(0), _ => [innerOf(ty), ty] }, ty, "list operand type")
-    },
-    ListHead, ListTail, ListIsNil => {
-      _arity(id, 1);
-      let list = _operand(id, 0);
-      if (!isKind(list, Kind.List)) { _fail("list operand type"); }
-      match (opOf(id)) { ListHead => innerOf(list), ListTail => list, _ => TYPE_BOOL }
-    },
-    BytesNew => _typed(id, [TYPE_I32], TYPE_BYTE_BUFFER, "bytes new length type"),
-    BytesSet => _typed(id, [TYPE_BYTE_BUFFER, TYPE_I32, TYPE_I32], TYPE_I32, "bytes set operand type"),
-    BitsPack => {
-      let i = 0;
-
-      while (i < childCount(id)) {
-        match (opOf(childOf(id, i))) {
-          BitsField => null, _ => {
-            _fail("bits pack field");
-            null
-          }
-        };
-        _operand(id, i);
-        i++;
-      }
-      TYPE_BYTES
-    },
-    BitsField => _typed(id, [segmentType(auxOf(id))], segmentType(auxOf(id)), "bits field type"),
-    BitsRead => _typed(id, [TYPE_BYTES], segmentType(auxOf(id)), "bits read operand type"),
-    BytesLen => _typed(id, [_readable(id)], TYPE_I32, "bytes len operand type"),
-    BytesSlice => _typed(id, [_readable(id), TYPE_I32, TYPE_I32], TYPE_BYTES, "bytes slice operand type"),
-    BytesConcat => _typed(id, [TYPE_BYTES, TYPE_BYTES], TYPE_BYTES, "bytes concat operand type"),
-    BytesConcatMany => {
-      let i = 0;
-
-      while (i < childCount(id)) {
-        if (_operand(id, i) != TYPE_BYTES) { _fail("bytes concat many operand type"); }
-        i++;
-      }
-      TYPE_BYTES
-    },
-    BytesEq => _typed(id, [TYPE_BYTES, TYPE_BYTES], TYPE_BOOL, "bytes eq operand type"),
     ArrayLen => {
       _arity(id, 1);
       if (!isKind(_operand(id, 0), Kind.Array)) { _fail("array len source type"); }
@@ -525,15 +575,63 @@ _expr = fn(id) {
     },
     ArrayGet => _array(id, 2),
     ArraySet => _array(id, 3),
+
+    ListNil, ListCons => {
+      if (!isKind(ty, Kind.List)) { _fail("list type"); }
+      let operands = match (opOf(id)) { ListNil => Array.new<I32>(0), _ => [innerOf(ty), ty] };
+      _typed(id, operands, ty, "list operand type")
+    },
+    ListHead, ListTail, ListIsNil => {
+      _arity(id, 1);
+      let list = _operand(id, 0);
+      if (!isKind(list, Kind.List)) { _fail("list operand type"); }
+      match (opOf(id)) { ListHead => innerOf(list), ListTail => list, _ => TYPE_BOOL }
+    },
+
+    BytesNew => _typed(id, [TYPE_I32], TYPE_BYTE_BUFFER, "bytes new length type"),
+    BytesSet => {
+      let operands = [TYPE_BYTE_BUFFER, TYPE_I32, TYPE_I32];
+      _typed(id, operands, TYPE_I32, "bytes set operand type")
+    },
+    BitsPack => {
+      let i = 0;
+
+      while (i < childCount(id)) {
+        match (opOf(childOf(id, i))) { BitsField => null, _ => _fail("bits pack field") };
+        _operand(id, i);
+        i++;
+      }
+
+      TYPE_BYTES
+    },
+    BitsField => {
+      let segment = segmentType(auxOf(id));
+      _typed(id, [segment], segment, "bits field type")
+    },
+    BitsRead => _typed(id, [TYPE_BYTES], segmentType(auxOf(id)), "bits read operand type"),
+    BytesLen => _typed(id, [_readable(id)], TYPE_I32, "bytes len operand type"),
+    BytesSlice => {
+      let operands = [_readable(id), TYPE_I32, TYPE_I32];
+      _typed(id, operands, TYPE_BYTES, "bytes slice operand type")
+    },
+    BytesConcat => _typed(id, [TYPE_BYTES, TYPE_BYTES], TYPE_BYTES, "bytes concat operand type"),
+    BytesConcatMany => {
+      _uniform(id, TYPE_BYTES, "bytes concat many operand type");
+      TYPE_BYTES
+    },
+    BytesEq => _typed(id, [TYPE_BYTES, TYPE_BYTES], TYPE_BOOL, "bytes eq operand type"),
     BytesGet => _typed(id, [_readable(id), TYPE_I32], TYPE_I32, "bytes get operand type"),
+
     Tuple => {
       if (_fieldCount(ty) != childCount(id)) { _fail("tuple shape"); }
+
       let i = 0;
 
       while (i < childCount(id)) {
         if (_operand(id, i) != memberType(ty, i)) { _fail("tuple field type"); }
         i++;
       }
+
       ty
     },
     TupleField => {
@@ -545,19 +643,28 @@ _expr = fn(id) {
     SetField => {
       _arity(id, 2);
       let record = _operand(id, 0);
-      if (!isKind(record, Kind.Record) || (valueOf(id) < 0) || (valueOf(id) >= _fieldCount(record))) { _fail("record field assignment"); }
-      if (_operand(id, 1) != memberType(record, valueOf(id))) { _fail("record field type"); }
-      memberType(record, valueOf(id))
+      let field = valueOf(id);
+
+      if (!isKind(record, Kind.Record) || (field < 0) || (field >= _fieldCount(record))) {
+        _fail("record field assignment");
+      }
+
+      if (_operand(id, 1) != memberType(record, field)) { _fail("record field type"); }
+      memberType(record, field)
     },
+
     EnumNew => {
       let tag = valueOf(id);
-      if (!isKind(ty, Kind.Enum) || (tag < 0) || (tag >= variantCount(ty)) || (childCount(id) != fieldCount(ty, tag))) { _fail("enum construction shape"); }
+      let variant = isKind(ty, Kind.Enum) && (tag >= 0) && (tag < variantCount(ty));
+      if (!variant || (childCount(id) != fieldCount(ty, tag))) { _fail("enum construction shape"); }
+
       let i = 0;
 
       while (i < childCount(id)) {
         if (_operand(id, i) != fieldType(ty, tag, i)) { _fail("enum payload type"); }
         i++;
       }
+
       ty
     },
     EnumTag => {
@@ -570,13 +677,20 @@ _expr = fn(id) {
       let source = _operand(id, 0);
       let tag = auxOf(id);
       let field = valueOf(id);
-      let inRange = isKind(source, Kind.Enum) && (tag >= 0) && (tag < variantCount(source)) && (field >= 0) && (field < fieldCount(source, tag));
+      let inRange = isKind(source, Kind.Enum)
+        && (tag >= 0) && (tag < variantCount(source))
+        && (field >= 0) && (field < fieldCount(source, tag));
       if (!inRange) { _fail("enum field access"); }
       fieldType(source, tag, field)
     },
+
     Call => {
       let function = _functionType(valueOf(id));
-      if (_captureTypes[valueOf(id) - 1].len() != 0) { _fail("direct call of a function that captures"); }
+
+      if (_captureTypes[valueOf(id) - 1].len() != 0) {
+        _fail("direct call of a function that captures");
+      }
+
       _arguments(id, function, 0, "direct call signature mismatch")
     },
     CallIndirect => _arguments(id, _operand(id, 0), 1, "indirect call signature mismatch"),
@@ -584,6 +698,7 @@ _expr = fn(id) {
       if ((valueOf(id) < 0) || (valueOf(id) >= nativeCount())) { _fail("native call target"); }
       _arguments(id, nativeTypeOf(valueOf(id)), 0, "native call signature mismatch")
     },
+
     Block => {
       if ((auxOf(id) != 1) && !endsPath(id)) { _fail("value block without a tail"); }
       _block(id, false)
@@ -593,8 +708,9 @@ _expr = fn(id) {
       _try(id, true);
       ty
     },
+
     Atom => {
-      if ((valueOf(id) < 0) || (valueOf(id) >= bytesCount())) { _fail("atom name index"); }
+      _bytesIndex(id, "atom name index");
       _typed(id, [], TYPE_ATOM, "")
     },
     ObjectNew => {
@@ -630,30 +746,51 @@ _expr = fn(id) {
       _objectOperand(id, 1);
       ty
     },
+
     _ => {
       _fail("expected expression");
       -1
     },
   };
+
   if (actual != ty) { _fail("expression type mismatch"); }
   _at = outer;
   ty
 };
 
-let _statement: (I32, Bool) -> Bool = fn(_id, _programBody) { false };
-_statement = fn(id, programBody) {
+let _otherwise = fn(id: I32) {
+  if (childCount(id) != 3) { return null; }
+
+  let otherwise = _child(id, 2);
+
+  match (opOf(otherwise)) {
+    Block => {
+      _block(otherwise, false);
+      null
+    },
+    IfStatement => {
+      _statement(otherwise, false);
+      null
+    },
+    _ => _fail("else branch must be a block or if"),
+  }
+};
+
+let _statement = fn(id: I32, programBody: Bool): Bool {
   let outer = _at;
   _at = id;
 
   match (opOf(id)) {
     Declare => {
       if (childCount(id) < 1) { _fail("declaration without a binding"); }
+
       let i = 0;
 
       while (i < childCount(id)) {
         _binding(id, i, programBody);
         i++;
       }
+
       null
     },
     Expression => {
@@ -678,70 +815,42 @@ _statement = fn(id, programBody) {
     },
     Break => {
       if (_loops == 0) { _fail("break outside loop"); }
-      _arity(id, 0);
-      null
+      _arity(id, 0)
     },
     Continue => {
       if (_loops == 0) { _fail("continue outside loop"); }
-      _arity(id, 0);
-      null
+      _arity(id, 0)
     },
     While => {
       _arity(id, 2);
       if ((auxOf(id) != 0) && (auxOf(id) != 1)) { _fail("loop body-first flag"); }
       if (_operand(id, 0) != TYPE_BOOL) { _fail("while condition must be bool"); }
+
       _loops++;
       _block(_child(id, 1), false);
       _loops--;
       null
     },
-    TryStatement => {
-      _try(id, false);
-      null
-    },
+    TryStatement => _try(id, false),
     IfStatement => {
       if ((childCount(id) != 2) && (childCount(id) != 3)) { _fail("wrong operand count"); }
       if (_operand(id, 0) != TYPE_BOOL) { _fail("if condition must be bool"); }
       _block(_child(id, 1), false);
-
-      if (childCount(id) == 3) {
-        let otherwise = _child(id, 2);
-
-        match (opOf(otherwise)) {
-          Block => {
-            _block(otherwise, false);
-            null
-          }, IfStatement => {
-            _statement(otherwise, false);
-            null
-          }, _ => {
-            _fail("else branch must be a block or if");
-            null
-          }
-        };
-      }
-      null
+      _otherwise(id)
     },
-    _ => {
-      _fail("expected statement");
-      null
-    },
+    _ => _fail("expected statement"),
   };
+
   _at = outer;
   true
 };
 
-_block = fn(id, programBody) {
+let _block = fn(id: I32, programBody: Bool): I32 {
   let outer = _at;
   _at = id;
-
-  match (opOf(id)) {
-    Block => null, _ => {
-      _fail("expected block");
-      null
-    }
-  };
+  match (opOf(id)) { Block => null, _ => _fail("expected block") };
   if ((auxOf(id) != 0) && (auxOf(id) != 1)) { _fail("block tail flag"); }
+
   let statements = childCount(id) - auxOf(id);
   let scope = _visibleIds.len();
   let i = 0;
@@ -751,8 +860,10 @@ _block = fn(id, programBody) {
     _statement(_child(id, i), programBody);
     i++;
   }
+
   let tail = auxOf(id) == 1 ? _operand(id, statements) : 0;
   _popTo(scope);
+
   let ty = (auxOf(id) == 0) && endsPath(id) ? typeOf(id) : tail;
   if (ty != typeOf(id)) { _fail("block type mismatch"); }
   _at = outer;
@@ -765,18 +876,26 @@ let _function = fn(id: I32, functionId: I32) {
   let ty = typeOf(id);
   let params = typeArgCount(ty);
   let captures = _captureTypes[functionId - 1];
-  if (childCount(id) != params + (captures.len() as I32) + 1) { _fail("parameter count mismatch"); }
+  if (childCount(id) != params + captures.len() + 1) { _fail("parameter count mismatch"); }
+
   _popTo(0);
   let i = 0;
 
   while (i < params + captures.len()) {
     let param = _child(id, i);
-    let expected = match (opOf(param)) { Parameter when (i < params) => slotType(typeArg(ty, i)), Capture when (i >= params) => captures[i - params], _ => -1 };
+
+    let expected = match (opOf(param)) {
+      Parameter when (i < params) => slotType(typeArg(ty, i)),
+      Capture when (i >= params) => captures[i - params],
+      _ => -1,
+    };
     if (typeOf(param) != expected) { _fail("parameter type mismatch"); }
     _arity(param, 0);
+
     _declare(valueOf(param), expected, i >= params);
     i++;
   }
+
   _result = innerOf(ty);
   _loops = 0;
   let body = _child(id, childCount(id) - 1);
@@ -786,81 +905,90 @@ let _function = fn(id: I32, functionId: I32) {
     if (auxOf(body) != 1) { _fail("function falls through without value"); }
     if (tail != innerOf(ty)) { _fail("function result type mismatch"); }
   }
+
   _at = outer;
   null
 };
 
-export let verifyHir: (Hir) -> Bool = fn(program) {
+let _capturesOf = fn(function: I32): Array<I32> {
+  let captures = Array.new<I32>(0);
+  let c = typeArgCount(typeOf(function));
+
+  while (c < childCount(function) - 1) {
+    let capture = childOf(function, c);
+    captures.push((capture >= 0) && (capture < function) ? typeOf(capture) : -1);
+    c++;
+  }
+
+  captures
+};
+
+export let verifyHir = fn(program: Hir): Bool {
   useHir(program);
   _at = -1;
   let root = rootNode();
   let count = nodeCount();
   let isProgram = (root == count - 1) && (match (opOf(root)) { Program => true, _ => false });
-  if (!isProgram || !childrenInBounds(root) || (childCount(root) < 1)) { _fail("program must be the last node"); }
-  _used = Array.new<Bool>(0);
-  let i = 0;
 
-  while (i < count) {
-    _used.push(false);
-    i++;
+  if (!isProgram || !childrenInBounds(root) || (childCount(root) < 1)) {
+    _fail("program must be the last node");
   }
+
+  _used = Array.new<Bool>(count);
+
   _functionTypes = Array.new<I32>(0);
   _captureTypes = Array.new<Array<I32>>(0);
-  i = 0;
+  let i = 0;
 
   while (i < childCount(root) - 1) {
     let function = childOf(root, i);
-    let isFunction = (function >= 0) && (function < root) && (match (opOf(function)) { Function => true, _ => false });
-    if (!isFunction || !isKind(typeOf(function), Kind.Function) || !childrenInBounds(function)) { _fail("expected function"); }
-    _functionTypes.push(typeOf(function));
-    let captures = Array.new<I32>(0);
-    let c = typeArgCount(typeOf(function));
+    let isFunction = (function >= 0) && (function < root)
+      && (match (opOf(function)) { Function => true, _ => false });
 
-    while (c < childCount(function) - 1) {
-      let capture = childOf(function, c);
-      captures.push((capture >= 0) && (capture < function) ? typeOf(capture) : -1);
-      c++;
+    if (!isFunction || !isKind(typeOf(function), Kind.Function) || !childrenInBounds(function)) {
+      _fail("expected function");
     }
-    _captureTypes.push(captures);
+
+    _functionTypes.push(typeOf(function));
+    _captureTypes.push(_capturesOf(function));
     i++;
   }
+
   _visibleIds = Array.new<I32>(0);
   _visibleTypes = Array.new<I32>(0);
   _visibleMutable = Array.new<Bool>(0);
   _declared = Array.new<Bool>(0);
   _places = Array.new<I32>(0);
-  i = 0;
   _initialized = Array.new<Bool>(globalCount());
+  i = 0;
 
   while (i < childCount(root) - 1) {
     _function(_child(root, i), i + 1);
     i++;
   }
+
   _popTo(0);
   let body = _child(root, childCount(root) - 1);
-
-  match (opOf(body)) {
-    Block => null, _ => {
-      _fail("program body must be a block");
-      null
-    }
-  };
+  match (opOf(body)) { Block => null, _ => _fail("program body must be a block") };
   if (auxOf(body) != 1) { _fail("program body without a tail"); }
+
   _result = -1;
   _loops = 0;
   _block(body, true);
+
   i = 0;
 
   while (i < _initialized.len()) {
     if (!_initialized[i]) { _fail("global never initialized"); }
     i++;
   }
+
   _spans();
   _closedTypes();
   true
 };
 
-export let verifyFailureSpan: () -> ?SourceSpan = fn() {
+export let verifyFailureSpan = fn(): ?SourceSpan {
   let valid = (_at >= 0) && (_at < spanCount()) && (_spanProblem(_at) == "");
   valid ? spanOf(_at) : null
 };

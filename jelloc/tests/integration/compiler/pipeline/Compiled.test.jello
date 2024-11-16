@@ -11,8 +11,8 @@ import { contains, startsWith } from std.core.Bytes;
 import type { Hir } from frontend.hir.Hir;
 import frontend.hir.Hir as H;
 import { printHir } from frontend.hir.Print;
-import type { BasicBlock, Function, Instruction, Program } from ir.Model;
-import { Op, immOf, opOf } from ir.Model;
+import type { BasicBlock, Instruction, Program } from ir.Model;
+import { Op } from ir.Model;
 import { allocatedFile, checkedFile, checkedTests, jloOf } from compiler.Pipeline;
 import { PROGRAMS } from compiler.Corpus;
 
@@ -21,24 +21,13 @@ const _NONE = Array.new<Bytes>(0);
 // The blocks of PROGRAM's functions.
 let _blocks = fn(program: Program): Array<BasicBlock> {
   let all = Array.new<BasicBlock>(0);
+  let f = 0;
 
-  match (program) { Program(functions, _, _, _, _, _, _, _) => {
-    let f = 0;
+  while (f < program.functions.len()) {
+    all.appendFrom(program.functions[f].blocks, 0);
+    f++;
+  }
 
-    while (f < functions.len()) {
-      match (functions[f]) {
-        Function(_, _, _, _, _, blocks, _) => {
-          let b = 0;
-
-          while (b < blocks.len()) {
-            all.push(blocks[b]);
-            b++;
-          }
-        }
-      };
-      f++;
-    }
-  } };
   all
 };
 
@@ -49,39 +38,18 @@ let _instructions = fn(program: Program): Array<Instruction> {
   let b = 0;
 
   while (b < blocks.len()) {
-    match (blocks[b]) {
-      Block(_, instructions, _, _) => {
-        let i = 0;
-
-        while (i < instructions.len()) {
-          all.push(instructions[i]);
-          i++;
-        }
-      }
-    };
+    all.appendFrom(blocks[b].instructions, 0);
     b++;
   }
+
   all
 };
 
 // The blocks of PROGRAM in a catch region, and its boxes.
 let _regionsAndBoxes = fn(program: Program): Tuple<I32, I32> {
-  let blocks = _blocks(program);
-  let caught = 0;
-  let b = 0;
+  let caught = _blocks(program).filter(fn(block) { block.handler != null }).len();
+  let boxes = _instructions(program).filter(fn(insn) { insn.op == Op.Box }).len();
 
-  while (b < blocks.len()) {
-    match (blocks[b]) { Block(_, _, _, handler) => { if (handler != null) { caught++; } } };
-    b++;
-  }
-  let instructions = _instructions(program);
-  let boxes = 0;
-  let i = 0;
-
-  while (i < instructions.len()) {
-    match (opOf(instructions[i])) { Box => { boxes++; }, _ => null };
-    i++;
-  }
   (caught, boxes)
 };
 
@@ -105,6 +73,7 @@ let _reached = fn(hir: Hir): Array<Tuple<I32, I32, Bool>> {
   let i = 0;
 
   while (i < H.childCount(root)) {
+    // The last child is the program body, in no function.
     pending.push((H.childOf(root, i), i < H.childCount(root) - 1 ? i : -1, false));
     i++;
   }
@@ -132,7 +101,11 @@ let _unwraps = fn(hir: Hir): Tuple<I32, I32> {
 
   while (i < reached.len()) {
     let (id, _, _) = reached[i];
-    match (H.opOf(id)) { Unwrap => { if (H.valueOf(id) == 1) { checked++; } else { known++; } }, _ => null };
+
+    match (H.opOf(id)) {
+      Unwrap => { if (H.valueOf(id) == 1) { checked++; } else { known++; } },
+      _ => null,
+    };
     i++;
   }
   (known, checked)
@@ -149,12 +122,19 @@ let testNarrowedUnwraps = fn(t: Test) {
 // to the same program.
 let testNamespaceTwins = fn(t: Test) {
   let roots = [PROGRAMS + "/namespaces/auxiliary"];
-  T.equal(t, jloOf(PROGRAMS + "/namespaces/qualified.jello", roots), jloOf(PROGRAMS + "/namespaces/named.jello", roots));
+  T.equal(
+    t,
+    jloOf(PROGRAMS + "/namespaces/qualified.jello", roots),
+    jloOf(PROGRAMS + "/namespaces/named.jello", roots)
+  );
 };
 
 // Whether NAME is a test's: test and a capital, as testXxx.
 let _isTest = fn(name: Bytes): Bool {
-  startsWith(name, "test") && (Bytes.len(name) > 4) && (Bytes.get_u8(name, 4) >= 65) && (Bytes.get_u8(name, 4) <= 90)
+  startsWith(name, "test")
+    && (Bytes.len(name) > 4)
+    && (Bytes.get_u8(name, 4) >= 65)
+    && (Bytes.get_u8(name, 4) <= 90)
 };
 
 // In the tests of HIR, how many strings values become (by the to_string or
@@ -171,7 +151,10 @@ let _stringsBuilt = fn(hir: Hir): Tuple<I32, I32> {
     let (id, function, otherwise) = reached[i];
 
     let shown = match (H.opOf(id)) {
-      CallNative => (H.nativeLibraryOf(H.valueOf(id)) == "std") && ((H.nativeNameOf(H.valueOf(id)) == "to_string") || (H.nativeNameOf(H.valueOf(id)) == "quote")),
+      CallNative => {
+        let name = H.nativeNameOf(H.valueOf(id));
+        (H.nativeLibraryOf(H.valueOf(id)) == "std") && ((name == "to_string") || (name == "quote"))
+      },
       // call @N is of the program's Nth function.
       Call => H.bytesOf(H.valueOf(H.childOf(root, H.valueOf(id) - 1))) == "string",
       _ => false,
@@ -200,15 +183,17 @@ let testAssertionsBuildNoStrings = fn(t: Test) {
 // Spill slots are dense (0..n-1), since the VM sizes each frame's slot
 // array, which the collector scans, by the highest slot used.
 let testSpillSlotsAreDense = fn(t: Test) {
-  let instructions = _instructions(allocatedFile(PROGRAMS + "/registers/spill-pressure.jello", _NONE));
+  let file = allocatedFile(PROGRAMS + "/registers/spill-pressure.jello", _NONE);
+  let instructions = _instructions(file);
   let used = Array.new<Bool>(0);
   let i = 0;
 
   while (i < instructions.len()) {
-    match (opOf(instructions[i])) {
+    match (instructions[i].op) {
       SpillPush, SpillPop => {
-        while (used.len() <= immOf(instructions[i])) { used.push(false); }
-        used[immOf(instructions[i])] = true;
+        let slot = instructions[i].imm;
+        while (used.len() <= slot) { used.push(false); }
+        used[slot] = true;
       },
       _ => null,
     };

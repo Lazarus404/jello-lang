@@ -1,14 +1,15 @@
 package ir;
 
-import type { BasicBlock, EnumSchema, Function, Instruction, Native, Program, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { ValueType, argumentCount, comparesByIdentity, argsOf, canBeNull, dstOf, handlerPayload, handlerTarget, immOf, opOf, valueTypeEqual } from ir.Model;
-import { blockId } from ir.Cfg;
+import type {
+  BasicBlock, EnumSchema, Function, Instruction, Native, Program, Terminator, ThrowHandler,
+  ValueType
+} from ir.Model;
+import { ValueType, argumentCount, canBeNull, comparesByIdentity, valueTypeEqual } from ir.Model;
 import { liveness } from ir.Liveness;
 import { internalError } from support.Internal;
-import { indexOf } from support.Arrays;
 
 let _fail = fn(message: Bytes): Bool {
-  internalError("invalid IR: " + message);
+  internalError(`invalid IR: ${message}`);
   false
 };
 
@@ -27,51 +28,108 @@ let _natives = Array.new<Native>(0);
 
 let _registers = Array.new<ValueType>(0);
 
+let _bool = ValueType.Bool;
+let _i32 = ValueType.I32;
+let _i64 = ValueType.I64;
+let _bytes = ValueType.Bytes;
+let _atom = ValueType.Atom;
+let _object = ValueType.Object;
+let _dynamic = ValueType.Dynamic;
+
+let _noTypes = Array.new<ValueType>(0);
+let _ofBool = [_bool];
+let _ofI32 = [_i32];
+let _ofI64 = [_i64];
+let _ofBytes = [_bytes];
+let _ofDynamic = [_dynamic];
+let _ofObject = [_object];
+let _bytesI32 = [_bytes, _i32];
+let _bytesI32I32 = [_bytes, _i32, _i32];
+let _bytesBytes = [_bytes, _bytes];
+let _bytesBytesI32 = [_bytes, _bytes, _i32];
+let _objectAtom = [_object, _atom];
+
 let _type = fn(register: I32): ValueType {
-  if ((register < 0) || (register >= _registers.len())) { _fail("register out of range: " + Std.string(register)); }
+  if ((register < 0) || (register >= _registers.len())) {
+    _fail(`register out of range: ${register}`);
+  }
   _registers[register]
 };
 
 let _expect = fn(register: I32, expected: ValueType) {
-  if (!valueTypeEqual(_type(register), expected)) { _fail("wrong type for register " + Std.string(register)); }
+  if (!valueTypeEqual(_type(register), expected)) { _fail(`wrong type for register ${register}`); }
+  null
+};
+
+let _expectEach = fn(registers: Array<I32>, start: I32, types: Array<ValueType>) {
+  let i = 0;
+
+  while (i < types.len()) {
+    _expect(registers[start + i], types[i]);
+    i++;
+  }
+  null
+};
+
+let _expectAll = fn(registers: Array<I32>, expected: ValueType) {
+  let i = 0;
+
+  while (i < registers.len()) {
+    _expect(registers[i], expected);
+    i++;
+  }
   null
 };
 
 let _isNumeric = fn(ty: ValueType): Bool { match (ty) { I32, I64 => true, _ => false } };
-let _isArithmetic = fn(ty: ValueType, half: Bool): Bool { match (ty) { I32, I64, F32, F64 => true, F16 => half, _ => false } };
+
+let _isArithmetic = fn(ty: ValueType, half: Bool): Bool {
+  match (ty) {
+    I32, I64, F32, F64 => true,
+    F16 => half,
+    _ => false,
+  }
+};
 
 let _converts = fn(source: ValueType, target: ValueType): Bool {
   match ((source, target)) {
-    (I32, F16), (I32, F32), (I32, F64), (I64, F32), (I64, F64), (F16, I32), (F32, I32), (F64, I32), (F32, I64), (F64, I64) => true,
+    (I32, F16), (I32, F32), (I32, F64), (I64, F32), (I64, F64) => true,
+    (F16, I32), (F32, I32), (F64, I32), (F32, I64), (F64, I64) => true,
     (F16, F32), (F32, F16), (F32, F64), (F64, F32) => true,
     _ => false,
   }
 };
 
 let _index = fn(function: I32): I32 {
-  if ((function < 0) || (function >= _functionIndexes.len()) || (_functionIndexes[function] < 0)) { _fail("unknown function @" + Std.string(function)); }
+  if ((function < 0)
+    || (function >= _functionIndexes.len())
+    || (_functionIndexes[function] < 0)) {
+    _fail(`unknown function @${function}`);
+  }
   _functionIndexes[function]
 };
 
-let _call = fn(params: Array<ValueType>, result: ValueType, dst: I32, args: Array<I32>, start: I32) {
-  if ((args.len() as I32) - start != (params.len() as I32)) { _fail("call argument count mismatch"); }
-  let i = 0;
-
-  while (i < params.len()) {
-    _expect(args[start + i], params[i]);
-    i++;
-  }
+let _call = fn(
+  params: Array<ValueType>,
+  result: ValueType,
+  dst: I32,
+  args: Array<I32>,
+  start: I32
+) {
+  if (args.len() - start != params.len()) { _fail("call argument count mismatch"); }
+  _expectEach(args, start, params);
   _expect(dst, result)
 };
 
 let _variants = fn(enumId: I32): Array<Array<ValueType>> {
-  if ((enumId < 0) || (enumId >= _enums.len())) { _fail("unknown enum type@" + Std.string(enumId)); }
+  if ((enumId < 0) || (enumId >= _enums.len())) { _fail(`unknown enum type@${enumId}`); }
 
   match (_enums[enumId]) {
-    Enum(variants) => variants, Record(_) => {
-      _fail("enum operation on a record@" + Std.string(enumId));
+    Enum(variants) => variants,
+    Record(_) => {
+      _fail(`enum operation on a record@${enumId}`);
       []
-    }
+    },
   }
 };
 
@@ -81,11 +139,19 @@ let _fields = fn(enumId: I32, tag: I32): Array<ValueType> {
   variants[tag]
 };
 
-let _bitField = fn(imm: I32) { if ((imm < 0) || (imm % 16 == 0) || (imm % 16 > 8)) { _fail("bit field out of range"); } null };
+let _bitField = fn(imm: I32) {
+  if ((imm < 0) || (imm % 16 == 0) || (imm % 16 > 8)) { _fail("bit field out of range"); }
+  null
+};
 
 let _formatType = fn(format: I32): ValueType {
   if ((format < 0) || (format > 7)) { _fail("bytes format out of range"); }
-  format >= 6 ? ValueType.F32 : ValueType.I32
+  format >= 6 ? ValueType.F32 : _i32
+};
+
+let _pooled = fn(imm: I32, size: I32, what: Bytes) {
+  if (_inProgram && ((imm < 0) || (imm >= size))) { _fail(`${what} out of range`); }
+  null
 };
 
 let _structFields = fn(ty: ValueType, what: Bytes): ?Array<ValueType> {
@@ -93,13 +159,14 @@ let _structFields = fn(ty: ValueType, what: Bytes): ?Array<ValueType> {
     TupleOf(elements) => elements,
     Nominal(_) when (!_inProgram) => null,
     Nominal(id) when ((id >= 0) && (id < _enums.len())) => match (_enums[id]) {
-      Record(fields) => fields, Enum(_) => {
-        _fail(what + " of an enum");
+      Record(fields) => fields,
+      Enum(_) => {
+        _fail(`${what} of an enum`);
         null
-      }
+      },
     },
     _ => {
-      _fail(what + " of a non-struct");
+      _fail(`${what} of a non-struct`);
       null
     },
   }
@@ -121,45 +188,61 @@ let _global = fn(index: I32): ValueType {
   _globals[index]
 };
 
-let _arity = fn(args: Array<I32>, count: I32) { if (args.len() != count) { _fail("wrong operand count"); } null };
+let _arity = fn(args: Array<I32>, count: I32) {
+  if (args.len() != count) { _fail("wrong operand count"); }
+  null
+};
+
+let _operands = fn(args: Array<I32>, types: Array<ValueType>) {
+  _arity(args, types.len());
+  _expectEach(args, 0, types)
+};
+
+let _defines = fn(dst: I32, result: ValueType, args: Array<I32>, types: Array<ValueType>) {
+  _arity(args, types.len());
+  _expect(dst, result);
+  _expectEach(args, 0, types)
+};
+
+let _spillSlot = fn(imm: I32) {
+  if ((imm < 0) || (imm >= 65536)) { _fail("spill slot out of range"); }
+  null
+};
 
 let _bitsOrBytes = fn(instruction: Instruction) {
-  let dst = dstOf(instruction);
-  let args = argsOf(instruction);
-  let imm = immOf(instruction);
+  let dst = instruction.dst;
+  let args = instruction.args;
+  let imm = instruction.imm;
 
-  match (opOf(instruction)) {
+  match (instruction.op) {
     BitsRead => {
       _arity(args, 1);
       _bitField(imm);
-      _expect(dst, ValueType.I32);
-      _expect(args[0], ValueType.Bytes)
+      _expect(dst, _i32);
+      _expect(args[0], _bytes)
     },
     BitsWrite => {
       _arity(args, 2);
       _bitField(imm);
-      _expect(args[0], ValueType.Bytes);
-      _expect(args[1], ValueType.I32)
+      _expectEach(args, 0, _bytesI32)
     },
     BytesRead => {
       _arity(args, 2);
       _expect(dst, _formatType(imm));
-      _expect(args[0], ValueType.Bytes);
-      _expect(args[1], ValueType.I32)
+      _expectEach(args, 0, _bytesI32)
     },
     _ => {
       _arity(args, 3);
-      _expect(args[0], ValueType.Bytes);
-      _expect(args[1], ValueType.I32);
+      _expectEach(args, 0, _bytesI32);
       _expect(args[2], _formatType(imm))
     },
   }
 };
 
 let _instruction = fn(instruction: Instruction) {
-  let dst = dstOf(instruction);
-  let args = argsOf(instruction);
-  let imm = immOf(instruction);
+  let dst = instruction.dst;
+  let args = instruction.args;
+  let imm = instruction.imm;
   let i = 0;
 
   while (i < args.len()) {
@@ -167,34 +250,34 @@ let _instruction = fn(instruction: Instruction) {
     i++;
   }
 
-  match (opOf(instruction)) {
-    ArraySet, ArrayResize, BytesSet, BytesBlit, BytesFreeze, BitsWrite, BytesWrite, StructSet, ObjectSet, ObjectClear, SpillPush, GlobalSet, NullCheck => { if (dst >= 0) { _fail("store defines a register"); } null },
+  match (instruction.op) {
+    ArraySet, ArrayResize, BytesSet, BytesBlit, BytesFreeze, BitsWrite, BytesWrite, StructSet,
+    ObjectSet, ObjectClear, SpillPush, GlobalSet, NullCheck => {
+      if (dst >= 0) { _fail("store defines a register"); }
+      null
+    },
     _ => {
       _type(dst);
       null
     },
   };
 
-  match (opOf(instruction)) {
+  match (instruction.op) {
     ConstBool => {
-      _arity(args, 0);
-      _expect(dst, ValueType.Bool);
-      if ((imm != 0) && (imm != 1)) { _fail("bool constant out of range"); } null
+      _defines(dst, _bool, args, _noTypes);
+      if ((imm != 0) && (imm != 1)) { _fail("bool constant out of range"); }
+      null
     },
-    ConstI32 => {
-      _arity(args, 0);
-      _expect(dst, ValueType.I32)
-    },
+    ConstI32 => _defines(dst, _i32, args, _noTypes),
     ConstI64 => {
-      _arity(args, 0);
-      _expect(dst, ValueType.I64);
-      if (_inProgram && ((imm < 0) || (imm >= _wideCount))) { _fail("i64 constant out of range"); } null
+      _defines(dst, _i64, args, _noTypes);
+      _pooled(imm, _wideCount, "i64 constant")
     },
     ConstFloat => {
       _arity(args, 0);
 
       match (_type(dst)) {
-        F64 => { if (_inProgram && ((imm < 0) || (imm >= _floatCount))) { _fail("f64 constant out of range"); } null },
+        F64 => _pooled(imm, _floatCount, "f64 constant"),
         F32, F16 => null,
         _ => {
           _fail("float constant of a type that is no float");
@@ -203,91 +286,92 @@ let _instruction = fn(instruction: Instruction) {
       }
     },
     ConstBytes => {
-      _arity(args, 0);
-      _expect(dst, ValueType.Bytes);
-      if (_inProgram && ((imm < 0) || (imm >= _poolSize))) { _fail("bytes constant out of range"); } null
+      _defines(dst, _bytes, args, _noTypes);
+      _pooled(imm, _poolSize, "bytes constant")
+    },
+    ConstAtom => {
+      _defines(dst, _atom, args, _noTypes);
+      _pooled(imm, _atomCount, "atom constant")
     },
     ConstNull => {
       _arity(args, 0);
-      if (!canBeNull(_type(dst))) { _fail("null constant of a type without null"); } null
+      if (!canBeNull(_type(dst))) { _fail("null constant of a type without null"); }
+      null
     },
     ConstFunction => {
       match (_type(dst)) {
-        Function(_, _) => null, _ => {
+        Function(_, _) => null,
+        _ => {
           _fail("function constant destination is not function typed");
           null
-        }
+        },
       };
-      i = 0;
-
-      while (i < args.len()) {
-        _expect(args[i], ValueType.Dynamic);
-        i++;
-      }
+      _expectAll(args, _dynamic);
 
       if (_inProgram) {
         let callee = _index(imm);
-        if (!valueTypeEqual(_type(dst), _signatures[callee])) { _fail("function constant signature mismatch"); }
+
+        if (!valueTypeEqual(_type(dst), _signatures[callee])) {
+          _fail("function constant signature mismatch");
+        }
         if (args.len() != _captureCounts[callee]) { _fail("closure capture count mismatch"); }
       }
       null
     },
     Move => {
       _arity(args, 1);
-      if (!valueTypeEqual(_type(dst), _type(args[0]))) { _fail("move type mismatch"); } null
+      if (!valueTypeEqual(_type(dst), _type(args[0]))) { _fail("move type mismatch"); }
+      null
     },
+
     Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor, DivU, RemU => {
       _arity(args, 2);
-      let numeric = match (opOf(instruction)) { Add, Sub, Mul => _isArithmetic(_type(dst), true), Div => _isArithmetic(_type(dst), false), _ => _isNumeric(_type(dst)) };
+      let ty = _type(dst);
+
+      let numeric = match (instruction.op) {
+        Add, Sub, Mul => _isArithmetic(ty, true),
+        Div => _isArithmetic(ty, false),
+        _ => _isNumeric(ty),
+      };
       if (!numeric) { _fail("arithmetic on a type that does not support it"); }
-      _expect(args[0], _type(dst));
-      _expect(args[1], _type(dst))
+      _expect(args[0], ty);
+      _expect(args[1], ty)
     },
     Neg => {
       _arity(args, 1);
-      if (!_isArithmetic(_type(dst), false)) { _fail("negation of a type that does not support it"); }
+
+      if (!_isArithmetic(_type(dst), false)) {
+        _fail("negation of a type that does not support it");
+      }
       _expect(args[0], _type(dst))
     },
-    AddImm, SubImm, MulImm => {
-      _arity(args, 1);
-      _expect(dst, ValueType.I32);
-      _expect(args[0], ValueType.I32)
-    },
-    EqImm, LtImm => {
-      _arity(args, 1);
-      _expect(dst, ValueType.Bool);
-      _expect(args[0], ValueType.I32)
-    },
-    Not => {
-      _arity(args, 1);
-      _expect(dst, ValueType.Bool);
-      _expect(args[0], ValueType.Bool)
-    },
+    AddImm, SubImm, MulImm => _defines(dst, _i32, args, _ofI32),
+    EqImm, LtImm => _defines(dst, _bool, args, _ofI32),
+    Not => _defines(dst, _bool, args, _ofBool),
     Eq, Lt, LtU => {
       _arity(args, 2);
-      _expect(dst, ValueType.Bool);
+      _expect(dst, _bool);
       let ty = _type(args[0]);
-      let compared = match (opOf(instruction)) { Eq when (comparesByIdentity(ty)) => true, LtU => _isNumeric(ty), _ => _isArithmetic(ty, false) };
+
+      let compared = match (instruction.op) {
+        Eq when (comparesByIdentity(ty)) => true,
+        LtU => _isNumeric(ty),
+        _ => _isArithmetic(ty, false),
+      };
       if (!compared) { _fail("comparison of a type that does not support it"); }
       _expect(args[1], ty)
     },
-    Sext, Zext => {
-      _arity(args, 1);
-      _expect(dst, ValueType.I64);
-      _expect(args[0], ValueType.I32)
-    },
-    Trunc => {
-      _arity(args, 1);
-      _expect(dst, ValueType.I32);
-      _expect(args[0], ValueType.I64)
-    },
+    Sext, Zext => _defines(dst, _i64, args, _ofI32),
+    Trunc => _defines(dst, _i32, args, _ofI64),
     Convert => {
       _arity(args, 1);
-      if (!_converts(_type(args[0]), _type(dst))) { _fail("conversion the VM lacks"); } null
+      if (!_converts(_type(args[0]), _type(dst))) { _fail("conversion the VM lacks"); }
+      null
     },
+
     Box => {
       _arity(args, 1);
-      _expect(dst, ValueType.Dynamic)
+      _expect(dst, _dynamic)
     },
     Unbox => {
       _arity(args, 1);
@@ -296,60 +380,63 @@ let _instruction = fn(instruction: Instruction) {
         Dynamic => {
           _fail("unbox to Dynamic");
           null
-        }, _ => null
+        },
+        _ => null,
       };
-      _expect(args[0], ValueType.Dynamic)
+      _expect(args[0], _dynamic)
     },
-    KindOf => {
-      _arity(args, 1);
-      _expect(dst, ValueType.I32);
-      _expect(args[0], ValueType.Dynamic)
-    },
+    KindOf => _defines(dst, _i32, args, _ofDynamic),
     IsEnum => {
-      _arity(args, 1);
-      _expect(dst, ValueType.Bool);
-      _expect(args[0], ValueType.Dynamic);
-      if (_inProgram && ((imm < 0) || (imm >= _enums.len()))) { _fail("enum test of an unknown enum"); }
+      _defines(dst, _bool, args, _ofDynamic);
+
+      if (_inProgram && ((imm < 0) || (imm >= _enums.len()))) {
+        _fail("enum test of an unknown enum");
+      }
       null
     },
     IsNull => {
       _arity(args, 1);
-      _expect(dst, ValueType.Bool);
-      if (!canBeNull(_type(args[0]))) { _fail("null test of a type without null"); } null
+      _expect(dst, _bool);
+      if (!canBeNull(_type(args[0]))) { _fail("null test of a type without null"); }
+      null
     },
     NullCheck => {
       _arity(args, 1);
-      if (!canBeNull(_type(args[0]))) { _fail("null check of a type without null"); } null
+      if (!canBeNull(_type(args[0]))) { _fail("null check of a type without null"); }
+      null
     },
+
     ArrayNew => {
       _arity(args, 1);
 
       match (_type(dst)) {
-        ArrayOf(_) => null, _ => {
+        ArrayOf(_) => null,
+        _ => {
           _fail("array.new defines a non-array");
           null
-        }
+        },
       };
-      _expect(args[0], ValueType.I32)
+      _expect(args[0], _i32)
     },
     ArrayLen => {
       _arity(args, 1);
-      _expect(dst, ValueType.I32);
+      _expect(dst, _i32);
 
       match (_type(args[0])) {
-        ArrayOf(_) => null, _ => {
+        ArrayOf(_) => null,
+        _ => {
           _fail("array.len of a non-array");
           null
-        }
+        },
       }
     },
     ArrayGet, ArraySet => {
-      let get = match (opOf(instruction)) { ArrayGet => true, _ => false };
+      let get = match (instruction.op) { ArrayGet => true, _ => false };
       _arity(args, get ? 2 : 3);
 
       match (_type(args[0])) {
         ArrayOf(element) => {
-          _expect(args[1], ValueType.I32);
+          _expect(args[1], _i32);
           _expect(get ? dst : args[2], element)
         },
         _ => {
@@ -362,134 +449,84 @@ let _instruction = fn(instruction: Instruction) {
       _arity(args, 2);
 
       match (_type(args[0])) {
-        ArrayOf(_) => null, _ => {
+        ArrayOf(_) => null,
+        _ => {
           _fail("array.resize of a non-array");
           null
-        }
+        },
       };
-      _expect(args[1], ValueType.I32)
+      _expect(args[1], _i32)
     },
     ArrayConcat => {
       _arity(args, 2);
 
       match (_type(dst)) {
-        ArrayOf(_) => {
-          _expect(args[0], _type(dst));
-          _expect(args[1], _type(dst))
-        }, _ => {
+        ArrayOf(_) => _expectEach(args, 0, [_type(dst), _type(dst)]),
+        _ => {
           _fail("array.concat defines a non-array");
           null
-        }
+        },
       }
     },
+
     ListNil => {
       _arity(args, 0);
 
       match (_type(dst)) {
-        ListOf(_) => null, _ => {
+        ListOf(_) => null,
+        _ => {
           _fail("list.nil defines a non-list");
           null
-        }
+        },
       }
     },
     ListCons => {
       _arity(args, 2);
 
       match (_type(dst)) {
-        ListOf(element) => {
-          _expect(args[0], element);
-          _expect(args[1], _type(dst))
-        }, _ => {
+        ListOf(element) => _expectEach(args, 0, [element, _type(dst)]),
+        _ => {
           _fail("list.cons defines a non-list");
           null
-        }
+        },
       }
     },
     ListHead, ListTail, ListIsNil => {
       _arity(args, 1);
 
       match (_type(args[0])) {
-        ListOf(element) => match (opOf(instruction)) { ListHead => _expect(dst, element), ListTail => _expect(dst, _type(args[0])), _ => _expect(dst, ValueType.Bool) },
+        ListOf(element) => match (instruction.op) {
+          ListHead => _expect(dst, element),
+          ListTail => _expect(dst, _type(args[0])),
+          _ => _expect(dst, _bool),
+        },
         _ => {
           _fail("list access of a non-list");
           null
         },
       }
     },
-    BytesNew => {
-      _arity(args, 1);
-      _expect(dst, ValueType.Bytes);
-      _expect(args[0], ValueType.I32)
-    },
-    BytesSet => {
-      _arity(args, 3);
-      _expect(args[0], ValueType.Bytes);
-      _expect(args[1], ValueType.I32);
-      _expect(args[2], ValueType.I32)
-    },
-    BytesBlit => {
-      _arity(args, 3);
-      _expect(args[0], ValueType.Bytes);
-      _expect(args[1], ValueType.Bytes);
-      _expect(args[2], ValueType.I32)
-    },
-    BytesFreeze => {
-      _arity(args, 1);
-      _expect(args[0], ValueType.Bytes)
-    },
+
+    BytesNew => _defines(dst, _bytes, args, _ofI32),
+    BytesSet => _operands(args, _bytesI32I32),
+    BytesBlit => _operands(args, _bytesBytesI32),
+    BytesFreeze => _operands(args, _ofBytes),
     BitsRead, BitsWrite, BytesRead, BytesWrite => _bitsOrBytes(instruction),
-    BytesGet => {
-      _arity(args, 2);
-      _expect(dst, ValueType.I32);
-      _expect(args[0], ValueType.Bytes);
-      _expect(args[1], ValueType.I32)
-    },
-    BytesLen => {
-      _arity(args, 1);
-      _expect(dst, ValueType.I32);
-      _expect(args[0], ValueType.Bytes)
-    },
-    BytesSlice => {
-      _arity(args, 3);
-      _expect(dst, ValueType.Bytes);
-      _expect(args[0], ValueType.Bytes);
-      _expect(args[1], ValueType.I32);
-      _expect(args[2], ValueType.I32)
-    },
-    BytesConcat => {
-      _arity(args, 2);
-      _expect(dst, ValueType.Bytes);
-      _expect(args[0], ValueType.Bytes);
-      _expect(args[1], ValueType.Bytes)
-    },
+    BytesGet => _defines(dst, _i32, args, _bytesI32),
+    BytesLen => _defines(dst, _i32, args, _ofBytes),
+    BytesSlice => _defines(dst, _bytes, args, _bytesI32I32),
+    BytesConcat => _defines(dst, _bytes, args, _bytesBytes),
     BytesConcatMany => {
       if (args.len() > 255) { _fail("bytes.concat_many of more than 255 parts"); }
-      _expect(dst, ValueType.Bytes);
-      let i = 0;
-
-      while (i < args.len()) {
-        _expect(args[i], ValueType.Bytes);
-        i++;
-      } null },
-    BytesEq => {
-      _arity(args, 2);
-      _expect(dst, ValueType.Bool);
-      _expect(args[0], ValueType.Bytes);
-      _expect(args[1], ValueType.Bytes)
+      _expect(dst, _bytes);
+      _expectAll(args, _bytes)
     },
+    BytesEq => _defines(dst, _bool, args, _bytesBytes),
+
     TupleNew => {
       if (_legalized) { _fail("tuple construction after legalization"); }
       let fields = _structFields(_type(dst), "tuple construction");
-
-      if (fields != null) {
-        _arity(args, fields.len() as I32);
-        let j = 0;
-
-        while (j < fields.len()) {
-          _expect(args[j], fields[j]);
-          j++;
-        }
-      }
+      if (fields != null) { _operands(args, fields); }
       null
     },
     StructNew => {
@@ -498,7 +535,7 @@ let _instruction = fn(instruction: Instruction) {
       null
     },
     TupleGet, StructSet => {
-      let get = match (opOf(instruction)) { TupleGet => true, _ => false };
+      let get = match (instruction.op) { TupleGet => true, _ => false };
       _arity(args, get ? 1 : 2);
       let fields = _structFields(_type(args[0]), "tuple access");
 
@@ -510,16 +547,7 @@ let _instruction = fn(instruction: Instruction) {
     },
     EnumNew => match (_type(dst)) {
       Nominal(id) => {
-        if (_inProgram) {
-          let fields = _fields(id, imm);
-          _arity(args, fields.len() as I32);
-          let j = 0;
-
-          while (j < fields.len()) {
-            _expect(args[j], fields[j]);
-            j++;
-          }
-        }
+        if (_inProgram) { _operands(args, _fields(id, imm)); }
         null
       },
       _ => {
@@ -529,71 +557,70 @@ let _instruction = fn(instruction: Instruction) {
     },
     EnumTag => {
       _arity(args, 1);
-      _expect(dst, ValueType.I32);
+      _expect(dst, _i32);
 
       match (_type(args[0])) {
-        Nominal(_) => null, _ => {
+        Nominal(_) => null,
+        _ => {
           _fail("enum tag source is not nominal");
           null
-        }
+        },
       }
     },
     EnumGet => {
       _arity(args, _legalized ? 2 : 1);
-      if (_legalized) { _expect(args[1], ValueType.I32); }
+      if (_legalized) { _expect(args[1], _i32); }
 
       match (_type(args[0])) {
-        Nominal(id) => { if (_inProgram && !_hasField(id, imm, _type(dst))) { _fail("enum payload type mismatch"); } null },
+        Nominal(id) => {
+          if (_inProgram && !_hasField(id, imm, _type(dst))) {
+            _fail("enum payload type mismatch");
+          }
+          null
+        },
         _ => {
           _fail("enum payload source is not nominal");
           null
         },
       }
     },
-    ObjectNew => {
-      _arity(args, 0);
-      _expect(dst, ValueType.Object)
-    },
+
+    ObjectNew => _defines(dst, _object, args, _noTypes),
     ObjectGet, ObjectSet, ObjectHas => {
       let keyed = imm < 0;
-      let set = match (opOf(instruction)) { ObjectSet => true, _ => false };
+      let set = match (instruction.op) { ObjectSet => true, _ => false };
       _arity(args, (keyed ? 2 : 1) + (set ? 1 : 0));
-      _expect(args[0], ValueType.Object);
-      if (keyed) { _expect(args[1], ValueType.Atom); } else if (_inProgram && (imm >= _atomCount)) { _fail("object key out of range"); }
-      match (opOf(instruction)) { ObjectHas => _expect(dst, ValueType.Bool), _ => null }
+      _expect(args[0], _object);
+
+      if (keyed) {
+        _expect(args[1], _atom);
+      } else if (_inProgram && (imm >= _atomCount)) {
+        _fail("object key out of range");
+      }
+      match (instruction.op) { ObjectHas => _expect(dst, _bool), _ => null }
     },
-    ObjectRemove => {
-      _arity(args, 2);
-      _expect(dst, ValueType.Bool);
-      _expect(args[0], ValueType.Object);
-      _expect(args[1], ValueType.Atom)
-    },
-    ObjectClear => {
-      _arity(args, 1);
-      _expect(args[0], ValueType.Object)
-    },
-    ObjectCopy => {
-      _arity(args, 1);
-      _expect(dst, ValueType.Object);
-      _expect(args[0], ValueType.Object)
-    },
-    ObjectKeys => {
-      _arity(args, 1);
-      _expect(dst, ValueType.ArrayOf(ValueType.Atom));
-      _expect(args[0], ValueType.Object)
-    },
+    ObjectRemove => _defines(dst, _bool, args, _objectAtom),
+    ObjectClear => _operands(args, _ofObject),
+    ObjectCopy => _defines(dst, _object, args, _ofObject),
+    ObjectKeys => _defines(dst, ValueType.ArrayOf(_atom), args, _ofObject),
+
     Call => {
       if (_inProgram) {
         let callee = _index(imm);
         if (_captureCounts[callee] != 0) { _fail("direct call of a function that captures"); }
-        match (_signatures[callee]) { Function(params, result) => _call(params, result, dst, args, 0), _ => null };
+
+        match (_signatures[callee]) {
+          Function(params, result) => _call(params, result, dst, args, 0),
+          _ => null,
+        };
       }
       null
     },
     CallNative => {
       if (_inProgram) {
         if ((imm < 0) || (imm >= _natives.len())) { _fail("native out of range"); }
-        match (_natives[imm]) { Native(_, _, params, result) => _call(params, result, dst, args, 0) };
+        let native = _natives[imm];
+        _call(native.params, native.result, dst, args, 0);
       }
       null
     },
@@ -608,59 +635,58 @@ let _instruction = fn(instruction: Instruction) {
         },
       }
     },
+
     SpillPush => {
       _arity(args, 1);
-      if ((imm < 0) || (imm >= 65536)) { _fail("spill slot out of range"); } null
-    },
-    GlobalGet => {
-      _arity(args, 0);
-      if (_inProgram) { _expect(dst, _global(imm)); } null
-    },
-    GlobalSet => {
-      _arity(args, 1);
-      if (_inProgram) { _expect(args[0], _global(imm)); } null
-    },
-    ConstAtom => {
-      _arity(args, 0);
-      _expect(dst, ValueType.Atom);
-      if (_inProgram && ((imm < 0) || (imm >= _atomCount))) { _fail("atom constant out of range"); } null
+      _spillSlot(imm)
     },
     SpillPop => {
       _arity(args, 0);
-      if ((imm < 0) || (imm >= 65536)) { _fail("spill slot out of range"); } null
+      _spillSlot(imm)
+    },
+    GlobalGet => {
+      _arity(args, 0);
+      if (_inProgram) { _expect(dst, _global(imm)); }
+      null
+    },
+    GlobalSet => {
+      _arity(args, 1);
+      if (_inProgram) { _expect(args[0], _global(imm)); }
+      null
     },
   };
   null
 };
 
-let _blockHandler = fn(block: BasicBlock): ?ThrowHandler { match (block) { Block(_, _, _, handler) => handler } };
-
 let _sameHandler = fn(a: ?ThrowHandler, b: ?ThrowHandler): Bool {
   if ((a == null) || (b == null)) { return (a == null) && (b == null); }
-  (handlerTarget(a) == handlerTarget(b)) && (handlerPayload(a) == handlerPayload(b))
+  (a.target == b.target) && (a.payload == b.payload)
 };
 
 let _regions = fn(blocks: Array<BasicBlock>, indexes: Array<I32>, entry: I32) {
-  if (_blockHandler(blocks[indexes[entry]]) != null) { _fail("entry block inside a try region"); }
+  if (blocks[indexes[entry]].handler != null) { _fail("entry block inside a try region"); }
+
   let i = 0;
 
   while (i < blocks.len()) {
-    let handler = _blockHandler(blocks[i]);
+    let handler = blocks[i].handler;
 
-    match (blocks[i]) { Block(_, _, terminator, _) => match (terminator) {
+    match (blocks[i].terminator) {
       Branch(_, thenTarget, elseTarget) => {
-        let same = _sameHandler(handler, _blockHandler(blocks[indexes[thenTarget]])) && _sameHandler(handler, _blockHandler(blocks[indexes[elseTarget]]));
+        let same = _sameHandler(handler, blocks[indexes[thenTarget]].handler)
+          && _sameHandler(handler, blocks[indexes[elseTarget]].handler);
         if (!same) { _fail("branch into another try region"); }
         null
       },
       _ => null,
-    } };
+    };
+
     let depth = 0;
 
     while (handler != null) {
       depth++;
       if (depth > 16) { _fail("try regions nested more than 16 deep"); }
-      handler = _blockHandler(blocks[indexes[handlerTarget(handler)]]);
+      handler = blocks[indexes[handler.target]].handler;
     }
     i++;
   }
@@ -672,7 +698,7 @@ let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   let i = 0;
 
   while (i < blocks.len()) {
-    let id = blockId(blocks[i]);
+    let id = blocks[i].id;
     if (id < 0) { _fail("negative block id"); }
     while (indexes.len() <= id) { indexes.push(-1); }
     if (indexes[id] >= 0) { _fail("duplicate block id"); }
@@ -683,7 +709,7 @@ let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
 };
 
 let _target = fn(indexes: Array<I32>, id: I32): I32 {
-  if ((id < 0) || (id >= indexes.len()) || (indexes[id] < 0)) { _fail("unknown block: " + Std.string(id)); }
+  if ((id < 0) || (id >= indexes.len()) || (indexes[id] < 0)) { _fail(`unknown block: ${id}`); }
   indexes[id]
 };
 
@@ -694,20 +720,31 @@ let _terminator = fn(result: ValueType, indexes: Array<I32>, terminator: Termina
       null
     },
     Branch(condition, thenTarget, elseTarget) => {
-      _expect(condition, ValueType.Bool);
+      _expect(condition, _bool);
       _target(indexes, thenTarget);
       _target(indexes, elseTarget);
       null
     },
     ReturnValue(value) => _expect(value, result),
-    Throw(value, _) => { if (_legalized) { _expect(value, ValueType.Dynamic); } else { _type(value); } null },
+    Throw(value, _) => {
+      if (_legalized) { _expect(value, _dynamic); } else { _type(value); }
+      null
+    },
   }
 };
 
-let _slot = fn(instruction: Instruction): I32 { match (opOf(instruction)) { SpillPush, SpillPop => immOf(instruction), _ => -1 } };
+let _slot = fn(instruction: Instruction): I32 {
+  match (instruction.op) { SpillPush, SpillPop => instruction.imm, _ => -1 }
+};
 
-let _definitions = fn(params: Array<I32>, blocks: Array<BasicBlock>, indexes: Array<I32>, entry: I32, slots: I32) {
-  let registers = _registers.len() as I32;
+let _definitions = fn(
+  params: Array<I32>,
+  blocks: Array<BasicBlock>,
+  indexes: Array<I32>,
+  entry: I32,
+  slots: I32
+) {
+  let registers = _registers.len();
   let (liveIn, _) = liveness(blocks, registers, slots, false);
   let live = liveIn[_target(indexes, entry)];
   let first = -1;
@@ -719,152 +756,173 @@ let _definitions = fn(params: Array<I32>, blocks: Array<BasicBlock>, indexes: Ar
     if ((p == params.len()) && ((first < 0) || (live[i] < first))) { first = live[i]; }
     i++;
   }
-  if (first >= registers) { _fail("spill slot read before written: " + Std.string(first - registers)); }
-  if (first >= 0) { _fail("register used before definition: " + Std.string(first)); }
+  if (first >= registers) { _fail(`spill slot read before written: ${first - registers}`); }
+  if (first >= 0) { _fail(`register used before definition: ${first}`); }
   null
 };
 
 let _function = fn(function: Function) {
-  match (function) { Function(_, params, captures, registers, result, blocks, entry) => {
-    _registers = registers;
-    if (blocks.len() == 0) { _fail("function has no blocks"); }
-    if ((captures < 0) || (captures > params.len())) { _fail("capture count out of range"); }
-    let indexes = _blockIndexes(blocks);
-    _target(indexes, entry);
-    let i = 0;
+  let params = function.params;
+  let blocks = function.blocks;
+  _registers = function.registers;
+  if (blocks.len() == 0) { _fail("function has no blocks"); }
 
-    while (i < params.len()) {
-      if (i >= argumentCount(function)) { _expect(params[i], ValueType.Dynamic); } else { _type(params[i]); }
-      if (indexOf(params, params[i]) < i) { _fail("duplicate parameter register"); }
-      i++;
+  if ((function.captures < 0) || (function.captures > params.len())) {
+    _fail("capture count out of range");
+  }
+  let indexes = _blockIndexes(blocks);
+  _target(indexes, function.entry);
+
+  let i = 0;
+
+  while (i < params.len()) {
+    if (i >= argumentCount(function)) {
+      _expect(params[i], _dynamic);
+    } else {
+      _type(params[i]);
     }
-    let slotTypes = Array.new<ValueType>(0);
-    let seen = Array.new<Bool>(0);
-    i = 0;
+    if (params.indexOf(params[i]) < i) { _fail("duplicate parameter register"); }
+    i++;
+  }
 
-    while (i < blocks.len()) {
-      match (blocks[i]) { Block(id, instructions, terminator, handler) => {
-        if (handler != null) {
-          _target(indexes, handlerTarget(handler));
-          _expect(handlerPayload(handler), ValueType.Dynamic);
-          if (handlerTarget(handler) == id) { _fail("block handles its own throw"); }
-        }
-        let j = 0;
+  let slotTypes = Array.new<ValueType>(0);
+  let seen = Array.new<Bool>(0);
+  i = 0;
 
-        while (j < instructions.len()) {
-          _instruction(instructions[j]);
-          let slot = _slot(instructions[j]);
+  while (i < blocks.len()) {
+    let block = blocks[i];
+    let handler = block.handler;
 
-          if (slot >= 0) {
-            let ty = match (opOf(instructions[j])) { SpillPush => _type(argsOf(instructions[j])[0]), _ => _type(dstOf(instructions[j])) };
-
-            while (slotTypes.len() <= slot) {
-              slotTypes.push(ty);
-              seen.push(false);
-            }
-
-            if (!seen[slot]) {
-              slotTypes[slot] = ty;
-              seen[slot] = true;
-            }
-            if (!valueTypeEqual(slotTypes[slot], ty)) { _fail("spill slot type mismatch"); }
-          }
-          j++;
-        }
-        _terminator(result, indexes, terminator);
-      } };
-      i++;
+    if (handler != null) {
+      _target(indexes, handler.target);
+      _expect(handler.payload, _dynamic);
+      if (handler.target == block.id) { _fail("block handles its own throw"); }
     }
-    _regions(blocks, indexes, entry);
-    _definitions(params, blocks, indexes, entry, slotTypes.len() as I32);
-  } };
+
+    let instructions = block.instructions;
+    let j = 0;
+
+    while (j < instructions.len()) {
+      let insn = instructions[j];
+      _instruction(insn);
+      let slot = _slot(insn);
+
+      if (slot >= 0) {
+        let ty = match (insn.op) { SpillPush => _type(insn.args[0]), _ => _type(insn.dst) };
+
+        while (slotTypes.len() <= slot) {
+          slotTypes.push(ty);
+          seen.push(false);
+        }
+
+        if (!seen[slot]) {
+          slotTypes[slot] = ty;
+          seen[slot] = true;
+        }
+        if (!valueTypeEqual(slotTypes[slot], ty)) { _fail("spill slot type mismatch"); }
+      }
+      j++;
+    }
+    _terminator(function.result, indexes, block.terminator);
+    i++;
+  }
+
+  _regions(blocks, indexes, function.entry);
+  _definitions(params, blocks, indexes, function.entry, slotTypes.len());
   true
 };
 
-export let verifyFunction: (Function) -> Bool = fn(function) {
+export let verifyFunction = fn(function: Function): Bool {
   _inProgram = false;
   _legalized = false;
   _function(function)
 };
 
 let _signatureOf = fn(function: Function): ValueType {
-  match (function) { Function(_, params, captures, registers, result, _, _) => {
-    let types = Array.new<ValueType>(0);
-    let i = 0;
+  let types = Array.new<ValueType>(0);
+  let i = 0;
 
-    while (i < argumentCount(function)) {
-      types.push(registers[params[i]]);
-      i++;
-    }
-    ValueType.Function(types, result)
-  } }
+  while (i < argumentCount(function)) {
+    types.push(function.registers[function.params[i]]);
+    i++;
+  }
+  ValueType.Function(types, function.result)
 };
 
 let _program = fn(program: Program, legalized: Bool, first: I32): Bool {
   _legalized = legalized;
+  let functions = program.functions;
+  _functionIndexes = Array.new<I32>(0);
+  _signatures = Array.new<ValueType>(0);
+  _captureCounts = Array.new<I32>(0);
+  let i = 0;
 
-  match (program) { Program(functions, pool, wides, floats, atoms, enums, globals, natives) => {
-    _functionIndexes = Array.new<I32>(0);
-    _signatures = Array.new<ValueType>(0);
-    _captureCounts = Array.new<I32>(0);
-    let i = 0;
+  while (i < functions.len()) {
+    let function = functions[i];
+    let id = function.id;
+    if (id < 0) { _fail("negative function id"); }
+    while (_functionIndexes.len() <= id) { _functionIndexes.push(-1); }
+    if (_functionIndexes[id] >= 0) { _fail("duplicate function id"); }
+    _functionIndexes[id] = i;
 
-    while (i < functions.len()) {
-      match (functions[i]) { Function(id, params, captures, registers, _, _, _) => {
-        if (id < 0) { _fail("negative function id"); }
-        while (_functionIndexes.len() <= id) { _functionIndexes.push(-1); }
-        if (_functionIndexes[id] >= 0) { _fail("duplicate function id"); }
-        _functionIndexes[id] = i as I32;
-        let j = 0;
+    let params = function.params;
+    let j = 0;
 
-        while (j < params.len()) {
-          if ((params[j] < 0) || (params[j] >= registers.len())) { _fail("parameter register out of range"); }
-          j++;
-        }
-        _signatures.push(_signatureOf(functions[i]));
-        _captureCounts.push(captures);
-      } };
-      i++;
+    while (j < params.len()) {
+      if ((params[j] < 0) || (params[j] >= function.registers.len())) {
+        _fail("parameter register out of range");
+      }
+      j++;
     }
-    _poolSize = pool.len() as I32;
-    _wideCount = wides.len() as I32;
-    _floatCount = floats.len() as I32;
-    _atomCount = atoms.len() as I32;
-    _enums = enums;
-    _globals = globals;
-    _natives = natives;
-    _inProgram = true;
-    i = first;
+    _signatures.push(_signatureOf(function));
+    _captureCounts.push(function.captures);
+    i++;
+  }
 
-    while (i < functions.len()) {
-      _function(functions[i]);
-      i++;
-    }
-    _inProgram = false;
-  } };
+  _poolSize = program.bytes.len();
+  _wideCount = program.wides.len();
+  _floatCount = program.floats.len();
+  _atomCount = program.atoms.len();
+  _enums = program.enums;
+  _globals = program.globals;
+  _natives = program.natives;
+  _inProgram = true;
+  i = first;
+
+  while (i < functions.len()) {
+    _function(functions[i]);
+    i++;
+  }
+  _inProgram = false;
   true
 };
 
-export let verifyProgram: (Program) -> Bool = fn(program) { _program(program, false, 0) };
-export let verifyLegalizedProgram: (Program) -> Bool = fn(program) { _program(program, true, 0) };
-export let verifyProgramFrom: (Program, Bool, I32) -> Bool = fn(program, legalized, first) { _program(program, legalized, first) };
+export let verifyProgram = fn(program: Program): Bool { _program(program, false, 0) };
+export let verifyLegalizedProgram = fn(program: Program): Bool { _program(program, true, 0) };
 
-export let verifyAllocatedProgram: (Program) -> Bool = fn(program) {
-  match (program) { Program(functions, _, _, _, _, _, _, natives) => {
-    let i = 0;
+export let verifyProgramFrom = fn(program: Program, legalized: Bool, first: I32): Bool {
+  _program(program, legalized, first)
+};
 
-    while (i < functions.len()) {
-      match (functions[i]) { Function(id, _, _, registers, _, _, _) => {
-        if (registers.len() > 256) { _fail("function @" + Std.string(id) + " uses " + Std.string(registers.len()) + " registers; JLO allows 256"); }
-      } };
-      i++;
-    }
-    i = 0;
+export let verifyAllocatedProgram = fn(program: Program): Bool {
+  let functions = program.functions;
+  let i = 0;
 
-    while (i < natives.len()) {
-      match (natives[i]) { Native(_, name, params, _) => { if (params.len() > 8) { _fail("native " + name + " takes more than 8 arguments"); } null } };
-      i++;
-    }
-  } };
+  while (i < functions.len()) {
+    let function = functions[i];
+    let count = function.registers.len();
+    if (count > 256) { _fail(`function @${function.id} uses ${count} registers; JLO allows 256`); }
+    i++;
+  }
+
+  let natives = program.natives;
+  i = 0;
+
+  while (i < natives.len()) {
+    let native = natives[i];
+    if (native.params.len() > 8) { _fail(`native ${native.name} takes more than 8 arguments`); }
+    i++;
+  }
+
   verifyLegalizedProgram(program)
 };

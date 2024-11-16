@@ -1,17 +1,20 @@
 package frontend;
 
 import type { Expr, Pattern, Program, QuoteBody, Stmt, Type } from frontend.syntax.Ast;
-import { BinaryOp, Expr, IntSize, FloatSize, Package, Pattern, Program, Stmt, Type, UnaryOp, integerValue, wideIntegerValue } from frontend.syntax.Ast;
+import {
+  BinaryOp, Expr, FloatSize, IntSize, Pattern, Stmt, Type, UnaryOp, integerValue, wideIntegerValue
+} from frontend.syntax.Ast;
 import type { Located } from frontend.syntax.Rewrite;
 import { Located, rewrite } from frontend.syntax.Rewrite;
 import type { SourceSpan, Syntax } from frontend.syntax.Source;
-import { SourceSpan, Syntax, relocated, sourceLocation, spanStart, syntaxChildren, syntaxPatterns, syntaxSpan } from frontend.syntax.Source;
+import { relocated, sourceLocation, syntaxSpan } from frontend.syntax.Source;
 import { isName, lexFailure, lexFile } from frontend.syntax.Lexer;
-import { parseFailureSpan, parseProgram, programSyntax, takeSyntaxErrors } from frontend.syntax.Parser;
-import { appendFrom, indexOf } from support.Arrays;
+import {
+  parseFailureSpan, parseProgram, programSyntax, takeSyntaxErrors
+} from frontend.syntax.Parser;
 import { E0901, E1000, E1001, E1002, E1003, coded, uncoded } from support.Codes;
 import { internalError } from support.Internal;
-import { concatAll, hexByte, joined, startsWith } from support.Text;
+import { concatAll, joined } from support.Text;
 
 load { image_run } from vm;
 
@@ -21,9 +24,15 @@ let _MAX_DEPTH = 32;
 let _MAX_NODES = 4096;
 let _FUEL: I64 = 100000000;
 
-enum Definition {
-  Definition(path: Bytes, name: Bytes, exported: Bool, index: I32, params: Array<Bytes>, quotes: Array<Tuple<QuoteBody, Syntax>>, scope: Array<Tuple<Bytes, I32>>);
-}
+typedef Definition = {
+  let path: Bytes;
+  let name: Bytes;
+  let exported: Bool;
+  let index: I32;
+  let params: Array<Bytes>;
+  let quotes: Array<Tuple<QuoteBody, Syntax>>;
+  let scope: Array<Tuple<Bytes, I32>>;
+};
 
 enum Fragment {
   Argument(index: I32);
@@ -47,9 +56,15 @@ let _depth = 0;
 let _macro = -1;
 let _arguments = Array.new<Expr>(0);
 let _placed = Array.new<Bool>(0);
-let _call = Syntax.Node("", 0, 0, [], []);
+let _call: Syntax = {
+  path: "",
+  start: 0,
+  end: 0,
+  children: [],
+  patterns: []
+};
 
-export let macroFailureSpan: () -> ?SourceSpan = fn() { _failure };
+export let macroFailureSpan = fn(): ?SourceSpan { _failure };
 
 export let beginMacros = fn(std: Bytes) {
   _definitions = Array.new<Definition>(0);
@@ -61,8 +76,17 @@ export let beginMacros = fn(std: Bytes) {
   null
 };
 
-let _leaf = fn(at: Syntax): Syntax { match (at) { Node(path, start, end, _, _) => Syntax.Node(path, start, end, [], []) } };
-let _node = fn(at: Syntax, children: Array<Syntax>): Syntax { match (at) { Node(path, start, end, _, _) => Syntax.Node(path, start, end, children, []) } };
+let _leaf = fn(at: Syntax): Syntax {
+  { ...at, children: [], patterns: [] }
+};
+
+let _node = fn(at: Syntax, children: Array<Syntax>): Syntax {
+  { ...at, children, patterns: [] }
+};
+
+let _placedAtCall = fn(syntax: Syntax): Syntax {
+  relocated(syntax, _call.path, _call.start, _call.end)
+};
 
 let _at = fn(syntax: Syntax, message: Bytes): Bytes {
   _failure = syntaxSpan(syntax);
@@ -70,13 +94,15 @@ let _at = fn(syntax: Syntax, message: Bytes): Bytes {
 };
 
 let _failed = fn(code: Bytes, message: Bytes): Bytes {
-  let name = match (_definitions[_macro]) { Definition(_, name, _, _, _, _, _) => name };
-  _at(_call, coded(code, "macro " + name + " " + message))
+  let name = _definitions[_macro].name;
+  _at(_call, coded(code, `macro ${name} ${message}`))
 };
 
-let _body: (Located, Array<Tuple<QuoteBody, Syntax>>) -> Located = fn(body, _quotes) { body };
-
-let _quotedCall = fn(index: I32, holes: Array<Tuple<Expr, Syntax>>, syntax: Syntax): Tuple<Expr, Syntax> {
+let _quotedCall = fn(
+  index: I32,
+  holes: Array<Tuple<Expr, Syntax>>,
+  syntax: Syntax
+): Tuple<Expr, Syntax> {
   let values = Array.new<Expr>(0);
   let valueSyntax = Array.new<Syntax>(0);
   let i = 0;
@@ -87,17 +113,20 @@ let _quotedCall = fn(index: I32, holes: Array<Tuple<Expr, Syntax>>, syntax: Synt
     valueSyntax.push(_node(at, [at]));
     i++;
   }
+
   let callee = Expr.Member(Expr.Variable("Macro"), "quoted");
-  (Expr.Call(callee, [], [Expr.Integer(Std.string(index), IntSize.Infer), Expr.Array(values)]),
-    _node(syntax, [_node(syntax, [_leaf(syntax)]), _leaf(syntax), _node(syntax, valueSyntax)]))
+  let args = [Expr.Integer(Std.string(index), IntSize.Infer), Expr.Array(values)];
+  let calleeAt = _node(syntax, [_leaf(syntax)]);
+  let at = _node(syntax, [calleeAt, _leaf(syntax), _node(syntax, valueSyntax)]);
+  (Expr.Call(callee, [], args), at)
 };
 
 let _quoted = fn(body: QuoteBody, syntax: Syntax): Located {
   match (body) {
-    Expression(value) => Located.Expression(value, syntaxChildren(syntax)[0]),
-    Statement(value) => Located.Statements([value], [syntaxChildren(syntax)[0]]),
-    Statements(values) => Located.Statements(values, syntaxChildren(syntax)),
-    Pattern(value) => Located.Pattern(value, syntaxPatterns(syntax)[0]),
+    Expression(value) => Located.Expression(value, syntax.children[0]),
+    Statement(value) => Located.Statements([value], [syntax.children[0]]),
+    Statements(values) => Located.Statements(values, syntax.children),
+    Pattern(value) => Located.Pattern(value, syntax.patterns[0]),
     Type(value) => Located.Type(value),
   }
 };
@@ -107,11 +136,11 @@ let _holes = fn(body: QuoteBody, syntax: Syntax): Array<Tuple<Expr, Syntax>> {
   rewrite(_quoted(body, syntax), fn(node: Located): ?Located {
     match (node) {
       Expression(Unquote(value), at) => {
-        holes.push((value, syntaxChildren(at)[0]));
+        holes.push((value, at.children[0]));
         node
       },
       Pattern(Unquote(value), at) => {
-        holes.push((value, syntaxChildren(at)[0]));
+        holes.push((value, at.children[0]));
         node
       },
       Type(Unquote(name)) => {
@@ -120,7 +149,6 @@ let _holes = fn(body: QuoteBody, syntax: Syntax): Array<Tuple<Expr, Syntax>> {
       },
       Expression(Quote(_, _), at) => {
         throw _at(at, coded(E1001, "a quote cannot hold another quote"));
-        null
       },
       _ => null,
     }
@@ -128,46 +156,53 @@ let _holes = fn(body: QuoteBody, syntax: Syntax): Array<Tuple<Expr, Syntax>> {
   holes
 };
 
-_body = fn(body, quotes) {
+let _body = fn(body: Located, quotes: Array<Tuple<QuoteBody, Syntax>>): Located {
   rewrite(body, fn(node: Located): ?Located {
     match (node) {
       Statements(values, syntax) => match (values[0]) {
         ImportModule(_, _, _), ImportFrom(_, _, _) => {
           throw _at(syntax[0], coded(E1000, "a macro body cannot import or load"));
-          null
         },
         Macro(_, _, _, _) => {
           throw _at(syntax[0], coded(E1000, "a macro body cannot define a macro"));
-          null
         },
         Expression(Quote(_, _)) => {
-          let emit = Expr.Member(Expr.Variable("Macro"), "emit");
+          let quoted = match (values[0]) { Expression(quoted) => quoted, _ => Expr.Null };
 
-          match (_body(Located.Expression(match (values[0]) { Expression(quoted) => quoted, _ => Expr.Null }, syntaxChildren(syntax[0])[0]), quotes)) {
-            Expression(call, at) => Located.Statements([Stmt.Expression(Expr.Call(emit, [], [call]))], [_node(syntax[0], [_node(at, [_node(at, [_leaf(at)]), at])])]),
+          match (_body(Located.Expression(quoted, syntax[0].children[0]), quotes)) {
+            Expression(call, at) => {
+              let emit = Expr.Call(Expr.Member(Expr.Variable("Macro"), "emit"), [], [call]);
+              let emitAt = _node(at, [_node(at, [_leaf(at)]), at]);
+              Located.Statements([Stmt.Expression(emit)], [_node(syntax[0], [emitAt])])
+            },
             _ => null,
           }
         },
         _ => null,
       },
       Expression(Quote(_, quoted), syntax) => {
-        let index = quotes.len() as I32;
+        let index = quotes.len();
         quotes.push((quoted, syntax));
+
         let holes = _holes(quoted, syntax);
         let made = Array.new<Tuple<Expr, Syntax>>(0);
         let i = 0;
 
         while (i < holes.len()) {
           let (value, at) = holes[i];
-          match (_body(Located.Expression(value, at), quotes)) { Expression(out, outAt) => made.push((out, outAt)), _ => null };
+
+          match (_body(Located.Expression(value, at), quotes)) {
+            Expression(out, outAt) => made.push((out, outAt)),
+            _ => null,
+          };
           i++;
         }
+
         let (call, at) = _quotedCall(index, made, syntax);
         Located.Expression(call, at)
       },
       Expression(Unquote(_), syntax) => {
         throw _at(syntax, coded(E1001, "unquote is only allowed inside a quote"));
-        null
       },
       _ => null,
     }
@@ -179,7 +214,10 @@ let _macros = fn(statements: Array<Stmt>, syntax: Array<Syntax>): Array<Tuple<St
   let i = 0;
 
   while (i < statements.len()) {
-    match (statements[i]) { Macro(_, _, _, _) => out.push((statements[i], syntax[i])), _ => null };
+    match (statements[i]) {
+      Macro(_, _, _, _) => out.push((statements[i], syntax[i])),
+      _ => null,
+    };
     i++;
   }
   out
@@ -188,34 +226,48 @@ let _macros = fn(statements: Array<Stmt>, syntax: Array<Syntax>): Array<Tuple<St
 let _ARGUMENTS = "__arguments";
 let _BODY = "__body";
 
-export let expanderSource = fn(statements: Array<Stmt>, syntax: Array<Syntax>): Tuple<Bytes, Array<Located>> {
+export let expanderSource = fn(
+  statements: Array<Stmt>,
+  syntax: Array<Syntax>
+): Tuple<Bytes, Array<Located>> {
   let macros = _macros(statements, syntax);
   let functions = Array.new<Bytes>(0);
   let bodies = Array.new<Located>(0);
   let i = 0;
 
   while (i < macros.len()) {
-    match (macros[i]) { (Macro(_, _, params, body), at) => {
-      bodies.push(_body(Located.Statements(body, syntaxChildren(at)), Array.new<Tuple<QuoteBody, Syntax>>(0)));
-      let bindings = Array.new<Bytes>(0);
-      let p = 0;
+    match (macros[i]) {
+      (Macro(_, _, params, body), at) => {
+        let quotes = Array.new<Tuple<QuoteBody, Syntax>>(0);
+        bodies.push(_body(Located.Statements(body, at.children), quotes));
 
-      while (p < params.len()) {
-        bindings.push("let " + params[p] + " = " + _ARGUMENTS + "[" + Std.string(p) + "]; ");
-        p++;
-      }
-      functions.push("fn(" + _ARGUMENTS + ": Array<Fragment>): Null { " + concatAll(bindings) + _BODY + "; }");
-    }, _ => null };
+        let bindings = Array.new<Bytes>(0);
+        let p = 0;
+
+        while (p < params.len()) {
+          bindings.push(`let ${params[p]} = ${_ARGUMENTS}[${p}]; `);
+          p++;
+        }
+        let params = `${_ARGUMENTS}: Array<Fragment>`;
+        functions.push(`fn(${params}): Null { ${concatAll(bindings)}${_BODY}; }`);
+      },
+      _ => null,
+    };
     i++;
   }
-  ("import std.macro.Macro as Macro;\nimport type { Fragment } from std.macro.Macro;\nMacro.run([\n  " + joined(functions, ",\n  ") + "\n])\n", bodies)
+
+  let source = "import std.macro.Macro as Macro;\n"
+    + "import type { Fragment } from std.macro.Macro;\n"
+    + `Macro.run([\n  ${joined(functions, ",\n  ")}\n])\n`;
+  (source, bodies)
 };
 
 export let spliceBodies = fn(node: Located, bodies: Array<Located>): Located {
   let next = 0;
   let out = rewrite(node, fn(inner: Located): ?Located {
     match (inner) {
-      Statements([Expression(Variable(name))], _) when ((name == _BODY) && (next < bodies.len())) => {
+      Statements([Expression(Variable(name))], _)
+        when ((name == _BODY) && (next < bodies.len())) => {
         next++;
         bodies[next - 1]
       },
@@ -230,9 +282,11 @@ let _RAN = 0;
 let _OUT_OF_FUEL = 2;
 
 let _image = fn(path: Bytes): Bytes {
-  let known = indexOf(_imagePaths, path);
+  let known = _imagePaths.indexOf(path);
   if (known >= 0) { return _images[known]; }
-  let args = path + "\0--expanders\0" + (_std == "" ? "" : "--std\0" + _std + "\0");
+
+  let std = _std == "" ? "" : `--std\0${_std}\0`;
+  let args = `${path}\0--expanders\0${std}`;
   let out = _imageRun("", args, 0);
   let made = Bytes.slice(out, 1, out.len() - 1);
 
@@ -240,19 +294,26 @@ let _image = fn(path: Bytes): Bytes {
     _failure = null;
     throw made;
   }
+
   _imagePaths.push(path);
   _images.push(made);
   made
 };
 
 let _define = fn(path: Bytes, index: I32, statement: Stmt, syntax: Syntax) {
-  match (statement) { Macro(exported, name, params, body) => {
-    if (_visibleIndex(name) >= 0) { throw _at(syntax, coded(E1000, "macro " + name + " is already defined")); }
-    let quotes = Array.new<Tuple<QuoteBody, Syntax>>(0);
-    _body(Located.Statements(body, syntaxChildren(syntax)), quotes);
-    _definitions.push(Definition.Definition(path, name, exported, index, params, quotes, _visible));
-    _visible.push((name, (_definitions.len() - 1) as I32));
-  }, _ => null };
+  match (statement) {
+    Macro(exported, name, params, body) => {
+      if (_visibleIndex(name) >= 0) {
+        throw _at(syntax, coded(E1000, `macro ${name} is already defined`));
+      }
+
+      let quotes = Array.new<Tuple<QuoteBody, Syntax>>(0);
+      _body(Located.Statements(body, syntax.children), quotes);
+      _definitions.push({ path, name, exported, index, params, quotes, scope: _visible });
+      _visible.push((name, _definitions.len() - 1));
+    },
+    _ => null,
+  };
   null
 };
 
@@ -265,47 +326,46 @@ let _scopeIndex = fn(scope: Array<Tuple<Bytes, I32>>, name: Bytes): I32 {
   }
   -1
 };
+
 let _visibleIndex = fn(name: Bytes): I32 { _scopeIndex(_visible, name) };
 
 let _importMacro = fn(local: Bytes, path: Bytes, module: Bytes, name: Bytes, at: SourceSpan) {
   _failure = at;
-  if (_visibleIndex(local) >= 0) { throw coded(E1000, "macro " + local + " is already defined"); }
+  if (_visibleIndex(local) >= 0) { throw coded(E1000, `macro ${local} is already defined`); }
+
   let i = 0;
 
   while (i < _definitions.len()) {
-    match (_definitions[i]) { Definition(file, defined, exported, _, _, _, _) when ((file == path) && (defined == name)) => {
-      if (!exported) { throw coded(E1000, "macro " + name + " is not exported by " + module); }
-      _visible.push((local, i as I32));
+    let definition = _definitions[i];
+
+    if ((definition.path == path) && (definition.name == name)) {
+      if (!definition.exported) {
+        throw coded(E1000, `macro ${name} is not exported by ${module}`);
+      }
+      _visible.push((local, i));
       _failure = null;
       return null;
-    }, _ => null };
+    }
     i++;
   }
-  throw coded(E1000, module + " defines no macro " + name);
-  null
+  throw coded(E1000, `${module} defines no macro ${name}`);
 };
 
 let _form = fn(value: Expr): Bytes {
-  let (negative, literal) = match (value) { Unary(Negate, inner) => (true, inner), _ => (false, value) };
+  let (negative, literal) = match (value) {
+    Unary(Negate, inner) => (true, inner),
+    _ => (false, value),
+  };
   let sign = negative ? "-" : "";
 
   try {
     match (literal) {
-      Integer(digits, Infer), Integer(digits, I32) => "i" + Std.string(integerValue(digits, negative)),
-      Integer(digits, I64) => "l" + Std.string(wideIntegerValue(digits, negative)),
-      Float(text, Infer), Float(text, F64) => "f" + sign + text,
+      Integer(digits, Infer), Integer(digits, I32) => `i${integerValue(digits, negative)}`,
+      Integer(digits, I64) => `l${wideIntegerValue(digits, negative)}`,
+      Float(text, Infer), Float(text, F64) => `f${sign}${text}`,
       Bool(flag) when (!negative) => flag ? "b1" : "b0",
       Null when (!negative) => "n",
-      Bytes(text) when (!negative) => {
-        let hex = Array.new<Bytes>(0);
-        let i = 0;
-
-        while (i < text.len()) {
-          hex.push(hexByte(Bytes.get_u8(text, i)));
-          i++;
-        }
-        "s" + concatAll(hex)
-      },
+      Bytes(text) when (!negative) => `s${text.toHex()}`,
       _ => "",
     }
   } catch { "" }
@@ -325,6 +385,7 @@ let _upTo = fn(end: I32): Bytes {
   _read = _find(_output, end, start) + 1;
   Bytes.slice(_output, start, _read - 1 - start)
 };
+
 let _number = fn(): I32 { integerValue(_upTo(";".code), false) };
 
 let _text = fn(): Bytes {
@@ -332,8 +393,8 @@ let _text = fn(): Bytes {
   _read += length;
   Bytes.slice(_output, _read - length, length)
 };
-let _fragment: () -> Fragment = fn() { Fragment.Argument(0) };
-_fragment = fn() {
+
+let _fragment = fn(): Fragment {
   let tag = Bytes.get_u8(_output, _read);
   _read++;
 
@@ -367,7 +428,11 @@ _fragment = fn() {
       Fragment.Argument(0)
     },
   };
-  match (fragment) { Name(_), Literal(_, _) => _made(1), _ => null };
+
+  match (fragment) {
+    Name(_), Literal(_, _) => _made(1),
+    _ => null,
+  };
   fragment
 };
 
@@ -377,7 +442,9 @@ let _literalExpression = fn(kind: I32, text: Bytes): Tuple<Expr, Syntax> {
   let at = _leaf(_call);
 
   let quotient = fn(dividend: Bytes): Tuple<Expr, Syntax> {
-    (Expr.Binary(BinaryOp.Divide, Expr.Float(dividend, FloatSize.Infer), Expr.Float("0.0", FloatSize.Infer)), _node(_call, [at, at]))
+    let zero = Expr.Float("0.0", FloatSize.Infer);
+    let divided = Expr.Binary(BinaryOp.Divide, Expr.Float(dividend, FloatSize.Infer), zero);
+    (divided, _node(_call, [at, at]))
   };
 
   let (value, valueAt) = match (kind) {
@@ -392,7 +459,8 @@ let _literalExpression = fn(kind: I32, text: Bytes): Tuple<Expr, Syntax> {
   };
 
   match (kind) {
-    "i".code, "l".code, "f".code when (negative) => (Expr.Unary(UnaryOp.Negate, value), _node(_call, [valueAt])),
+    "i".code, "l".code, "f".code when (negative) =>
+      (Expr.Unary(UnaryOp.Negate, value), _node(_call, [valueAt])),
     _ => (value, valueAt),
   }
 };
@@ -404,114 +472,124 @@ let _parseFailure = fn(message: Bytes, source: Bytes, shift: I32): Bytes {
   let why = lexed;
 
   if (lexedAt < 0) {
-    at = span == null ? -1 : spanStart(span);
+    at = span == null ? -1 : span.start;
     why = Bytes.slice(message, 0, _find(message, "\n".code, 0));
-    if (startsWith(why, "ParseError: ")) { why = Bytes.slice(why, 12, why.len() - 12); }
+    if (why.startsWith("ParseError: ")) { why = Bytes.slice(why, 12, why.len() - 12); }
   }
   why = uncoded(why);
   if (at < 0) { return why; }
+
   let offset = at - shift;
-  let (line, column) = sourceLocation(source, offset < 0 ? 0 : (offset > source.len() ? source.len() : offset));
-  "at " + Std.string(line) + ":" + Std.string(column) + ", " + why
+  let clamped = offset < 0 ? 0 : (offset > source.len() ? source.len() : offset);
+  let (line, column) = sourceLocation(source, clamped);
+  `at ${line}:${column}, ${why}`
 };
 
 let _parsed = fn(source: Bytes, kind: Bytes): Located {
-  let prefix = (kind == "auto" ? "quote" : "quote." + kind) + " { ";
+  let prefix = kind == "auto" ? "quote { " : `quote.${kind} { `;
 
-  let program = try { parseProgram(lexFile(prefix + source + "\n}", "Macro.parse")) } catch (e) {
+  let program = try {
+    parseProgram(lexFile(`${prefix}${source}\n}`, "Macro.parse"))
+  } catch (e) {
     takeSyntaxErrors();
-    throw _failed(E1003, "emitted text that does not parse: " + _parseFailure(Std.string(e), source, prefix.len()));
-    Program.Program(Package.None, [], null)
+    let why = _parseFailure(Std.string(e), source, prefix.len());
+    throw _failed(E1003, `emitted text that does not parse: ${why}`);
   };
-  let syntax = match (_call) { Node(path, start, end, _, _) => syntaxChildren(relocated(programSyntax(program), path, start, end)) };
+
+  let syntax = _placedAtCall(programSyntax(program)).children;
 
   match (program) {
-    Program(_, [], Quote(_, body)) => {
+    { statements: [], tail: Quote(_, body) } => {
       _made(_count(syntax[0]));
-      _marked(_quoted(body, syntax[0]), match (_definitions[_macro]) { Definition(_, _, _, _, _, _, scope) => scope })
+      _marked(_quoted(body, syntax[0]), _definitions[_macro].scope)
     },
-    _ => {
-      throw _failed(E1003, "emitted text that does not parse as " + kind);
-      Located.Type(Type.Named(""))
-    },
+    _ => { throw _failed(E1003, `emitted text that does not parse as ${kind}`); },
   }
 };
 
 let _argument = fn(index: I32): Located {
-  if ((index < 0) || (index >= _arguments.len())) { throw _failed(E1003, "emitted an argument it was not given"); }
-  if (_placed[index]) { _made(_count(syntaxChildren(_call)[index + 1])); }
+  if ((index < 0) || (index >= _arguments.len())) {
+    throw _failed(E1003, "emitted an argument it was not given");
+  }
+
+  let at = _call.children[index + 1];
+  if (_placed[index]) { _made(_count(at)); }
   _placed[index] = true;
 
   match (_arguments[index]) {
     Quote(_, body) => {
-      let quoted = _quoted(body, syntaxChildren(_call)[index + 1]);
+      let quoted = _quoted(body, at);
+      let cannot = "a quote passed to a macro cannot unquote";
       rewrite(quoted, fn(node: Located): ?Located {
         match (node) {
-          Expression(Unquote(_), at), Pattern(Unquote(_), at) => {
-            throw _at(at, coded(E1002, "a quote passed to a macro cannot unquote"));
-            null
+          Expression(Unquote(_), unquoted), Pattern(Unquote(_), unquoted) => {
+            throw _at(unquoted, coded(E1002, cannot));
           },
-          Type(Unquote(_)) => {
-            throw _at(syntaxChildren(_call)[index + 1], coded(E1002, "a quote passed to a macro cannot unquote"));
-            null
-          },
+          Type(Unquote(_)) => { throw _at(at, coded(E1002, cannot)); },
           _ => null,
         }
       });
       quoted
     },
-    value => Located.Expression(value, syntaxChildren(_call)[index + 1]),
+    value => Located.Expression(value, at),
   }
 };
 
 let _made = fn(n: I32) {
   _nodes += n;
-  if (_nodes > _MAX_NODES) { throw _failed(E0901, "made more than " + Std.string(_MAX_NODES) + " syntax nodes in this module"); }
+
+  if (_nodes > _MAX_NODES) {
+    throw _failed(E0901, `made more than ${_MAX_NODES} syntax nodes in this module`);
+  }
   null
 };
 
 let _MARK = "\0";
 
-let _marked: (Located, Array<Tuple<Bytes, I32>>) -> Located = fn(node, _scope) { node };
-_marked = fn(node, scope) {
+let _marked = fn(node: Located, scope: Array<Tuple<Bytes, I32>>): Located {
   rewrite(node, fn(inner: Located): ?Located {
     match (inner) {
       Expression(Unquote(_), _), Pattern(Unquote(_), _) => inner,
       Expression(Call(Variable(name), [], args), at) when (_scopeIndex(scope, name) >= 0) => {
-        let children = syntaxChildren(at);
+        let children = at.children;
         let marked = Array.new<Expr>(0);
         let i = 0;
 
         while (i < args.len()) {
-          match (_marked(Located.Expression(args[i], children[i + 1]), scope)) { Expression(value, _) => marked.push(value), _ => null };
+          match (_marked(Located.Expression(args[i], children[i + 1]), scope)) {
+            Expression(value, _) => marked.push(value),
+            _ => null,
+          };
           i++;
         }
-        Located.Expression(Expr.Call(Expr.Variable(_MARK + Std.string(_scopeIndex(scope, name))), [], marked), at)
+        let callee = Expr.Variable(_MARK + Std.string(_scopeIndex(scope, name)));
+        Located.Expression(Expr.Call(callee, [], marked), at)
       },
       _ => null,
     }
   })
 };
 
-let _expressionOf: (Fragment) -> Tuple<Expr, Syntax> = fn(_f) { (Expr.Null, _call) };
-let _statementsOf: (Fragment) -> Tuple<Array<Stmt>, Array<Syntax>> = fn(_f) { ([], []) };
-let _patternOf: (Fragment) -> Tuple<Pattern, Syntax> = fn(_f) { (Pattern.Null, _call) };
-let _typeOf: (Fragment) -> Type = fn(_f) { Type.Named("") };
-
 let _instantiate = fn(index: I32, holes: Array<Fragment>): Located {
-  let (quotes, scope) = match (_definitions[_macro]) { Definition(_, _, _, _, _, quotes, scope) => (quotes, scope) };
-  if ((index < 0) || (index >= quotes.len())) { throw _failed(E1003, "emitted a quote it does not have"); }
+  let definition = _definitions[_macro];
+  let quotes = definition.quotes;
+
+  if ((index < 0) || (index >= quotes.len())) {
+    throw _failed(E1003, "emitted a quote it does not have");
+  }
+
   let (body, defined) = quotes[index];
-  let next = 0;
-  let syntax = match (_call) { Node(path, start, end, _, _) => relocated(defined, path, start, end) };
+  let syntax = _placedAtCall(defined);
   _made(_count(defined));
+
+  let next = 0;
 
   let take = fn(): Fragment {
     if (next >= holes.len()) { throw _failed(E1003, "emitted a quote with too few unquotes"); }
     next++;
     holes[next - 1]
   };
-  let out = rewrite(_marked(_quoted(body, syntax), scope), fn(node: Located): ?Located {
+  let out = rewrite(_marked(_quoted(body, syntax), definition.scope), fn(node: Located): ?Located {
     match (node) {
       Statements([Expression(Unquote(_))], _) => {
         let (values, at) = _statementsOf(take());
@@ -547,85 +625,74 @@ let _located = fn(fragment: Fragment): Located {
 };
 
 let _misplaced = fn(made: Located, needed: Bytes): Bytes {
-  let kind = match (made) { Expression(_, _) => "an expression", Statements(_, _) => "statements", Pattern(_, _) => "a pattern", Type(_) => "a type" };
-  _failed(E1003, "emitted " + kind + " where " + needed + " is needed")
+  let kind = match (made) {
+    Expression(_, _) => "an expression",
+    Statements(_, _) => "statements",
+    Pattern(_, _) => "a pattern",
+    Type(_) => "a type",
+  };
+  _failed(E1003, `emitted ${kind} where ${needed} is needed`)
 };
 
-_expressionOf = fn(fragment) {
+let _expressionOf = fn(fragment: Fragment): Tuple<Expr, Syntax> {
   match (_located(fragment)) {
     Expression(value, at) => (value, at),
-    Statements([Expression(value)], [at]) => (value, syntaxChildren(at)[0]),
-    made => {
-      throw _misplaced(made, "an expression");
-      (Expr.Null, _call)
-    },
+    Statements([Expression(value)], [at]) => (value, at.children[0]),
+    made => { throw _misplaced(made, "an expression"); },
   }
 };
 
-_statementsOf = fn(fragment) {
+let _statementsOf = fn(fragment: Fragment): Tuple<Array<Stmt>, Array<Syntax>> {
   match (fragment) {
-    Name(_) => {
-      throw _failed(E1003, "emitted a name where a statement is needed");
-      ([], [])
-    },
+    Name(_) => { throw _failed(E1003, "emitted a name where a statement is needed"); },
     _ => match (_located(fragment)) {
       Expression(value, at) => ([Stmt.Expression(value)], [_node(at, [at])]),
       Statements(values, at) => (values, at),
-      made => {
-        throw _misplaced(made, "a statement");
-        ([], [])
-      },
+      made => { throw _misplaced(made, "a statement"); },
     },
   }
 };
 
-_patternOf = fn(fragment) {
+let _patternOf = fn(fragment: Fragment): Tuple<Pattern, Syntax> {
   match (_located(fragment)) {
     Pattern(value, at) => (value, at),
     Expression(Variable(name), at) => (Pattern.BindPattern(name), at),
     Expression(Integer(digits, size), at) => (Pattern.Integer(digits, size), at),
-    Expression(Unary(Negate, Integer(digits, size)), at) => (Pattern.Integer("-" + digits, size), at),
+    Expression(Unary(Negate, Integer(digits, size)), at) =>
+      (Pattern.Integer(`-${digits}`, size), at),
     Expression(Float(text, size), at) => (Pattern.Float(text, size), at),
-    Expression(Unary(Negate, Float(text, size)), at) => (Pattern.Float("-" + text, size), at),
+    Expression(Unary(Negate, Float(text, size)), at) => (Pattern.Float(`-${text}`, size), at),
     Expression(Bool(flag), at) => (Pattern.Bool(flag), at),
     Expression(Bytes(text), at) => (Pattern.Bytes(text), at),
     Expression(Null, at) => (Pattern.Null, at),
-    made => {
-      throw _misplaced(made, "a pattern");
-      (Pattern.Null, _call)
-    },
+    made => { throw _misplaced(made, "a pattern"); },
   }
 };
 
-_typeOf = fn(fragment) {
+let _typeOf = fn(fragment: Fragment): Type {
   match (_located(fragment)) {
     Type(value) => value,
     Expression(Variable(name), _) => Type.Named(name),
-    made => {
-      throw _misplaced(made, "a type");
-      Type.Named("")
-    },
+    made => { throw _misplaced(made, "a type"); },
   }
 };
 
-let _count: (Syntax) -> I32 = fn(_syntax) { 0 };
-_count = fn(syntax) {
-  match (syntax) { Node(_, _, _, children, patterns) => {
-    let n = 1;
-    let i = 0;
+let _count = fn(syntax: Syntax): I32 {
+  let { children, patterns } = syntax;
+  let n = 1;
+  let i = 0;
 
-    while (i < children.len()) {
-      n += _count(children[i]);
-      i++;
-    }
-    i = 0;
+  while (i < children.len()) {
+    n += _count(children[i]);
+    i++;
+  }
+  i = 0;
 
-    while (i < patterns.len()) {
-      n += _count(patterns[i]);
-      i++;
-    }
-    n
-  } }
+  while (i < patterns.len()) {
+    n += _count(patterns[i]);
+    i++;
+  }
+  n
 };
 
 let _run = fn(index: I32, call: Expr, syntax: Syntax): Array<Fragment> {
@@ -635,23 +702,32 @@ let _run = fn(index: I32, call: Expr, syntax: Syntax): Array<Fragment> {
   _call = syntax;
   _placed = Array.new<Bool>(0);
   while (_placed.len() < args.len()) { _placed.push(false); }
-  let (path, macroIndex, params) = match (_definitions[index]) { Definition(path, _, _, macroIndex, params, _, _) => (path, macroIndex, params) };
+
+  let definition = _definitions[index];
+  let params = definition.params;
 
   if (args.len() != params.len()) {
-    throw _failed(E1002, "takes " + Std.string(params.len()) + (params.len() == 1 ? " argument" : " arguments") + ", not " + Std.string(args.len()));
+    let noun = (params.len() == 1) ? "argument" : "arguments";
+    throw _failed(E1002, `takes ${params.len()} ${noun}, not ${args.len()}`);
   }
-  let entries = [Std.string(macroIndex), Std.string(_names)];
+
+  let entries = [Std.string(definition.index), Std.string(_names)];
   let i = 0;
 
   while (i < args.len()) {
     entries.push(_form(args[i]));
     i++;
   }
-  let image = _image(path);
-  let out = _imageRun(image, joined(entries, "\0") + "\0", _FUEL);
+  let image = _image(definition.path);
+  let out = _imageRun(image, `${joined(entries, "\0")}\0`, _FUEL);
+
   let tag = Bytes.get_u8(out, 0);
-  if (tag == _OUT_OF_FUEL) { throw _failed(E1003, "runs too long; it took more than " + Std.string(_FUEL) + " steps"); }
-  if (tag != _RAN) { throw _failed(E1003, "failed: " + Bytes.slice(out, 1, out.len() - 1)); }
+
+  if (tag == _OUT_OF_FUEL) {
+    throw _failed(E1003, `runs too long; it took more than ${_FUEL} steps`);
+  }
+  if (tag != _RAN) { throw _failed(E1003, `failed: ${Bytes.slice(out, 1, out.len() - 1)}`); }
+
   _output = out;
   _read = 1;
   _names = _number();
@@ -660,10 +736,10 @@ let _run = fn(index: I32, call: Expr, syntax: Syntax): Array<Fragment> {
   fragments
 };
 
-let _expandIn: (Located) -> Located = fn(node) { node };
-
 let _deeper = fn(node: Located): Located {
-  if (_depth >= _MAX_DEPTH) { throw _failed(E0901, "expands " + Std.string(_MAX_DEPTH) + " levels deep; does it call itself without end?"); }
+  if (_depth >= _MAX_DEPTH) {
+    throw _failed(E0901, `expands ${_MAX_DEPTH} levels deep; does it call itself without end?`);
+  }
   _depth++;
   let out = _expandIn(node);
   _depth--;
@@ -672,14 +748,15 @@ let _deeper = fn(node: Located): Located {
 
 let _calledMacro = fn(call: Expr): I32 {
   match (call) {
-    Call(Variable(name), [], _) when (startsWith(name, _MARK)) => integerValue(Bytes.slice(name, 1, name.len() - 1), false),
+    Call(Variable(name), [], _) when (name.startsWith(_MARK)) =>
+      integerValue(Bytes.slice(name, 1, name.len() - 1), false),
     Call(Variable(name), [], _) => _visibleIndex(name),
     _ => -1,
   }
 };
 
 let _expandStatement = fn(index: I32, call: Expr, syntax: Syntax): Located {
-  let fragments = _run(index, call, syntaxChildren(syntax)[0]);
+  let fragments = _run(index, call, syntax.children[0]);
   let statements = Array.new<Stmt>(0);
   let made = Array.new<Syntax>(0);
   let i = 0;
@@ -692,12 +769,8 @@ let _expandStatement = fn(index: I32, call: Expr, syntax: Syntax): Located {
       match (values[j]) {
         ImportModule(_, _, _), ImportFrom(_, _, _) => {
           throw _failed(E1003, "emitted an import, which a module makes itself");
-          null
         },
-        Macro(_, _, _, _) => {
-          throw _failed(E1003, "emitted a macro definition");
-          null
-        },
+        Macro(_, _, _, _) => { throw _failed(E1003, "emitted a macro definition"); },
         _ => null,
       };
       statements.push(values[j]);
@@ -713,23 +786,25 @@ let _expandExpression = fn(index: I32, call: Expr, syntax: Syntax): Located {
   let fragments = _run(index, call, syntax);
 
   if (fragments.len() != 1) {
-    throw _failed(E1002, "is called where an expression is needed, so it must emit one expression, not " + Std.string(fragments.len()) + " fragments");
+    let needed = "is called where an expression is needed, so it must emit one expression";
+    throw _failed(E1002, `${needed}, not ${fragments.len()} fragments`);
   }
+
   let (value, at) = _expressionOf(fragments[0]);
   _deeper(Located.Expression(value, at))
 };
 
-_expandIn = fn(node) {
+let _expandIn = fn(node: Located): Located {
   rewrite(node, fn(inner: Located): ?Located {
     match (inner) {
       Expression(Quote(_, _), _) => inner,
       Statements([Expression(call)], syntax) => {
         let index = _calledMacro(call);
-        index < 0 ? null : _expandStatement(index, call, syntax[0])
+        (index < 0) ? null : _expandStatement(index, call, syntax[0])
       },
       Expression(call, syntax) => {
         let index = _calledMacro(call);
-        index < 0 ? null : _expandExpression(index, call, syntax)
+        (index < 0) ? null : _expandExpression(index, call, syntax)
       },
       _ => null,
     }
@@ -740,18 +815,28 @@ export let hasMacros = fn(statements: Array<Stmt>): Bool {
   let i = 0;
 
   while (i < statements.len()) {
-    match (statements[i]) { Macro(_, _, _, _), ImportFrom(MacroOnly, _, _) => { return true; }, _ => null };
+    match (statements[i]) {
+      Macro(_, _, _, _), ImportFrom(MacroOnly, _, _) => { return true; },
+      _ => null,
+    };
     i++;
   }
   false
 };
 
-export let expandModule = fn(path: Bytes, statements: Array<Stmt>, syntax: Syntax, tail: ?Expr, imported: Array<Tuple<Bytes, Bytes, Bytes, Bytes, SourceSpan>>): Tuple<Array<Stmt>, Syntax, ?Expr, Array<I32>> {
+export let expandModule = fn(
+  path: Bytes,
+  statements: Array<Stmt>,
+  syntax: Syntax,
+  tail: ?Expr,
+  imported: Array<Tuple<Bytes, Bytes, Bytes, Bytes, SourceSpan>>
+): Tuple<Array<Stmt>, Syntax, ?Expr, Array<I32>> {
   _visible = Array.new<Tuple<Bytes, I32>>(0);
   _nodes = 0;
   _depth = 0;
-  let children = syntaxChildren(syntax);
+  let children = syntax.children;
   let macros = _macros(statements, children);
+
   let i = 0;
 
   while (i < imported.len()) {
@@ -765,6 +850,7 @@ export let expandModule = fn(path: Bytes, statements: Array<Stmt>, syntax: Synta
     _define(path, i, macros[i].0, macros[i].1);
     i++;
   }
+
   let out = Array.new<Stmt>(0);
   let outSyntax = Array.new<Syntax>(0);
   let moved = Array.new<I32>(0);
@@ -774,12 +860,12 @@ export let expandModule = fn(path: Bytes, statements: Array<Stmt>, syntax: Synta
     match (statements[i]) {
       Macro(_, _, _, _), ImportFrom(MacroOnly, _, _) => moved.push(-1),
       _ => {
-        moved.push(out.len() as I32);
+        moved.push(out.len());
 
         match (_expandIn(Located.Statements([statements[i]], [children[i]]))) {
           Statements(values, at) => {
-            appendFrom(out, values, 0);
-            appendFrom(outSyntax, at, 0);
+            out.appendFrom(values, 0);
+            outSyntax.appendFrom(at, 0);
             null
           },
           _ => null,
@@ -788,6 +874,7 @@ export let expandModule = fn(path: Bytes, statements: Array<Stmt>, syntax: Synta
     };
     i++;
   }
+
   let expandedTail = tail;
 
   if (tail != null) {
@@ -795,9 +882,10 @@ export let expandModule = fn(path: Bytes, statements: Array<Stmt>, syntax: Synta
       Expression(value, at) => {
         expandedTail = value;
         outSyntax.push(at);
-      }, _ => null
+      },
+      _ => null,
     };
   }
-  let root = match (syntax) { Node(file, start, end, _, _) => Syntax.Node(file, start, end, outSyntax, []) };
+  let root: Syntax = { ...syntax, children: outSyntax, patterns: [] };
   (out, root, expandedTail, moved)
 };

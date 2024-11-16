@@ -8,11 +8,21 @@ import { expressionOf } from frontend.semantics.Derived;
 import { storable } from frontend.semantics.Values;
 import { callField, namedKey, readObject, storeField, writeField } from frontend.semantics.Objects;
 import { scopedType } from frontend.semantics.ModuleScope;
-import { indexOf } from support.Arrays;
 import { E0302, E0402, E0805, coded } from support.Codes;
-import { buildInstances, checkGenericPrototype, checkMethodCall, checkOperand, checkPresent, delegates, enterSyntax, fieldMismatch, findMethod, hasInitField, hideValue, linkedMember, methodValue, objectValue, prototypeGlobal, prototypeField, prototypeNamed, prototypeParent, prototypeValue, receiverMethodType, rejectAt, requireThis, resolveInstanceReads, syntaxChild, widened } from frontend.semantics.TypeCheck;
+import {
+  buildInstances, checkGenericPrototype, checkMethodCall, checkOperand, checkPresent, delegates,
+  enterSyntax, fieldMismatch, findMethod, hasInitField, hideValue, linkedMember, methodValue,
+  objectValue, prototypeGlobal, prototypeField, prototypeNamed, prototypeParent, prototypeValue,
+  receiverMethodType, rejectAt, requireThis, resolveInstanceReads, syntaxChild, widened,
+} from frontend.semantics.TypeCheck;
 
-let _methodCall = fn(holder: I32, receiver: I32, index: I32, name: Bytes, args: Array<AstExpr>): I32 {
+let _methodCall = fn(
+  holder: I32,
+  receiver: I32,
+  index: I32,
+  name: Bytes,
+  args: Array<AstExpr>
+): I32 {
   let ty = receiverMethodType(index, H.typeOf(receiver));
   let self = H.typeArg(ty, 0);
   let statements = Array.new<I32>(0);
@@ -20,78 +30,101 @@ let _methodCall = fn(holder: I32, receiver: I32, index: I32, name: Bytes, args: 
   let source = holder < 0 ? H.local(held, H.typeOf(receiver)) : holder;
   let callee = readObject(objectValue(source), namedKey(name), ty);
   let first = H.local(held, H.typeOf(receiver));
-  if (H.typeOf(receiver) != self) { first = H.node(Op.Convert, self, 0, 0, [first]); }
+  if (H.typeOf(receiver) != self) { first = H.opNode(Op.Convert, self, [first]); }
   let call = checkMethodCall(callee, index, first, args);
   statements.push(call);
   H.node(Op.Block, H.typeOf(call), 0, 1, statements)
 };
 
-export let checkPrototypeCall: (I32, Bytes, Array<AstExpr>) -> I32 = fn(receiver, name, args) {
+export let checkPrototypeCall = fn(receiver: I32, name: Bytes, args: Array<AstExpr>): I32 {
   let found = findMethod(H.typeOf(receiver), name);
   found < 0 ? -1 : _methodCall(-1, receiver, found, name, args)
 };
 
-export let checkSuperCall: (Bytes, Array<AstType>, Array<AstExpr>) -> I32 = fn(name, types, args) {
+export let checkSuperCall = fn(name: Bytes, types: Array<AstType>, args: Array<AstExpr>): I32 {
   let outer = enterSyntax(syntaxChild(0));
   let ty = requireThis("`super`");
   let receiver = checkPresent(AstExpr.This, 0);
   let parent = prototypeParent(ty);
-  if (parent == -2) { throw coded(E0805, H.typeName(ty) + " has no __proto__, so `super` has nothing to call"); }
+
+  if (parent == -2) {
+    throw coded(E0805, H.typeName(ty) + " has no __proto__, so `super` has nothing to call");
+  }
   let holder = readObject(prototypeValue(ty), namedKey("__proto__"), H.TYPE_OBJECT);
   enterSyntax(outer);
-  if (types.len() != 0) { throw coded(E0402, "super." + name + " does not take type arguments"); }
+  if (types.len() != 0) { throw coded(E0402, `super.${name} does not take type arguments`); }
   let found = parent >= 0 ? findMethod(parent, name) : -1;
-  found >= 0 ? _methodCall(holder, receiver, found, name, args) : callField(holder, receiver, name, args)
+
+  if (found >= 0) {
+    _methodCall(holder, receiver, found, name, args)
+  } else {
+    callField(holder, receiver, name, args)
+  }
 };
 
 let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): I32 {
   let statements = Array.new<I32>(0);
-  let object = hideValue(statements, "prototype", H.node(Op.ObjectNew, ty, 0, 0, []));
+  let object = hideValue(statements, "prototype", H.opNode(Op.ObjectNew, ty, []));
   let names = Array.new<Bytes>(0);
   let f = 0;
 
   while (f < fields.len()) {
-    match (fields[f]) { Field(field, value) => {
-      if (indexOf(names, field) >= 0) {
-        enterSyntax(syntaxChild(f));
-        throw coded(E0302, name + " declares " + field + " twice");
-      }
-      names.push(field);
+    let { name: field, value } = fields[f];
 
-      let stored = match (value) {
-        Function(_, _, body, true) => {
-          let (declared, _) = linkedMember(ty, field);
+    if (names.indexOf(field) >= 0) {
+      enterSyntax(syntaxChild(f));
+      throw coded(E0302, `${name} declares ${field} twice`);
+    }
+    names.push(field);
 
-          if (declared >= 0) {
-            enterSyntax(syntaxChild(f));
-            throw coded(E0302, field + " is a method of " + name + " and a field of its typedef");
-          }
-          writeField(H.local(object, ty), field, methodValue(ty, field, f, body))
-        },
-        _ => {
-          let outer = enterSyntax(syntaxChild(f));
-          let declared = prototypeField(ty, field);
-          enterSyntax(outer);
-          let checked = declared < 0 ? -1 : widened(checkOperand(value, f, declared), declared);
-          if ((declared >= 0) && !H.unify(H.typeOf(checked), declared)) { rejectAt(f, fieldMismatch(ty, field, declared, checked)); }
-          declared < 0 ? storeField(H.local(object, ty), field, value, f) : writeField(H.local(object, ty), field, storable(checked))
-        },
-      };
-      statements.push(expressionOf(stored));
-    } };
+    let stored = match (value) {
+      Function(_, _, body, true) => {
+        let (declared, _) = linkedMember(ty, field);
+
+        if (declared >= 0) {
+          enterSyntax(syntaxChild(f));
+          throw coded(E0302, `${field} is a method of ${name} and a field of its typedef`);
+        }
+        writeField(H.local(object, ty), field, methodValue(ty, field, f, body))
+      },
+      _ => {
+        let outer = enterSyntax(syntaxChild(f));
+        let declared = prototypeField(ty, field);
+        enterSyntax(outer);
+        let checked = declared < 0 ? -1 : widened(checkOperand(value, f, declared), declared);
+
+        if ((declared >= 0) && !H.unify(H.typeOf(checked), declared)) {
+          rejectAt(f, fieldMismatch(ty, field, declared, checked));
+        }
+
+        if (declared < 0) {
+          storeField(H.local(object, ty), field, value, f)
+        } else {
+          writeField(H.local(object, ty), field, storable(checked))
+        }
+      },
+    };
+    statements.push(expressionOf(stored));
     f++;
   }
   statements.push(H.local(object, ty));
-  H.node(Op.Declare, 0, 0, 0, [H.node(Op.InitGlobal, ty, prototypeGlobal(ty), 0, [H.node(Op.Block, ty, 0, 1, statements)])])
+  let global = prototypeGlobal(ty);
+  let body = H.node(Op.Block, ty, 0, 1, statements);
+  H.opNode(Op.Declare, 0, [H.node(Op.InitGlobal, ty, global, 0, [body])])
 };
 
-export let checkPrototype: (Bytes, Array<PrototypeField>) -> I32 = fn(name, fields) {
+export let checkPrototype = fn(name: Bytes, fields: Array<PrototypeField>): I32 {
   let ty = scopedType(name);
-  if (delegates(ty, ty)) { throw coded(E0805, name + " delegates to itself through __proto__"); }
-  H.isTemplateEnum(ty) ? checkGenericPrototype(ty, fn() { _prototypeObject(ty, name, fields) }) : _prototypeObject(ty, name, fields)
+  if (delegates(ty, ty)) { throw coded(E0805, `${name} delegates to itself through __proto__`); }
+
+  if (H.isTemplateEnum(ty)) {
+    checkGenericPrototype(ty, fn() { _prototypeObject(ty, name, fields) })
+  } else {
+    _prototypeObject(ty, name, fields)
+  }
 };
 
-export let instantiatePrototypes: () -> Bool = fn() {
+export let instantiatePrototypes = fn(): Bool {
   let resolved = resolveInstanceReads();
   buildInstances(_prototypeObject) || resolved
 };
@@ -112,25 +145,32 @@ let _checkNew = fn(proto: AstExpr, args: Array<AstExpr>): I32 {
   let made = H.isPrototype(ty) ? ty : H.TYPE_OBJECT;
   let statements = Array.new<I32>(0);
   let link = hideValue(statements, "prototype", checked);
-  let object = hideValue(statements, "object", H.node(Op.ObjectNew, made, 0, 0, []));
+  let object = hideValue(statements, "object", H.opNode(Op.ObjectNew, made, []));
   statements.push(expressionOf(writeField(H.local(object, made), "__proto__", H.local(link, ty))));
   let init = H.isPrototype(ty) ? findMethod(ty, "init") : -1;
 
-  if (init >= 0) { statements.push(expressionOf(_methodCall(-1, H.local(object, made), init, "init", args))); } else if (args.len() != 0) {
-    if (hasInitField(ty)) { throw coded(E0805, "the init of " + H.typeName(ty) + " is a field; `new` passes its arguments to an init method, `init(params) { ... }`"); }
-    throw coded(E0805, H.isPrototype(ty) ? H.typeName(ty) + " has no init method, so `new` passes it no arguments" : "`new` passes arguments only to a prototype's init method");
+  if (init >= 0) {
+    statements.push(expressionOf(_methodCall(-1, H.local(object, made), init, "init", args)));
+  } else if (args.len() != 0) {
+    if (hasInitField(ty)) {
+      throw coded(E0805, "the init of " + H.typeName(ty)
+        + " is a field; `new` passes its arguments to an init method, `init(params) { ... }`");
+    }
+    throw coded(E0805, H.isPrototype(ty)
+      ? H.typeName(ty) + " has no init method, so `new` passes it no arguments"
+      : "`new` passes arguments only to a prototype's init method");
   }
   statements.push(H.local(object, made));
   H.node(Op.Block, made, 0, 1, statements)
 };
 
-export let checkPrototypeExpr: (AstExpr) -> I32 = fn(expr) {
+export let checkPrototypeExpr = fn(expr: AstExpr): I32 {
   match (expr) {
     New(proto, args) => _checkNew(proto, args),
     _ => {
       requireThis("`super`");
-      throw coded(E0805, "`super` calls a method of the Object the prototype delegates to, as `super.m(...)`");
-      -1
+      throw coded(E0805,
+        "`super` calls a method of the Object the prototype delegates to, as `super.m(...)`");
     },
   }
 };

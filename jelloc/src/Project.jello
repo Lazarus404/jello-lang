@@ -2,37 +2,46 @@ import { Json, jsonAt, jsonField, parseJson } from support.Json;
 import { sourceDiagnostic } from frontend.syntax.Source;
 import { E0211, E0212, coded } from support.Codes;
 import { exists, readText } from std.io.File;
-import { appendFrom, indexOf } from support.Arrays;
-import { joined, startsWith } from support.Text;
+import { joined } from support.Text;
 
 load { file_real_path } from std;
 
 let _realPath: (Bytes) -> Bytes = file_real_path;
 
-export enum Project {
-  Project(root: Bytes, sources: Array<Bytes>, tests: Array<Bytes>, libraries: Array<Bytes>);
-}
+export typedef Project = {
+  let root: Bytes;
+  let sources: Array<Bytes>;
+  let tests: Array<Bytes>;
+  let libraries: Array<Bytes>;
+};
+
+typedef Dependency = {
+  let name: Bytes;
+  let at: I32;
+  let namedIn: Bytes;
+};
 
 export let inDirectory = fn(dir: Bytes, name: Bytes): Bytes {
   let end = dir.len();
   while ((end > 1) && (Bytes.get_u8(dir, end - 1) == "/".code)) { end--; }
   let trimmed = Bytes.slice(dir, 0, end);
+
   if ((name == ".") || (name == "")) { return trimmed; }
-  if (startsWith(name, "/")) { return name; }
+  if (name.startsWith("/")) { return name; }
   if (trimmed == ".") { return name; }
-  trimmed == "/" ? "/" + name : trimmed + "/" + name
+  trimmed == "/" ? `/${name}` : `${trimmed}/${name}`
 };
 
 export let parentDirectory = fn(dir: Bytes): Bytes {
-  if ((dir == ".") || (dir == "..") || ((dir.len() > 3) && (Bytes.slice(dir, dir.len() - 3, 3) == "/.."))) { return dir + "/.."; }
-  let slash = dir.len() - 1;
-  while ((slash >= 0) && (Bytes.get_u8(dir, slash) != "/".code)) { slash--; }
+  if ((dir == ".") || (dir == "..") || ((dir.len() > 3) && dir.endsWith("/.."))) {
+    return `${dir}/..`;
+  }
+  let slash = dir.lastIndexOf("/");
   slash < 0 ? "." : (slash == 0 ? "/" : Bytes.slice(dir, 0, slash))
 };
 
 export let baseName = fn(path: Bytes): Bytes {
-  let slash = path.len() - 1;
-  while ((slash >= 0) && (Bytes.get_u8(path, slash) != "/".code)) { slash--; }
+  let slash = path.lastIndexOf("/");
   Bytes.slice(path, slash + 1, path.len() - slash - 1)
 };
 
@@ -53,7 +62,6 @@ let _json: ?Json = null;
 
 let _fail = fn(at: I32, code: Bytes, message: Bytes) {
   throw sourceDiagnostic(_path, _text, at, coded(code, message));
-  null
 };
 
 let _read = fn(path: Bytes): Json {
@@ -61,14 +69,13 @@ let _read = fn(path: Bytes): Json {
   _path = path;
   _text = readText(path);
   _json = null;
+
   let (value, message, at) = parseJson(_text);
-  if (value == null) { _fail(at, E0211, "invalid JSON: " + message); }
+  if (value == null) { _fail(at, E0211, `invalid JSON: ${message}`); }
 
   match (value) {
-    Object(_, _, _) => null, _ => {
-      _fail(jsonAt(value), E0211, "a jello.json holds an object");
-      null
-    }
+    Object(_, _, _) => null,
+    _ => _fail(jsonAt(value), E0211, "a jello.json holds an object"),
   };
   _json = value;
   value
@@ -81,7 +88,7 @@ let _string = fn(manifest: Json, key: Bytes, otherwise: Bytes): Bytes {
   match (found) {
     Text(_, value) => value,
     _ => {
-      _fail(jsonAt(found), E0211, "\"" + key + "\" must be a string");
+      _fail(jsonAt(found), E0211, `"${key}" must be a string`);
       ""
     },
   }
@@ -90,51 +97,48 @@ let _string = fn(manifest: Json, key: Bytes, otherwise: Bytes): Bytes {
 let _strings = fn(value: Json, key: Bytes, what: Bytes, otherwise: Array<Bytes>): Array<Bytes> {
   let found = jsonField(value, key);
   if (found == null) { return otherwise; }
-  let out = Array.new<Bytes>(0);
-  let message = "\"" + what + "\" must be an array of strings";
+
+  let message = `"${what}" must be an array of strings`;
+
+  let string = fn(item: Json): Bytes {
+    match (item) {
+      Text(_, text) => text,
+      _ => {
+        _fail(jsonAt(item), E0211, message);
+        ""
+      },
+    }
+  };
 
   match (found) {
-    List(_, items) => {
-      let i = 0;
-
-      while (i < items.len()) {
-        match (items[i]) {
-          Text(_, item) => {
-            out.push(item);
-            null
-          }, _ => _fail(jsonAt(items[i]), E0211, message)
-        };
-        i++;
-      }
-    },
+    List(_, items) => items.map(string),
     _ => {
       _fail(jsonAt(found), E0211, message);
-      null
+      []
     },
-  };
-  out
+  }
 };
 
-let _dependencies = fn(manifest: Json, names: Array<Bytes>, at: Array<I32>, namedIn: Array<Bytes>) {
-  let found = jsonField(manifest, "dependencies");
-  if (found == null) { return null; }
+let _dependencies = fn(manifest: Json, found: Array<Dependency>) {
+  let field = jsonField(manifest, "dependencies");
+  if (field == null) { return null; }
 
-  match (found) {
+  match (field) {
     Null(_) => null,
     Object(_, keys, values) => {
       let i = 0;
 
       while (i < keys.len()) {
-        if (indexOf(names, keys[i]) < 0) {
-          names.push(keys[i]);
-          at.push(jsonAt(values[i]));
-          namedIn.push(_path);
+        let name = keys[i];
+
+        if (found.first(fn(known: Dependency): Bool { known.name == name }) == null) {
+          found.push({ name: name, at: jsonAt(values[i]), namedIn: _path });
         }
         i++;
       }
       null
     },
-    _ => _fail(jsonAt(found), E0211, "\"dependencies\" must be an object"),
+    _ => _fail(jsonAt(field), E0211, "\"dependencies\" must be an object"),
   }
 };
 
@@ -145,51 +149,58 @@ let _addLibraries = fn(dir: Bytes, name: Bytes, libraries: Array<Bytes>) {
 };
 
 let _within = fn(dir: Bytes, names: Array<Bytes>): Array<Bytes> {
-  let out = Array.new<Bytes>(0);
-  let i = 0;
+  names.map(fn(name: Bytes): Bytes { inDirectory(dir, name) })
+};
 
-  while (i < names.len()) {
-    out.push(inDirectory(dir, names[i]));
-    i++;
+let _locate = fn(places: Array<Bytes>, name: Bytes): Bytes {
+  let p = 0;
+
+  while (p < places.len()) {
+    let candidate = inDirectory(places[p], name);
+    if (exists(candidate)) { return candidate; }
+    p++;
   }
-  out
+  ""
 };
 
 export let loadProject = fn(root: Bytes): Project {
   let manifest = _read(inDirectory(root, "jello.json"));
   let sources = [inDirectory(root, _string(manifest, "src", "src"))];
+
   let dirs = ["tests"];
   let test = jsonField(manifest, "test");
 
   if (test != null) {
-    match (test) { Object(_, _, _) => null, _ => _fail(jsonAt(test), E0211, "\"test\" must be an object") };
+    match (test) {
+      Object(_, _, _) => null,
+      _ => _fail(jsonAt(test), E0211, "\"test\" must be an object"),
+    };
     dirs = _strings(test, "dirs", "test.dirs", dirs);
   }
   let tests = _within(root, dirs);
+
   let libraries = Array.new<Bytes>(0);
   _addLibraries(root, _string(manifest, "jdll", "jdll"), libraries);
   let paths = _strings(manifest, "package_paths", "package_paths", Array.new<Bytes>(0));
-  let places = appendFrom([inDirectory(root, "packages")], _within(root, paths), 0);
-  let names = Array.new<Bytes>(0);
-  let at = Array.new<I32>(0);
-  let namedIn = Array.new<Bytes>(0);
-  _dependencies(manifest, names, at, namedIn);
+  let places = [inDirectory(root, "packages")].appendFrom(_within(root, paths), 0);
+
+  let dependencies = Array.new<Dependency>(0);
+  _dependencies(manifest, dependencies);
   let d = 0;
 
-  while (d < names.len()) {
-    let dir = "";
-    let p = 0;
-
-    while ((dir == "") && (p < places.len())) {
-      let candidate = inDirectory(places[p], names[d]);
-      if (exists(candidate)) { dir = candidate; }
-      p++;
-    }
+  while (d < dependencies.len()) {
+    let dependency = dependencies[d];
+    let dir = _locate(places, dependency.name);
 
     if (dir == "") {
-      if (_path != namedIn[d]) { _read(namedIn[d]); }
-      _fail(at[d], E0212, "package " + names[d] + " is in none of " + joined(places, ", ") + "; run `jelloc deps.get`");
+      if (_path != dependency.namedIn) { _read(dependency.namedIn); }
+      _fail(
+        dependency.at,
+        E0212,
+        `package ${dependency.name} is in none of ${joined(places, ", ")}; run \`jelloc deps.get\``
+      );
     }
+
     let packageManifest = inDirectory(dir, "jello.json");
     let src = "src";
     let jdll = "jdll";
@@ -198,13 +209,13 @@ export let loadProject = fn(root: Bytes): Project {
       let read = _read(packageManifest);
       src = _string(read, "src", "src");
       jdll = _string(read, "jdll", "jdll");
-      _dependencies(read, names, at, namedIn);
+      _dependencies(read, dependencies);
     }
     sources.push(inDirectory(dir, src));
     _addLibraries(dir, jdll, libraries);
     d++;
   }
-  Project.Project(root, sources, tests, libraries)
+  { root, sources, tests, libraries }
 };
 
 export let compileDefaults = fn(dir: Bytes): Tuple<Bytes, Bytes> {
@@ -217,14 +228,8 @@ export let compileDefaults = fn(dir: Bytes): Tuple<Bytes, Bytes> {
     entry = _string(manifest, "entry", inDirectory(_string(manifest, "src", "src"), "Main.jello"));
     name = _string(manifest, "name", "");
   }
-  let base = name == "" ? baseName(_realPath(dir)) : name;
-  let file = "";
-  let i = 0;
 
-  while (i < base.len()) {
-    let c = Bytes.get_u8(base, i);
-    file = file + (((c == " ".code) || (c == "/".code)) ? "-" : Bytes.slice(base, i, 1));
-    i++;
-  }
+  let base = name == "" ? baseName(_realPath(dir)) : name;
+  let file = base.replaceAll(" ", "-").replaceAll("/", "-");
   (inDirectory(dir, entry), file == "" ? "main" : file)
 };

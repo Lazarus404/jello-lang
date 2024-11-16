@@ -1,11 +1,11 @@
 package frontend.semantics;
 
-import { indexOf } from support.Arrays;
 import { internalError, internalRaised } from support.Internal;
 import type { SourceSpan } from frontend.syntax.Source;
-import { SourceSpan } from frontend.syntax.Source;
 
 export let MAX_FAILURES = 20;
+
+export typedef Need = Tuple<?SourceSpan, Bytes>;
 
 let _failures = Array.new<Tuple<?SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
 let _noteSpan: ?SourceSpan = null;
@@ -39,14 +39,14 @@ export let pendingNote = fn(message: Bytes): Tuple<?SourceSpan, Bytes> {
   message == _noted ? (_noteSpan, _note) : (_neededAt, _needed)
 };
 
-export let needInstance = fn(span: ?SourceSpan, note: Bytes): Tuple<?SourceSpan, Bytes> {
+export let needInstance = fn(span: ?SourceSpan, note: Bytes): Need {
   let outer = (_neededAt, _needed);
   _neededAt = span;
   _needed = note;
   outer
 };
 
-export let instanceNeed = fn(): Tuple<?SourceSpan, Bytes> { (_neededAt, _needed) };
+export let instanceNeed = fn(): Need { (_neededAt, _needed) };
 
 export let keepNote = fn(message: Bytes): Bytes {
   let (span, note) = pendingNote(message);
@@ -61,7 +61,7 @@ export let recordFailure = fn(span: ?SourceSpan, error: Dynamic): Bool {
   if (internalRaised() || (_failures.len() >= MAX_FAILURES)) { return false; }
   _given++;
   let failure = (span, message, noteSpan, note);
-  if (!_touched && (indexOf(_failures, failure) < 0)) { _failures.push(failure); }
+  if (!_touched && (_failures.indexOf(failure) < 0)) { _failures.push(failure); }
   _failures.len() < MAX_FAILURES
 };
 
@@ -75,7 +75,9 @@ export let noteFailure = fn(span: ?SourceSpan, note: Bytes, message: Bytes): Byt
 export let failureCount = fn(): I32 { _given };
 
 export let sortFailures = fn(paths: Array<Bytes>): Tuple<?SourceSpan, Bytes> {
-  if (_failures.len() == 0) { internalError("a failure was recovered from, but none was recorded"); }
+  if (_failures.len() == 0) {
+    internalError("a failure was recovered from, but none was recorded");
+  }
   let i = 1;
 
   while (i < _failures.len()) {
@@ -95,7 +97,7 @@ export let sortFailures = fn(paths: Array<Bytes>): Tuple<?SourceSpan, Bytes> {
 
 let _placeKey = fn(span: ?SourceSpan, paths: Array<Bytes>): I64 {
   if (span == null) { return 0; }
-  match (span) { Span(path, start, _) => (indexOf(paths, path) as I64 + 1) * 4294967296 + (start as I64) }
+  (paths.indexOf(span.path) as I64 + 1) * 4294967296 + (span.start as I64)
 };
 
 export let takeFailures = fn(): Tuple<Array<Tuple<?SourceSpan, Bytes, ?SourceSpan, Bytes>>, Bool> {
@@ -106,7 +108,7 @@ export let takeFailures = fn(): Tuple<Array<Tuple<?SourceSpan, Bytes, ?SourceSpa
 
 export let warn = fn(span: ?SourceSpan, message: Bytes): Bool {
   let warning = (span, message);
-  if (indexOf(_warnings, warning) < 0) { _warnings.push(warning); }
+  if (_warnings.indexOf(warning) < 0) { _warnings.push(warning); }
   true
 };
 
@@ -127,15 +129,15 @@ export let poisonLocal = fn(binding: I32): Bool {
 };
 
 export let touch = fn(name: Bytes): Bool {
-  if ((_poisoned.len() > 0) && (indexOf(_poisoned, name) >= 0)) {
+  if ((_poisoned.len() > 0) && (_poisoned.indexOf(name) >= 0)) {
     _touched = true;
-    throw "uses poisoned " + name;
+    throw `uses poisoned ${name}`;
   }
   true
 };
 
 export let touchLocal = fn(binding: I32): Bool {
-  if ((_poisonedLocals.len() > 0) && (indexOf(_poisonedLocals, binding) >= 0)) {
+  if ((_poisonedLocals.len() > 0) && (_poisonedLocals.indexOf(binding) >= 0)) {
     _touched = true;
     throw "uses a poisoned local";
   }

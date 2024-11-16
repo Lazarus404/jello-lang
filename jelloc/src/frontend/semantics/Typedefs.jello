@@ -1,15 +1,23 @@
 package frontend.semantics;
 
-import type { BytesLayoutField, BytesLayoutType, Stmt, StructField, TypeParam } from frontend.syntax.Ast;
+import type {
+  BytesLayoutField, BytesLayoutType, Stmt, StructField, TypeParam,
+} from frontend.syntax.Ast;
 import { BitValueKind } from frontend.syntax.Ast;
 import { placeSegments, segmentCode } from frontend.semantics.Bits;
-import { indexOf } from support.Arrays;
 import { E0302, E0605, E0804, coded } from support.Codes;
 import { checkFields, defineEnums } from frontend.semantics.Enums;
-import { declareEnum, declareGenericEnum, declareGenericPrototype, declareGenericRecord, declareLayout, declarePrototype, declareRecord, defineVariants, enumParams, isParametric, isPrototype, layoutCodes, readsTyped, segmentType, typeName } from frontend.hir.Hir;
+import {
+  declareEnum, declareGenericEnum, declareGenericPrototype, declareGenericRecord, declareLayout,
+  declarePrototype, declareRecord, defineVariants, enumParams, isParametric, isPrototype,
+  layoutCodes, readsTyped, segmentType, typeName,
+} from frontend.hir.Hir;
 import { declareScopedType, exportScopedType, scopedType } from frontend.semantics.ModuleScope;
 import type { Syntax } from frontend.syntax.Source;
-import { checkType, checkTypeParams, declareGenericAlias, enterSyntax, paramNames, syntaxChild, useTypeParams, useTypedefs } from frontend.semantics.TypeCheck;
+import {
+  checkType, checkTypeParams, declareGenericAlias, enterSyntax, paramNames, syntaxChild,
+  useTypeParams, useTypedefs,
+} from frontend.semantics.TypeCheck;
 
 let _statements = Array.new<Stmt>(0);
 let _module = -1;
@@ -17,7 +25,14 @@ let _opened = false;
 let _aliases = Array.new<I32>(0);
 let _prototypeNames = Array.new<Bytes>(0);
 let _syntaxes = Array.new<Syntax>(0);
-let _states = Array.new<I32>(0);
+
+enum State {
+  Waiting;
+  Checking;
+  Done;
+}
+
+let _states = Array.new<State>(0);
 
 let _declare = fn(name: Bytes, exported: Bool, ty: I32) {
   declareScopedType(name, ty);
@@ -26,19 +41,21 @@ let _declare = fn(name: Bytes, exported: Bool, ty: I32) {
 };
 
 let _declareAlias = fn(alias: I32) {
-  if (_states[alias] == 2) { return null; }
+  if (_states[alias] == State.Done) { return null; }
 
   match (_statements[_aliases[alias]]) {
     Typedef(exported, name, typeParams, Alias(body)) => {
-      if (_states[alias] == 1) { throw coded(E0804, "typedef " + name + " refers to itself"); }
-      _states[alias] = 1;
+      if (_states[alias] == State.Checking) {
+        throw coded(E0804, `typedef ${name} refers to itself`);
+      }
+      _states[alias] = State.Checking;
       let parent = enterSyntax(_syntaxes[alias]);
       let params = checkTypeParams(typeParams, false);
       let (outerNames, outerTypes) = useTypeParams(paramNames(params), params);
       let ty = checkType(body);
       useTypeParams(outerNames, outerTypes);
       _declare(name, exported, params.len() == 0 ? ty : declareGenericAlias(name, params, ty));
-      _states[alias] = 2;
+      _states[alias] = State.Done;
       enterSyntax(parent);
     },
     _ => null,
@@ -51,7 +68,7 @@ let _later = fn(name: Bytes): I32 {
 
   while (alias < _aliases.len()) {
     match (_statements[_aliases[alias]]) {
-      Typedef(_, declared, _, _) when ((declared == name) && (_states[alias] != 2)) => {
+      Typedef(_, declared, _, _) when ((declared == name) && (_states[alias] != State.Done)) => {
         _declareAlias(alias);
         return scopedType(name);
       },
@@ -66,7 +83,9 @@ let _defineRecord = fn(name: Bytes, names: Array<Bytes>, types: Array<I32>) {
   let f = 0;
 
   while (f < names.len()) {
-    if (indexOf(names, names[f]) < f) { throw coded(E0302, "duplicate field " + names[f] + " of " + name); }
+    if (names.indexOf(names[f]) < f) {
+      throw coded(E0302, `duplicate field ${names[f]} of ${name}`);
+    }
     f++;
   }
   defineVariants(scopedType(name), [name], [names], [types]);
@@ -89,7 +108,7 @@ let _declareLayout = fn(name: Bytes, fields: Array<BytesLayoutField>): I32 {
   let f = 0;
 
   while (f < fields.len()) {
-    match (fields[f]) { Field(_, ty) => codes.push(_layoutCode(ty)) };
+    codes.push(_layoutCode(fields[f].ty));
     f++;
   }
   let (offsets, fixed) = placeSegments(codes);
@@ -104,7 +123,10 @@ let _defineStruct = fn(name: Bytes, fields: Array<StructField>) {
   let f = isPrototype(scopedType(name)) ? 0 : types.len();
 
   while (f < types.len()) {
-    if (!isParametric(types[f]) && !readsTyped(types[f])) { throw coded(E0804, "field " + names[f] + " of typedef " + name + " is " + typeName(types[f]) + ", which a prototype's Object cannot hold as itself"); }
+    if (!isParametric(types[f]) && !readsTyped(types[f])) {
+      let field = `field ${names[f]} of typedef ${name} is ${typeName(types[f])}`;
+      throw coded(E0804, `${field}, which a prototype's Object cannot hold as itself`);
+    }
     f++;
   }
   _defineRecord(name, names, types)
@@ -117,12 +139,8 @@ let _defineLayout = fn(name: Bytes, fields: Array<BytesLayoutField>) {
   let f = 0;
 
   while (f < fields.len()) {
-    match (fields[f]) {
-      Field(field, _) => {
-        names.push(field);
-        types.push(segmentType(codes[f]));
-      }
-    };
+    names.push(fields[f].name);
+    types.push(segmentType(codes[f]));
     f++;
   }
   _defineRecord(name, names, types)
@@ -133,55 +151,63 @@ let _paramKey = fn(params: Array<TypeParam>): Bytes {
   let i = 0;
 
   while (i < params.len()) {
-    match (params[i]) { TypeParam(param, _, _, _) => { names = names + param + ","; } };
+    names = `${names}${params[i].name},`;
     i++;
   }
   names
 };
 
-let _linksPrototype = fn(statement: I32, name: Bytes, exported: Bool, params: Array<TypeParam>): Bool {
-  if (indexOf(_prototypeNames, name) < 0) { return false; }
+let _linksPrototype = fn(
+  statement: I32,
+  name: Bytes,
+  exported: Bool,
+  params: Array<TypeParam>
+): Bool {
+  if (_prototypeNames.indexOf(name) < 0) { return false; }
+  let linked = `typedef ${name} and prototype ${name} are linked`;
   let i = 0;
-  let linked = false;
+  let found = false;
 
   while (i < _statements.len()) {
     match (_statements[i]) {
-      Typedef(_, declared, _, Struct(_)) when ((declared == name) && ((i as I32) < statement)) => { return false; },
+      Typedef(_, declared, _, Struct(_)) when ((declared == name) && (i < statement)) => {
+        return false;
+      },
       Prototype(other, declared, typeParams, _) when (declared == name) => {
-        if (other != exported) { throw coded(E0804, "typedef " + name + " and prototype " + name + " are linked, so both or neither must be exported"); }
-        if (_paramKey(typeParams) != _paramKey(params)) { throw coded(E0804, "typedef " + name + " and prototype " + name + " are linked, so they must take the same type parameters"); }
-        linked = true;
+        if (other != exported) {
+          throw coded(E0804, `${linked}, so both or neither must be exported`);
+        }
+
+        if (_paramKey(typeParams) != _paramKey(params)) {
+          throw coded(E0804, `${linked}, so they must take the same type parameters`);
+        }
+        found = true;
       },
       _ => null,
     };
     i++;
   }
-  linked
+  found
 };
 
-export let prototypeNames: (Array<Stmt>) -> Array<Bytes> = fn(statements) {
+export let prototypeNames = fn(statements: Array<Stmt>): Array<Bytes> {
   let names = Array.new<Bytes>(0);
   let i = 0;
 
   while (i < statements.len()) {
-    match (statements[i]) {
-      Prototype(_, name, _, _) => {
-        names.push(name);
-        null
-      }, _ => null
-    };
+    if (let Prototype(_, name, _, _) = statements[i]) { names.push(name); }
     i++;
   }
   names
 };
 
-export let declareTypes: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, module, opened) {
+export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool): Bool {
   _statements = statements;
   _module = module;
   _opened = opened;
   _aliases = Array.new<I32>(0);
   _syntaxes = Array.new<Syntax>(0);
-  _states = Array.new<I32>(0);
+  _states = Array.new<State>(0);
   _prototypeNames = prototypeNames(statements);
   let i = 0;
 
@@ -189,30 +215,50 @@ export let declareTypes: (Array<Stmt>, I32, Bool) -> Bool = fn(statements, modul
     match (statements[i]) {
       Enum(exported, name, typeParams, _) => {
         let parent = enterSyntax(syntaxChild(i));
-        _declare(name, exported, typeParams.len() == 0 ? declareEnum(name) : declareGenericEnum(name, checkTypeParams(typeParams, false)));
+
+        let ty = if (typeParams.len() == 0) {
+          declareEnum(name)
+        } else {
+          declareGenericEnum(name, checkTypeParams(typeParams, false))
+        };
+        _declare(name, exported, ty);
         enterSyntax(parent);
       },
       Typedef(_, _, _, Alias(_)) => {
-        _aliases.push(i as I32);
+        _aliases.push(i);
         _syntaxes.push(syntaxChild(i));
-        _states.push(0);
+        _states.push(State.Waiting);
       },
       Prototype(exported, name, typeParams, _) => {
         let parent = enterSyntax(syntaxChild(i));
-        _declare(name, exported, typeParams.len() == 0 ? declarePrototype(name) : declareGenericPrototype(name, checkTypeParams(typeParams, false)));
+
+        let ty = if (typeParams.len() == 0) {
+          declarePrototype(name)
+        } else {
+          declareGenericPrototype(name, checkTypeParams(typeParams, false))
+        };
+        _declare(name, exported, ty);
         enterSyntax(parent);
       },
       Typedef(exported, name, typeParams, Struct(_)) => {
         let parent = enterSyntax(syntaxChild(i));
 
-        if (!_linksPrototype(i as I32, name, exported, typeParams)) {
-          _declare(name, exported, typeParams.len() == 0 ? declareRecord(name) : declareGenericRecord(name, checkTypeParams(typeParams, false)));
+        if (!_linksPrototype(i, name, exported, typeParams)) {
+          let ty = if (typeParams.len() == 0) {
+            declareRecord(name)
+          } else {
+            declareGenericRecord(name, checkTypeParams(typeParams, false))
+          };
+          _declare(name, exported, ty);
         }
         enterSyntax(parent);
       },
       Typedef(exported, name, typeParams, BytesLayout(fields)) => {
         let parent = enterSyntax(syntaxChild(i));
-        if (typeParams.len() != 0) { throw coded(E0605, "a bytes layout takes no type parameters"); }
+
+        if (typeParams.len() != 0) {
+          throw coded(E0605, "a bytes layout takes no type parameters");
+        }
         _declare(name, exported, _declareLayout(name, fields));
         enterSyntax(parent);
       },

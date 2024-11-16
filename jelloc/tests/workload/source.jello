@@ -1,7 +1,7 @@
 // Source locations and diagnostics. Columns count code points; the caret is
 // padded by display width.
-import { sourceDiagnostic, sourceLocation, spanEnd, spanPath, spanStart } from frontend.syntax.Source;
-import { SourceSpan } from frontend.syntax.Source;
+import { sourceDiagnostic, sourceLocation } from frontend.syntax.Source;
+import type { SourceSpan } from frontend.syntax.Source;
 
 let _at = fn(source: Bytes, offset: I32): Bytes {
   let (line, column) = sourceLocation(source, offset);
@@ -9,12 +9,12 @@ let _at = fn(source: Bytes, offset: I32): Bytes {
 };
 
 let text = "let a = 1;\n  b(é, c)\n";
-let span = SourceSpan.Span("f.jello", 13, 14);
+let span: SourceSpan = { path: "f.jello", start: 13, end: 14 };
 // A tab is kept, each CJK character takes 2 columns, a combining mark 0.
 let wide = "\tx = \"\u{65e5}\u{672c}\" + e\u{301} + ;";
 // A byte that is not UTF-8 is one column.
 let bad = "ab" + Bytes.slice("\u{e9}", 0, 1) + "c ;";
-_at(text, 0) + " " + _at(text, 13) + " " + _at(text, 18) + " " + spanPath(span) + " " + Std.string(spanEnd(span) - spanStart(span)) + "\n"
+_at(text, 0) + " " + _at(text, 13) + " " + _at(text, 18) + " " + span.path + " " + Std.string(span.end - span.start) + "\n"
   + sourceDiagnostic("f.jello", text, 18, "expected expression") + "\n"
   + sourceDiagnostic("g.jello", wide, wide.len() - 1, "expected expression") + "\n"
   + _at(bad, 4) + " " + sourceDiagnostic("h.jello", bad, 5, "expected expression")

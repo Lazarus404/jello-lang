@@ -1,0 +1,59 @@
+package std.crypto;
+
+load {
+  crypto_digest_length,
+  crypto_digest,
+  crypto_hmac,
+  crypto_pbkdf2,
+  crypto_hkdf,
+  crypto_equal,
+} from tls;
+
+let _length: (Bytes) -> I32 = crypto_digest_length;
+let _digest: (Bytes, Bytes) -> Bytes = crypto_digest;
+let _hmac: (Bytes, Bytes, Bytes) -> Bytes = crypto_hmac;
+let _pbkdf2: (Bytes, Bytes, Bytes, I32, I32) -> Bytes = crypto_pbkdf2;
+let _hkdf: (Bytes, Bytes, Bytes, Bytes, I32) -> Bytes = crypto_hkdf;
+
+let _size = fn(who: Bytes, algorithm: Bytes): I32 {
+  let size = _length(algorithm);
+  if (size == 0) { throw who + ": unknown algorithm " + algorithm; };
+  size
+};
+
+export let size = fn(algorithm: Bytes): I32 { _size("Hash.size", algorithm) };
+
+export let digest = fn(algorithm: Bytes, data: Bytes): Bytes {
+  _size("Hash.digest", algorithm);
+  _digest(algorithm, data)
+};
+
+export let md5 = fn(data: Bytes): Bytes { _digest("md5", data) };
+export let sha1 = fn(data: Bytes): Bytes { _digest("sha1", data) };
+export let sha256 = fn(data: Bytes): Bytes { _digest("sha256", data) };
+export let sha384 = fn(data: Bytes): Bytes { _digest("sha384", data) };
+export let sha512 = fn(data: Bytes): Bytes { _digest("sha512", data) };
+
+export let hmac = fn(algorithm: Bytes, key: Bytes, data: Bytes): Bytes {
+  _size("Hash.hmac", algorithm);
+  _hmac(algorithm, key, data)
+};
+
+export let equal: (Bytes, Bytes) -> Bool = crypto_equal;
+
+export let pbkdf2 = fn(algorithm: Bytes, password: Bytes, salt: Bytes, iterations: I32,
+  length: I32): Bytes {
+  _size("Hash.pbkdf2", algorithm);
+  if (iterations < 1) { throw "Hash.pbkdf2: iterations " + Std.string(iterations) + " is not 1 or more"; };
+  if (length < 1) { throw "Hash.pbkdf2: length " + Std.string(length) + " is not 1 or more"; };
+  _pbkdf2(algorithm, password, salt, iterations, length)
+};
+
+export let hkdf = fn(algorithm: Bytes, key: Bytes, salt: Bytes, info: Bytes, length: I32): Bytes {
+  let most = 255 * _size("Hash.hkdf", algorithm);
+
+  if ((length < 1) || (length > most)) {
+    throw "Hash.hkdf: length " + Std.string(length) + " is not from 1 to " + Std.string(most);
+  };
+  _hkdf(algorithm, key, salt, info, length)
+};

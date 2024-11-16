@@ -1,6 +1,8 @@
 package frontend.semantics;
 
-import type { AssignOp, BinaryOp, Expr as AstExpr, IncDecOp, ObjectEntry, Type as AstType } from frontend.syntax.Ast;
+import type {
+  AssignOp, BinaryOp, Expr as AstExpr, IncDecOp, ObjectEntry, Type as AstType,
+} from frontend.syntax.Ast;
 import { BinaryOp } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { internalError } from support.Internal;
@@ -12,31 +14,47 @@ import { checkSystemAssertion } from frontend.semantics.Testing;
 import { storable, toDynamic } from frontend.semantics.Values;
 import { touch } from frontend.semantics.Failures;
 import type { Binding } from frontend.semantics.ModuleScope;
-import { Binding, currentModule, exportedValue, scoped, scopedType } from frontend.semantics.ModuleScope;
+import {
+  Binding, currentModule, exportedValue, scoped, scopedType,
+} from frontend.semantics.ModuleScope;
 import { checkList } from frontend.semantics.Lists;
 import { checkInterpolation } from frontend.semantics.Interpolation;
-import { OBJECT_UPDATE, assignObject, callObjectField, checkObject, checkObjectCall, isObjectIntrinsic, namedKey, objectArgument, objectKey, readObject, readTyped, writeField } from frontend.semantics.Objects;
+import {
+  OBJECT_UPDATE, assignObject, callObjectField, checkObject, checkObjectCall, isObjectIntrinsic,
+  namedKey, objectArgument, objectKey, readObject, readTyped, writeField,
+} from frontend.semantics.Objects;
 import { checkFunctionIntrinsic, isFunctionIntrinsic } from frontend.semantics.Functions;
-import { checkPrototypeCall, checkPrototypeExpr, checkSuperCall } from frontend.semantics.Prototypes;
-import { appendFrom, indexOf, internIndex } from support.Arrays;
-import { closestNames, joined, startsWith } from support.Text;
-import { binaryValues, bufferHint, checkArity, checkFunctionCall, checkIndirectCall, checkInstance, checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, hasSpread, hideValue, fieldMismatch, isBound, joinArrays, linkedMember, newBinding, objectValue, one, prototypeField, prototypeMethod, receiverMethodType, rejectAt, spreadArray, spreadOperand, syntaxChild, tupleFields, widened, withoutCallee } from frontend.semantics.TypeCheck;
-import { E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0600, E0601, E0800, E0801, E0807, E0808, E0900, coded } from support.Codes;
+import {
+  checkPrototypeCall, checkPrototypeExpr, checkSuperCall,
+} from frontend.semantics.Prototypes;
+import { closestNames, joined } from support.Text;
+import {
+  binaryValues, bufferHint, checkArity, checkFunctionCall, checkIndirectCall, checkInstance,
+  checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, hasSpread, hideValue,
+  fieldMismatch, isBound, joinArrays, linkedMember, newBinding, objectValue, one, prototypeField,
+  prototypeMethod, receiverMethodType, rejectAt, spreadArray, spreadOperand, syntaxChild,
+  tupleFields, widened, withoutCallee,
+} from frontend.semantics.TypeCheck;
+import {
+  E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0600, E0601, E0800, E0801, E0807,
+  E0808, E0900, coded,
+} from support.Codes;
 
 let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   let checked = checkOperand(expr, index, H.TYPE_I32);
 
   if (H.typeOf(checked) != H.TYPE_I32) {
     enterSyntax(syntaxChild(index));
-    throw coded(E0400, what + " must be I32");
+    throw coded(E0400, `${what} must be I32`);
   }
   checked
 };
 
 let _readable = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   let checked = checkPresent(expr, index);
+  let ty = H.typeOf(checked);
 
-  if (!H.isKind(H.typeOf(checked), Kind.Bytes) && !H.isKind(H.typeOf(checked), Kind.ByteBuffer)) {
+  if (!H.isKind(ty, Kind.Bytes) && !H.isKind(ty, Kind.ByteBuffer)) {
     enterSyntax(syntaxChild(index));
     throw coded(E0400, what);
   }
@@ -56,7 +74,12 @@ let _of = fn(expr: AstExpr, index: I32, kind: Kind, expected: I32, what: Bytes):
 let _codePoint = fn(value: Bytes): I32 {
   if (value.len() == 0) { return -1; }
   let first = Bytes.get_u8(value, 0);
-  let size = first < 128 ? 1 : first < 194 ? 0 : first < 224 ? 2 : first < 240 ? 3 : first < 245 ? 4 : 0;
+  let size = first < 128 ? 1
+    : first < 194 ? 0
+    : first < 224 ? 2
+    : first < 240 ? 3
+    : first < 245 ? 4
+    : 0;
   if ((size == 0) || (value.len() != size)) { return -1; }
   let code = size == 1 ? first : first & (255 >> (size + 1));
   let i = 1;
@@ -74,7 +97,8 @@ let _codePoint = fn(value: Bytes): I32 {
 
 let _builtin = fn(space: Bytes): Bool {
   match (space) {
-    "Array", "Atom", "Bytes", "Float", "Function", "Integer", "List", "Math", "Object", "Std", "System", "Tuple" => !isBound(space),
+    "Array", "Atom", "Bytes", "Float", "Function", "Integer", "List", "Math", "Object", "Std",
+    "System", "Tuple" => !isBound(space),
     "Enum" => !isBound(space) && (scopedType(space) < 0),
     _ => false,
   }
@@ -85,20 +109,28 @@ let _args = fn(): I32 {
   let args = newBinding();
   let index = newBinding();
   let count = H.callStd("args_count", [], H.TYPE_I32, []);
-  let previous = H.node(Op.Assign, H.TYPE_I32, index, 0, [H.node(Op.Sub, H.TYPE_I32, 0, 0, [H.local(index, H.TYPE_I32), one(H.TYPE_I32)])]);
+  let less = H.opNode(Op.Sub, H.TYPE_I32, [H.local(index, H.TYPE_I32), one(H.TYPE_I32)]);
+  let previous = H.node(Op.Assign, H.TYPE_I32, index, 0, [less]);
   let arg = H.callStd("args_get", [H.TYPE_I32], H.TYPE_BYTES, [previous]);
-  let cons = H.node(Op.Assign, ty, args, 0, [H.node(Op.ListCons, ty, 0, 0, [arg, H.local(args, ty)])]);
-  let more = H.node(Op.Gt, H.TYPE_BOOL, 0, 0, [H.local(index, H.TYPE_I32), H.node(Op.I32, H.TYPE_I32, 0, 0, [])]);
-  let loop = H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, [H.node(Op.Expression, 0, 0, 0, [cons])])]);
-  H.node(Op.Block, ty, 0, 1, [H.declareBinding(Op.Let, args, "args", H.node(Op.ListNil, ty, 0, 0, [])), H.declareBinding(Op.Let, index, "index", count), loop, H.local(args, ty)])
+  let consed = H.opNode(Op.ListCons, ty, [arg, H.local(args, ty)]);
+  let cons = H.node(Op.Assign, ty, args, 0, [consed]);
+  let left = H.local(index, H.TYPE_I32);
+  let more = H.opNode(Op.Gt, H.TYPE_BOOL, [left, i32Of(0)]);
+  let loop = H.opNode(Op.While, 0, [more, H.opNode(Op.Block, 0, [expressionOf(cons)])]);
+  let empty = H.declareBinding(Op.Let, args, "args", H.opNode(Op.ListNil, ty, []));
+  let counter = H.declareBinding(Op.Let, index, "index", count);
+  H.node(Op.Block, ty, 0, 1, [empty, counter, loop, H.local(args, ty)])
 };
 
 let _fieldOf = fn(ty: I32, member: Bytes): I32 {
   let field = H.recordField(ty, member);
-  if (field < 0) { throw coded(E0800, H.typeName(ty) + " has no field " + member); }
+  if (field < 0) { throw coded(E0800, `${H.typeName(ty)} has no field ${member}`); }
   field
 };
-let _readField = fn(record: I32, field: I32): I32 { H.node(Op.TupleField, H.fieldType(H.typeOf(record), 0, field), field, 0, [record]) };
+
+let _readField = fn(record: I32, field: I32): I32 {
+  H.node(Op.TupleField, H.fieldType(H.typeOf(record), 0, field), field, 0, [record])
+};
 
 let _member = fn(base: AstExpr, member: Bytes): I32 {
   match (base) {
@@ -107,9 +139,12 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
       if (code < 0) { throw coded(E0008, "'.code' requires one Unicode character"); }
       return H.node(Op.I32, H.TYPE_I32, code, 0, []);
     },
-    Variable(space) when ((space == "System") && (member == "args") && _builtin(space)) => { return _args(); },
+    Variable(space) when ((space == "System") && (member == "args") && _builtin(space)) => {
+      return _args();
+    },
     Variable(space) when (_builtin(space)) => {
-      throw coded(E0301, space + "." + member + " is built in, so it can only be called; to pass it as a value, wrap the call in a function");
+      let called = `${space}.${member} is built in, so it can only be called`;
+      throw coded(E0301, `${called}; to pass it as a value, wrap the call in a function`);
     },
     _ => null,
   };
@@ -117,17 +152,22 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
   let tuple = objectValue(checked);
   let ty = H.typeOf(tuple);
   let found = prototypeMethod(checked, member);
-  if (found >= 0) { return readObject(tuple, namedKey(member), receiverMethodType(found, H.typeOf(checked))); }
+
+  if (found >= 0) {
+    let key = namedKey(member);
+    return readObject(tuple, key, receiverMethodType(found, H.typeOf(checked)));
+  }
 
   if (!H.isKind(ty, Kind.Tuple)) {
     if (H.isRecord(ty)) { return _readField(tuple, _fieldOf(ty, member)); }
 
     if (ty == H.TYPE_OBJECT) {
       let linked = prototypeField(H.typeOf(checked), member);
-      return linked < 0 ? readObject(tuple, namedKey(member), H.TYPE_DYNAMIC) : readTyped(tuple, namedKey(member), linked);
+      if (linked < 0) { return readObject(tuple, namedKey(member), H.TYPE_DYNAMIC); }
+      return readTyped(tuple, namedKey(member), linked);
     }
     enterSyntax(syntaxChild(0));
-    throw coded(E0800, "unknown member: " + member);
+    throw coded(E0800, `unknown member: ${member}`);
   }
   let field = 0;
   let i = 0;
@@ -143,7 +183,10 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
       i++;
     }
   }
-  if ((field < 0) || (field >= H.typeArgCount(ty))) { throw coded(E0807, "tuple " + H.typeName(ty) + " has no field " + member); }
+
+  if ((field < 0) || (field >= H.typeArgCount(ty))) {
+    throw coded(E0807, `tuple ${H.typeName(ty)} has no field ${member}`);
+  }
   H.node(Op.TupleField, H.typeArg(ty, field), field, 0, [tuple])
 };
 
@@ -151,6 +194,7 @@ let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
   let count = H.fieldCount(ty, 0);
   let values = Array.new<I32>(0);
   while (values.len() < count) { values.push(-1); }
+
   let fields = Array.new<I32>(0);
   let ordered = true;
   let last = -1;
@@ -166,6 +210,7 @@ let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
     fields.push(field);
     i++;
   }
+
   let statements = Array.new<I32>(0);
   let spread = -1;
   i = 0;
@@ -181,7 +226,8 @@ let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
 
         if (!H.unify(H.typeOf(source), ty)) {
           enterSyntax(syntaxChild(0));
-          throw coded(E0801, "cannot spread " + H.typeName(H.typeOf(source)) + " into a record literal of " + H.typeName(ty));
+          let spreading = `cannot spread ${H.typeName(H.typeOf(source))}`;
+          throw coded(E0801, `${spreading} into a record literal of ${H.typeName(ty)}`);
         }
         spread = hideValue(statements, "spread", source);
       },
@@ -190,16 +236,26 @@ let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
 
         if ((field < 0) || (values[field] >= 0)) {
           enterSyntax(syntaxChild(i));
-          throw field < 0 ? coded(E0800, H.typeName(ty) + " has no field " + name) : coded(E0801, "field " + name + " is given twice");
+          if (field < 0) { throw coded(E0800, `${H.typeName(ty)} has no field ${name}`); }
+          throw coded(E0801, `field ${name} is given twice`);
         }
         let declared = H.fieldType(ty, 0, field);
         let checked = widened(checkOperand(value, i, declared), H.isOpen(declared) ? -1 : declared);
-        if (!H.unify(H.typeOf(checked), declared)) { rejectAt(i, fieldMismatch(ty, name, declared, checked)); }
-        values[field] = ordered ? checked : H.local(hideValue(statements, name, checked), H.typeOf(checked));
+
+        if (!H.unify(H.typeOf(checked), declared)) {
+          rejectAt(i, fieldMismatch(ty, name, declared, checked));
+        }
+
+        if (ordered) {
+          values[field] = checked;
+        } else {
+          values[field] = H.local(hideValue(statements, name, checked), H.typeOf(checked));
+        }
       },
       Computed(_, _) => {
         enterSyntax(syntaxChild(i));
-        throw coded(E0801, "a record literal's fields are named; " + H.typeName(ty) + " has no computed keys");
+        let named = "a record literal's fields are named";
+        throw coded(E0801, `${named}; ${H.typeName(ty)} has no computed keys`);
       },
     };
     i++;
@@ -208,12 +264,15 @@ let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
 
   while (i < count) {
     if (values[i] < 0) {
-      if (spread < 0) { throw coded(E0801, "the record literal of " + H.typeName(ty) + " is missing field " + H.fieldName(ty, 0, i)); }
+      if (spread < 0) {
+        let missing = `is missing field ${H.fieldName(ty, 0, i)}`;
+        throw coded(E0801, `the record literal of ${H.typeName(ty)} ${missing}`);
+      }
       values[i] = _readField(H.local(spread, ty), i);
     }
     i++;
   }
-  let record = H.node(Op.Tuple, ty, 0, 0, values);
+  let record = H.opNode(Op.Tuple, ty, values);
   if (statements.len() == 0) { return record; }
   statements.push(record);
   H.node(Op.Block, ty, 0, 1, statements)
@@ -228,11 +287,15 @@ let _spreadTuple = fn(items: Array<AstExpr>, expected: I32): I32 {
 
   while (i < items.len()) {
     match (items[i]) {
-      Spread(operand) => { appendFrom(values, tupleFields(spreadOperand(operand, i, -1, true, false), i, statements), 0); },
+      Spread(operand) => {
+        let tuple = spreadOperand(operand, i, -1, true, false);
+        values.appendFrom(tupleFields(tuple, i, statements), 0);
+      },
       _ => {
         let at = values.len();
         let place = at < declared.len();
-        let value = widened(checkOperand(items[i], i, place ? H.typeArg(expected, at) : -1), place ? declared[at] : -1);
+        let context = place ? H.typeArg(expected, at) : -1;
+        let value = widened(checkOperand(items[i], i, context), place ? declared[at] : -1);
         values.push(H.local(hideValue(statements, "item", value), H.typeOf(value)));
       },
     };
@@ -246,7 +309,7 @@ let _spreadTuple = fn(items: Array<AstExpr>, expected: I32): I32 {
     i++;
   }
   let ty = H.tupleType(types);
-  statements.push(H.node(Op.Tuple, ty, 0, 0, values));
+  statements.push(H.opNode(Op.Tuple, ty, values));
   H.node(Op.Block, ty, 0, 1, statements)
 };
 
@@ -259,12 +322,13 @@ let _tuple = fn(items: Array<AstExpr>, expected: I32): I32 {
   let i = 0;
 
   while (i < items.len()) {
-    let value = widened(checkOperand(items[i], i, fits ? H.typeArg(expected, i) : -1), fits ? declared[i] : -1);
+    let context = fits ? H.typeArg(expected, i) : -1;
+    let value = widened(checkOperand(items[i], i, context), fits ? declared[i] : -1);
     values.push(value);
     types.push(H.typeOf(value));
     i++;
   }
-  H.node(Op.Tuple, H.tupleType(types), 0, 0, values)
+  H.opNode(Op.Tuple, H.tupleType(types), values)
 };
 
 let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
@@ -282,7 +346,7 @@ let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
         if (element < 0) { element = H.innerOf(H.typeOf(array)); }
 
         if (values.len() > 0) {
-          parts.push(H.node(Op.ArrayLiteral, H.arrayType(element), 0, 0, values));
+          parts.push(H.opNode(Op.ArrayLiteral, H.arrayType(element), values));
           values = Array.new<I32>(0);
         }
         parts.push(array);
@@ -290,7 +354,10 @@ let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
       _ => {
         let value = widened(checkOperand(items[i], i, element), declared);
         if (element < 0) { element = H.typeOf(value); }
-        if (!H.unify(H.typeOf(value), element)) { rejectAt(i, coded(E0400, "array element must be " + H.typeName(element))); }
+
+        if (!H.unify(H.typeOf(value), element)) {
+          rejectAt(i, coded(E0400, `array element must be ${H.typeName(element)}`));
+        }
         values.push(value);
       },
     };
@@ -306,12 +373,11 @@ let _index = fn(base: AstExpr, index: AstExpr): I32 {
   let checkedIndex = _i32(index, 1, "index");
 
   match (H.kindOf(ty)) {
-    Bytes, ByteBuffer => H.node(Op.BytesGet, H.TYPE_I32, 0, 0, [value, checkedIndex]),
-    Array => H.node(Op.ArrayGet, H.innerOf(ty), 0, 0, [value, checkedIndex]),
+    Bytes, ByteBuffer => H.opNode(Op.BytesGet, H.TYPE_I32, [value, checkedIndex]),
+    Array => H.opNode(Op.ArrayGet, H.innerOf(ty), [value, checkedIndex]),
     _ => {
       enterSyntax(syntaxChild(0));
-      throw coded(E0807, "cannot index " + H.typeName(ty));
-      -1
+      throw coded(E0807, `cannot index ${H.typeName(ty)}`);
     },
   }
 };
@@ -323,25 +389,33 @@ let _twice = fn(id: I32, stable: Bool, declared: Array<I32>, name: Bytes): Tuple
   (H.local(binding, H.typeOf(id)), H.local(binding, H.typeOf(id)))
 };
 
-let _elementOf = fn(target: I32): I32 { H.isKind(H.typeOf(target), Kind.ByteBuffer) ? H.TYPE_I32 : H.innerOf(H.typeOf(target)) };
+let _elementOf = fn(target: I32): I32 {
+  let ty = H.typeOf(target);
+  H.isKind(ty, Kind.ByteBuffer) ? H.TYPE_I32 : H.innerOf(ty)
+};
 
 let _get = fn(target: I32, index: I32): I32 {
-  H.node(H.isKind(H.typeOf(target), Kind.ByteBuffer) ? Op.BytesGet : Op.ArrayGet, _elementOf(target), 0, 0, [target, index])
+  let op = H.isKind(H.typeOf(target), Kind.ByteBuffer) ? Op.BytesGet : Op.ArrayGet;
+  H.opNode(op, _elementOf(target), [target, index])
 };
 
 let _set = fn(target: I32, index: I32, value: I32): I32 {
-  H.node(H.isKind(H.typeOf(target), Kind.ByteBuffer) ? Op.BytesSet : Op.ArraySet, _elementOf(target), 0, 0, [target, index, value])
+  let op = H.isKind(H.typeOf(target), Kind.ByteBuffer) ? Op.BytesSet : Op.ArraySet;
+  H.opNode(op, _elementOf(target), [target, index, value])
 };
 
 let _indexTarget = fn(base: AstExpr, index: AstExpr): Tuple<I32, I32> {
   let outer = enterSyntax(syntaxChild(0));
   let array = objectValue(checkPresent(base, 0));
   let ty = H.typeOf(array);
-  if (H.isKind(ty, Kind.Bytes)) { throw coded(E0412, "Bytes values are immutable; build bytes in a buffer from Bytes.new"); }
+
+  if (H.isKind(ty, Kind.Bytes)) {
+    throw coded(E0412, "Bytes values are immutable; build bytes in a buffer from Bytes.new");
+  }
 
   if (!H.isKind(ty, Kind.Array) && !H.isKind(ty, Kind.ByteBuffer) && (ty != H.TYPE_OBJECT)) {
     enterSyntax(syntaxChild(0));
-    throw coded(E0807, "cannot index " + H.typeName(ty));
+    throw coded(E0807, `cannot index ${H.typeName(ty)}`);
   }
   let checkedIndex = ty == H.TYPE_OBJECT ? objectKey(index, 1) : _i32(index, 1, "index");
   enterSyntax(outer);
@@ -349,39 +423,61 @@ let _indexTarget = fn(base: AstExpr, index: AstExpr): Tuple<I32, I32> {
 };
 
 let _updated = fn(set: I32, ty: I32, op: BinaryOp, postfix: Bool, declared: Array<I32>): I32 {
-  let result = postfix ? H.node(match (op) { Add => Op.Sub, _ => Op.Add }, ty, 0, 0, [set, one(ty)]) : set;
+  let undo = match (op) { Add => Op.Sub, _ => Op.Add };
+  let result = postfix ? H.opNode(undo, ty, [set, one(ty)]) : set;
   if (declared.len() == 0) { return result; }
   declared.push(result);
   H.node(Op.Block, ty, 0, 1, declared)
 };
 
-let _updateIndex = fn(array: I32, index: I32, op: BinaryOp, checked: I32, step: Bool, postfix: Bool): I32 {
+let _updateIndex = fn(
+  array: I32,
+  index: I32,
+  op: BinaryOp,
+  checked: I32,
+  step: Bool,
+  postfix: Bool
+): I32 {
   let element = _elementOf(array);
-  if (step && !H.isInteger(element)) { throw coded(E0500, "increment and decrement require an integer element, not " + H.typeName(element)); }
+
+  if (step && !H.isInteger(element)) {
+    let steps = "increment and decrement require an integer element";
+    throw coded(E0500, `${steps}, not ${H.typeName(element)}`);
+  }
   let declared = Array.new<I32>(0);
   let (arrayRead, arrayWrite) = _twice(array, step, declared, "array");
   let (indexRead, indexWrite) = _twice(index, step, declared, "index");
-  _updated(_set(arrayWrite, indexWrite, binaryValues(op, _get(arrayRead, indexRead), checked)), element, op, postfix, declared)
+  let updated = binaryValues(op, _get(arrayRead, indexRead), checked);
+  _updated(_set(arrayWrite, indexWrite, updated), element, op, postfix, declared)
 };
 
 let _assignIndex = fn(base: AstExpr, index: AstExpr, op: AssignOp, value: AstExpr): I32 {
   let (array, checkedIndex) = _indexTarget(base, index);
   if (H.typeOf(array) == H.TYPE_OBJECT) { return assignObject(array, checkedIndex, op, value); }
   let element = _elementOf(array);
-  let checked = match (op) { Assign => widened(checkOperand(value, 1, element), element), _ => checkOperand(value, 1, element) };
+
+  let checked = match (op) {
+    Assign => widened(checkOperand(value, 1, element), element),
+    _ => checkOperand(value, 1, element),
+  };
 
   if (!H.unify(H.typeOf(checked), element)) {
-    rejectAt(1, coded(E0400, (H.isKind(H.typeOf(array), Kind.ByteBuffer) ? "a byte" : "array element") + " must be " + H.typeName(element)));
+    let what = H.isKind(H.typeOf(array), Kind.ByteBuffer) ? "a byte" : "array element";
+    rejectAt(1, coded(E0400, `${what} must be ${H.typeName(element)}`));
     return _set(array, checkedIndex, checked);
   }
-  match (op) { Assign => _set(array, checkedIndex, checked), Compound(binary) => _updateIndex(array, checkedIndex, binary, checked, false, false) }
+
+  match (op) {
+    Assign => _set(array, checkedIndex, checked),
+    Compound(binary) => _updateIndex(array, checkedIndex, binary, checked, false, false),
+  }
 };
 
 let _stepIndex = fn(base: AstExpr, index: AstExpr, op: IncDecOp, prefix: Bool): I32 {
   let (array, checkedIndex) = _indexTarget(base, index);
   if (H.typeOf(array) == H.TYPE_OBJECT) { throw OBJECT_UPDATE; }
-  let increment = match (op) { Increment => true, _ => false };
-  _updateIndex(array, checkedIndex, increment ? BinaryOp.Add : BinaryOp.Subtract, one(_elementOf(array)), true, !prefix)
+  let binary = match (op) { Increment => BinaryOp.Add, _ => BinaryOp.Subtract };
+  _updateIndex(array, checkedIndex, binary, one(_elementOf(array)), true, !prefix)
 };
 
 let _fieldTarget = fn(base: AstExpr, member: Bytes, inPlace: Bool): Tuple<I32, I32, I32, I32> {
@@ -391,42 +487,83 @@ let _fieldTarget = fn(base: AstExpr, member: Bytes, inPlace: Bool): Tuple<I32, I
   let replaced = prototypeMethod(checked, member);
   let record = objectValue(checked);
   let ty = H.typeOf(record);
+  let owner = H.typeOf(checked);
 
   if (replaced >= 0) {
-    if (inPlace) { throw coded(E0807, member + " is a method, so it cannot be updated in place"); }
-    return (record, -2, receiverMethodType(replaced, H.typeOf(checked)), H.typeOf(checked));
+    if (inPlace) { throw coded(E0807, `${member} is a method, so it cannot be updated in place`); }
+    return (record, -2, receiverMethodType(replaced, owner), owner);
   }
-  if (ty == H.TYPE_OBJECT) { return (record, -1, prototypeField(H.typeOf(checked), member), H.typeOf(checked)); }
-  if (!H.isRecord(ty)) { throw coded(E0103, H.isKind(ty, Kind.Tuple) ? "tuple fields cannot be assigned" : "only a record's fields can be assigned, not a member of " + H.typeName(ty)); }
+  if (ty == H.TYPE_OBJECT) { return (record, -1, prototypeField(owner, member), owner); }
+  if (H.isKind(ty, Kind.Tuple)) { throw coded(E0103, "tuple fields cannot be assigned"); }
+
+  if (!H.isRecord(ty)) {
+    let assigned = "only a record's fields can be assigned";
+    throw coded(E0103, `${assigned}, not a member of ${H.typeName(ty)}`);
+  }
   let field = _fieldOf(ty, member);
   (record, field, H.fieldType(ty, 0, field), ty)
 };
 
-let _updateField = fn(record: I32, field: I32, member: Bytes, ty: I32, op: BinaryOp, checked: I32, step: Bool, postfix: Bool): I32 {
-  if (step && !H.isInteger(ty)) { throw coded(E0500, "increment and decrement require an integer field, not " + H.typeName(ty)); }
+let _updateField = fn(
+  record: I32,
+  field: I32,
+  member: Bytes,
+  ty: I32,
+  op: BinaryOp,
+  checked: I32,
+  step: Bool,
+  postfix: Bool
+): I32 {
+  if (step && !H.isInteger(ty)) {
+    let steps = "increment and decrement require an integer field";
+    throw coded(E0500, `${steps}, not ${H.typeName(ty)}`);
+  }
   let declared = Array.new<I32>(0);
   let (read, write) = _twice(record, step, declared, "record");
-  let updated = binaryValues(op, field < 0 ? readTyped(read, namedKey(member), ty) : _readField(read, field), checked);
-  _updated(field < 0 ? writeField(write, member, storable(updated)) : H.node(Op.SetField, ty, field, 0, [write, updated]), ty, op, postfix, declared)
+  let current = field < 0 ? readTyped(read, namedKey(member), ty) : _readField(read, field);
+  let updated = binaryValues(op, current, checked);
+
+  let set = if (field < 0) {
+    writeField(write, member, storable(updated))
+  } else {
+    H.node(Op.SetField, ty, field, 0, [write, updated])
+  };
+  _updated(set, ty, op, postfix, declared)
 };
 
 let _assignField = fn(base: AstExpr, member: Bytes, op: AssignOp, value: AstExpr): I32 {
-  let (record, field, ty, owner) = _fieldTarget(base, member, match (op) { Compound(_) => true, _ => false });
+  let inPlace = match (op) { Compound(_) => true, _ => false };
+  let (record, field, ty, owner) = _fieldTarget(base, member, inPlace);
 
   if (field == -2) {
     let replacement = checkOperand(value, 1, ty);
-    if (!H.unify(H.typeOf(replacement), ty)) { rejectAt(1, coded(E0400, member + " is a method of type " + H.typeName(ty) + ", so only a function of that type replaces it")); }
+
+    if (!H.unify(H.typeOf(replacement), ty)) {
+      let typed = `${member} is a method of type ${H.typeName(ty)}`;
+      rejectAt(1, coded(E0400, `${typed}, so only a function of that type replaces it`));
+    }
     return writeField(record, member, replacement);
   }
   if (ty < 0) { return assignObject(record, namedKey(member), op, value); }
-  let checked = match (op) { Assign => widened(checkOperand(value, 1, ty), ty), _ => checkOperand(value, 1, ty) };
+
+  let checked = match (op) {
+    Assign => widened(checkOperand(value, 1, ty), ty),
+    _ => checkOperand(value, 1, ty),
+  };
   let fits = H.unify(H.typeOf(checked), ty);
 
   match (op) {
-    Compound(binary) when (fits) => _updateField(record, field, member, ty, binary, checked, false, false),
+    Compound(binary) when (fits) => {
+      _updateField(record, field, member, ty, binary, checked, false, false)
+    },
     _ => {
       if (!fits) { rejectAt(1, fieldMismatch(owner, member, ty, checked)); }
-      field < 0 ? writeField(record, member, storable(checked)) : H.node(Op.SetField, ty, field, 0, [record, checked])
+
+      if (field < 0) {
+        writeField(record, member, storable(checked))
+      } else {
+        H.node(Op.SetField, ty, field, 0, [record, checked])
+      }
     },
   }
 };
@@ -461,93 +598,187 @@ let _tupleField = fn(tuple: I32, index: I32): I32 {
   if ((known >= 0) && (known < fields.len())) {
     statements.push(fields[known]);
   } else {
-    let array = H.node(Op.ArrayLiteral, H.arrayType(H.TYPE_DYNAMIC), 0, 0, fields);
-    statements.push(H.node(Op.ArrayGet, H.TYPE_DYNAMIC, 0, 0, [array, index]));
+    let array = H.opNode(Op.ArrayLiteral, H.arrayType(H.TYPE_DYNAMIC), fields);
+    statements.push(H.opNode(Op.ArrayGet, H.TYPE_DYNAMIC, [array, index]));
   }
   H.node(Op.Block, H.TYPE_DYNAMIC, 0, 1, statements)
 };
 
-enum Extension { Extension(name: Bytes, module: I32, exports: Array<Bytes>); }
+typedef Extension = {
+  let name: Bytes;
+  let module: I32;
+  let exports: Array<Bytes>;
+};
 let _extensions = Array.new<Extension>(0);
 let _wanted = Array.new<Bytes>(0);
 
-enum Builtin { Builtin(signature: I32, op: Op, container: I32, messages: Array<Bytes>); }
+typedef Builtin = {
+  let name: Bytes;
+  let signature: I32;
+  let op: Op;
+  let container: I32;
+  let messages: Array<Bytes>;
+};
 let _T = Array.new<I32>(0);
 let _BUILTINS = Array.new<Builtin>(0);
 
-export let declareBuiltins: () -> Bool = fn() {
+export let declareBuiltins = fn(): Bool {
   let t = H.newParam("T", 0);
   let length = "array length must be ";
   _T = [t];
   _extensions = Array.new<Extension>(0);
   _wanted = Array.new<Bytes>(0);
   _BUILTINS = [
-    Builtin.Builtin(H.functionType([H.TYPE_I32], H.arrayType(t)), Op.ArrayNew, -1, [length]),
-    Builtin.Builtin(H.functionType([H.arrayType(t), H.TYPE_I32], H.arrayType(t)), Op.ArrayResize, 0, ["Array.resize requires an array", length]),
-    Builtin.Builtin(H.functionType([], H.listType(t)), Op.ListNil, -1, []),
-    Builtin.Builtin(H.functionType([t, H.listType(t)], H.listType(t)), Op.ListCons, 1, ["list element must be ", "List.cons requires a list"]),
-    Builtin.Builtin(H.functionType([H.listType(t)], H.listType(t)), Op.ListTail, 0, ["List.tail requires a list"]),
-    Builtin.Builtin(H.functionType([H.listType(t)], t), Op.ListHead, 0, ["List.head requires a list"]),
-    Builtin.Builtin(H.functionType([H.arrayType(t)], t), Op.ArrayPop, 0, []),
-    Builtin.Builtin(H.functionType([H.arrayType(t)], H.TYPE_I32), Op.ArrayLen, 0, ["Array.len requires an array"]),
-    Builtin.Builtin(H.functionType([H.arrayType(t), t], H.TYPE_I32), Op.ArrayPush, 0, ["array element must be "]),
-    Builtin.Builtin(H.functionType([H.listType(t)], H.TYPE_BOOL), Op.ListIsNil, 0, ["List.is_nil requires a list"])
+    {
+      name: "Array.new",
+      signature: H.functionType([H.TYPE_I32], H.arrayType(t)),
+      op: Op.ArrayNew,
+      container: -1,
+      messages: [length]
+    },
+    {
+      name: "Array.resize",
+      signature: H.functionType([H.arrayType(t), H.TYPE_I32], H.arrayType(t)),
+      op: Op.ArrayResize,
+      container: 0,
+      messages: ["Array.resize requires an array", length]
+    },
+    {
+      name: "List.nil",
+      signature: H.functionType([], H.listType(t)),
+      op: Op.ListNil,
+      container: -1,
+      messages: []
+    },
+    {
+      name: "List.cons",
+      signature: H.functionType([t, H.listType(t)], H.listType(t)),
+      op: Op.ListCons,
+      container: 1,
+      messages: ["list element must be ", "List.cons requires a list"]
+    },
+    {
+      name: "List.tail",
+      signature: H.functionType([H.listType(t)], H.listType(t)),
+      op: Op.ListTail,
+      container: 0,
+      messages: ["List.tail requires a list"]
+    },
+    {
+      name: "List.head",
+      signature: H.functionType([H.listType(t)], t),
+      op: Op.ListHead,
+      container: 0,
+      messages: ["List.head requires a list"]
+    },
+    {
+      name: "Array.pop",
+      signature: H.functionType([H.arrayType(t)], t),
+      op: Op.ArrayPop,
+      container: 0,
+      messages: []
+    },
+    {
+      name: "Array.len",
+      signature: H.functionType([H.arrayType(t)], H.TYPE_I32),
+      op: Op.ArrayLen,
+      container: 0,
+      messages: ["Array.len requires an array"]
+    },
+    {
+      name: "Array.push",
+      signature: H.functionType([H.arrayType(t), t], H.TYPE_I32),
+      op: Op.ArrayPush,
+      container: 0,
+      messages: ["array element must be "]
+    },
+    {
+      name: "List.is_nil",
+      signature: H.functionType([H.listType(t)], H.TYPE_BOOL),
+      op: Op.ListIsNil,
+      container: 0,
+      messages: ["List.is_nil requires a list"]
+    }
   ];
   true
 };
 
 let _builtinIndex = fn(name: Bytes): I32 {
-  match (name) {
-    "len", "Array.len" => 7, "push", "Array.push" => 8, "pop", "Array.pop" => 6, "resize", "Array.resize" => 1,
-    "Array.new" => 0, "List.nil" => 2, "List.cons" => 3, "List.tail" => 4, "List.head" => 5, "List.is_nil" => 9,
-    _ => -1,
+  let i = 0;
+
+  while (i < _BUILTINS.len()) {
+    if (_BUILTINS[i].name == name) { return i; }
+    i++;
   }
+  -1
 };
 
 let _receiverBuiltin = fn(qualified: Bytes): I32 {
   let index = _builtinIndex(qualified);
   if (index < 0) { return -1; }
-  match (_BUILTINS[index]) { Builtin(_, _, container, _) => container == 0 ? index : -1 }
+  _BUILTINS[index].container == 0 ? index : -1
 };
 let _NO_TYPES = Array.new<AstType>(0);
 
 let _bytesArity = fn(name: Bytes): I32 {
-  match (name) { "len", "toString", "new" => 1, "eq", "get", "get_u8" => 2, "set", "set_u8", "slice" => 3, _ => 0 }
+  match (name) {
+    "len", "toString", "new" => 1,
+    "eq", "get", "get_u8" => 2,
+    "set", "set_u8", "slice" => 3,
+    _ => 0,
+  }
 };
 
 let _intrinsic = fn(qualified: Bytes): Bool {
   let bytes = "Bytes.";
   let object = "Object.";
-  if (startsWith(qualified, object)) { return isObjectIntrinsic(Bytes.slice(qualified, object.len(), qualified.len() - object.len())); }
-  if (startsWith(qualified, bytes)) { return _bytesArity(Bytes.slice(qualified, bytes.len(), qualified.len() - bytes.len())) > 0; }
+
+  let after = fn(prefix: Bytes): Bytes {
+    Bytes.slice(qualified, prefix.len(), qualified.len() - prefix.len())
+  };
+  if (qualified.startsWith(object)) { return isObjectIntrinsic(after(object)); }
+  if (qualified.startsWith(bytes)) { return _bytesArity(after(bytes)) > 0; }
   (_builtinIndex(qualified) >= 0) || match (qualified) {
-    "Tuple.len", "Tuple.get", "Tuple.toString", "Atom.intern", "Atom.toString", "Enum.tag", "Enum.toString" => true,
+    "Tuple.len", "Tuple.get", "Tuple.toString", "Atom.intern", "Atom.toString", "Enum.tag",
+    "Enum.toString" => true,
     _ => false,
   }
 };
-export let isIntrinsic: (Bytes, Bytes) -> Bool = fn(owner, name) { _intrinsic(owner + "." + name) };
+export let isIntrinsic = fn(owner: Bytes, name: Bytes): Bool { _intrinsic(`${owner}.${name}`) };
 
-let _extensible = fn(name: Bytes): Bool { match (name) { "Array", "Atom", "Bytes", "Enum", "List", "Object", "Tuple" => true, _ => false } };
+let _extensible = fn(name: Bytes): Bool {
+  match (name) {
+    "Array", "Atom", "Bytes", "Enum", "List", "Object", "Tuple" => true,
+    _ => false,
+  }
+};
 
-export let extendedType: (Bytes) -> Bytes = fn(name) {
+export let extendedType = fn(name: Bytes): Bytes {
   let prefix = "std.core.";
-  if (!startsWith(name, prefix)) { return ""; }
+  if (!name.startsWith(prefix)) { return ""; }
   let extended = Bytes.slice(name, prefix.len(), name.len() - prefix.len());
   _extensible(extended) ? extended : ""
 };
 
-export let useExtension: (Bytes, I32, Array<Bytes>) -> Bool = fn(owner, module, exports) {
-  _extensions.push(Extension.Extension(owner, module, exports));
+export let useExtension = fn(owner: Bytes, module: I32, exports: Array<Bytes>): Bool {
+  _extensions.push({ name: owner, module, exports });
   true
 };
 
-export let wantedExtensions: () -> Array<Bytes> = fn() { _wanted };
+export let wantedExtensions = fn(): Array<Bytes> { _wanted };
 
-let _extends = fn(space: Bytes, qualified: Bytes): Bool { _extensible(space) && !_intrinsic(qualified) };
+let _extends = fn(space: Bytes, qualified: Bytes): Bool {
+  _extensible(space) && !_intrinsic(qualified)
+};
 
 let _extensionOf = fn(ty: I32): Bytes {
   match (H.kindOf(ty)) {
-    Array => "Array", List => "List", Bytes, ByteBuffer => "Bytes", Tuple => "Tuple", Atom => "Atom", Object => "Object",
+    Array => "Array",
+    List => "List",
+    Bytes, ByteBuffer => "Bytes",
+    Tuple => "Tuple",
+    Atom => "Atom",
+    Object => "Object",
     Enum, Applied => H.isRecord(ty) ? "" : "Enum",
     _ => "",
   }
@@ -559,137 +790,193 @@ let _extensionModule = fn(owner: Bytes): Tuple<I32, Array<Bytes>> {
   let e = 0;
 
   while ((module < 0) && (e < _extensions.len())) {
-    match (_extensions[e]) {
-      Extension(extended, index, names) => {
-        if (extended == owner) {
-          module = index;
-          exports = names;
-        }
-      }
-    };
+    let extension = _extensions[e];
+
+    if (extension.name == owner) {
+      module = extension.module;
+      exports = extension.exports;
+    }
     e++;
   }
 
   if ((module < 0) || (module > currentModule())) {
-    internIndex(_wanted, owner);
+    _wanted.internIndex(owner);
     module = -1;
   }
   (module, exports)
 };
 
-let _extensionCall = fn(owner: Bytes, name: Bytes, types: Array<AstType>, receiver: I32, args: Array<AstExpr>, expected: I32): I32 {
+let _extensionCall = fn(
+  owner: Bytes,
+  name: Bytes,
+  types: Array<AstType>,
+  receiver: I32,
+  args: Array<AstExpr>,
+  expected: I32
+): I32 {
   let (module, exports) = _extensionModule(owner);
-  let binding = module < 0 ? Binding.Unbound : module == currentModule() ? scoped(name) : exportedValue(module, name);
-  let qualified = owner + "." + name;
+
+  let binding = if (module < 0) {
+    Binding.Unbound
+  } else if (module == currentModule()) {
+    scoped(name)
+  } else {
+    exportedValue(module, name)
+  };
+  let qualified = `${owner}.${name}`;
 
   match (binding) {
     Unbound => {
       let closest = module < 0 ? Array.new<Bytes>(0) : closestNames(exports, name);
-      let message = receiver >= 0 ? "unknown method " + name + " of " + H.typeName(H.typeOf(receiver)) : "unknown function " + qualified;
-      throw coded(E0800, closest.len() == 0 ? message : message + "; closest: " + joined(closest, ", "));
-      -1
+
+      let message = if (receiver >= 0) {
+        `unknown method ${name} of ${H.typeName(H.typeOf(receiver))}`
+      } else {
+        `unknown function ${qualified}`
+      };
+      if (closest.len() == 0) { throw coded(E0800, message); }
+      throw coded(E0800, `${message}; closest: ${joined(closest, ", ")}`);
     },
     _ => checkFunctionCall(binding, qualified, types, receiver, args, expected),
   }
 };
 
-let _checkBuiltin = fn(index: I32, name: Bytes, types: Array<AstType>, receiver: I32, args: Array<AstExpr>, expected: I32): I32 {
-  match (_BUILTINS[index]) { Builtin(signature, op, container, messages) => {
-    checkArity(args, H.typeArgCount(signature) - (receiver < 0 ? 0 : 1), name);
-    let checked = receiver;
+let _checkBuiltin = fn(
+  index: I32,
+  name: Bytes,
+  types: Array<AstType>,
+  receiver: I32,
+  args: Array<AstExpr>,
+  expected: I32
+): I32 {
+  let builtin = _BUILTINS[index];
+  let signature = builtin.signature;
+  let container = builtin.container;
+  let messages = builtin.messages;
+  checkArity(args, H.typeArgCount(signature) - (receiver < 0 ? 0 : 1), name);
+  let checked = receiver;
 
-    if ((receiver < 0) && (container >= 0) && (types.len() == 0)) {
-      checked = _of(args[container], container + 1, H.kindOf(H.typeArg(signature, container)), -1, messages[container]);
-    }
-    let (_, ty, children) = checkInstance(_T, signature, name, types, args, expected, messages, checked, container);
-    H.node(op, H.innerOf(ty), 0, 0, children)
-  } }
+  if ((receiver < 0) && (container >= 0) && (types.len() == 0)) {
+    let kind = H.kindOf(H.typeArg(signature, container));
+    checked = _of(args[container], container + 1, kind, -1, messages[container]);
+  }
+  let (_, ty, children) = checkInstance(
+    _T, signature, name, types, args, expected, messages, checked, container
+  );
+  H.opNode(builtin.op, H.innerOf(ty), children)
 };
 
 let _bytesOperand = fn(receiver: I32, args: Array<AstExpr>, ty: I32, what: Bytes): I32 {
   if (receiver < 0) {
-    return ty < 0 ? _readable(args[0], 1, what) : _of(args[0], 1, H.kindOf(ty), ty == H.TYPE_BYTES ? ty : -1, what);
+    if (ty < 0) { return _readable(args[0], 1, what); }
+    return _of(args[0], 1, H.kindOf(ty), ty == H.TYPE_BYTES ? ty : -1, what);
   }
-  if ((ty >= 0) && !H.isKind(H.typeOf(receiver), H.kindOf(ty))) { throw coded(E0400, what + bufferHint(H.typeOf(receiver))); }
+
+  if ((ty >= 0) && !H.isKind(H.typeOf(receiver), H.kindOf(ty))) {
+    throw coded(E0400, `${what}${bufferHint(H.typeOf(receiver))}`);
+  }
   receiver
 };
 
-let _bytesI32 = fn(args: Array<AstExpr>, skip: I32, at: I32, what: Bytes): I32 { _i32(args[at - skip], at - skip + 1, what) };
+let _bytesI32 = fn(args: Array<AstExpr>, skip: I32, at: I32, what: Bytes): I32 {
+  _i32(args[at - skip], at - skip + 1, what)
+};
 
 let _bytesCall = fn(name: Bytes, receiver: I32, args: Array<AstExpr>): I32 {
-  let qualified = "Bytes." + name;
+  let qualified = `Bytes.${name}`;
   let skip = receiver < 0 ? 0 : 1;
   checkArity(args, _bytesArity(name) - skip, qualified);
-  let requires = qualified + " requires Bytes";
+  let requires = `${qualified} requires Bytes`;
 
   match (name) {
-    "len" => H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [_bytesOperand(receiver, args, -1, requires)]),
+    "len" => H.opNode(Op.BytesLen, H.TYPE_I32, [_bytesOperand(receiver, args, -1, requires)]),
     "eq" => {
       let left = _bytesOperand(receiver, args, H.TYPE_BYTES, requires);
-      H.node(Op.BytesEq, H.TYPE_BOOL, 0, 0, [left, _of(args[1 - skip], 2 - skip, Kind.Bytes, H.TYPE_BYTES, requires)])
+      let right = _of(args[1 - skip], 2 - skip, Kind.Bytes, H.TYPE_BYTES, requires);
+      H.opNode(Op.BytesEq, H.TYPE_BOOL, [left, right])
     },
     "get", "get_u8" => {
       let bytes = _bytesOperand(receiver, args, -1, requires);
-      H.node(Op.BytesGet, H.TYPE_I32, 0, 0, [bytes, _bytesI32(args, skip, 1, "byte index")])
+      H.opNode(Op.BytesGet, H.TYPE_I32, [bytes, _bytesI32(args, skip, 1, "byte index")])
     },
     "set", "set_u8" => {
-      let buffer = _bytesOperand(receiver, args, H.TYPE_BYTE_BUFFER, qualified + " requires a buffer from Bytes.new; Bytes values are immutable");
+      let wanted = `${qualified} requires a buffer from Bytes.new; Bytes values are immutable`;
+      let buffer = _bytesOperand(receiver, args, H.TYPE_BYTE_BUFFER, wanted);
       let index = _bytesI32(args, skip, 1, "byte index");
-      H.node(Op.BytesSet, H.TYPE_I32, 0, 0, [buffer, index, _bytesI32(args, skip, 2, "byte")])
+      H.opNode(Op.BytesSet, H.TYPE_I32, [buffer, index, _bytesI32(args, skip, 2, "byte")])
     },
     "slice" => {
       let bytes = _bytesOperand(receiver, args, -1, requires);
       let start = _bytesI32(args, skip, 1, "slice start");
-      H.node(Op.BytesSlice, H.TYPE_BYTES, 0, 0, [bytes, start, _bytesI32(args, skip, 2, "slice length")])
+      let length = _bytesI32(args, skip, 2, "slice length");
+      H.opNode(Op.BytesSlice, H.TYPE_BYTES, [bytes, start, length])
     },
     "toString" => {
       let statements = Array.new<I32>(0);
-      let buffer = hideValue(statements, "buffer", _bytesOperand(receiver, args, H.TYPE_BYTE_BUFFER, qualified + " requires a buffer from Bytes.new"));
-      let length = H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [H.local(buffer, H.TYPE_BYTE_BUFFER)]);
-      statements.push(H.node(Op.BytesSlice, H.TYPE_BYTES, 0, 0, [H.local(buffer, H.TYPE_BYTE_BUFFER), i32Of(0), length]));
+      let wanted = `${qualified} requires a buffer from Bytes.new`;
+      let operand = _bytesOperand(receiver, args, H.TYPE_BYTE_BUFFER, wanted);
+      let buffer = hideValue(statements, "buffer", operand);
+      let length = H.opNode(Op.BytesLen, H.TYPE_I32, [H.local(buffer, H.TYPE_BYTE_BUFFER)]);
+      let held = H.local(buffer, H.TYPE_BYTE_BUFFER);
+      statements.push(H.opNode(Op.BytesSlice, H.TYPE_BYTES, [held, i32Of(0), length]));
       H.node(Op.Block, H.TYPE_BYTES, 0, 1, statements)
     },
     _ => {
-      internalError("no Bytes intrinsic " + name);
+      internalError(`no Bytes intrinsic ${name}`);
       -1
     },
   }
 };
 
-let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<AstExpr>, expected: I32): I32 {
-  let qualified = space + "." + name;
+let _static = fn(
+  space: Bytes,
+  name: Bytes,
+  types: Array<AstType>,
+  args: Array<AstExpr>,
+  expected: I32
+): I32 {
+  let qualified = `${space}.${name}`;
   let builtin = _builtinIndex(qualified);
   if (builtin >= 0) { return _checkBuiltin(builtin, qualified, types, -1, args, expected); }
   let isFunction = (space == "Function") && isFunctionIntrinsic(name);
 
   if (isFunction || ((space == "Object") && isObjectIntrinsic(name))) {
-    if (args.len() == 0) { throw coded(E0600, qualified + (isFunction ? " requires a function" : " requires an Object")); }
+    if (args.len() == 0) {
+      let wanted = isFunction ? "a function" : "an Object";
+      throw coded(E0600, `${qualified} requires ${wanted}`);
+    }
     let rest = Array.new<AstExpr>(0);
-    appendFrom(rest, args, 1);
-    if (!isFunction) { return checkObjectCall(name, objectArgument(args[0], qualified), types, rest, 2); }
-    if (types.len() != 0) { throw coded(E0402, qualified + " does not take type arguments"); }
+    rest.appendFrom(args, 1);
+
+    if (!isFunction) {
+      return checkObjectCall(name, objectArgument(args[0], qualified), types, rest, 2);
+    }
+    if (types.len() != 0) { throw coded(E0402, `${qualified} does not take type arguments`); }
     let outer = enterSyntax(withoutCallee());
     let call = checkFunctionIntrinsic(name, checkPresent(args[0], 0), rest);
     enterSyntax(outer);
     return call;
   }
-  if ((types.len() != 0) && !_extends(space, qualified)) { throw coded(E0402, qualified + " does not take type arguments"); }
-  if ((space == "Bytes") && (name != "new") && (_bytesArity(name) > 0)) { return _bytesCall(name, -1, args); }
+
+  if ((types.len() != 0) && !_extends(space, qualified)) {
+    throw coded(E0402, `${qualified} does not take type arguments`);
+  }
+
+  if ((space == "Bytes") && (name != "new") && (_bytesArity(name) > 0)) {
+    return _bytesCall(name, -1, args);
+  }
 
   match (qualified) {
     "Bytes.new" => {
       checkArity(args, 1, qualified);
-      H.node(Op.BytesNew, H.TYPE_BYTE_BUFFER, 0, 0, [_i32(args[0], 1, "bytes length")])
+      H.opNode(Op.BytesNew, H.TYPE_BYTE_BUFFER, [_i32(args[0], 1, "bytes length")])
     },
     "Atom.intern" => {
       checkArity(args, 1, qualified);
 
       match (args[0]) {
         Bytes(value) => namedKey(value),
-        _ => {
-          throw coded(E0808, "Atom.intern requires a compile-time bytes literal");
-          -1
-        },
+        _ => { throw coded(E0808, "Atom.intern requires a compile-time bytes literal"); },
       }
     },
     "Std.string" => _string(args),
@@ -704,12 +991,12 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
     },
     "System.args" => {
       throw coded(E0601, "System.args is a value, not a function; read it without parentheses");
-      -1
     },
     "Atom.toString", "Tuple.toString" => {
       checkArity(args, 1, qualified);
       let kind = space == "Atom" ? Kind.Atom : Kind.Tuple;
-      printed(_of(args[0], 1, kind, -1, qualified + " requires " + (space == "Atom" ? "an Atom" : "a tuple")), qualified, 1)
+      let wanted = space == "Atom" ? "an Atom" : "a tuple";
+      printed(_of(args[0], 1, kind, -1, `${qualified} requires ${wanted}`), qualified, 1)
     },
     "Enum.tag", "Enum.toString" => {
       checkArity(args, 1, qualified);
@@ -717,9 +1004,14 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
 
       if (!H.isEnum(H.typeOf(value))) {
         enterSyntax(syntaxChild(1));
-        throw coded(E0400, qualified + " requires an enum value");
+        throw coded(E0400, `${qualified} requires an enum value`);
       }
-      name == "tag" ? H.node(Op.EnumTag, H.TYPE_I32, 0, 0, [value]) : printed(value, qualified, 1)
+
+      if (name == "tag") {
+        H.opNode(Op.EnumTag, H.TYPE_I32, [value])
+      } else {
+        printed(value, qualified, 1)
+      }
     },
     "System.assert" => checkSystemAssertion("assert", qualified, args),
     "System.assertEq" => checkSystemAssertion("assertEq", qualified, args),
@@ -727,12 +1019,24 @@ let _static = fn(space: Bytes, name: Bytes, types: Array<AstType>, args: Array<A
       checkArity(args, 1, qualified);
       H.callStd("process_exit", [H.TYPE_I32], H.TYPE_I32, [_i32(args[0], 1, "exit status")])
     },
-    _ => _extends(space, qualified) ? _extensionCall(space, name, types, -1, args, expected) : checkNumberCall(space, name, args, expected),
+    _ when (_extends(space, qualified)) => {
+      _extensionCall(space, name, types, -1, args, expected)
+    },
+    _ => checkNumberCall(space, name, args, expected),
   }
 };
 
-let _method = fn(base: AstExpr, name: Bytes, types: Array<AstType>, args: Array<AstExpr>, expected: I32): I32 {
-  match (base) { Super => { return checkSuperCall(name, types, args); }, _ => null };
+let _method = fn(
+  base: AstExpr,
+  name: Bytes,
+  types: Array<AstType>,
+  args: Array<AstExpr>,
+  expected: I32
+): I32 {
+  match (base) {
+    Super => { return checkSuperCall(name, types, args); },
+    _ => null,
+  };
   let outer = enterSyntax(syntaxChild(0));
   let receiver = checkPresent(base, 0);
   enterSyntax(outer);
@@ -742,7 +1046,11 @@ let _method = fn(base: AstExpr, name: Bytes, types: Array<AstType>, args: Array<
     let call = checkPrototypeCall(receiver, name, args);
     if (call >= 0) { return call; }
     let (field, _) = linkedMember(declared, name);
-    if (field >= 0) { return checkIndirectCall(readTyped(objectValue(receiver), namedKey(name), field), -1, args); }
+
+    if (field >= 0) {
+      let read = readTyped(objectValue(receiver), namedKey(name), field);
+      return checkIndirectCall(read, -1, args);
+    }
   }
   receiver = objectValue(receiver);
   let ty = H.typeOf(receiver);
@@ -750,16 +1058,35 @@ let _method = fn(base: AstExpr, name: Bytes, types: Array<AstType>, args: Array<
   if (ty == H.TYPE_OBJECT) {
     if (isObjectIntrinsic(name)) { return checkObjectCall(name, receiver, types, args, 1); }
     let (module, exports) = _extensionModule("Object");
-    if (linkedMember(declared, name).1 && (indexOf(exports, name) < 0)) { throw coded(E0800, H.typeName(declared) + " has no method or field " + name); }
-    if ((module < 0) || (indexOf(exports, name) >= 0)) { return _extensionCall("Object", name, types, receiver, args, expected); }
+
+    if (linkedMember(declared, name).1 && (exports.indexOf(name) < 0)) {
+      throw coded(E0800, `${H.typeName(declared)} has no method or field ${name}`);
+    }
+
+    if ((module < 0) || (exports.indexOf(name) >= 0)) {
+      return _extensionCall("Object", name, types, receiver, args, expected);
+    }
   }
-  if (types.len() != 0) { throw coded(E0402, name + " does not take type arguments"); }
-  let builtin = H.isKind(ty, Kind.Array) ? _builtinIndex(name) : H.isKind(ty, Kind.List) ? _receiverBuiltin("List." + name) : -1;
+  if (types.len() != 0) { throw coded(E0402, `${name} does not take type arguments`); }
+
+  let builtin = if (H.isKind(ty, Kind.Array)) {
+    _receiverBuiltin(`Array.${name}`)
+  } else if (H.isKind(ty, Kind.List)) {
+    _receiverBuiltin(`List.${name}`)
+  } else {
+    -1
+  };
 
   match (H.kindOf(ty)) {
-    Bytes, ByteBuffer when ((name != "new") && (_bytesArity(name) > 0)) => _bytesCall(name, receiver, args),
-    Array, List when (builtin >= 0) => _checkBuiltin(builtin, name, _NO_TYPES, receiver, args, expected),
-    Record, Applied when (H.isRecord(ty)) => checkIndirectCall(_readField(receiver, _fieldOf(ty, name)), -1, args),
+    Bytes, ByteBuffer when ((name != "new") && (_bytesArity(name) > 0)) => {
+      _bytesCall(name, receiver, args)
+    },
+    Array, List when (builtin >= 0) => {
+      _checkBuiltin(builtin, name, _NO_TYPES, receiver, args, expected)
+    },
+    Record, Applied when (H.isRecord(ty)) => {
+      checkIndirectCall(_readField(receiver, _fieldOf(ty, name)), -1, args)
+    },
     Atom, Tuple, Enum, Applied when (name == "toString") => {
       checkArity(args, 0, "toString");
       printed(receiver, "toString", -1)
@@ -772,75 +1099,97 @@ let _method = fn(base: AstExpr, name: Bytes, types: Array<AstType>, args: Array<
     Function when (isFunctionIntrinsic(name)) => checkFunctionIntrinsic(name, receiver, args),
     Enum, Applied when (name == "tag") => {
       checkArity(args, 0, "tag");
-      H.node(Op.EnumTag, H.TYPE_I32, 0, 0, [receiver])
+      H.opNode(Op.EnumTag, H.TYPE_I32, [receiver])
     },
     _ => {
       let extended = _extensionOf(ty);
-      if ((extended == "") || isIntrinsic(extended, name)) { throw coded(E0800, "unknown method " + name + " of " + H.typeName(ty)); }
+
+      if ((extended == "") || isIntrinsic(extended, name)) {
+        throw coded(E0800, `unknown method ${name} of ${H.typeName(ty)}`);
+      }
       _extensionCall(extended, name, _NO_TYPES, receiver, args, expected)
     },
   }
 };
 
 let _layoutCall = fn(ty: I32, name: Bytes, types: Array<AstType>, args: Array<AstExpr>): I32 {
-  let qualified = H.typeName(ty) + "." + name;
-  if ((name != "pack") && (name != "unpack")) { throw coded(E0800, "unknown function " + qualified + "; a bytes layout has pack and unpack"); }
-  if (types.len() != 0) { throw coded(E0402, qualified + " does not take type arguments"); }
+  let qualified = `${H.typeName(ty)}.${name}`;
+
+  if ((name != "pack") && (name != "unpack")) {
+    throw coded(E0800, `unknown function ${qualified}; a bytes layout has pack and unpack`);
+  }
+  if (types.len() != 0) { throw coded(E0402, `${qualified} does not take type arguments`); }
   checkArity(args, 1, qualified);
   let statements = Array.new<I32>(0);
 
   if (name == "unpack") {
-    let bytes = hideValue(statements, "bytes", _of(args[0], 1, Kind.Bytes, H.TYPE_BYTES, qualified + " takes Bytes"));
+    let packed = _of(args[0], 1, Kind.Bytes, H.TYPE_BYTES, `${qualified} takes Bytes`);
+    let bytes = hideValue(statements, "bytes", packed);
     statements.push(unpackLayout(ty, fn(): I32 { H.local(bytes, H.TYPE_BYTES) }));
     return H.node(Op.Block, H.nullType(ty), 0, 1, statements);
   }
 
-  match (args[0]) {
-    Object(entries) => {
-      let outer = enterSyntax(syntaxChild(1));
-      checkLayoutLiterals(ty, entries);
-      enterSyntax(outer);
-    }, _ => null
-  };
+  if (let Object(entries) = args[0]) {
+    let outer = enterSyntax(syntaxChild(1));
+    checkLayoutLiterals(ty, entries);
+    enterSyntax(outer);
+  }
   let record = checkOperand(args[0], 1, ty);
 
   if (!H.unify(H.typeOf(record), ty)) {
     enterSyntax(syntaxChild(1));
-    throw coded(E0400, qualified + " takes " + H.typeName(ty) + ", not " + H.typeName(H.typeOf(record)));
+    let takes = `${qualified} takes ${H.typeName(ty)}`;
+    throw coded(E0400, `${takes}, not ${H.typeName(H.typeOf(record))}`);
   }
 
   if (H.opOf(record) == Op.Tuple) {
     let values = Array.new<I32>(0);
-    while (values.len() < H.childCount(record)) { values.push(H.childOf(record, values.len() as I32)); }
+    while (values.len() < H.childCount(record)) { values.push(H.childOf(record, values.len())); }
     return packLayout(ty, values);
   }
   let hidden = hideValue(statements, "record", record);
   let values = Array.new<I32>(0);
-  while (values.len() < H.fieldCount(ty, 0)) { values.push(_readField(H.local(hidden, ty), values.len() as I32)); }
+
+  while (values.len() < H.fieldCount(ty, 0)) {
+    values.push(_readField(H.local(hidden, ty), values.len()));
+  }
   statements.push(packLayout(ty, values));
   H.node(Op.Block, H.TYPE_BYTES, 0, 1, statements)
 };
 
-let _call = fn(callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>, expected: I32): I32 {
-  let (target, types) = match (callee) { TypeApply(base, applied) when (typeArgs.len() == 0) => (base, applied), _ => (callee, typeArgs) };
+let _call = fn(
+  callee: AstExpr,
+  typeArgs: Array<AstType>,
+  args: Array<AstExpr>,
+  expected: I32
+): I32 {
+  let (target, types) = match (callee) {
+    TypeApply(base, applied) when (typeArgs.len() == 0) => (base, applied),
+    _ => (callee, typeArgs),
+  };
 
   match (target) {
-    Member(Variable(space), name) when (_builtin(space)) => _static(space, name, types, args, expected),
-    Member(Variable(space), name) when (!isBound(space) && H.isLayout(scopedType(space))) => _layoutCall(scopedType(space), name, types, args),
+    Member(Variable(space), name) when (_builtin(space)) => {
+      _static(space, name, types, args, expected)
+    },
+    Member(Variable(space), name) when (!isBound(space) && H.isLayout(scopedType(space))) => {
+      _layoutCall(scopedType(space), name, types, args)
+    },
     Member(Variable(space), name) when (!isBound(space)) => {
       touch(space);
-      throw scopedType(space) >= 0 ? coded(E0301, space + " is a type, not a value") : coded(E0300, "unknown name " + space + " in " + space + "." + name + "; import a module as " + space + " to call its exports");
-      -1
+      if (scopedType(space) >= 0) { throw coded(E0301, `${space} is a type, not a value`); }
+      let unknown = `unknown name ${space} in ${space}.${name}`;
+      throw coded(E0300, `${unknown}; import a module as ${space} to call its exports`);
     },
     Member(base, name) => _method(base, name, types, args, expected),
     _ => {
-      throw coded(E0900, "calling this expression is not supported yet; bind the function to a name first");
-      -1
+      throw coded(E0900,
+        "calling this expression is not supported yet; bind the function to a name first");
     },
   }
 };
 
-export let checkAggregateExpr: (AstExpr, I32) -> I32 = fn(expr, expected) {
+export let checkAggregateExpr = fn(expr: AstExpr, expected: I32): I32 {
   match (expr) {
     Tuple(items) => _tuple(items, expected),
     Bits(segments) => checkBits(segments),

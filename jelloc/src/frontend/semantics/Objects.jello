@@ -3,25 +3,30 @@ package frontend.semantics;
 import type { AssignOp, Expr as AstExpr, ObjectEntry, Type as AstType } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { Kind, Op } from frontend.hir.Hir;
-import { expressionOf, i32Of, printed } from frontend.semantics.Derived;
+import { expressionOf, indexLoop, printed } from frontend.semantics.Derived;
 import { UNCHECKED_KINDS, checkedKind, storable } from frontend.semantics.Values;
-import { appendFrom } from support.Arrays;
-import { checkArity, checkIndirectCall, checkOperand, checkPresent, checkType, enterSyntax, hasSpread, hideValue, inferLater, newBinding, objectValue, syntaxChild } from frontend.semantics.TypeCheck;
+import {
+  checkArity, checkIndirectCall, checkOperand, checkPresent, checkType, enterSyntax, hasSpread,
+  hideValue, inferLater, objectValue, syntaxChild,
+} from frontend.semantics.TypeCheck;
 import { E0402, E0406, E0604, E0805, E0806, coded } from support.Codes;
 
 let _object = fn(binding: I32): I32 { H.local(binding, H.TYPE_OBJECT) };
 
-export let namedKey: (Bytes) -> I32 = fn(name) { H.node(Op.Atom, H.TYPE_ATOM, H.bytesId(name), 0, []) };
+export let namedKey = fn(name: Bytes): I32 {
+  H.node(Op.Atom, H.TYPE_ATOM, H.bytesId(name), 0, [])
+};
 
-export let objectKey: (AstExpr, I32) -> I32 = fn(key, index) {
+export let objectKey = fn(key: AstExpr, index: I32): I32 {
   match (key) {
     Atom(name), Bytes(name) => namedKey(name),
     _ => {
       let checked = checkPresent(key, index);
+      let ty = H.typeOf(checked);
 
-      if (H.typeOf(checked) != H.TYPE_ATOM) {
+      if (ty != H.TYPE_ATOM) {
         enterSyntax(syntaxChild(index));
-        throw coded(E0806, "an Object key is an Atom or a bytes literal, not " + H.typeName(H.typeOf(checked)));
+        throw coded(E0806, `an Object key is an Atom or a bytes literal, not ${H.typeName(ty)}`);
       }
       checked
     },
@@ -31,80 +36,103 @@ export let objectKey: (AstExpr, I32) -> I32 = fn(key, index) {
 let _access = fn(op: Op, ty: I32, object: I32, key: I32, operands: Array<I32>): I32 {
   let named = H.opOf(key) == Op.Atom;
   let children = named ? [object] : [object, key];
-  H.node(op, ty, named ? H.valueOf(key) : -1, 0, appendFrom(children, operands, 0))
+  H.node(op, ty, named ? H.valueOf(key) : -1, 0, children.appendFrom(operands, 0))
 };
 
-export let readObject: (I32, I32, I32) -> I32 = fn(object, key, ty) { _access(Op.ObjectGet, ty, object, key, []) };
+export let readObject = fn(object: I32, key: I32, ty: I32): I32 {
+  _access(Op.ObjectGet, ty, object, key, [])
+};
 
-export let readTyped: (I32, I32, I32) -> I32 = fn(object, key, declared) {
+export let readTyped = fn(object: I32, key: I32, declared: I32): I32 {
   let ty = H.resolve(declared);
   if (H.isKind(ty, Kind.Var)) { H.unify(ty, H.newVar(true)); }
   if (H.readsExactly(ty) || !H.isKind(ty, Kind.Null)) { return readObject(object, key, ty); }
   let statements = Array.new<I32>(0);
   let held = hideValue(statements, "field", readObject(object, key, H.TYPE_DYNAMIC));
-  let absent = H.node(Op.IsNull, H.TYPE_BOOL, 0, 0, [H.local(held, H.TYPE_DYNAMIC)]);
-  let present = H.node(Op.Present, ty, 0, 0, [H.node(Op.FromDynamic, H.innerOf(ty), 0, 0, [H.local(held, H.TYPE_DYNAMIC)])]);
-  statements.push(H.node(Op.If, ty, 0, 0, [absent, H.node(Op.Null, ty, 0, 0, []), present]));
+  let absent = H.opNode(Op.IsNull, H.TYPE_BOOL, [H.local(held, H.TYPE_DYNAMIC)]);
+  let unboxed = H.opNode(Op.FromDynamic, H.innerOf(ty), [H.local(held, H.TYPE_DYNAMIC)]);
+  let present = H.opNode(Op.Present, ty, [unboxed]);
+  statements.push(H.opNode(Op.If, ty, [absent, H.opNode(Op.Null, ty, []), present]));
   H.node(Op.Block, ty, 0, 1, statements)
 };
 
-let _write = fn(object: I32, key: I32, value: I32): I32 { _access(Op.ObjectSet, H.typeOf(value), object, key, [value]) };
+let _write = fn(object: I32, key: I32, value: I32): I32 {
+  _access(Op.ObjectSet, H.typeOf(value), object, key, [value])
+};
 
 let _store = fn(object: I32, key: I32, value: AstExpr, index: I32): I32 {
   let checked = checkOperand(value, index, -1);
   let ty = H.typeOf(checked);
   let outer = enterSyntax(syntaxChild(index));
   let link = (H.opOf(key) == Op.Atom) && (H.bytesOf(H.valueOf(key)) == "__proto__");
-  if (link && !H.isObject(ty) && (ty != H.TYPE_DYNAMIC) && (ty != H.TYPE_NULL)) { throw coded(E0805, "an Object's __proto__ is the Object it delegates to, not " + H.typeName(ty)); }
+
+  if (link && !H.isObject(ty) && (ty != H.TYPE_DYNAMIC) && (ty != H.TYPE_NULL)) {
+    let delegate = "an Object's __proto__ is the Object it delegates to";
+    throw coded(E0805, `${delegate}, not ${H.typeName(ty)}`);
+  }
   let stored = storable(checked);
   enterSyntax(outer);
   _write(object, key, stored)
 };
 
-export let storeField: (I32, Bytes, AstExpr, I32) -> I32 = fn(object, name, value, index) { _store(object, namedKey(name), value, index) };
+export let storeField = fn(object: I32, name: Bytes, value: AstExpr, index: I32): I32 {
+  _store(object, namedKey(name), value, index)
+};
 
-export let writeField: (I32, Bytes, I32) -> I32 = fn(object, name, value) { _write(object, namedKey(name), value) };
+export let writeField = fn(object: I32, name: Bytes, value: I32): I32 {
+  _write(object, namedKey(name), value)
+};
 
-export let OBJECT_UPDATE: Bytes = coded(E0806, "an Object field is Dynamic, so it cannot be updated in place; assign it a value");
+export let OBJECT_UPDATE: Bytes = coded(E0806,
+  "an Object field is Dynamic, so it cannot be updated in place; assign it a value");
 
-export let assignObject: (I32, I32, AssignOp, AstExpr) -> I32 = fn(object, key, op, value) {
-  match (op) {
-    Compound(_) => {
-      throw OBJECT_UPDATE;
-      null
-    }, _ => null
-  };
+export let assignObject = fn(object: I32, key: I32, op: AssignOp, value: AstExpr): I32 {
+  if (let Compound(_) = op) { throw OBJECT_UPDATE; }
   _store(object, key, value, 1)
 };
 
 let _copyFields = fn(statements: Array<I32>, target: I32, source: I32) {
   let keysType = H.arrayType(H.TYPE_ATOM);
-  let keys = hideValue(statements, "keys", H.node(Op.ObjectKeys, keysType, 0, 0, [_object(source)]));
-  let index = newBinding();
-  statements.push(H.declareBinding(Op.Let, index, "index", i32Of(0)));
-  let at = H.local(index, H.TYPE_I32);
-  let more = H.node(Op.Lt, H.TYPE_BOOL, 0, 0, [at, H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [H.local(keys, keysType)])]);
-  let key = fn(): I32 { H.node(Op.ArrayGet, H.TYPE_ATOM, 0, 0, [H.local(keys, keysType), H.local(index, H.TYPE_I32)]) };
+  let listed = H.opNode(Op.ObjectKeys, keysType, [_object(source)]);
+  let keys = hideValue(statements, "keys", listed);
+  let loop = indexLoop(fn() { H.opNode(Op.ArrayLen, H.TYPE_I32, [H.local(keys, keysType)]) });
+  statements.push(loop.start);
+
+  let key = fn(): I32 {
+    let at = H.local(loop.index, H.TYPE_I32);
+    H.opNode(Op.ArrayGet, H.TYPE_ATOM, [H.local(keys, keysType), at])
+  };
   let copy = _write(_object(target), key(), readObject(_object(source), key(), H.TYPE_DYNAMIC));
-  let next = H.node(Op.Assign, H.TYPE_I32, index, 0, [H.node(Op.Add, H.TYPE_I32, 0, 0, [H.local(index, H.TYPE_I32), i32Of(1)])]);
-  statements.push(H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, [expressionOf(copy), expressionOf(next)])]));
+  let body = H.opNode(Op.Block, 0, [expressionOf(copy), expressionOf(loop.next)]);
+  statements.push(H.opNode(Op.While, 0, [loop.more, body]));
   null
 };
 
 let _spread = fn(value: AstExpr, index: I32): I32 {
   let source = checkPresent(value, index);
+  let ty = H.typeOf(source);
 
-  if (!H.isObject(H.typeOf(source))) {
+  if (!H.isObject(ty)) {
     enterSyntax(syntaxChild(index));
-    throw coded(E0806, "an Object literal spreads only an Object, not " + H.typeName(H.typeOf(source)));
+    throw coded(E0806, `an Object literal spreads only an Object, not ${H.typeName(ty)}`);
   }
   source
 };
 
-export let checkObject: (Array<ObjectEntry>) -> I32 = fn(entries) {
-  let leading = entries.len() > 0 ? match (entries[0]) { Spread(value) => _spread(value, 0), _ => -1 } : -1;
+export let checkObject = fn(entries: Array<ObjectEntry>): I32 {
+  let leading = -1;
+
+  if (entries.len() > 0) {
+    if (let Spread(value) = entries[0]) { leading = _spread(value, 0); }
+  }
   let statements = Array.new<I32>(0);
-  let object = hideValue(statements, "object", leading >= 0 ? H.node(Op.ObjectCopy, H.TYPE_OBJECT, 0, 0, [leading]) : H.node(Op.ObjectNew, H.TYPE_OBJECT, 0, 0, []));
+
+  let fresh = if (leading >= 0) {
+    H.opNode(Op.ObjectCopy, H.TYPE_OBJECT, [leading])
+  } else {
+    H.opNode(Op.ObjectNew, H.TYPE_OBJECT, [])
+  };
+  let object = hideValue(statements, "object", fresh);
   let at = leading >= 0 ? 1 : 0;
   let i = at;
 
@@ -131,20 +159,35 @@ export let checkObject: (Array<ObjectEntry>) -> I32 = fn(entries) {
 };
 
 let _readType = fn(types: Array<AstType>, name: Bytes): I32 {
-  if (types.len() > 1) { throw coded(E0402, name + " takes one type argument"); }
+  if (types.len() > 1) { throw coded(E0402, `${name} takes one type argument`); }
   if (types.len() == 0) { return H.TYPE_DYNAMIC; }
   let ty = checkType(types[0]);
-  if ((ty != H.TYPE_DYNAMIC) && (checkedKind(ty) < 0)) { throw coded(E0406, name + " cannot read " + H.typeName(ty) + UNCHECKED_KINDS); }
+
+  if ((ty != H.TYPE_DYNAMIC) && (checkedKind(ty) < 0)) {
+    throw coded(E0406, `${name} cannot read ${H.typeName(ty)}${UNCHECKED_KINDS}`);
+  }
   ty
 };
 
-export let isObjectIntrinsic: (Bytes) -> Bool = fn(name) {
-  match (name) { "get", "set", "exists", "remove", "clear", "copy", "keys", "toString" => true, _ => false }
+export let isObjectIntrinsic = fn(name: Bytes): Bool {
+  match (name) {
+    "get", "set", "exists", "remove", "clear", "copy", "keys", "toString" => true,
+    _ => false,
+  }
 };
 
-export let checkObjectCall: (Bytes, I32, Array<AstType>, Array<AstExpr>, I32) -> I32 = fn(name, object, types, args, first) {
-  let qualified = "Object." + name;
-  if ((types.len() != 0) && (name != "get")) { throw coded(E0402, qualified + " does not take type arguments"); }
+export let checkObjectCall = fn(
+  name: Bytes,
+  object: I32,
+  types: Array<AstType>,
+  args: Array<AstExpr>,
+  first: I32
+): I32 {
+  let qualified = `Object.${name}`;
+
+  if ((types.len() != 0) && (name != "get")) {
+    throw coded(E0402, `${qualified} does not take type arguments`);
+  }
   let arity = match (name) { "get", "exists", "remove" => 1, "set" => 2, _ => 0 };
   checkArity(args, arity, qualified);
 
@@ -155,35 +198,39 @@ export let checkObjectCall: (Bytes, I32, Array<AstType>, Array<AstExpr>, I32) ->
       _store(object, key, args[1], first + 1)
     },
     "exists" => _access(Op.ObjectHas, H.TYPE_BOOL, object, objectKey(args[0], first), []),
-    "remove" => H.node(Op.ObjectRemove, H.TYPE_BOOL, 0, 0, [object, objectKey(args[0], first)]),
-    "clear" => H.node(Op.ObjectClear, H.TYPE_OBJECT, 0, 0, [object]),
-    "copy" => H.node(Op.ObjectCopy, H.TYPE_OBJECT, 0, 0, [object]),
-    "keys" => H.node(Op.ObjectKeys, H.arrayType(H.TYPE_ATOM), 0, 0, [object]),
+    "remove" => H.opNode(Op.ObjectRemove, H.TYPE_BOOL, [object, objectKey(args[0], first)]),
+    "clear" => H.opNode(Op.ObjectClear, H.TYPE_OBJECT, [object]),
+    "copy" => H.opNode(Op.ObjectCopy, H.TYPE_OBJECT, [object]),
+    "keys" => H.opNode(Op.ObjectKeys, H.arrayType(H.TYPE_ATOM), [object]),
     _ => printed(object, qualified, -1),
   }
 };
 
-export let objectArgument: (AstExpr, Bytes) -> I32 = fn(arg, name) {
+export let objectArgument = fn(arg: AstExpr, name: Bytes): I32 {
   let object = checkPresent(arg, 1);
 
   if (!H.isObject(H.typeOf(object))) {
     enterSyntax(syntaxChild(1));
-    throw coded(E0806, name + " requires an Object, not " + H.typeName(H.typeOf(object)));
+    throw coded(E0806, `${name} requires an Object, not ${H.typeName(H.typeOf(object))}`);
   }
   objectValue(object)
 };
 
-export let callObjectField: (I32, Bytes, Array<AstExpr>) -> I32 = fn(object, name, args) { callField(object, -1, name, args) };
+export let callObjectField = fn(object: I32, name: Bytes, args: Array<AstExpr>): I32 {
+  callField(object, -1, name, args)
+};
 
-export let callField: (I32, I32, Bytes, Array<AstExpr>) -> I32 = fn(holder, receiver, name, args) {
-  if (hasSpread(args)) { throw coded(E0604, "an Object's function cannot take a spread; its type is the arguments'"); }
+export let callField = fn(holder: I32, receiver: I32, name: Bytes, args: Array<AstExpr>): I32 {
+  if (hasSpread(args)) {
+    throw coded(E0604, "an Object's function cannot take a spread; its type is the arguments'");
+  }
   let statements = Array.new<I32>(0);
   let object = hideValue(statements, receiver < 0 ? "receiver" : "holder", objectValue(holder));
   let first = receiver < 0 ? object : hideValue(statements, "receiver", objectValue(receiver));
   let params = [H.TYPE_OBJECT];
   while (params.len() <= args.len()) { params.push(H.newVar(false)); }
   let result = H.newVar(false);
-  inferLater("o." + name + "(...)'s result, which the VM checks against the function", result);
+  inferLater(`o.${name}(...)'s result, which the VM checks against the function`, result);
   let callee = readObject(_object(object), namedKey(name), H.functionType(params, result));
   let call = checkIndirectCall(callee, _object(first), args);
   statements.push(call);

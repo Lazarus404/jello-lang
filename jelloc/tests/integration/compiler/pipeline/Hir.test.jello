@@ -5,12 +5,12 @@ import std.testing as T;
 import type { Hir, Kind } from frontend.hir.Hir;
 import frontend.hir.Hir as H;
 import {
-  Hir, Op, arrayType, beginHir, bytesId, declareEnum, functionType, hirTypeName, nullType, opOf, tupleType,
+  Op, arrayType, beginHir, bytesId, declareEnum, functionType, hirTypeName, nullType, opOf, tupleType,
   typeName, useHir,
 } from frontend.hir.Hir;
 import { takeInternalError } from support.Internal;
 import type { SyntaxMark } from frontend.syntax.Source;
-import { sourceDiagnostic, spanEnd, spanPath, spanStart } from frontend.syntax.Source;
+import { sourceDiagnostic } from frontend.syntax.Source;
 import { readText } from std.io.File;
 import { failure } from Driver;
 import { lexFile } from frontend.syntax.Lexer;
@@ -56,58 +56,48 @@ let copy = fn(values: Array<I32>): Array<I32> {
 
 // A copy of `hir` with one node column replaced (0 type, 1 value, 2 aux).
 let mutate = fn(hir: Hir, id: I32, column: I32, value: I32): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
-    let changed = copy(nodes);
-    changed[id * 5 + column] = value;
-    Hir.Hir(ops, changed, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields)
-  } }
+  let changed = copy(hir.nodes);
+  changed[id * 5 + column] = value;
+  { ...hir, nodes: changed }
 };
 
 let mutateOp = fn(hir: Hir, id: I32, op: Op): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
-    let changed = Array.new<Op>(0);
-    let i = 0;
+  let changed = Array.new<Op>(0);
+  let i = 0;
 
-    while (i < ops.len()) {
-      changed.push(i == id ? op : ops[i]);
-      i++;
-    }
-    Hir.Hir(changed, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields)
-  } }
+  while (i < hir.ops.len()) {
+    changed.push(i == id ? op : hir.ops[i]);
+    i++;
+  }
+  { ...hir, ops: changed }
 };
 
 // A copy of `hir` whose child `index` of `parent` is `child`.
 let mutateChild = fn(hir: Hir, parent: I32, index: I32, child: I32): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
-    let changed = copy(edges);
-    changed[nodes[parent * 5 + 3] + index] = child;
-    Hir.Hir(ops, nodes, changed, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields)
-  } }
+  let changed = copy(hir.edges);
+  changed[hir.nodes[parent * 5 + 3] + index] = child;
+  { ...hir, edges: changed }
 };
 
 // A copy of `hir` with its span table cut to `count` entries, or with one
 // span column replaced (0 path, 1 start, 2 end) when `id` is a node.
 let mutateSpans = fn(hir: Hir, count: I32, id: I32, column: I32, value: I32): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
-    let changed = Array.new<I32>(0);
-    let i = 0;
+  let changed = Array.new<I32>(0);
+  let i = 0;
 
-    while (i < count * 3) {
-      changed.push(spans[i]);
-      i++;
-    }
-    if (id >= 0) { changed[id * 3 + column] = value; }
-    Hir.Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, changed, globals, natives, variants, fields)
-  } }
+  while (i < count * 3) {
+    changed.push(hir.spans[i]);
+    i++;
+  }
+  if (id >= 0) { changed[id * 3 + column] = value; }
+  { ...hir, spans: changed }
 };
 
 // A copy of `hir` with field slot `slot` of its field table (name, type) replaced.
 let mutateField = fn(hir: Hir, slot: I32, value: I32): Hir {
-  match (hir) { Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, fields) => {
-    let changed = copy(fields);
-    changed[slot] = value;
-    Hir.Hir(ops, nodes, edges, bytes, kinds, types, typeEdges, root, spans, globals, natives, variants, changed)
-  } }
+  let changed = copy(hir.fields);
+  changed[slot] = value;
+  { ...hir, fields: changed }
 };
 
 let rejection = fn(hir: Hir): Bytes {
@@ -122,7 +112,7 @@ let rejection = fn(hir: Hir): Bytes {
 let location = fn(hir: Hir): Tuple<I32, I32> {
   rejection(hir);
   let span = verifyFailureSpan();
-  span == null ? (-1, -1) : (spanStart(span), spanEnd(span))
+  span == null ? (-1, -1) : (span.start, span.end)
 };
 
 let SAMPLE = "let twice = fn(f: (I32) -> I32, x: I32): I32 { f(f(x)) };\n"
@@ -308,7 +298,7 @@ let testFailuresReportTheirStatus = fn(t: Test) {
   let literal = find(hir, "I32", 0);
   let span = H.spanOf(literal);
   let error = try { verifyHir(mutate(hir, literal, 0, H.TYPE_BOOL)) as Dynamic } catch (e) { e };
-  let located = fn(message: Bytes): Bytes { sourceDiagnostic(spanPath(span), readText(spanPath(span)), spanStart(span), message) };
+  let located = fn(message: Bytes): Bytes { sourceDiagnostic(span.path, readText(span.path), span.start, message) };
   let message = Std.string(error);
   T.equal(t, failure("PARSER", error), (3, located("internal error: " + message + " (please report this compiler bug)")));
   T.equal(t, failure("PARSER", error), (1, "PARSER\t" + located(message)));

@@ -3,18 +3,37 @@ package frontend.semantics;
 import type { Expr as AstExpr } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { Kind, Op } from frontend.hir.Hir;
-import { appendFrom } from support.Arrays;
 import { E0600, E0601, E0604, coded } from support.Codes;
-import { checkArguments, checkIndirectCall, defineFunction, enterSyntax, generateClosure, hasSpread, newBinding, syntaxChild } from frontend.semantics.TypeCheck;
+import {
+  checkArguments,
+  checkIndirectCall,
+  defineFunction,
+  enterSyntax,
+  generateClosure,
+  hasSpread,
+  newBinding,
+  syntaxChild
+} from frontend.semantics.TypeCheck;
 
-export let isFunctionIntrinsic: (Bytes) -> Bool = fn(name) { match (name) { "bind", "callWith" => true, _ => false } };
+export let isFunctionIntrinsic = fn(name: Bytes): Bool {
+  match (name) { "bind", "callWith" => true, _ => false }
+};
 
 let _bind = fn(function: I32, args: Array<AstExpr>): I32 {
   let ty = H.typeOf(function);
   let count = H.typeArgCount(ty);
   let fixed = ((count > 0) && H.isKind(H.typeArg(ty, count - 1), Kind.Rest)) ? count - 1 : count;
-  if (args.len() == 0) { throw coded(E0600, "Function.bind requires the `this` it passes, as bind(f, thisArg, args...)"); }
-  if (args.len() > fixed) { throw coded(E0600, "Function.bind fixes " + Std.string(args.len()) + " parameters of " + H.typeName(ty) + ", which " + (fixed < count ? "has " + Std.string(fixed) + " before its `T...`" : "takes " + Std.string(fixed))); }
+
+  if (args.len() == 0) {
+    throw coded(E0600, "Function.bind requires the `this` it passes, as bind(f, thisArg, args...)");
+  }
+
+  if (args.len() > fixed) {
+    let takes = (fixed < count) ? `has ${fixed} before its ` + "`T...`" : `takes ${fixed}`;
+    let fixes = `Function.bind fixes ${args.len()} parameters of ${H.typeName(ty)}`;
+    throw coded(E0600, `${fixes}, which ${takes}`);
+  }
+
   let prefix = Array.new<I32>(0);
   let i = 0;
 
@@ -22,7 +41,9 @@ let _bind = fn(function: I32, args: Array<AstExpr>): I32 {
     prefix.push(H.typeArg(ty, i));
     i++;
   }
-  let captured = appendFrom([function], checkArguments(H.functionType(prefix, H.innerOf(ty)), args, "Function.bind"), 0);
+  let fixedType = H.functionType(prefix, H.innerOf(ty));
+  let captured = [function].appendFrom(checkArguments(fixedType, args, "Function.bind"), 0);
+
   let params = Array.new<I32>(0);
   let names = Array.new<Bytes>(0);
   let children = Array.new<I32>(0);
@@ -32,7 +53,7 @@ let _bind = fn(function: I32, args: Array<AstExpr>): I32 {
     let param = H.typeArg(ty, i);
     let slot = H.slotType(param);
     let binding = newBinding();
-    let name = "p" + Std.string(i);
+    let name = `p${i}`;
     params.push(param);
     names.push(name);
     children.push(H.node(Op.Parameter, slot, binding, H.bytesId(name), []));
@@ -45,23 +66,33 @@ let _bind = fn(function: I32, args: Array<AstExpr>): I32 {
   while (i < captured.len()) {
     let copy = newBinding();
     let held = H.typeOf(captured[i]);
-    children.push(H.node(Op.Capture, held, copy, H.bytesId(i == 0 ? "function" : "bound"), []));
+    let name = (i == 0) ? "function" : "bound";
+    children.push(H.node(Op.Capture, held, copy, H.bytesId(name), []));
     passed.push(H.local(copy, held));
     i++;
   }
+
   let result = H.innerOf(ty);
   let closure = H.functionType(params, result);
-  children.push(H.node(Op.Block, result, 0, 1, [H.node(Op.CallIndirect, result, 0, 0, appendFrom(passed, reads, 0))]));
+  let call = H.opNode(Op.CallIndirect, result, passed.appendFrom(reads, 0));
+  children.push(H.node(Op.Block, result, 0, 1, [call]));
   let index = generateClosure("bound", names, closure);
   defineFunction(index, H.node(Op.Function, closure, H.bytesId("bound"), 0, children));
   H.node(Op.FunctionRef, closure, index + 1, 0, captured)
 };
 
-export let checkFunctionIntrinsic: (Bytes, I32, Array<AstExpr>) -> I32 = fn(name, function, args) {
+export let checkFunctionIntrinsic = fn(name: Bytes, function: I32, args: Array<AstExpr>): I32 {
   if (!H.isKind(H.typeOf(function), Kind.Function)) {
     enterSyntax(syntaxChild(0));
-    throw coded(E0601, "Function." + name + " requires a function, not " + H.typeName(H.typeOf(function)));
+    let actual = H.typeName(H.typeOf(function));
+    throw coded(E0601, `Function.${name} requires a function, not ${actual}`);
   }
-  if (hasSpread(args)) { throw coded(E0604, "Function." + name + " cannot take a spread; it passes its arguments to the function in order"); }
-  name == "bind" ? _bind(function, args) : checkIndirectCall(function, -1, args)
+
+  if (hasSpread(args)) {
+    throw coded(
+      E0604,
+      `Function.${name} cannot take a spread; it passes its arguments to the function in order`
+    );
+  }
+  (name == "bind") ? _bind(function, args) : checkIndirectCall(function, -1, args)
 };

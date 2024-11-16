@@ -9,10 +9,10 @@ import type { Syntax } from frontend.syntax.Source;
 // The program's syntax: its statements, then its tail.
 let tree = fn(source: Bytes): Syntax { programSyntax(parseProgram(lexFile(source, "<input>"))) };
 
-let span = fn(node: Syntax): Bytes { match (node) { Node(_, start, end, _, _) => Std.string(start) + ".." + Std.string(end) } };
-let child = fn(node: Syntax, i: I32): Syntax { match (node) { Node(_, _, _, children, _) => children[i] } };
-let width = fn(node: Syntax): I32 { match (node) { Node(_, _, _, children, _) => children.len() } };
-let pattern = fn(node: Syntax, i: I32): Syntax { match (node) { Node(_, _, _, _, patterns) => patterns[i] } };
+let span = fn(node: Syntax): Bytes { Std.string(node.start) + ".." + Std.string(node.end) };
+let child = fn(node: Syntax, i: I32): Syntax { node.children[i] };
+let width = fn(node: Syntax): I32 { node.children.len() };
+let pattern = fn(node: Syntax, i: I32): Syntax { node.patterns[i] };
 
 let tail = fn(source: Bytes): Syntax {
   let root = tree(source);

@@ -1,0 +1,23 @@
+// expect: |Zg==|Zm8=|Zm9v|Zm9vYg==|Zm9vYmE=|Zm9vYmFy|+vv8/f7/|-vv8_f7_|Zm9vYg
+// expect: foobar|foob|fooba|fooba|true|00ff10ab|true
+// expect: Bytes.fromHex: not hexadecimal|Bytes.fromHex: not hexadecimal|Bytes.fromBase64: not Base64
+// expect: Bytes.fromBase64: not Base64|Bytes.fromBase64: not Base64|Bytes.fromBase64: not Base64
+/* Base64's published answers (RFC 4648), in both alphabets, and reading
+ * them back, with and without padding; hexadecimal both ways; and the text
+ * that is in neither. */
+let error = fn(f: () -> Bytes): Bytes { try { f() } catch (e) { Std.string(e) } };
+let high = Bytes.fromHex("fafbfcfdfeff");
+Bytes.join([
+  Bytes.join(["", "f", "fo", "foo", "foob", "fooba", "foobar"].map(fn(t: Bytes): Bytes {
+    Bytes.toBase64(t)
+  }), "|") + "|" + Bytes.toBase64(high) + "|" + Bytes.toBase64(high, true) + "|"
+    + Bytes.toBase64("foob", true),
+  Bytes.fromBase64("Zm9vYmFy") + "|" + Bytes.fromBase64("Zm9vYg") + "|" + Bytes.fromBase64("Zm9vYmE=")
+    + "|" + Bytes.fromBase64("Zm9vYmE", true) + "|"
+    + Std.string(Bytes.fromBase64("-vv8_f7_", true) == high) + "|" + Bytes.fromHex("00FF10ab").toHex()
+    + "|" + Std.string(Bytes.fromHex("") == ""),
+  error(fn() { Bytes.fromHex("abc") }) + "|" + error(fn() { Bytes.fromHex("0g") }) + "|"
+    + error(fn() { Bytes.fromBase64("Zm9v YmFy") }),
+  error(fn() { Bytes.fromBase64("+vv8", true) }) + "|" + error(fn() { Bytes.fromBase64("Zm9vZ") })
+    + "|" + error(fn() { Bytes.fromBase64("Zm9=") })
+], "\n")

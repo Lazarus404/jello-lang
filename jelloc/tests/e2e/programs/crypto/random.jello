@@ -1,0 +1,27 @@
+// expect: 0 1 32 1000|true|true true true|5|true|36 4 true true
+// expect: Random.bytes: count -1 is below 0|Random.int: low 2 is above high 1
+/* Random values can only be checked by their shape: their lengths, that they
+ * stay in range and reach both ends of it, and that they differ. */
+import std.crypto.Random as Random;
+
+let error = fn(f: () -> Bytes): Bytes { try { f() } catch (e) { Std.string(e) } };
+let lows = 0; let highs = 0; let inRange = true; let i = 0;
+while (i < 200) {
+  let n = Random.int(-3, 3);
+  inRange = inRange && (n >= -3) && (n <= 3);
+  if (n == -3) { lows++; } else if (n == 3) { highs++; }
+  i++;
+}
+let wide = Random.int(-2147483648, 2147483647);
+let uuid = Random.uuid();
+Bytes.join([
+  Bytes.join([0, 1, 32, 1000].map(fn(n: I32): Bytes { Std.string(Random.bytes(n).len()) }), " ")
+    + "|" + Std.string(Random.bytes(32) != Random.bytes(32))
+    + "|" + Std.string(inRange) + " " + Std.string(lows > 0) + " " + Std.string(highs > 0)
+    + "|" + Std.string(Random.int(5, 5))
+    + "|" + Std.string((wide != Random.int(-2147483648, 2147483647)) && (Random.uuid() != uuid))
+    + "|" + Std.string(uuid.len()) + " " + Bytes.slice(uuid, 14, 1) + " "
+    + Std.string("89ab".contains(Bytes.slice(uuid, 19, 1)))
+    + " " + Std.string(Bytes.split(uuid, "-").map(fn(p: Bytes): Bytes { Std.string(p.len()) }).join("-") == "8-4-4-4-12"),
+  error(fn() { Random.bytes(-1) }) + "|" + error(fn() { Std.string(Random.int(2, 1)) })
+], "\n")

@@ -426,11 +426,12 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     + "needed, or text that `Macro.parse` cannot parse. The message says which.")
 ] };
 
-export let coded = fn(code: Bytes, message: Bytes): Bytes { message + " [" + code + "]" };
+export let coded = fn(code: Bytes, message: Bytes): Bytes { `${message} [${code}]` };
 
 export let uncoded = fn(message: Bytes): Bytes {
   let n = message.len();
-  (n > 8) && (Bytes.slice(message, n - 8, 3) == " [E") && (Bytes.get_u8(message, n - 1) == "]".code) ? Bytes.slice(message, 0, n - 8) : message
+  let tagged = (n > 8) && (Bytes.slice(message, n - 8, 3) == " [E") && message.endsWith("]");
+  tagged ? Bytes.slice(message, 0, n - 8) : message
 };
 
 export let errorCodes = fn(): Array<Bytes> {
@@ -452,7 +453,9 @@ let _wrapped = fn(text: Bytes): Bytes {
   while (start < text.len()) {
     let end = start + 80;
 
-    if (end >= text.len()) { end = text.len(); } else {
+    if (end >= text.len()) {
+      end = text.len();
+    } else {
       let space = end;
       while ((space > start) && (Bytes.get_u8(text, space) != " ".code)) { space--; }
       if (space > start) { end = space; }
@@ -460,7 +463,7 @@ let _wrapped = fn(text: Bytes): Bytes {
     lines.push(Bytes.slice(text, start, end - start));
     start = ((end < text.len()) && (Bytes.get_u8(text, end) == " ".code)) ? end + 1 : end;
   }
-  joined(lines, "\n") + "\n"
+  `${joined(lines, "\n")}\n`
 };
 
 export let explain = fn(code: Bytes): Bytes {
@@ -469,7 +472,7 @@ export let explain = fn(code: Bytes): Bytes {
 
   while (i < explained.len()) {
     let (known, title, text) = explained[i];
-    if (known == code) { return code + ": " + title + "\n\n" + _wrapped(text); }
+    if (known == code) { return `${code}: ${title}\n\n${_wrapped(text)}`; }
     i++;
   }
   ""

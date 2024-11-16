@@ -1,0 +1,81 @@
+// expect: CN=localhost|CN=Jello Test CA, O=Jello|2002|2024-03-01T00:00:00Z|2025-03-01T00:00:00Z
+// expect: localhost 127.0.0.1|false true|EC 256|2 2|true false false
+// expect: 4255195a2991455f|4bf4d1428ef17212|true|CERTIFICATE CERTIFICATE|true
+// expect: ok|ok|ok|the certificate is not for example.com
+// expect: a certificate has expired|a certificate has expired|ok|a certificate has expired|2
+// expect: a certificate is not valid yet
+// expect: the chain does not lead to a trusted certificate|the chain does not lead to a trusted certificate
+// expect: X509.verify: the chain is empty|X509.parse: |Pem.decode: the KEY block does not end
+// expect: Pem.decode: the KEY block is not Base64|Pem.decode: a BEGIN line does not end|0
+/* A certificate authority and a server's certificate that it signed, both
+ * valid from 1 March 2024, the server's for a year: reading them, from PEM
+ * and DER, and checking chains of them at fixed dates, so the answers do not
+ * change with the clock. */
+import std.crypto.Pem as Pem;
+import std.crypto.X509 as X509;
+import type { Certificate } from std.crypto.X509;
+import std.sys.Date as Date;
+
+let error = fn(f: () -> Bytes): Bytes {
+  try { f() } catch (e) {
+    let text = Std.string(e);
+    // Mbed TLS's own words for why it cannot read a certificate are left out.
+    text.startsWith("X509.parse: ") ? "X509.parse: " : text
+  }
+};
+let ok = fn(problems: Array<Bytes>): Bytes { problems.len() == 0 ? "ok" : Bytes.join(problems, "|") };
+let caPem = "-----BEGIN CERTIFICATE-----\n"
+  + "MIIBgjCCASigAwIBAgICEAEwCgYIKoZIzj0EAwIwKDEWMBQGA1UEAwwNSmVsbG8g\n"
+  + "VGVzdCBDQTEOMAwGA1UECgwFSmVsbG8wHhcNMjQwMzAxMDAwMDAwWhcNMzQwMzAx\n"
+  + "MDAwMDAwWjAoMRYwFAYDVQQDDA1KZWxsbyBUZXN0IENBMQ4wDAYDVQQKDAVKZWxs\n"
+  + "bzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABF1dPebQl2gC0ngqHji4e8F4SeDd\n"
+  + "r2VC4sjcq3o4VSNIFRuVgh1NRtxG8NbdGO1A17WcNAxQ2SmN4+tqhkNU9++jQjBA\n"
+  + "MB0GA1UdDgQWBBSB0UDtCcjQqFtnclbt33SGDe9lsjAPBgNVHRMBAf8EBTADAQH/\n"
+  + "MA4GA1UdDwEB/wQEAwIBBjAKBggqhkjOPQQDAgNIADBFAiEAm7oE0H1OxuPrhQa9\n"
+  + "wP2/PHPWR5cjoNry8neP4uTaV/wCIFkqpUzfwZLGSvxb7/aa57M2dF6w90eHKrE8\n"
+  + "mvtowwVG\n"
+  + "-----END CERTIFICATE-----\n";
+let serverPem = "-----BEGIN CERTIFICATE-----\n"
+  + "MIIBejCCASCgAwIBAgICIAIwCgYIKoZIzj0EAwIwKDEWMBQGA1UEAwwNSmVsbG8g\n"
+  + "VGVzdCBDQTEOMAwGA1UECgwFSmVsbG8wHhcNMjQwMzAxMDAwMDAwWhcNMjUwMzAx\n"
+  + "MDAwMDAwWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO\n"
+  + "PQMBBwNCAAQDD/Z6Pf8ZsXM7GEXBhdRUB/tSKCOk8Mh7aB2jgxfKJ1zSeShoTstD\n"
+  + "nAC9aU9D7gm2NmNjIaMho9p85BcQVFe2o04wTDAJBgNVHRMEAjAAMBoGA1UdEQQT\n"
+  + "MBGCCWxvY2FsaG9zdIcEfwAAATAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYI\n"
+  + "KwYBBQUHAwEwCgYIKoZIzj0EAwIDSAAwRQIhAJDpeFs0zKqEsei9qxOK6moTTgVq\n"
+  + "7yV7byFKfDnJivAlAiA4msbdM8RH6o2Dlfn5pBNiWMQwbUXCJLyG67za7/xgng==\n"
+  + "-----END CERTIFICATE-----\n";
+let both = X509.parse(serverPem + caPem);
+let server = both[0]; let ca = both[1];
+let saturday = Date.utc(2024, 3, 2);
+let blocks = Pem.decode("A chain:\r\n" + server.pem() + "and its root:\n" + caPem);
+Bytes.join([
+  Bytes.join([server.subject, server.issuer, server.serial, server.notBefore.iso(),
+    server.notAfter.iso()], "|"),
+  Bytes.join(server.names, " ") + "|" + Std.string(server.isCa) + " " + Std.string(ca.isCa) + "|"
+    + server.key + "|" + Std.string(both.len()) + " " + Std.string(blocks.len()) + "|"
+    + Std.string(server.isValidAt(saturday)) + " " + Std.string(server.isValidAt(Date.utc(2025, 3, 1, 0, 0, 1)))
+    + " " + Std.string(ca.isValidAt(Date.utc(2024, 2, 29, 23, 59, 59))),
+  Bytes.slice(server.fingerprint().toHex(), 0, 16)
+    + "|" + Bytes.slice(ca.fingerprint("sha1").toHex(), 0, 16)
+    + "|" + Std.string(X509.parse(server.der)[0].der == server.der)
+    + "|" + blocks[0].label + " " + blocks[1].label + "|" + Std.string(blocks[0].data == server.der),
+  ok(X509.verify([server], [ca], "localhost", saturday)) + "|"
+    + ok(X509.verify([server], [ca], "127.0.0.1", saturday)) + "|"
+    + ok(X509.verify([server, ca], [ca], "", saturday)) + "|"
+    + ok(X509.verify([server], [ca], "example.com", saturday)),
+  ok(X509.verify([server], [ca], "localhost", Date.utc(2025, 3, 2))) + "|"
+    + ok(X509.verify([ca], [ca], "", Date.utc(2034, 3, 2))) + "|"
+    + ok(X509.verify([server], [ca], "", Date.utc(2025, 3, 1))) + "|"
+    + ok(X509.verify([server], [ca], "", Date.utc(2025, 3, 1, 0, 0, 0, 1))) + "|"
+    + Std.string(X509.parse(server.der + ca.der).len()),
+  ok(X509.verify([server], [ca], "localhost", Date.utc(2024, 2, 24))),
+  ok(X509.verify([server], [server], "localhost", saturday)) + "|"
+    + ok(X509.verify([ca], [server], "", saturday)),
+  error(fn() { ok(X509.verify(Array.new<Certificate>(0), [ca])) }) + "|"
+    + error(fn() { X509.parse("no certificate here")[0].subject }) + "|"
+    + error(fn() { Std.string(Pem.decode("-----BEGIN KEY-----\nAAAA\n").len()) }),
+  error(fn() { Std.string(Pem.decode("-----BEGIN KEY-----\nA!AA\n-----END KEY-----\n").len()) }) + "|"
+    + error(fn() { Std.string(Pem.decode("-----BEGIN KEY\n").len()) }) + "|"
+    + Std.string(Pem.decode("no blocks").len())
+], "\n")

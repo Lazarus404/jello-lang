@@ -2,15 +2,22 @@ package ir;
 
 import type { Hir } from frontend.hir.Hir;
 import {
-  BITS_BIG, BITS_FLOAT, KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_NULL, TYPE_U32, TYPE_U64, TYPE_U8, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits, isFloatKind, isFloatType, isRecord, isReference, isTemplateEnum, kindOf, lastChild, leastValue, mostValue, opOf, rootNode, slotType, typeArg,
-  typeArgCount, typeCount, findBytesId, globalCount, isObject, nodeCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, segmentWidth, typeOf, useHir, valueOf, variantCount,
+  BITS_BIG, BITS_FLOAT, KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC,
+  TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_NULL, TYPE_U32, TYPE_U64, TYPE_U8,
+  auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits,
+  isFloatKind, isFloatType, isRecord, isReference, isTemplateEnum, kindOf, lastChild, leastValue,
+  mostValue, opOf, rootNode, slotType, typeArg, typeArgCount, typeCount, findBytesId, globalCount,
+  isObject, nodeCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf,
+  segmentWidth, typeOf, useHir, valueOf, variantCount
 } from frontend.hir.Hir;
-import type { BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType } from ir.Model;
-import { BasicBlock, EnumSchema, Native, Op, Program as IrProgram, Terminator, ThrowHandler, ValueType, handlerTarget, instructionAt, internValueType } from ir.Model;
+import type {
+  BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram,
+  Terminator, ThrowHandler, ValueType
+} from ir.Model;
+import { EnumSchema, Op, Terminator, ValueType, instructionAt, internValueType } from ir.Model;
 import { blockMayThrow } from ir.Cfg;
 import { verifyProgramFrom } from ir.Verify;
 import { internalError } from support.Internal;
-import { appendFrom, indexOf } from support.Arrays;
 
 let _registers = Array.new<ValueType>(0);
 let _instructions = Array.new<Instruction>(0);
@@ -45,8 +52,6 @@ let _enumIndexes = Array.new<I32>(0);
 let _natives = Array.new<Native>(0);
 let _nativeIndexes = Array.new<I32>(0);
 
-let _valueType: (I32) -> ValueType = fn(_ty) { ValueType.Bool };
-
 let _valueTypes = fn(ty: I32): Array<ValueType> {
   let items = Array.new<ValueType>(0);
   let i = 0;
@@ -57,7 +62,8 @@ let _valueTypes = fn(ty: I32): Array<ValueType> {
   }
   items
 };
-_valueType = fn(ty) {
+
+let _valueType = fn(ty: I32): ValueType {
   match (kindOf(ty)) {
     Bool => ValueType.Bool,
     I32 => ValueType.I32,
@@ -66,7 +72,9 @@ _valueType = fn(ty) {
     Atom => ValueType.Atom,
     Array => ValueType.ArrayOf(_valueType(innerOf(ty))),
     List => ValueType.ListOf(_valueType(innerOf(ty))),
-    Null => ((innerOf(ty) >= 0) && isReference(innerOf(ty))) ? _valueType(innerOf(ty)) : ValueType.Dynamic,
+    Null => ((innerOf(ty) >= 0) && isReference(innerOf(ty)))
+      ? _valueType(innerOf(ty))
+      : ValueType.Dynamic,
     Tuple => ValueType.TupleOf(_valueTypes(ty)),
     Function => ValueType.Function(_valueTypes(ty), _valueType(innerOf(ty))),
     Optional, Rest => _valueType(slotType(ty)),
@@ -86,28 +94,36 @@ _valueType = fn(ty) {
   }
 };
 
-let _isDynamic = fn(id: I32): Bool { match (_valueType(typeOf(id))) { Dynamic => true, _ => false } };
+let _isDynamic = fn(id: I32): Bool {
+  match (_valueType(typeOf(id))) { Dynamic => true, _ => false }
+};
 
 let _freshValue = fn(ty: ValueType): I32 {
-  let register = _registers.len() as I32;
   _registers.push(ty);
-  register
+  _registers.len() - 1
 };
 let _fresh = fn(ty: I32): I32 { _freshValue(_valueType(ty)) };
 let _node = -1;
-let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) { if (_reachable) { _instructions.push(instructionAt(op, dst, args, imm, _node)); } null };
+
+let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
+  if (_reachable) { _instructions.push(instructionAt(op, dst, args, imm, _node)); }
+  null
+};
 let _move = fn(dst: I32, src: I32) { _emit(Op.Move, dst, [src], 0) };
 
 let _internAt = fn(indexes: Array<I32>, table: Array<Bytes>, id: I32): I32 {
   while (indexes.len() <= id) { indexes.push(-1); }
 
   if (indexes[id] < 0) {
-    indexes[id] = table.len() as I32;
+    indexes[id] = table.len();
     table.push(bytesOf(id));
   }
   indexes[id]
 };
-let _objectKey = fn(id: I32): I32 { valueOf(id) < 0 ? -1 : _internAt(_atomIndexes, _atoms, valueOf(id)) };
+
+let _objectKey = fn(id: I32): I32 {
+  valueOf(id) < 0 ? -1 : _internAt(_atomIndexes, _atoms, valueOf(id))
+};
 
 let _target = fn(block: I32) {
   while (_targeted.len() <= block) { _targeted.push(false); }
@@ -124,7 +140,7 @@ let _open = fn(block: I32) {
 
 let _end = fn(terminator: Terminator, next: I32) {
   if (_reachable) {
-    _blocks.push(BasicBlock.Block(_block, _instructions, terminator, _handler));
+    _blocks.push({ id: _block, instructions: _instructions, terminator, handler: _handler });
 
     match (terminator) {
       Jump(target) => _target(target),
@@ -151,7 +167,13 @@ let _markAssigned = fn(register: I32) {
 };
 
 let _isCell = fn(binding: I32): Bool { (binding < _cells.len()) && _cells[binding] };
-let _cellOf = fn(id: I32): I32 { match (opOf(id)) { Local when (_isCell(valueOf(id))) => valueOf(id), _ => -1 } };
+
+let _cellOf = fn(id: I32): I32 {
+  match (opOf(id)) {
+    Local when (_isCell(valueOf(id))) => valueOf(id),
+    _ => -1,
+  }
+};
 let _freshCell = fn(ty: I32): I32 { _freshValue(ValueType.ArrayOf(_valueType(ty))) };
 
 let _setBox = fn(binding: I32, box: I32) {
@@ -165,10 +187,6 @@ let _copy = fn(ty: I32, register: I32): I32 {
   _move(dst, register);
   dst
 };
-
-let _expr: (I32) -> I32 = fn(_id) { -1 };
-let _lowerBlock: (I32) -> I32 = fn(_id) { -1 };
-let _statement: (I32) -> Bool = fn(_id) { false };
 
 let _bind = fn(binding: I32) {
   let local = match (opOf(binding)) { Let, Const => true, _ => false };
@@ -202,7 +220,9 @@ let _bind = fn(binding: I32) {
       _bindRegister(binding, register)
     },
     _ => {
-      let assigned = (value >= 0) && (value < _assignedRegisters.len()) && _assignedRegisters[value];
+      let assigned = (value >= 0)
+        && (value < _assignedRegisters.len())
+        && _assignedRegisters[value];
       _bindRegister(binding, assigned ? _copy(typeOf(binding), value) : value)
     },
   }
@@ -220,13 +240,14 @@ let _values = fn(id: I32, start: I32): Array<I32> {
 };
 
 let _boxed = fn(id: I32): I32 {
-  let box = match (opOf(id)) { Local when ((valueOf(id) < _boxes.len()) && (_cellOf(id) < 0)) => _boxes[valueOf(id)], _ => -1 };
+  let box = match (opOf(id)) {
+    Local when ((valueOf(id) < _boxes.len()) && (_cellOf(id) < 0)) => _boxes[valueOf(id)],
+    _ => -1,
+  };
   if (box >= 0) { return box; }
   let value = _expr(id);
   if (_isDynamic(id)) { return value; }
-  let dst = _fresh(TYPE_DYNAMIC);
-  _emit(Op.Box, dst, [value], 0);
-  dst
+  _unaryOp(Op.Box, TYPE_DYNAMIC, value)
 };
 
 let _capturedBox = fn(id: I32): I32 {
@@ -244,8 +265,7 @@ let _statements = fn(id: I32): Bool {
   _reachable && (auxOf(id) == 1)
 };
 
-let _branch: (I32, I32, I32, I32) -> Null = fn(_condition, _ifTrue, _ifFalse, _next) { null };
-_branch = fn(condition, ifTrue, ifFalse, next) {
+let _branch = fn(condition: I32, ifTrue: I32, ifFalse: I32, next: I32): Null {
   match (opOf(condition)) {
     And, Or => {
       let right = _nextBlock;
@@ -259,15 +279,19 @@ _branch = fn(condition, ifTrue, ifFalse, next) {
     },
     Not => _branch(childOf(condition, 0), ifFalse, ifTrue, next),
     Bool => _end(Terminator.Jump(valueOf(condition) != 0 ? ifTrue : ifFalse), next),
-    Block when (auxOf(condition) == 1) => _statements(condition) ? _branch(lastChild(condition), ifTrue, ifFalse, next) : _open(next),
+    Block when (auxOf(condition) == 1) => _statements(condition)
+      ? _branch(lastChild(condition), ifTrue, ifFalse, next)
+      : _open(next),
     _ => _end(Terminator.Branch(_expr(condition), ifTrue, ifFalse), next),
   }
 };
 
-let _branchAfter: (I32, I32, I32, I32, I32) -> Null = fn(_condition, _head, _ifTrue, _ifFalse, _next) { null };
-_branchAfter = fn(condition, head, ifTrue, ifFalse, next) {
+let _branchAfter = fn(condition: I32, head: I32, ifTrue: I32, ifFalse: I32, next: I32): Null {
   if (condition == head) { return _end(Terminator.Jump(ifTrue), next); }
-  if (childOf(condition, 0) == head) { return _branch(childOf(condition, 1), ifTrue, ifFalse, next); }
+
+  if (childOf(condition, 0) == head) {
+    return _branch(childOf(condition, 1), ifTrue, ifFalse, next);
+  }
   let right = _nextBlock;
   _nextBlock += 1;
   _branchAfter(childOf(condition, 0), head, right, ifFalse, right);
@@ -277,12 +301,14 @@ _branchAfter = fn(condition, head, ifTrue, ifFalse, next) {
 let _keyOf = fn(test: I32): I32 {
   let local = childOf(test, 0);
   let binding = match (opOf(local)) { Local => valueOf(local), _ => -1 };
-  let fixed = (binding >= 0) && (typeOf(local) == TYPE_I32) && !_isCell(binding) && ((_usesOf(binding) & _ASSIGNED) == 0);
+  let fixed = (binding >= 0)
+    && (typeOf(local) == TYPE_I32)
+    && !_isCell(binding)
+    && ((_usesOf(binding) & _ASSIGNED) == 0);
   (fixed && match (opOf(childOf(test, 1))) { I32 => true, _ => false }) ? binding : -1
 };
 
-let _head: (I32) -> I32 = fn(_condition) { -1 };
-_head = fn(condition) {
+let _head = fn(condition: I32): I32 {
   match (opOf(condition)) {
     And => _head(childOf(condition, 0)),
     Eq when (_keyOf(condition) >= 0) => condition,
@@ -295,13 +321,12 @@ let _DISCARDED = -2;
 
 let _chains = fn(value: I32, result: I32): Bool {
   match (opOf(value)) {
-    If => (result == _RETURNED) || ((result >= 0) && (_valueType(typeOf(value)) == _registers[result])),
+    If => (result == _RETURNED)
+      || ((result >= 0) && (_valueType(typeOf(value)) == _registers[result])),
     IfStatement => result == _DISCARDED,
     _ => false,
   }
 };
-
-let _tail: (I32, I32, I32) -> Null = fn(_value, _result, _join) { null };
 
 let _decided = fn(value: I32, result: I32, join: I32): Bool {
   let arms = Array.new<I32>(0);
@@ -317,7 +342,7 @@ let _decided = fn(value: I32, result: I32, join: I32): Bool {
     heads.push(head);
     rest = childCount(rest) == 3 ? childOf(rest, 2) : -1;
   }
-  let n = arms.len() as I32;
+  let n = arms.len();
   if (n < 2) { return false; }
   let bodies = _nextBlock;
   let after = bodies + n;
@@ -329,7 +354,9 @@ let _decided = fn(value: I32, result: I32, join: I32): Bool {
   let a = 0;
 
   while (a < n) {
-    if (childOf(arms[a], 0) == heads[a]) { entries.push(bodies + a); } else {
+    if (childOf(arms[a], 0) == heads[a]) {
+      entries.push(bodies + a);
+    } else {
       entries.push(_nextBlock);
       _nextBlock += 1;
     }
@@ -364,7 +391,8 @@ let _decided = fn(value: I32, result: I32, join: I32): Bool {
   while (a < n) {
     if (entries[a] != bodies + a) {
       _open(entries[a]);
-      _branchAfter(childOf(arms[a], 0), heads[a], bodies + a, nexts[a] < 0 ? after : entries[nexts[a]], -1);
+      let otherwise = nexts[a] < 0 ? after : entries[nexts[a]];
+      _branchAfter(childOf(arms[a], 0), heads[a], bodies + a, otherwise, -1);
     }
     a++;
   }
@@ -422,16 +450,59 @@ let _shortCircuit = fn(id: I32): I32 {
 
 let _operation = fn(id: I32): Op {
   match (opOf(id)) {
-    Bool => Op.ConstBool, I32 => Op.ConstI32, I64 => Op.ConstI64, Float => Op.ConstFloat, Bytes => Op.ConstBytes, Null => Op.ConstNull,
-    Add => Op.Add, Sub => Op.Sub, Mul => Op.Mul, Shl => Op.Shl, Shr => Op.Shr, BitAnd => Op.BitAnd, BitOr => Op.BitOr, BitXor => Op.BitXor,
-    Neg => Op.Neg, Not => Op.Not, Eq => Op.Eq, Lt, Gt => _wideUnsigned(typeOf(childOf(id, 0))) ? Op.LtU : Op.Lt, IsNull, IsPresent => Op.IsNull,
-    ArrayNew => Op.ArrayNew, ArrayLen => Op.ArrayLen, ArrayGet => Op.ArrayGet, ArrayConcat => Op.ArrayConcat,
-    ListNil => Op.ListNil, ListCons => Op.ListCons, ListHead => Op.ListHead, ListTail => Op.ListTail, ListIsNil => Op.ListIsNil,
-    BytesNew => Op.BytesNew, BytesLen => Op.BytesLen, BytesGet => Op.BytesGet, BytesSlice => Op.BytesSlice, BytesConcat => Op.BytesConcat, BytesEq => Op.BytesEq,
-    Tuple => Op.TupleNew, TupleField => Op.TupleGet, Call => Op.Call, CallIndirect => Op.CallIndirect, CallNative => Op.CallNative,
-    EnumNew => Op.EnumNew, EnumTag => Op.EnumTag, EnumField => Op.EnumGet, Atom => Op.ConstAtom,
-    ObjectNew => Op.ObjectNew, ObjectGet => Op.ObjectGet, ObjectHas => Op.ObjectHas, ObjectRemove => Op.ObjectRemove,
-    ObjectCopy => Op.ObjectCopy, ObjectKeys => Op.ObjectKeys,
+    Bool => Op.ConstBool,
+    I32 => Op.ConstI32,
+    I64 => Op.ConstI64,
+    Float => Op.ConstFloat,
+    Bytes => Op.ConstBytes,
+    Null => Op.ConstNull,
+    Atom => Op.ConstAtom,
+
+    Add => Op.Add,
+    Sub => Op.Sub,
+    Mul => Op.Mul,
+    Shl => Op.Shl,
+    Shr => Op.Shr,
+    BitAnd => Op.BitAnd,
+    BitOr => Op.BitOr,
+    BitXor => Op.BitXor,
+    Neg => Op.Neg,
+    Not => Op.Not,
+    Eq => Op.Eq,
+    Lt, Gt => _wideUnsigned(typeOf(childOf(id, 0))) ? Op.LtU : Op.Lt,
+    IsNull, IsPresent => Op.IsNull,
+
+    ArrayNew => Op.ArrayNew,
+    ArrayLen => Op.ArrayLen,
+    ArrayGet => Op.ArrayGet,
+    ArrayConcat => Op.ArrayConcat,
+    ListNil => Op.ListNil,
+    ListCons => Op.ListCons,
+    ListHead => Op.ListHead,
+    ListTail => Op.ListTail,
+    ListIsNil => Op.ListIsNil,
+    BytesNew => Op.BytesNew,
+    BytesLen => Op.BytesLen,
+    BytesGet => Op.BytesGet,
+    BytesSlice => Op.BytesSlice,
+    BytesConcat => Op.BytesConcat,
+    BytesEq => Op.BytesEq,
+
+    Tuple => Op.TupleNew,
+    TupleField => Op.TupleGet,
+    EnumNew => Op.EnumNew,
+    EnumTag => Op.EnumTag,
+    EnumField => Op.EnumGet,
+    ObjectNew => Op.ObjectNew,
+    ObjectGet => Op.ObjectGet,
+    ObjectHas => Op.ObjectHas,
+    ObjectRemove => Op.ObjectRemove,
+    ObjectCopy => Op.ObjectCopy,
+    ObjectKeys => Op.ObjectKeys,
+
+    Call => Op.Call,
+    CallIndirect => Op.CallIndirect,
+    CallNative => Op.CallNative,
     _ => {
       internalError("invalid HIR expression op");
       Op.Move
@@ -442,8 +513,13 @@ let _operation = fn(id: I32): Op {
 let _nativeIndex = fn(native: I32): I32 {
   if (_nativeIndexes[native] < 0) {
     let ty = nativeTypeOf(native);
-    _natives.push(Native.Native(nativeLibraryOf(native), nativeNameOf(native), _valueTypes(ty), _valueType(innerOf(ty))));
-    _nativeIndexes[native] = (_natives.len() - 1) as I32;
+    _natives.push({
+      library: nativeLibraryOf(native),
+      name: nativeNameOf(native),
+      params: _valueTypes(ty),
+      result: _valueType(innerOf(ty)),
+    });
+    _nativeIndexes[native] = _natives.len() - 1;
   }
   _nativeIndexes[native]
 };
@@ -480,42 +556,26 @@ let _binaryOp = fn(op: Op, ty: I32, left: I32, right: I32): I32 {
   dst
 };
 
-let _arithmetic = fn(op: Op, left: I32, right: I32): I32 {
-  let dst = _fresh(TYPE_I32);
-  _emit(op, dst, [left, right], 0);
-  dst
-};
-
-let _converted = fn(ty: I32, value: I32): I32 {
+let _unaryOp = fn(op: Op, ty: I32, operand: I32): I32 {
   let dst = _fresh(ty);
-  _emit(Op.Convert, dst, [value], 0);
+  _emit(op, dst, [operand], 0);
   dst
 };
+let _arithmetic = fn(op: Op, left: I32, right: I32): I32 { _binaryOp(op, TYPE_I32, left, right) };
+let _converted = fn(ty: I32, value: I32): I32 { _unaryOp(Op.Convert, ty, value) };
 
 let _i64 = fn(ty: I32, value: I64): I32 {
   _wides.push(value);
   let dst = _fresh(ty);
-  _emit(Op.ConstI64, dst, Array.new<I32>(0), (_wides.len() - 1) as I32);
+  _emit(Op.ConstI64, dst, Array.new<I32>(0), _wides.len() - 1);
   dst
 };
-
-let _length = fn(array: I32): I32 {
-  let dst = _fresh(TYPE_I32);
-  _emit(Op.ArrayLen, dst, [array], 0);
-  dst
-};
-
-let _bytesLength = fn(bytes: I32): I32 {
-  let dst = _fresh(TYPE_I32);
-  _emit(Op.BytesLen, dst, [bytes], 0);
-  dst
-};
+let _length = fn(array: I32): I32 { _unaryOp(Op.ArrayLen, TYPE_I32, array) };
+let _bytesLength = fn(bytes: I32): I32 { _unaryOp(Op.BytesLen, TYPE_I32, bytes) };
 
 let _widened = fn(ty: I32, value: I32): I32 {
   if (integerBits(ty) != 64) { return value; }
-  let dst = _fresh(ty);
-  _emit(Op.Sext, dst, [value], 0);
-  dst
+  _unaryOp(Op.Sext, ty, value)
 };
 
 let _wideUnsigned = fn(ty: I32): Bool { (ty == TYPE_U32) || (ty == TYPE_U64) };
@@ -553,7 +613,8 @@ let _logicalShift = fn(id: I32): I32 {
   let shifted = _binaryOp(Op.Shr, ty, operands[0], count);
   let ones = _widened(ty, _i32(-1));
   let room = _binaryOp(Op.Sub, ty, _widened(ty, _i32(integerBits(ty) - 1)), count);
-  let mask = _binaryOp(Op.BitXor, ty, _binaryOp(Op.Shl, ty, _binaryOp(Op.Shl, ty, ones, room), _widened(ty, _i32(1))), ones);
+  let high = _binaryOp(Op.Shl, ty, _binaryOp(Op.Shl, ty, ones, room), _widened(ty, _i32(1)));
+  let mask = _binaryOp(Op.BitXor, ty, high, ones);
   _binaryOp(Op.BitAnd, ty, shifted, mask)
 };
 
@@ -624,8 +685,10 @@ let _fromU64 = fn(target: I32, value: I32): I32 {
   _end(Terminator.Branch(_binaryOp(Op.Lt, TYPE_BOOL, value, _i64(TYPE_I64, 0)), low + 1, low), low);
   _emit(Op.Convert, result, [value], 0);
   _end(Terminator.Jump(low + 2), low + 1);
-  let half = _binaryOp(Op.BitAnd, TYPE_I64, _binaryOp(Op.Shr, TYPE_I64, value, _i64(TYPE_I64, 1)), _i64(TYPE_I64, 9223372036854775807));
-  let halved = _converted(ty, _binaryOp(Op.BitOr, TYPE_I64, half, _binaryOp(Op.BitAnd, TYPE_I64, value, _i64(TYPE_I64, 1))));
+  let shifted = _binaryOp(Op.Shr, TYPE_I64, value, _i64(TYPE_I64, 1));
+  let half = _binaryOp(Op.BitAnd, TYPE_I64, shifted, _i64(TYPE_I64, 9223372036854775807));
+  let lowest = _binaryOp(Op.BitAnd, TYPE_I64, value, _i64(TYPE_I64, 1));
+  let halved = _converted(ty, _binaryOp(Op.BitOr, TYPE_I64, half, lowest));
   _emit(Op.Add, result, [halved, halved], 0);
   _end(Terminator.Jump(low + 2), low + 2);
   target == TYPE_F16 ? _converted(TYPE_F16, result) : result
@@ -637,20 +700,19 @@ let _toInteger = fn(target: I32, value: I32): I32 {
     I8, I16, U8, U16 => {
       let least = leastValue(target) as I32;
       let narrow = _converted(TYPE_I32, value);
-      _inRange(narrow, least == 0 ? narrow : _arithmetic(Op.Sub, narrow, _i32(least)), _i32((mostValue(target) as I32) - least))
+      let offset = least == 0 ? narrow : _arithmetic(Op.Sub, narrow, _i32(least));
+      _inRange(narrow, offset, _i32((mostValue(target) as I32) - least))
     },
     U32 => {
       let converted = _converted(TYPE_I64, value);
       let wide = _inRange(converted, converted, _i64(TYPE_I64, 4294967295));
-      let dst = _fresh(TYPE_U32);
-      _emit(Op.Trunc, dst, [wide], 0);
-      dst
+      _unaryOp(Op.Trunc, TYPE_U32, wide)
     },
     _ => {
       let exact = _registers[value] == ValueType.F64 ? value : _converted(TYPE_F64, value);
       let top = _fresh(TYPE_F64);
       _floats.push(4890909195324358656);
-      _emit(Op.ConstFloat, top, Array.new<I32>(0), (_floats.len() - 1) as I32);
+      _emit(Op.ConstFloat, top, Array.new<I32>(0), _floats.len() - 1);
       let result = _fresh(TYPE_U64);
       let low = _nextBlock;
       _nextBlock += 3;
@@ -658,7 +720,8 @@ let _toInteger = fn(target: I32, value: I32): I32 {
       _emit(Op.Convert, result, [exact], 0);
       _trapIf(_binaryOp(Op.Lt, TYPE_BOOL, result, _i64(TYPE_I64, 0)));
       _end(Terminator.Jump(low + 2), low + 1);
-      _emit(Op.Add, result, [_converted(TYPE_I64, _binaryOp(Op.Sub, TYPE_F64, exact, top)), _i64(TYPE_I64, -9223372036854775807 - 1)], 0);
+      let above = _converted(TYPE_I64, _binaryOp(Op.Sub, TYPE_F64, exact, top));
+      _emit(Op.Add, result, [above, _i64(TYPE_I64, -9223372036854775807 - 1)], 0);
       _end(Terminator.Jump(low + 2), low + 2);
       result
     },
@@ -666,7 +729,9 @@ let _toInteger = fn(target: I32, value: I32): I32 {
 };
 
 let _floatConvert = fn(source: I32, target: I32, value: I32): I32 {
-  if (!isFloatType(target)) { return _toInteger(target, source == TYPE_F16 ? _converted(TYPE_F32, value) : value); }
+  if (!isFloatType(target)) {
+    return _toInteger(target, source == TYPE_F16 ? _converted(TYPE_F32, value) : value);
+  }
   if (source == TYPE_U64) { return _fromU64(target, value); }
   let operand = value;
 
@@ -675,7 +740,8 @@ let _floatConvert = fn(source: I32, target: I32, value: I32): I32 {
     _emit(Op.Zext, operand, [value], 0);
   }
   let wideSource = (integerBits(source) == 64) || (source == TYPE_U32) || (source == TYPE_F64);
-  let viaF32 = ((target == TYPE_F16) && wideSource) || ((source == TYPE_F16) && (target == TYPE_F64));
+  let viaF32 = ((target == TYPE_F16) && wideSource)
+    || ((source == TYPE_F16) && (target == TYPE_F64));
   _converted(target, viaF32 ? _converted(TYPE_F32, operand) : operand)
 };
 
@@ -701,9 +767,7 @@ let _convert = fn(id: I32): I32 {
 
 let _byMinusOne = fn(remainder: Bool, ty: I32, left: I32): I32 {
   if (remainder) { return _widened(ty, _i32(0)); }
-  let dst = _fresh(ty);
-  _emit(Op.Neg, dst, [left], 0);
-  dst
+  _unaryOp(Op.Neg, ty, left)
 };
 
 let _divide = fn(id: I32): I32 {
@@ -715,15 +779,21 @@ let _divide = fn(id: I32): I32 {
   if (_isNarrow(ty) || _wideUnsigned(ty)) {
     let operands = _values(id, 0);
     let dst = _fresh(ty);
-    _emit(_isNarrow(ty) ? (remainder ? Op.Rem : Op.Div) : (remainder ? Op.RemU : Op.DivU), dst, operands, 0);
+    let division = _isNarrow(ty)
+      ? (remainder ? Op.Rem : Op.Div)
+      : (remainder ? Op.RemU : Op.DivU);
+    _emit(division, dst, operands, 0);
     return _normalised(ty, dst);
   }
   let op = remainder ? Op.Rem : Op.Div;
   let constant = match (opOf(divisor)) { I32, I64 => true, _ => false };
-  let minusOne = constant && (valueOf(divisor) == -1) && ((ty == TYPE_I32) || (auxOf(divisor) == -1));
+  let minusOne = constant
+    && (valueOf(divisor) == -1)
+    && ((ty == TYPE_I32) || (auxOf(divisor) == -1));
   let left = _expr(childOf(id, 0));
   let right = _expr(divisor);
   if (minusOne) { return _byMinusOne(remainder, ty, left); }
+
   let result = _fresh(ty);
 
   if (constant) {
@@ -747,18 +817,19 @@ let _divide = fn(id: I32): I32 {
 let _arrayLiteral = fn(id: I32): I32 {
   let items = _values(id, 0);
   let array = _fresh(typeOf(id));
-  _emit(Op.ArrayNew, array, [_i32(items.len() as I32)], 0);
+  _emit(Op.ArrayNew, array, [_i32(items.len())], 0);
   let i = 0;
 
   while (i < items.len()) {
-    _emit(Op.ArraySet, -1, [array, _i32(i as I32), items[i]], 0);
+    _emit(Op.ArraySet, -1, [array, _i32(i), items[i]], 0);
     i++;
   }
   array
 };
 
 let _bytesFormat = fn(code: I32): I32 {
-  (segmentWidth(code) == 16 ? 0 : (code & BITS_FLOAT) != 0 ? 6 : 2) + ((code & BITS_BIG) != 0 ? 1 : 0)
+  let format = segmentWidth(code) == 16 ? 0 : (code & BITS_FLOAT) != 0 ? 6 : 2;
+  format + ((code & BITS_BIG) != 0 ? 1 : 0)
 };
 
 let _bitsPack = fn(id: I32): I32 {
@@ -775,12 +846,21 @@ let _bitsPack = fn(id: I32): I32 {
   let length = rest < 0 ? _i32(fixed) : _arithmetic(Op.Add, _bytesLength(rest), _i32(fixed));
   let bytes = _fresh(TYPE_BYTES);
   _emit(Op.BytesNew, bytes, [length], 0);
+
   i = 0;
 
   while (i < values.len()) {
     let field = childOf(id, i);
     let width = segmentWidth(auxOf(field));
-    if (width == 0) { _emit(Op.BytesBlit, -1, [bytes, values[i], _i32(fixed)], 0); } else if (width <= 8) { _emit(Op.BitsWrite, -1, [bytes, values[i]], valueOf(field) * 16 + width); } else { _emit(Op.BytesWrite, -1, [bytes, _i32(valueOf(field) / 8), values[i]], _bytesFormat(auxOf(field))); }
+
+    if (width == 0) {
+      _emit(Op.BytesBlit, -1, [bytes, values[i], _i32(fixed)], 0);
+    } else if (width <= 8) {
+      _emit(Op.BitsWrite, -1, [bytes, values[i]], valueOf(field) * 16 + width);
+    } else {
+      let offset = _i32(valueOf(field) / 8);
+      _emit(Op.BytesWrite, -1, [bytes, offset, values[i]], _bytesFormat(auxOf(field)));
+    }
     i++;
   }
   _emit(Op.BytesFreeze, -1, [bytes], 0);
@@ -806,6 +886,10 @@ let _pop = fn(id: I32): I32 {
   value
 };
 
+let _catchesInto = fn(handler: ?ThrowHandler, target: I32): Bool {
+  (handler != null) && (handler.target == target)
+};
+
 let _try = fn(id: I32, value: Bool): I32 {
   let bodyBlock = _nextBlock;
   let catchBlock = bodyBlock + 1;
@@ -815,32 +899,36 @@ let _try = fn(id: I32, value: Bool): I32 {
   let payload = _fresh(TYPE_DYNAMIC);
   if (valueOf(id) >= 0) { _bindRegister(id, payload); }
   _end(Terminator.Jump(bodyBlock), bodyBlock);
+
   let outer = _handler;
   let first = _blocks.len();
-  _handler = ThrowHandler.Catch(catchBlock, payload);
+  _handler = { target: catchBlock, payload };
   let body = _lowerBlock(childOf(id, 0));
   if (value) { _move(result, body); }
   _end(Terminator.Jump(joinBlock), -1);
   _handler = outer;
+
   let throws = false;
   let i = first;
 
   while (i < _blocks.len()) {
-    match (_blocks[i]) { Block(_, instructions, terminator, handler) => {
-      let catches = (handler != null) && (handlerTarget(handler) == catchBlock);
-      if (catches && blockMayThrow(instructions, terminator)) { throws = true; }
-    } };
+    let block = _blocks[i];
+
+    if (_catchesInto(block.handler, catchBlock)
+      && blockMayThrow(block.instructions, block.terminator)) {
+      throws = true;
+    }
     i++;
   }
   i = first;
 
   while (!throws && (i < _blocks.len())) {
-    match (_blocks[i]) { Block(block, instructions, terminator, handler) => {
-      let catches = (handler != null) && (handlerTarget(handler) == catchBlock);
-      if (catches) { _blocks[i] = BasicBlock.Block(block, instructions, terminator, outer); }
-    } };
+    if (_catchesInto(_blocks[i].handler, catchBlock)) {
+      _blocks[i] = { ..._blocks[i], handler: outer };
+    }
     i++;
   }
+
   if (throws) { _target(catchBlock); }
   _open(catchBlock);
   let caught = _lowerBlock(childOf(id, 1));
@@ -849,16 +937,16 @@ let _try = fn(id: I32, value: Bool): I32 {
   result
 };
 
-let _exprAt: (I32) -> I32 = fn(_id) { -1 };
-_expr = fn(id) {
+let _expr = fn(id: I32): I32 {
   let outer = _node;
   _node = id;
   let register = _exprAt(id);
   _node = outer;
+
   register
 };
 
-_exprAt = fn(id) {
+let _exprAt = fn(id: I32): I32 {
   match (opOf(id)) {
     Local when (_isCell(valueOf(id))) => {
       let dst = _fresh(typeOf(id));
@@ -889,6 +977,7 @@ _exprAt = fn(id) {
       _emit(Op.GlobalSet, -1, [value], valueOf(id));
       value
     },
+
     ArraySet => {
       let operands = _values(id, 0);
       _emit(Op.ArraySet, -1, operands, 0);
@@ -920,12 +1009,18 @@ _exprAt = fn(id) {
       _emit(Op.NullCheck, -1, [dst], 0);
       dst
     },
+
     BitsPack => _bitsPack(id),
     BitsRead => {
       let bytes = _expr(childOf(id, 0));
       let width = segmentWidth(auxOf(id));
       let dst = _fresh(typeOf(id));
-      if (width <= 8) { _emit(Op.BitsRead, dst, [bytes], valueOf(id) * 16 + width); } else { _emit(Op.BytesRead, dst, [bytes, _i32(valueOf(id) / 8)], _bytesFormat(auxOf(id))); }
+
+      if (width <= 8) {
+        _emit(Op.BitsRead, dst, [bytes], valueOf(id) * 16 + width);
+      } else {
+        _emit(Op.BytesRead, dst, [bytes, _i32(valueOf(id) / 8)], _bytesFormat(auxOf(id)));
+      }
       dst
     },
     ArrayLiteral => _arrayLiteral(id),
@@ -936,12 +1031,11 @@ _exprAt = fn(id) {
       _emit(Op.ArrayResize, -1, operands, 0);
       operands[0]
     },
+
     Present => {
       let value = _expr(childOf(id, 0));
       if (isReference(innerOf(typeOf(id)))) { return value; }
-      let dst = _fresh(typeOf(id));
-      _emit(Op.Box, dst, [value], 0);
-      dst
+      _unaryOp(Op.Box, typeOf(id), value)
     },
     ToDynamic => _toDynamic(childOf(id, 0)),
     Convert => _convert(id),
@@ -959,11 +1053,11 @@ _exprAt = fn(id) {
     },
     FromDynamic => {
       let value = _expr(childOf(id, 0));
-      let dst = _fresh(typeOf(id));
-      _emit(Op.Unbox, dst, [value], 0);
+      let dst = _unaryOp(Op.Unbox, typeOf(id), value);
       if (isReference(typeOf(id))) { _emit(Op.NullCheck, -1, [dst], 0); }
       dst
     },
+
     IsKind when (valueOf(id) == KIND_ENUM) => {
       let dst = _fresh(TYPE_BOOL);
       _emit(Op.IsEnum, dst, [_expr(childOf(id, 0))], _enumIndexes[auxOf(id)]);
@@ -974,20 +1068,21 @@ _exprAt = fn(id) {
       _emit(Op.KindOf, kind, [_expr(childOf(id, 0))], 0);
       let code = valueOf(id);
       let wide = (code == KIND_I64) || isFloatKind(code);
-      let tested = wide ? _arithmetic(Op.Mul, _arithmetic(Op.Sub, kind, _i32(KIND_I32)), _arithmetic(Op.Sub, kind, _i32(code))) : kind;
+      let tested = kind;
+
+      if (wide) {
+        let fromI32 = _arithmetic(Op.Sub, kind, _i32(KIND_I32));
+        tested = _arithmetic(Op.Mul, fromI32, _arithmetic(Op.Sub, kind, _i32(code)));
+      }
       let dst = _fresh(TYPE_BOOL);
       _emit(Op.Eq, dst, [tested, _i32(wide ? 0 : code)], 0);
       dst
     },
+
     Unwrap => {
       let operand = childOf(id, 0);
       let value = _expr(operand);
-
-      if (!isReference(typeOf(id))) {
-        let dst = _fresh(typeOf(id));
-        _emit(Op.Unbox, dst, [value], 0);
-        return dst;
-      }
+      if (!isReference(typeOf(id))) { return _unaryOp(Op.Unbox, typeOf(id), value); }
       if ((valueOf(id) == 1) || (_cellOf(operand) >= 0)) { _emit(Op.NullCheck, -1, [value], 0); }
       value
     },
@@ -1011,14 +1106,13 @@ _exprAt = fn(id) {
         CallNative => _nativeIndex(valueOf(id)),
         I64 => {
           _wides.push(wideValueOf(id));
-          (_wides.len() - 1) as I32
+          _wides.len() - 1
         },
-        Float => {
-          if (typeOf(id) == TYPE_F64) {
-            _floats.push(wideValueOf(id));
-            (_floats.len() - 1) as I32
-          } else { valueOf(id) }
+        Float when (typeOf(id) == TYPE_F64) => {
+          _floats.push(wideValueOf(id));
+          _floats.len() - 1
         },
+        Float => valueOf(id),
         Atom => _internAt(_atomIndexes, _atoms, valueOf(id)),
         ObjectGet, ObjectHas => _objectKey(id),
         _ => 0,
@@ -1033,12 +1127,8 @@ _exprAt = fn(id) {
       let present = match (opOf(id)) { IsPresent => true, _ => false };
       let dst = _fresh(present ? TYPE_BOOL : typeOf(id));
       _emit(op, dst, operands, imm);
-
-      if (present) {
-        let negated = _fresh(TYPE_BOOL);
-        _emit(Op.Not, negated, [dst], 0);
-        negated
-      } else { _wrapped(id, dst) }
+      if (!present) { return _wrapped(id, dst); }
+      _unaryOp(Op.Not, TYPE_BOOL, dst)
     },
   }
 };
@@ -1052,6 +1142,7 @@ let _while = fn(id: I32) {
   _nextBlock += 3;
   _end(Terminator.Jump(conditionBlock), conditionBlock);
   _branch(childOf(id, 0), bodyBlock, exitBlock, bodyBlock);
+
   let outerBreak = _breakTarget;
   let outerContinue = _continueTarget;
   _breakTarget = exitBlock;
@@ -1069,6 +1160,7 @@ let _doWhile = fn(id: I32) {
   let exitBlock = bodyBlock + 2;
   _nextBlock += 3;
   _end(Terminator.Jump(bodyBlock), bodyBlock);
+
   let outerBreak = _breakTarget;
   let outerContinue = _continueTarget;
   _breakTarget = exitBlock;
@@ -1081,15 +1173,16 @@ let _doWhile = fn(id: I32) {
   null
 };
 
-let _statementAt: (I32) -> Bool = fn(_id) { false };
-
 let _restart = fn(id: I32) {
   let args = _values(id, 0);
   let i = 0;
 
   while (i < args.len()) {
-    let held = indexOf(_params, args[i]);
-    if ((held >= 0) && (held < i) && (args[held] != _params[held])) { args[i] = _copy(typeOf(childOf(id, i)), args[i]); }
+    let held = _params.indexOf(args[i]);
+
+    if ((held >= 0) && (held < i) && (args[held] != _params[held])) {
+      args[i] = _copy(typeOf(childOf(id, i)), args[i]);
+    }
     i++;
   }
   i = 0;
@@ -1101,7 +1194,7 @@ let _restart = fn(id: I32) {
   _exit(Terminator.Jump(_start))
 };
 
-_tail = fn(value, result, join) {
+let _tail = fn(value: I32, result: I32, join: I32): Null {
   let outer = _node;
   _node = value;
 
@@ -1121,9 +1214,17 @@ _tail = fn(value, result, join) {
       }
     },
     Block when ((auxOf(value) == 1) || (result < 0)) => {
-      if (_statements(value)) { _tail(lastChild(value), result, join); } else if (result == _DISCARDED) { _end(Terminator.Jump(join), -1); } else { _open(-1); }
+      if (_statements(value)) {
+        _tail(lastChild(value), result, join);
+      } else if (result == _DISCARDED) {
+        _end(Terminator.Jump(join), -1);
+      } else {
+        _open(-1);
+      }
     },
-    Call when ((result == _RETURNED) && (valueOf(value) == _self) && (_handler == null)) => _restart(value),
+    Call when ((result == _RETURNED) && (valueOf(value) == _self) && (_handler == null)) => {
+      _restart(value)
+    },
     _ when (result == _RETURNED) => _exit(Terminator.ReturnValue(_expr(value))),
     _ when (result == _DISCARDED) => {
       _expr(value);
@@ -1138,7 +1239,9 @@ _tail = fn(value, result, join) {
   null
 };
 
-let _returned = fn(id: I32): Null { _start < 0 ? _exit(Terminator.ReturnValue(_expr(id))) : _tail(id, _RETURNED, -1) };
+let _returned = fn(id: I32): Null {
+  _start < 0 ? _exit(Terminator.ReturnValue(_expr(id))) : _tail(id, _RETURNED, -1)
+};
 
 let _ifStatement = fn(id: I32) {
   let joinBlock = _nextBlock;
@@ -1147,15 +1250,16 @@ let _ifStatement = fn(id: I32) {
   _open(joinBlock)
 };
 
-_statement = fn(id) {
+let _statement = fn(id: I32): Bool {
   let outer = _node;
   _node = id;
   let done = _statementAt(id);
   _node = outer;
+
   done
 };
 
-_statementAt = fn(id) {
+let _statementAt = fn(id: I32): Bool {
   match (opOf(id)) {
     Declare => {
       let i = 0;
@@ -1163,7 +1267,8 @@ _statementAt = fn(id) {
       while (i < childCount(id)) {
         _bind(childOf(id, i));
         i++;
-      } null
+      }
+      null
     },
     Expression => {
       _expr(childOf(id, 0));
@@ -1191,7 +1296,7 @@ _statementAt = fn(id) {
   true
 };
 
-_lowerBlock = fn(id) { _statements(id) ? _expr(lastChild(id)) : -1 };
+let _lowerBlock = fn(id: I32): I32 { _statements(id) ? _expr(lastChild(id)) : -1 };
 
 let _usesOf = fn(binding: I32): I32 { binding < _uses.len() ? _uses[binding] : 0 };
 
@@ -1204,16 +1309,18 @@ let _use = fn(binding: I32, flag: I32) {
   null
 };
 
-let _markUses: (I32, I32) -> Null = fn(_id, _expression) { null };
-_markUses = fn(id, expression) {
+let _markUses = fn(id: I32, expression: I32): Null {
   let at = _walked;
   _walked++;
   let reboxes = false;
 
   let sequential = match (opOf(id)) {
-    Block, If, IfStatement, While, Try, TryStatement, Let, Const, Declare, Expression, Return, Throw, SetGlobal, InitGlobal, And, Or => true,
+    Block, If, IfStatement, While, Try, TryStatement, Let, Const, Declare, Expression, Return,
+    Throw, SetGlobal, InitGlobal, And, Or => true,
     Assign => {
-      let overtakes = (expression >= 0) && (valueOf(id) < _lastRead.len()) && (_lastRead[valueOf(id)] > expression);
+      let overtakes = (expression >= 0)
+        && (valueOf(id) < _lastRead.len())
+        && (_lastRead[valueOf(id)] > expression);
       _use(valueOf(id), overtakes ? _ASSIGNED | _OVERTAKEN : _ASSIGNED);
       true
     },
@@ -1230,7 +1337,10 @@ _markUses = fn(id, expression) {
       reboxes = _cellOf(childOf(id, 0)) < 0;
       false
     },
-    Call => { if (valueOf(id) == _self) { _start = 1; } false },
+    Call => {
+      if (valueOf(id) == _self) { _start = 1; }
+      false
+    },
     _ => false,
   };
   let inner = ((expression < 0) && !sequential && (childCount(id) > 1)) ? at : expression;
@@ -1250,14 +1360,16 @@ let _begin = fn(body: I32, self: I32) {
   _blocks = Array.new<BasicBlock>(0);
   _block = 0;
   _nextBlock = 1;
+  _targeted = [true];
+  _reachable = true;
+
   _bindings = Array.new<I32>(0);
   _uses = Array.new<I32>(0);
   _lastRead = Array.new<I32>(0);
   _walked = 0;
   _assignedRegisters = Array.new<Bool>(0);
   _boxes = Array.new<I32>(0);
-  _targeted = [true];
-  _reachable = true;
+
   _breakTarget = -1;
   _continueTarget = -1;
   _handler = null;
@@ -1265,6 +1377,10 @@ let _begin = fn(body: I32, self: I32) {
   _self = self;
   _start = -1;
   _markUses(body, -1)
+};
+
+let _irFunction = fn(id: I32, params: Array<I32>, captures: I32, result: ValueType): IrFunction {
+  { id, params, captures, registers: _registers, result, blocks: _blocks, entry: 0 }
 };
 
 let _function = fn(id: I32, functionId: I32): IrFunction {
@@ -1279,6 +1395,7 @@ let _function = fn(id: I32, functionId: I32): IrFunction {
     let register = _fresh(capture ? TYPE_DYNAMIC : typeOf(param));
     params.push(register);
     if (capture) { _setBox(valueOf(param), register); }
+
     let bound = register;
     let cell = _isCell(valueOf(param));
     let used = (_usesOf(valueOf(param)) & (cell ? _UNBOXED | _ASSIGNED : _UNBOXED)) != 0;
@@ -1297,8 +1414,7 @@ let _function = fn(id: I32, functionId: I32): IrFunction {
     _end(Terminator.Jump(_start), _start);
   }
   _returned(lastChild(id));
-  let captures = (params.len() as I32) - arguments;
-  IrFunction.Function(functionId, params, captures, _registers, _valueType(innerOf(typeOf(id))), _blocks, 0)
+  _irFunction(functionId, params, params.len() - arguments, _valueType(innerOf(typeOf(id))))
 };
 
 let _reachableFunctions = fn(): Array<Bool> {
@@ -1327,10 +1443,13 @@ let _reachableFunctions = fn(): Array<Bool> {
 
 let _partStarts = Array.new<I32>(0);
 
-export let functionNode: (I32) -> I32 = fn(functionId) {
+export let functionNode = fn(functionId: I32): I32 {
   let root = rootNode();
   let first = childCount(root);
-  if (functionId >= first) { return childOf(lastChild(root), _partStarts[functionId - first]); }
+
+  if (functionId >= first) {
+    return childOf(lastChild(root), _partStarts[functionId - first]);
+  }
   functionId == 0 ? lastChild(root) : childOf(root, functionId - 1)
 };
 
@@ -1352,20 +1471,25 @@ let _part = fn(body: I32, start: I32, functionId: I32): Tuple<IrFunction, I32> {
       counted++;
     }
   }
+
   let result = _fresh(TYPE_NULL);
   _emit(Op.ConstNull, result, [], 0);
   _exit(Terminator.ReturnValue(result));
-  (IrFunction.Function(functionId, [], 0, _registers, _valueType(TYPE_NULL), _blocks, 0), next)
+  (_irFunction(functionId, [], 0, _valueType(TYPE_NULL)), next)
 };
 
 let _capturesItself = fn(id: I32): Bool {
   let value = childOf(id, 0);
-  let i = 0;
   match (opOf(value)) { FunctionRef => null, _ => { return false; } };
+  let i = 0;
 
   while (i < childCount(value)) {
     let source = childOf(value, i);
-    match (opOf(source)) { Local when (valueOf(source) == valueOf(id)) => { return true; }, _ => null };
+
+    match (opOf(source)) {
+      Local when (valueOf(source) == valueOf(id)) => { return true; },
+      _ => null,
+    };
     i++;
   }
   false
@@ -1378,7 +1502,7 @@ let _findCells = fn() {
 
   let grow = fn(binding: I32) {
     while (groups.len() <= binding) {
-      groups.push(groups.len() as I32);
+      groups.push(groups.len());
       assigned.push(false);
       captured.push(false);
     }
@@ -1391,6 +1515,7 @@ let _findCells = fn() {
     while (groups[group] != group) { group = groups[group]; }
     group
   };
+
   let count = nodeCount();
   let id = 0;
 
@@ -1457,7 +1582,12 @@ let _forgetIndexes = fn(indexes: Array<I32>, size: I32) {
   null
 };
 
-let _lowerBody = fn(functions: Array<IrFunction>, enums: Array<EnumSchema>, inParts: Bool, verified: I32): IrProgram {
+let _lowerBody = fn(
+  functions: Array<IrFunction>,
+  enums: Array<EnumSchema>,
+  inParts: Bool,
+  verified: I32
+): IrProgram {
   let root = rootNode();
   let body = lastChild(root);
   let first = childCount(root);
@@ -1473,7 +1603,7 @@ let _lowerBody = fn(functions: Array<IrFunction>, enums: Array<EnumSchema>, inPa
 
     while (next < statements) {
       _partStarts.push(next);
-      let (part, after) = _part(body, next, first + (_partStarts.len() as I32) - 1);
+      let (part, after) = _part(body, next, first + _partStarts.len() - 1);
       functions.push(part);
       next = after;
     }
@@ -1481,13 +1611,14 @@ let _lowerBody = fn(functions: Array<IrFunction>, enums: Array<EnumSchema>, inPa
     let part = 0;
 
     while (part < _partStarts.len()) {
-      _emit(Op.Call, _fresh(TYPE_NULL), [], first + (part as I32));
+      _emit(Op.Call, _fresh(TYPE_NULL), [], first + part);
       part++;
     }
     result = _expr(lastChild(body));
   }
   _end(Terminator.ReturnValue(result), -1);
-  functions.push(IrFunction.Function(0, [], 0, _registers, _valueType(typeOf(body)), _blocks, 0));
+  functions.push(_irFunction(0, [], 0, _valueType(typeOf(body))));
+
   let globals = Array.new<ValueType>(0);
   let i = 0;
 
@@ -1495,12 +1626,21 @@ let _lowerBody = fn(functions: Array<IrFunction>, enums: Array<EnumSchema>, inPa
     globals.push(_valueType(globalTypeOf(i)));
     i++;
   }
-  let lowered = IrProgram.Program(functions, _pool, _wides, _floats, _atoms, enums, globals, _natives);
+  let lowered: IrProgram = {
+    functions,
+    bytes: _pool,
+    wides: _wides,
+    floats: _floats,
+    atoms: _atoms,
+    enums,
+    globals,
+    natives: _natives,
+  };
   verifyProgramFrom(lowered, false, verified);
   lowered
 };
 
-export let lowerProgram: (Hir) -> IrProgram = fn(program) {
+export let lowerProgram = fn(program: Hir): IrProgram {
   useHir(program);
   _pool = Array.new<Bytes>(0);
   _poolIndexes = Array.new<I32>(0);
@@ -1513,17 +1653,15 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
   _natives = Array.new<Native>(0);
   _nativeIndexes = Array.new<I32>(0);
   while (_nativeIndexes.len() < nativeCount()) { _nativeIndexes.push(-1); }
+
   _enumIndexes = Array.new<I32>(0);
   let enumTypes = Array.new<I32>(0);
   let ty = 0;
 
   while (ty < typeCount()) {
-    _enumIndexes.push(match (kindOf(ty)) {
-      Enum, Record when (!isTemplateEnum(ty)) => {
-        enumTypes.push(ty);
-        (enumTypes.len() - 1) as I32
-      }, _ => -1
-    });
+    let nominal = match (kindOf(ty)) { Enum, Record => !isTemplateEnum(ty), _ => false };
+    if (nominal) { enumTypes.push(ty); }
+    _enumIndexes.push(nominal ? enumTypes.len() - 1 : -1);
     ty++;
   }
   let enums = Array.new<EnumSchema>(0);
@@ -1547,6 +1685,7 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
     enums.push(isRecord(enumTypes[e]) ? EnumSchema.Record(variants[0]) : EnumSchema.Enum(variants));
     e++;
   }
+
   _findCells();
   let root = rootNode();
   let functions = Array.new<IrFunction>(0);
@@ -1557,17 +1696,17 @@ export let lowerProgram: (Hir) -> IrProgram = fn(program) {
     if (reached[i + 1]) { functions.push(_function(childOf(root, i), i + 1)); }
     i++;
   }
-  _poolSizes = [_pool.len() as I32, _wides.len() as I32, _floats.len() as I32, _atoms.len() as I32, _natives.len() as I32];
+  _poolSizes = [_pool.len(), _wides.len(), _floats.len(), _atoms.len(), _natives.len()];
   _lowerBody(functions, enums, false, 0)
 };
 
-export let relowerBodyInParts: (IrProgram) -> IrProgram = fn(earlier) {
+export let relowerBodyInParts = fn(earlier: IrProgram): IrProgram {
   if (_poolSizes.len() == 0) { throw "no program body to lower again"; }
-  _pool = appendFrom(Array.new<Bytes>(0), _pool, 0);
-  _wides = appendFrom(Array.new<I64>(0), _wides, 0);
-  _floats = appendFrom(Array.new<I64>(0), _floats, 0);
-  _atoms = appendFrom(Array.new<Bytes>(0), _atoms, 0);
-  _natives = appendFrom(Array.new<Native>(0), _natives, 0);
+  _pool = _pool.copy();
+  _wides = _wides.copy();
+  _floats = _floats.copy();
+  _atoms = _atoms.copy();
+  _natives = _natives.copy();
   Array.resize(_pool, _poolSizes[0]);
   Array.resize(_wides, _poolSizes[1]);
   Array.resize(_floats, _poolSizes[2]);
@@ -1577,9 +1716,7 @@ export let relowerBodyInParts: (IrProgram) -> IrProgram = fn(earlier) {
   _forgetIndexes(_atomIndexes, _poolSizes[3]);
   _forgetIndexes(_nativeIndexes, _poolSizes[4]);
 
-  match (earlier) { Program(functions, _, _, _, _, enums, _, _) => {
-    let kept = Array.new<IrFunction>(0);
-    while (kept.len() < functions.len() - 1) { kept.push(functions[kept.len()]); }
-    _lowerBody(kept, enums, true, kept.len() as I32)
-  } }
+  let kept = Array.new<IrFunction>(0);
+  while (kept.len() < earlier.functions.len() - 1) { kept.push(earlier.functions[kept.len()]); }
+  _lowerBody(kept, earlier.enums, true, kept.len())
 };

@@ -1,7 +1,5 @@
 package frontend.semantics;
 
-import { appendFrom, indexOf } from support.Arrays;
-
 let _known = Array.new<I32>(0);
 let _assigned = Array.new<I32>(0);
 
@@ -9,62 +7,64 @@ let _index = fn(binding: I32): I32 {
   let i = 0;
 
   while (i < _known.len()) {
-    if (_known[i] / 2 == binding) { return i as I32; }
+    if (_known[i] / 2 == binding) { return i; }
     i++;
   }
   -1
 };
 
 let _copy = fn(items: Array<I32>): Array<I32> {
-  appendFrom(Array.new<I32>(0), items, 0)
+  items.copy()
 };
 
-export let resetNarrowing: () -> Bool = fn() {
+export let resetNarrowing = fn(): Bool {
   _known = Array.new<I32>(0);
   _assigned = Array.new<I32>(0);
   true
 };
 
-export let isNarrowed: (I32) -> Bool = fn(binding) { _index(binding) >= 0 };
+export let isNarrowed = fn(binding: I32): Bool { _index(binding) >= 0 };
 
-export let narrow: (I32, Bool) -> Bool = fn(binding, mutable) {
+export let narrow = fn(binding: I32, mutable: Bool): Bool {
   if (_index(binding) < 0) { _known.push(binding * 2 + (mutable ? 1 : 0)); }
   true
 };
 
-export let assignLocal: (I32, Bool) -> Bool = fn(binding, present) {
+export let assignLocal = fn(binding: I32, present: Bool): Bool {
   _assigned.push(binding);
   let found = _index(binding);
 
-  if (present) { narrow(binding, true); } else if (found >= 0) {
+  if (present) {
+    narrow(binding, true);
+  } else if (found >= 0) {
     _known[found] = _known[_known.len() - 1];
     _known.pop();
   }
   true
 };
 
-export let narrowings: () -> Array<I32> = fn() { _copy(_known) };
+export let narrowings = fn(): Array<I32> { _copy(_known) };
 
-export let setNarrowings: (Array<I32>) -> Bool = fn(known) {
+export let setNarrowings = fn(known: Array<I32>): Bool {
   _known = _copy(known);
   true
 };
 
-export let keepNarrowings: (Array<I32>) -> Bool = fn(before) {
+export let keepNarrowings = fn(before: Array<I32>): Bool {
   let kept = Array.new<I32>(0);
   let i = 0;
 
   while (i < _known.len()) {
-    if (indexOf(before, _known[i]) >= 0) { kept.push(_known[i]); }
+    if (before.indexOf(_known[i]) >= 0) { kept.push(_known[i]); }
     i++;
   }
   _known = kept;
   true
 };
 
-export let assignmentMark: () -> I32 = fn() { _assigned.len() as I32 };
+export let assignmentMark = fn(): I32 { _assigned.len() };
 
-export let enterLoop: () -> Bool = fn() {
+export let enterLoop = fn(): Bool {
   let kept = Array.new<I32>(0);
   let i = 0;
 
@@ -76,7 +76,7 @@ export let enterLoop: () -> Bool = fn() {
   true
 };
 
-export let leaveLoop: (Array<I32>, I32) -> Bool = fn(before, mark) {
+export let leaveLoop = fn(before: Array<I32>, mark: I32): Bool {
   let kept = Array.new<I32>(0);
   let i = 0;
 

@@ -1,0 +1,99 @@
+package std.crypto;
+
+import std.crypto.Hash as Hash;
+import std.crypto.Pem as Pem;
+import std.sys.Date as Date;
+import type { Date } from std.sys.Date;
+
+load { x509_parse, x509_count, x509_ca, x509_field, x509_verify } from tls;
+
+let _parse: (Bytes) -> Dynamic = x509_parse;
+let _count: (Dynamic) -> I32 = x509_count;
+let _ca: (Dynamic, I32) -> Bool = x509_ca;
+let _field: (Dynamic, I32, I32) -> Bytes = x509_field;
+let _verify: (Bytes, Bytes, Bytes, I64) -> I32 = x509_verify;
+
+let _NOT_FOR_HOST = 0x04;
+let _FLAGS = [0x01, 0x0200, 0x02, 0x08, 0x40, 0x0800, 0x1000, 0x4000, 0x8000, 0x010000];
+let _PROBLEMS = ["a certificate has expired", "a certificate is not valid yet",
+  "a certificate is revoked", "the chain does not lead to a trusted certificate",
+  "a certificate in the chain is missing", "a certificate's key usage does not allow it",
+  "a certificate's extended key usage does not allow it",
+  "a certificate is signed with a hash that is not accepted",
+  "a certificate's key is of a kind that is not accepted", "a certificate's key is too short"];
+
+export typedef Certificate = {
+  let subject: Bytes;
+  let issuer: Bytes;
+  let serial: Bytes;
+  let notBefore: Date;
+  let notAfter: Date;
+  let names: Array<Bytes>;
+  let isCa: Bool;
+  let key: Bytes;
+  let der: Bytes;
+};
+
+export prototype Certificate {
+  init(subject: Bytes, issuer: Bytes, serial: Bytes, notBefore: Date, notAfter: Date,
+    names: Array<Bytes>, isCa: Bool, key: Bytes, der: Bytes) {
+    this.subject = subject;
+    this.issuer = issuer;
+    this.serial = serial;
+    this.notBefore = notBefore;
+    this.notAfter = notAfter;
+    this.names = names;
+    this.isCa = isCa;
+    this.key = key;
+    this.der = der;
+  };
+  isValidAt(date: Date): Bool { !date.isBefore(this.notBefore) && !date.isAfter(this.notAfter) };
+  fingerprint(algorithm: Bytes = "sha256"): Bytes { Hash.digest(algorithm, this.der) };
+  pem(): Bytes { Pem.encode("CERTIFICATE", this.der) };
+};
+
+export let parse = fn(text: Bytes): Array<Certificate> {
+  let parsed = _parse(text);
+  if (parsed is Bytes) { throw "X509.parse: " + (parsed as Bytes); };
+  let certificates = Array.new<Certificate>(0);
+  let count = _count(parsed);
+  let i = 0;
+
+  while (i < count) {
+    let names = _field(parsed, i, 6);
+    certificates.push(new Certificate(_field(parsed, i, 0), _field(parsed, i, 1),
+      _field(parsed, i, 2), Date.parse(_field(parsed, i, 4)), Date.parse(_field(parsed, i, 5)),
+      names.isEmpty() ? Array.new<Bytes>(0) : names.split("\n"), _ca(parsed, i),
+      _field(parsed, i, 7), _field(parsed, i, 3)));
+    i++;
+  }
+  certificates
+};
+
+let _der = fn(certificates: Array<Certificate>): Bytes {
+  Bytes.join(certificates.map(fn(c: Certificate): Bytes { c.der }), "")
+};
+
+export let verify = fn(chain: Array<Certificate>, trusted: Array<Certificate>, host: Bytes = "",
+  ?at: Date): Array<Bytes> {
+  if (chain.len() == 0) { throw "X509.verify: the chain is empty"; };
+  let time = at == null ? Date.now().time : at.time;
+  let flags = _verify(_der(chain), _der(trusted), host, time);
+  let problems = Array.new<Bytes>(0);
+
+  if ((flags & _NOT_FOR_HOST) != 0) {
+    problems.push("the certificate is not for " + host);
+    flags = flags ^ _NOT_FOR_HOST;
+  };
+  let i = 0;
+
+  while (i < _FLAGS.len()) {
+    if ((flags & _FLAGS[i]) != 0) {
+      problems.push(_PROBLEMS[i]);
+      flags = flags ^ _FLAGS[i];
+    }
+    i++;
+  }
+  if (flags != 0) { problems.push("the chain cannot be trusted"); };
+  problems
+};

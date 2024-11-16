@@ -1,33 +1,16 @@
 package frontend.syntax;
 
+import type { FloatSize, IntSize } from frontend.syntax.Ast;
 import { sourceDiagnostic, utf8CharLength } from frontend.syntax.Source;
 import { E0001, E0002, E0003, E0004, E0005, E0006, coded } from support.Codes;
-import { concatAll, hexValue, u8, utf8FromCodepoint, utf8Validate } from support.Text;
-
-export enum IntegerSize {
-  Infer;
-  I8;
-  I16;
-  I32;
-  I64;
-  U8;
-  U16;
-  U32;
-  U64;
-};
-
-export enum FloatSize {
-  Infer;
-  F16;
-  F32;
-  F64;
-};
+import { concatAll, hexValue } from support.Text;
+import { u8, utf8FromCodepoint, utf8Validate } from std.core.Bytes;
 
 export enum Token {
   BytesLiteral(value: Bytes);
   FloatConstant(literal: Bytes, size: FloatSize);
   Ident(name: Bytes);
-  IntegerConstant(digits: Bytes, size: IntegerSize);
+  IntegerConstant(digits: Bytes, size: IntSize);
   RegExpLiteral(pattern: Bytes, flags: Bytes);
   TemplateHead(text: Bytes);
   TemplateMiddle(text: Bytes);
@@ -125,15 +108,15 @@ export enum Token {
   Eof;
 };
 
-let _byteAt = fn(src: Bytes, i: I32) {
+let _byteAt = fn(src: Bytes, i: I32): I32 {
   ((i < 0) || (i >= src.len())) ? -1 : Bytes.get_u8(src, i)
 };
 
-let _isSpace = fn(c: I32) {
+let _isSpace = fn(c: I32): Bool {
   (c == " ".code) || ((c >= "\t".code) && (c <= "\r".code))
 };
 
-let _isDigit = fn(c: I32) {
+let _isDigit = fn(c: I32): Bool {
   (c >= "0".code) && (c <= "9".code)
 };
 
@@ -177,7 +160,7 @@ let _skipSpace = fn(src: Bytes, at: I32): I32 {
   pos
 };
 
-let _keywordToken = fn(word: Bytes) {
+let _keywordToken = fn(word: Bytes): Token {
   match (word) {
     "as" => Token.As,
     "await" => Token.Await,
@@ -221,28 +204,28 @@ let _keywordToken = fn(word: Bytes) {
   }
 };
 
-let _isWordChar = fn(c: I32) {
+let _isWordChar = fn(c: I32): Bool {
   ((c >= "0".code) && (c <= "9".code))
     || ((c >= "A".code) && (c <= "Z".code))
     || ((c >= "a".code) && (c <= "z".code))
     || (c == "_".code)
 };
 
-let _integerSize = fn(suffix: Bytes) {
+let _integerSize = fn(suffix: Bytes): IntSize {
   match (suffix) {
-    "i8" => IntegerSize.I8,
-    "i16" => IntegerSize.I16,
-    "i32" => IntegerSize.I32,
-    "i64" => IntegerSize.I64,
-    "u8" => IntegerSize.U8,
-    "u16" => IntegerSize.U16,
-    "u32" => IntegerSize.U32,
-    "u64" => IntegerSize.U64,
-    _ => IntegerSize.Infer,
+    "i8" => IntSize.I8,
+    "i16" => IntSize.I16,
+    "i32" => IntSize.I32,
+    "i64" => IntSize.I64,
+    "u8" => IntSize.U8,
+    "u16" => IntSize.U16,
+    "u32" => IntSize.U32,
+    "u64" => IntSize.U64,
+    _ => IntSize.Infer,
   }
 };
 
-let _floatSize = fn(suffix: Bytes) {
+let _floatSize = fn(suffix: Bytes): FloatSize {
   match (suffix) {
     "f16" => FloatSize.F16,
     "f32" => FloatSize.F32,
@@ -251,7 +234,7 @@ let _floatSize = fn(suffix: Bytes) {
   }
 };
 
-let _escapeByte = fn(c: I32) {
+let _escapeByte = fn(c: I32): I32 {
   match (c) {
     "0".code => 0,
     "a".code => 7,
@@ -272,15 +255,11 @@ let _escapeByte = fn(c: I32) {
 let _widthLength = fn(src: Bytes, i: I32, eight: Bool): I32 {
   let a = _byteAt(src, i);
   let b = _byteAt(src, i + 1);
-
-  if (eight && (a == "8".code)) {
-    1
-  } else if (((a == "1".code) && (b == "6".code)) || ((a == "3".code) && (b == "2".code))
-    || ((a == "6".code) && (b == "4".code))) {
-    2
-  } else {
-    0
-  }
+  if (eight && (a == "8".code)) { return 1; }
+  let wide = ((a == "1".code) && (b == "6".code))
+    || ((a == "3".code) && (b == "2".code))
+    || ((a == "6".code) && (b == "4".code));
+  wide ? 2 : 0
 };
 
 let _integerSuffix = fn(src: Bytes, i: I32): Bytes {
@@ -306,10 +285,11 @@ let _checkConstantEnd = fn(src: Bytes, start: I32, end: I32) {
     let stop = end;
 
     let more = fn(at: I32): Bool {
-      _isWordChar(_byteAt(src, at)) || ((_byteAt(src, at) == ".".code) && _isWordChar(_byteAt(src, at + 1)))
+      _isWordChar(_byteAt(src, at))
+        || ((_byteAt(src, at) == ".".code) && _isWordChar(_byteAt(src, at + 1)))
     };
     while (more(stop)) { stop++; }
-    throw coded(E0003, "invalid constant: " + Bytes.slice(src, start, stop - start));
+    throw coded(E0003, `invalid constant: ${Bytes.slice(src, start, stop - start)}`);
   }
   null
 };
@@ -317,9 +297,9 @@ let _checkConstantEnd = fn(src: Bytes, start: I32, end: I32) {
 let _lexConstant = fn(src: Bytes, digits: Bytes, i: I32): Tuple<Token, I32> {
   let integer = _integerSuffix(src, i);
   let float = (integer.len() > 0) ? "" : _floatSuffix(src, i);
-  let token = (integer.len() > 0)
-    ? Token.IntegerConstant(digits, _integerSize(integer))
-    : (float.len() > 0) ? Token.FloatConstant(digits, _floatSize(float)) : Token.IntegerConstant(digits, IntegerSize.Infer);
+  let token = (float.len() > 0)
+    ? Token.FloatConstant(digits, _floatSize(float))
+    : Token.IntegerConstant(digits, _integerSize(integer));
   let end = i + integer.len() + float.len();
   _checkConstantEnd(src, i - digits.len(), end);
   (token, end)
@@ -330,23 +310,20 @@ let _radixEnd = fn(src: Bytes, i: I32): I32 {
   let hex = (kind == "x".code) || (kind == "X".code);
   let binary = (kind == "b".code) || (kind == "B".code);
   let octal = (kind == "o".code) || (kind == "O".code);
+  if ((_byteAt(src, i) != "0".code) || !(hex || binary || octal)) { return -1; }
 
-  if ((_byteAt(src, i) != "0".code) || !(hex || binary || octal)) {
-    -1
-  } else {
-    let end = i + 2;
-    let more = true;
+  let end = i + 2;
+  let more = true;
 
-    while (more) {
-      let c = _byteAt(src, end);
-      more = (c == "_".code)
-        || (hex && (hexValue(c) >= 0))
-        || (binary && ((c == "0".code) || (c == "1".code)))
-        || (octal && (c >= "0".code) && (c <= "7".code));
-      if (more) { end++; }
-    }
-    end
+  while (more) {
+    let c = _byteAt(src, end);
+    more = (c == "_".code)
+      || (hex && (hexValue(c) >= 0))
+      || (binary && ((c == "0".code) || (c == "1".code)))
+      || (octal && (c >= "0".code) && (c <= "7".code));
+    if (more) { end++; }
   }
+  end
 };
 
 let _lexRadix = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
@@ -358,15 +335,13 @@ let _lexRadix = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
     if (_byteAt(text, k) != "_".code) { digits++; }
     k++;
   }
-  if (digits == 0) { throw coded(E0003, "invalid integer literal: " + text); }
+  if (digits == 0) { throw coded(E0003, `invalid integer literal: ${text}`); }
+
   let (token, cur) = _lexConstant(src, text, end);
 
   match (token) {
     IntegerConstant(_, _) => (token, cur),
-    _ => {
-      throw coded(E0003, "invalid integer literal: " + text);
-      (Token.Eof, end)
-    },
+    _ => { throw coded(E0003, `invalid integer literal: ${text}`); },
   }
 };
 
@@ -386,18 +361,10 @@ let _floatEnd = fn(src: Bytes, i: I32): I32 {
   let hasWhole = whole > i;
   let pointExponent = hasFraction ? _exponentEnd(src, fraction) : -1;
   let wholeExponent = hasWhole ? _exponentEnd(src, dot ? whole + 1 : whole) : -1;
-
-  if (pointExponent >= 0) {
-    pointExponent
-  } else if (wholeExponent >= 0) {
-    wholeExponent
-  } else if (hasFraction) {
-    fraction
-  } else if (hasWhole && dot && !_dotStartsMember(src, whole)) {
-    whole + 1
-  } else {
-    -1
-  }
+  if (pointExponent >= 0) { return pointExponent; }
+  if (wholeExponent >= 0) { return wholeExponent; }
+  if (hasFraction) { return fraction; }
+  (hasWhole && dot && !_dotStartsMember(src, whole)) ? whole + 1 : -1
 };
 
 let _lexFloat = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
@@ -410,7 +377,12 @@ let _lexFloat = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
 
 let _failAt = -1;
 
-let _holes = Array.new<I32>(0);
+typedef Hole = {
+  let depth: I32;
+  let tick: I32;
+};
+
+let _holes = Array.new<Hole>(0);
 
 let _unicodeEscape = fn(src: Bytes, at: I32): Tuple<I32, I32> {
   let braced = _byteAt(src, at) == "{".code;
@@ -433,7 +405,9 @@ let _unicodeEscape = fn(src: Bytes, at: I32): Tuple<I32, I32> {
     }
   }
 
-  if ((digits == 0) || (cp > 1114111) || ((cp >= 55296) && (cp <= 57343))
+  if ((digits == 0)
+    || (cp > 1114111)
+    || ((cp >= 55296) && (cp <= 57343))
     || (braced && (_byteAt(src, i) != "}".code))) {
     return (-1, i);
   }
@@ -472,8 +446,7 @@ let _escape = fn(src: Bytes, i: I32, esc: I32, out: Array<Bytes>): I32 {
 
 let _unknownEscape = fn(src: Bytes, i: I32) {
   _failAt = i;
-  throw coded(E0004, "unknown escape \\" + Bytes.slice(src, i + 1, utf8CharLength(src, i + 1)));
-  null
+  throw coded(E0004, `unknown escape \\${Bytes.slice(src, i + 1, utf8CharLength(src, i + 1))}`);
 };
 
 let _lexBytesLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
@@ -498,7 +471,9 @@ let _lexBytesLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
       let end = _escape(src, i, esc, out);
 
       if (end < 0) {
-        if ((esc < 0) || (esc == "\n".code) || (esc == "\r".code)) { throw coded(E0005, "unterminated bytes literal"); }
+        if ((esc < 0) || (esc == "\n".code) || (esc == "\r".code)) {
+          throw coded(E0005, "unterminated bytes literal");
+        }
         _unknownEscape(src, i);
       }
       i = end;
@@ -561,13 +536,14 @@ let _lexTemplate = fn(src: Bytes, at: I32, tick: I32, head: Bool): Tuple<Token, 
   (Token.Eof, i)
 };
 
-let _isLetter = fn(c: I32) {
+let _isLetter = fn(c: I32): Bool {
   ((c >= "A".code) && (c <= "Z".code))
     || ((c >= "a".code) && (c <= "z".code))
 };
 
 export let isName = fn(text: Bytes): Bool {
-  if ((text.len() == 0) || !(_isLetter(Bytes.get_u8(text, 0)) || (Bytes.get_u8(text, 0) == "_".code))) { return false; }
+  let first = _byteAt(text, 0);
+  if (!_isLetter(first) && (first != "_".code)) { return false; }
   let i = 1;
 
   while (i < text.len()) {
@@ -598,10 +574,11 @@ let _lexRegExpLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
   let flags = close + 1;
   let end = flags;
   while (_isLetter(_byteAt(src, end))) { end++; }
-  (Token.RegExpLiteral(Bytes.slice(src, at + 3, close - at - 3), Bytes.slice(src, flags, end - flags)), end)
+  let pattern = Bytes.slice(src, at + 3, close - at - 3);
+  (Token.RegExpLiteral(pattern, Bytes.slice(src, flags, end - flags)), end)
 };
 
-let _opToken: (Bytes) -> Token = fn(op) {
+let _opToken = fn(op: Bytes): Token {
   match (op) {
     "==" => Token.EqualEqual,
     "=>" => Token.FatArrow,
@@ -630,49 +607,44 @@ let _opToken: (Bytes) -> Token = fn(op) {
 };
 
 let _lexOp = fn(src: Bytes, i: I32): Tuple<Token, I32> {
-  let three = (i + 3 <= src.len()) && _startsAt(src, i, "...");
+  if ((i + 3 <= src.len()) && _startsAt(src, i, "...")) { return (Token.DotDotDot, i + 3); }
+
   let two = (i + 2 <= src.len()) ? _opToken(Bytes.slice(src, i, 2)) : Token.Eof;
 
-  if (three) {
-    (Token.DotDotDot, i + 3)
-  } else {
-    match (two) {
-      Eof => {
-        let token = match (_byteAt(src, i)) {
-          "(".code => Token.LParen,
-          ")".code => Token.RParen,
-          "{".code => Token.LBrace,
-          "}".code => Token.RBrace,
-          "[".code => Token.LBracket,
-          "]".code => Token.RBracket,
-          ";".code => Token.Semicolon,
-          ":".code => Token.Colon,
-          ",".code => Token.Comma,
-          "?".code => Token.Question,
-          ".".code => Token.Dot,
-          "=".code => Token.Equal,
-          "!".code => Token.Not,
-          "<".code => Token.Less,
-          ">".code => Token.Greater,
-          "+".code => Token.Plus,
-          "-".code => Token.Minus,
-          "*".code => Token.Star,
-          "/".code => Token.Slash,
-          "%".code => Token.Percent,
-          "&".code => Token.Ampersand,
-          "|".code => Token.Pipe,
-          "^".code => Token.Caret,
-          _ => {
-            throw coded(E0002, "unexpected character");
-            Token.Eof
-          },
-        };
-        (token, i + 1)
-      },
-      LessLess, GreaterGreater when ((i + 3 <= src.len()) && (Bytes.get_u8(src, i + 2) == "=".code)) =>
-        (two == Token.LessLess ? Token.LessLessEqual : Token.GreaterGreaterEqual, i + 3),
-      _ => (two, i + 2),
-    }
+  match (two) {
+    Eof => {
+      let token = match (_byteAt(src, i)) {
+        "(".code => Token.LParen,
+        ")".code => Token.RParen,
+        "{".code => Token.LBrace,
+        "}".code => Token.RBrace,
+        "[".code => Token.LBracket,
+        "]".code => Token.RBracket,
+        ";".code => Token.Semicolon,
+        ":".code => Token.Colon,
+        ",".code => Token.Comma,
+        "?".code => Token.Question,
+        ".".code => Token.Dot,
+        "=".code => Token.Equal,
+        "!".code => Token.Not,
+        "<".code => Token.Less,
+        ">".code => Token.Greater,
+        "+".code => Token.Plus,
+        "-".code => Token.Minus,
+        "*".code => Token.Star,
+        "/".code => Token.Slash,
+        "%".code => Token.Percent,
+        "&".code => Token.Ampersand,
+        "|".code => Token.Pipe,
+        "^".code => Token.Caret,
+        _ => { throw coded(E0002, "unexpected character"); },
+      };
+      (token, i + 1)
+    },
+    LessLess, GreaterGreater
+      when ((i + 3 <= src.len()) && (Bytes.get_u8(src, i + 2) == "=".code)) =>
+      (two == Token.LessLess ? Token.LessLessEqual : Token.GreaterGreaterEqual, i + 3),
+    _ => (two, i + 2),
   }
 };
 
@@ -691,10 +663,9 @@ let _lexOne = fn(src: Bytes, i: I32): Tuple<Token, I32> {
     _lexOp(src, i)
   } else if (_isDigit(c) && (_byteAt(src, i - 1) == ".".code) && _memberDot(src, i - 1)) {
     let end = _digitsEnd(src, i);
-    (Token.IntegerConstant(Bytes.slice(src, i, end - i), IntegerSize.Infer), end)
+    (Token.IntegerConstant(Bytes.slice(src, i, end - i), IntSize.Infer), end)
   } else if ((c == "/".code) && (_byteAt(src, i + 1) == "*".code)) {
     throw coded(E0005, "unterminated block comment");
-    (Token.Eof, i)
   } else if (_startsAt(src, i, "~r/")) {
     _lexRegExpLiteral(src, i)
   } else if (radix >= 0) {
@@ -728,21 +699,26 @@ let _invalidUtf8 = fn(src: Bytes): I32 {
     if (n == 0) {
       bad = i;
       i = src.len();
-    } else { i = i + n; }
+    } else {
+      i = i + n;
+    }
   }
   bad
 };
 
 let _failure: Tuple<I32, Bytes> = (-1, "");
 
-export let lexFailure: () -> Tuple<I32, Bytes> = fn() { _failure };
+export let lexFailure = fn(): Tuple<I32, Bytes> { _failure };
 
 let _failed = fn(filename: Bytes, src: Bytes, at: I32, message: Bytes): Bytes {
   _failure = (at, message);
   sourceDiagnostic(filename, src, at, message)
 };
 
-export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>> = fn(src, filename) {
+export let lexFile = fn(
+  src: Bytes,
+  filename: Bytes
+): Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>> {
   let toks = Array.new<Token>(64);
   let starts = Array.new<I32>(64);
   let ends = Array.new<I32>(64);
@@ -752,8 +728,9 @@ export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Arr
   let invalid = _invalidUtf8(src);
   _failure = (-1, "");
   if (invalid >= 0) { throw _failed(filename, src, invalid, coded(E0001, "invalid UTF-8")); }
+
   let depth = -1;
-  Array.resize(_holes, 0);
+  _holes = Array.new<Hole>(0);
   let done = false;
 
   while (!done) {
@@ -764,7 +741,7 @@ export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Arr
       start = pos;
 
       if ((depth == 0) && (_byteAt(src, pos) == "}".code)) {
-        _lexTemplate(src, pos + 1, _holes[_holes.len() - 1], false)
+        _lexTemplate(src, pos + 1, _holes[_holes.len() - 1].tick, false)
       } else {
         _lexOne(src, pos)
       }
@@ -774,7 +751,6 @@ export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Arr
         _failAt = -1;
       }
       throw _failed(filename, src, pos, Std.string(e));
-      (Token.Eof, pos)
     };
     let (t, next) = result;
 
@@ -800,20 +776,22 @@ export let lexFile: (Bytes, Bytes) -> Tuple<Array<Token>, Bytes, Array<I32>, Arr
         false
       },
       TemplateHead(_) => {
-        _holes.push(depth);
-        _holes.push(start);
+        _holes.push({ depth: depth, tick: start });
         depth = 0;
         false
       },
       TemplateTail(_) => {
-        _holes.pop();
-        depth = _holes.pop();
+        depth = _holes.pop().depth;
         false
       },
       _ => false,
     };
   }
-  if (depth >= 0) { throw _failed(filename, src, _holes[_holes.len() - 1], coded(E0005, "unterminated template")); }
+
+  if (depth >= 0) {
+    let tick = _holes[_holes.len() - 1].tick;
+    throw _failed(filename, src, tick, coded(E0005, "unterminated template"));
+  }
   Array.resize(toks, count);
   Array.resize(starts, count);
   Array.resize(ends, count);

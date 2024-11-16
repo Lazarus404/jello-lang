@@ -1,6 +1,7 @@
 package support;
 
-import { concatAll, hexValue, u8, utf8FromCodepoint } from support.Text;
+import { concatAll, hexValue } from support.Text;
+import { u8, utf8FromCodepoint } from std.core.Bytes;
 
 export enum Json {
   Null(at: I32);
@@ -12,7 +13,9 @@ export enum Json {
 }
 
 export let jsonAt = fn(value: Json): I32 {
-  match (value) { Null(at), Bool(at, _), Number(at, _), Text(at, _), List(at, _), Object(at, _, _) => at }
+  match (value) {
+    Null(at), Bool(at, _), Number(at, _), Text(at, _), List(at, _), Object(at, _, _) => at,
+  }
 };
 
 export let jsonField = fn(value: Json, key: Bytes): ?Json {
@@ -35,10 +38,9 @@ let _pos = 0;
 
 let _errorAt = -1;
 
-let _fail = fn(at: I32, message: Bytes): Json {
+let _fail = fn(at: I32, message: Bytes): Null {
   _errorAt = at;
   throw message;
-  Json.Null(at)
 };
 
 let _peek = fn(): I32 { _pos < _text.len() ? Bytes.get_u8(_text, _pos) : -1 };
@@ -49,11 +51,10 @@ let _skipSpace = fn() {
 };
 
 let _accept = fn(word: Bytes): Bool {
-  if ((_pos + word.len() <= _text.len()) && (Bytes.slice(_text, _pos, word.len()) == word)) {
-    _pos += word.len();
-    return true;
-  }
-  false
+  let fits = _pos + word.len() <= _text.len();
+  if (!fits || (Bytes.slice(_text, _pos, word.len()) != word)) { return false; }
+  _pos += word.len();
+  true
 };
 
 let _codeUnit = fn(): I32 {
@@ -73,6 +74,7 @@ let _codeUnit = fn(): I32 {
 let _string = fn(): Bytes {
   let start = _pos;
   _pos++;
+
   let parts = Array.new<Bytes>(0);
   let run = _pos;
 
@@ -88,16 +90,23 @@ let _string = fn(): Bytes {
       let e = _peek();
       _pos++;
       parts.push(match (e) {
-        "\"".code => "\"", "\\".code => "\\", "/".code => "/",
-        "b".code => u8(8), "f".code => u8(12), "n".code => "\n", "r".code => "\r", "t".code => "\t",
+        "\"".code => "\"",
+        "\\".code => "\\",
+        "/".code => "/",
+        "b".code => u8(8),
+        "f".code => u8(12),
+        "n".code => "\n",
+        "r".code => "\r",
+        "t".code => "\t",
         "u".code => {
+          let lone = "lone surrogate in \\u escape";
           let unit = _codeUnit();
-          if ((unit >= 0xDC00) && (unit <= 0xDFFF)) { _fail(escape, "lone surrogate in \\u escape"); }
+          if ((unit >= 0xDC00) && (unit <= 0xDFFF)) { _fail(escape, lone); }
 
           if ((unit >= 0xD800) && (unit <= 0xDBFF)) {
-            if (!_accept("\\u")) { _fail(escape, "lone surrogate in \\u escape"); }
+            if (!_accept("\\u")) { _fail(escape, lone); }
             let low = _codeUnit();
-            if ((low < 0xDC00) || (low > 0xDFFF)) { _fail(escape, "lone surrogate in \\u escape"); }
+            if ((low < 0xDC00) || (low > 0xDFFF)) { _fail(escape, lone); }
             unit = 0x10000 + (unit - 0xD800) * 1024 + (low - 0xDC00);
           }
           utf8FromCodepoint(unit)
@@ -140,7 +149,7 @@ let _number = fn(): Json {
   Json.Number(start, Bytes.slice(_text, start, _pos - start))
 };
 
-let _value: () -> Json = fn() {
+let _value = fn(): Json {
   _skipSpace();
   let start = _pos;
 
@@ -181,7 +190,15 @@ let _value: () -> Json = fn() {
     },
     "\"".code => Json.Text(start, _string()),
     _ => {
-      if (_accept("null")) { Json.Null(start) } else if (_accept("true")) { Json.Bool(start, true) } else if (_accept("false")) { Json.Bool(start, false) } else { _number() }
+      if (_accept("null")) {
+        Json.Null(start)
+      } else if (_accept("true")) {
+        Json.Bool(start, true)
+      } else if (_accept("false")) {
+        Json.Bool(start, false)
+      } else {
+        _number()
+      }
     },
   }
 };
@@ -196,5 +213,7 @@ export let parseJson = fn(text: Bytes): Tuple<?Json, Bytes, I32> {
     _skipSpace();
     if (_pos < _text.len()) { _fail(_pos, "unexpected text after the value"); }
     (value, "", -1)
-  } catch (e) { (null, Std.string(e), _errorAt) }
+  } catch (e) {
+    (null, Std.string(e), _errorAt)
+  }
 };

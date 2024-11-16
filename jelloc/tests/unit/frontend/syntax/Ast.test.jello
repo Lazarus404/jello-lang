@@ -6,10 +6,8 @@ import { integerValue, wideIntegerValue } from frontend.syntax.Ast;
 
 import type {
   BinaryOp,
-  Block,
   Expr,
   IntSize,
-  MatchAlternative,
   MatchArm,
   Package,
   Pattern,
@@ -29,38 +27,31 @@ let testRepresentsRecursiveJelloSyntax = fn(t: Test) {
   let noGuard: ?Expr = null;
   let noType: ?Type = null;
   let noStatements: Array<Stmt> = [];
-  let arms: Array<MatchArm> = [MatchArm.Arm(
-    [MatchAlternative.Alternative(Pattern.BindPattern("n"), noGuard)],
-    noGuard,
-    Block.Block(noStatements, Expr.Variable("n"))
-  )];
+  let arms: Array<MatchArm> = [{
+    alternatives: [{ pattern: Pattern.BindPattern("n"), guard: noGuard }],
+    guard: noGuard,
+    body: { statements: noStatements, tail: Expr.Variable("n") }
+  }];
   let packagePath: Array<Bytes> = ["demo", "ast"];
   let statements: Array<Stmt> = [
     Stmt.LetStmt(false, false, Pattern.BindPattern("sum"), [], noType, sum, null)
   ];
   let tail: ?Expr = Expr.Match(Expr.Variable("sum"), arms);
-  let program = Program.Program(
-    Package.Path(packagePath),
-    statements,
-    tail
-  );
+  let program: Program = { packageName: Package.Path(packagePath), statements, tail };
+  let same: Program = { packageName: Package.Path(packagePath), statements, tail };
 
-  T.equal(t, program, Program.Program(
-    Package.Path(packagePath),
-    statements,
-    tail
-  ));
+  T.equal(t, program, same);
 
   let macroExpr = Expr.Function(
     [],
     noType,
-    Block.Block(
-      noStatements,
-      Expr.Quote(
+    {
+      statements: noStatements,
+      tail: Expr.Quote(
         QuoteKind.Expression,
         QuoteBody.Expression(Expr.Unquote(Expr.Variable("x")))
       )
-    ),
+    },
     true
   );
   T.isTrue(t, match (macroExpr) { Function(_, _, _, isMacro) => isMacro, _ => false });

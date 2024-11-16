@@ -5,7 +5,7 @@ import std.testing as T;
 import { contains, indexOf } from std.core.Bytes;
 import { verifyProgram } from ir.Verify;
 import { blockCatch } from ir.Cfg;
-import { Op, instruction, opOf } from ir.Model;
+import { Op, instruction } from ir.Model;
 import { printIr } from ir.Print;
 import { printHir } from frontend.hir.Print;
 import { lexFile } from frontend.syntax.Lexer;
@@ -18,7 +18,6 @@ import { typeCheckModules, typeCheckProgramWithSyntax } from frontend.semantics.
 import type { Module } from frontend.Loader;
 import { loadModules, modulePath } from frontend.Loader;
 import type { SourceSpan } from frontend.syntax.Source;
-import { spanEnd, spanPath, spanStart } from frontend.syntax.Source;
 import type { Hir } from frontend.hir.Hir;
 import { nodeCount, spanOf, useHir } from frontend.hir.Hir;
 import type {
@@ -34,36 +33,76 @@ import type {
 } from ir.Model;
 import { checked, checkedFile, emitted, encoded, legalized, lowered } from compiler.Pipeline;
 
-let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
+let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction {
+  instruction(op, dst, args, imm)
+};
 let none = fn(): Array<I32> { Array.new<I32>(0) };
-let program = fn(functions: Array<Function>): Program { Program.Program(functions, Array.new<Bytes>(0), Array.new<I64>(0), Array.new<I64>(0), Array.new<Bytes>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0)) };
-// The allocated program the emitter encodes, printed.
-let printJlo = fn(jlo: Program): Bytes { printIr(allocateProgram(jlo)) };
-// The first allocated function: its register count and spill traffic.
-let allocated = fn(jlo: Program): Function { match (allocateProgram(jlo)) { Program(functions, _, _, _, _, _, _, _) => functions[0] } };
-let registerCount = fn(function: Function): I32 { match (function) { Function(_, _, _, registers, _, _, _) => registers.len() as I32 } };
 
-let spillCount = fn(function: Function, push: Bool): I32 {
-  match (function) { Function(_, _, _, _, _, blocks, _) => {
-    let count = 0;
-    let b = 0;
-
-    while (b < blocks.len()) {
-      match (blocks[b]) { Block(_, instructions, _, _) => {
-        let i = 0;
-
-        while (i < instructions.len()) {
-          if (match (opOf(instructions[i])) { SpillPush => push, SpillPop => !push, _ => false }) { count++; }
-          i++;
-        }
-      } };
-      b++;
-    }
-    count
-  } }
+// IR built by hand, field by field in declaration order, as the tests below read best.
+let basicBlock = fn(
+  id: I32,
+  instructions: Array<Instruction>,
+  terminator: Terminator,
+  handler: ?ThrowHandler
+): BasicBlock {
+  { id, instructions, terminator, handler }
 };
 
-let modulesOf = fn(path: Bytes): Array<Module> { loadModules(path, "", Array.new<Bytes>(0), Array.new<Bytes>(0)) };
+let irFunction = fn(
+  id: I32,
+  params: Array<I32>,
+  captures: I32,
+  registers: Array<ValueType>,
+  result: ValueType,
+  blocks: Array<BasicBlock>,
+  entry: I32
+): Function {
+  { id, params, captures, registers, result, blocks, entry }
+};
+let catches = fn(target: I32, payload: I32): ThrowHandler { { target, payload } };
+
+let program = fn(functions: Array<Function>): Program {
+  {
+    functions,
+    bytes: Array.new<Bytes>(0),
+    wides: Array.new<I64>(0),
+    floats: Array.new<I64>(0),
+    atoms: Array.new<Bytes>(0),
+    enums: Array.new<EnumSchema>(0),
+    globals: Array.new<ValueType>(0),
+    natives: Array.new<Native>(0),
+  }
+};
+
+// The allocated program the emitter encodes, printed.
+let printJlo = fn(jlo: Program): Bytes { printIr(allocateProgram(jlo)) };
+
+// The first allocated function: its register count and spill traffic.
+let allocated = fn(jlo: Program): Function { allocateProgram(jlo).functions[0] };
+let registerCount = fn(function: Function): I32 { function.registers.len() };
+
+let spillCount = fn(function: Function, push: Bool): I32 {
+  let count = 0;
+  let b = 0;
+
+  while (b < function.blocks.len()) {
+    let instructions = function.blocks[b].instructions;
+    let i = 0;
+
+    while (i < instructions.len()) {
+      let counted = match (instructions[i].op) { SpillPush => push, SpillPop => !push, _ => false };
+      if (counted) { count++; }
+      i++;
+    }
+    b++;
+  }
+
+  count
+};
+
+let modulesOf = fn(path: Bytes): Array<Module> {
+  loadModules(path, "", Array.new<Bytes>(0), Array.new<Bytes>(0))
+};
 let checkFile = fn(path: Bytes): Hir { checkedFile(path, Array.new<Bytes>(0)) };
 
 // The paths of MODULES, in initialisation order.
@@ -98,8 +137,8 @@ let spansBothModules = fn(spans: Array<SourceSpan>): Bool {
   let i = 0;
 
   while (i < spans.len()) {
-    if (contains(spanPath(spans[i]), "/math/Increment.jello")) { dependency = true; }
-    if (contains(spanPath(spans[i]), "/modules/main.jello")) { entry = true; }
+    if (contains(spans[i].path, "/math/Increment.jello")) { dependency = true; }
+    if (contains(spans[i].path, "/modules/main.jello")) { entry = true; }
     i++;
   }
   dependency && entry
@@ -108,21 +147,23 @@ let spansBothModules = fn(spans: Array<SourceSpan>): Bool {
 let testFindsTheCatchAThrowingBlockReaches = fn(t: Test) {
   // Blocks 0 and 2 sit at indexes 1 and 0.
   let indexes = [1, -1, 0];
-  T.equal(t, blockCatch(BasicBlock.Block(0, [], Terminator.Throw(0, -1), ThrowHandler.Catch(2, 1)), indexes), (0, 1));
-  T.equal(t, blockCatch(BasicBlock.Block(0, [], Terminator.ReturnValue(0), ThrowHandler.Catch(2, 1)), indexes), (-1, -1));
-  T.equal(t, blockCatch(BasicBlock.Block(0, [], Terminator.Throw(0, -1), null), indexes), (-1, -1));
+  let throwing = basicBlock(0, [], Terminator.Throw(0, -1), catches(2, 1));
+  let returning = basicBlock(0, [], Terminator.ReturnValue(0), catches(2, 1));
+  T.equal(t, blockCatch(throwing, indexes), (0, 1));
+  T.equal(t, blockCatch(returning, indexes), (-1, -1));
+  T.equal(t, blockCatch(basicBlock(0, [], Terminator.Throw(0, -1), null), indexes), (-1, -1));
 };
 
 let testPrintsDeterministicHumanReadableIR = fn(t: Test) {
-  let printed = program([Function.Function(
+  let printed = program([irFunction(
     7,
     [0, 1], 0,
     [ValueType.I32, ValueType.I32, ValueType.Bool],
     ValueType.I32,
     [
-      BasicBlock.Block(0, [insn(Op.Eq, 2, [0, 1], 0)], Terminator.Branch(2, 1, 2), null),
-      BasicBlock.Block(1, [], Terminator.ReturnValue(0), null),
-      BasicBlock.Block(2, [], Terminator.ReturnValue(1), null)
+      basicBlock(0, [insn(Op.Eq, 2, [0, 1], 0)], Terminator.Branch(2, 1, 2), null),
+      basicBlock(1, [], Terminator.ReturnValue(0), null),
+      basicBlock(2, [], Terminator.ReturnValue(1), null)
     ],
     0
   )]);
@@ -197,15 +238,15 @@ let testGivesEveryHIRNodeTheSpanOfTheSyntaxItWasCheckedFrom = fn(t: Test) {
   let i = 0;
 
   while (i < spans.len()) {
-    T.equal(t, spanPath(spans[i]), "<input>");
+    T.equal(t, spans[i].path, "<input>");
     i++;
   }
-  T.equal(t, spanStart(spans[0]), 0);
-  T.equal(t, spanEnd(spans[0]), 4);
-  T.equal(t, spanStart(spans[1]), 7);
-  T.equal(t, spanEnd(spans[1]), 11);
-  T.equal(t, spanStart(spans[2]), 0);
-  T.equal(t, spanEnd(spans[2]), 11);
+  T.equal(t, spans[0].start, 0);
+  T.equal(t, spans[0].end, 4);
+  T.equal(t, spans[1].start, 7);
+  T.equal(t, spans[1].end, 11);
+  T.equal(t, spans[2].start, 0);
+  T.equal(t, spans[2].end, 11);
 
   T.isTrue(t, spansBothModules(spansOf(checkFile("tests/e2e/programs/modules/main.jello"))));
 };
@@ -219,7 +260,7 @@ let testKeepsSourceSpansWithExplicitFrontendResults = fn(t: Test) {
   let i = 0;
 
   while (i < spans.len()) {
-    T.equal(t, spanPath(spans[i]), "first.jello");
+    T.equal(t, spans[i].path, "first.jello");
     i++;
   }
 
@@ -245,7 +286,8 @@ let testLoadsAComparisonTailWithItsSyntax = fn(t: Test) {
 };
 
 let testChecksLenGetAndSetOnArrayOfI32 = fn(t: Test) {
-  let source = "let values = Array.new<I32>(2i32); values[0i32] = 39i32; values[0i32] + values.len() + 1i32";
+  let source = "let values = Array.new<I32>(2i32); values[0i32] = 39i32; "
+    + "values[0i32] + values.len() + 1i32";
   let hir = checked(source);
   let printed = printHir(hir);
   T.isTrue(t, contains(printed, "array.set: i32"));
@@ -267,7 +309,8 @@ let testLowersAPairOfI32LiteralAndItsFixedFields = fn(t: Test) {
 };
 
 let testPreservesExactSpansThroughFunctionsAssignmentsBranchesAndLoops = fn(t: Test) {
-  let source = "let f = fn(flag: Bool): I32 { let value = 1i32; while (flag) { value += 2i32; break; } return value; }; f(false)";
+  let source = "let f = fn(flag: Bool): I32 { let value = 1i32; "
+    + "while (flag) { value += 2i32; break; } return value; }; f(false)";
   let lexed = lexFile(source, "spans.jello");
   let path = lexed.1;
   let program = parseProgram(lexed);
@@ -277,11 +320,11 @@ let testPreservesExactSpansThroughFunctionsAssignmentsBranchesAndLoops = fn(t: T
   let i = 0;
 
   while (i < spans.len()) {
-    T.equal(t, spanPath(spans[i]), path);
-    T.isTrue(t, spanEnd(spans[i]) > spanStart(spans[i]));
+    T.equal(t, spans[i].path, path);
+    T.isTrue(t, spans[i].end > spans[i].start);
     // `value += 2i32`: the assignment and its addition span it all; the local read is `value`.
-    if ((spanStart(spans[i]) == 63) && (spanEnd(spans[i]) == 68)) { sawTarget = true; }
-    if ((spanStart(spans[i]) == 63) && (spanEnd(spans[i]) == 76)) { sawAssignment++; }
+    if ((spans[i].start == 63) && (spans[i].end == 68)) { sawTarget = true; }
+    if ((spans[i].start == 63) && (spans[i].end == 76)) { sawAssignment++; }
     i++;
   }
   T.isTrue(t, sawTarget);
@@ -459,7 +502,8 @@ let testLowersTypedDirectFunctionsAndLeftToRightCalls = fn(t: Test) {
 };
 
 let testResolvesDirectRecursiveCallsFromCollectedSignatures = fn(t: Test) {
-  let source = "let factorial = fn(value: I32): I32 { if (value < 2i32) { 1i32 } else { value * factorial(value - 1i32) } }; factorial(5i32)";
+  let source = "let factorial = fn(value: I32): I32 { "
+    + "if (value < 2i32) { 1i32 } else { value * factorial(value - 1i32) } }; factorial(5i32)";
   let hir = checked(source);
   let printedHir = printHir(hir);
   T.isTrue(t, contains(printedHir, "fn @1 factorial"));
@@ -475,7 +519,9 @@ let testResolvesDirectRecursiveCallsFromCollectedSignatures = fn(t: Test) {
 };
 
 let testLowersExactNoncapturingFunctionValuesAndIndirectCalls = fn(t: Test) {
-  let source = "let increment = fn(value: I32): I32 { value + 1i32 }; let decrement = fn(value: I32): I32 { value - 1i32 }; let operation: (I32) -> I32 = increment; operation = decrement; operation(43i32)";
+  let source = "let increment = fn(value: I32): I32 { value + 1i32 }; "
+    + "let decrement = fn(value: I32): I32 { value - 1i32 }; "
+    + "let operation: (I32) -> I32 = increment; operation = decrement; operation(43i32)";
   let hir = checked(source);
   let program = lowerProgram(hir);
   let ir = printIr(program);
@@ -487,13 +533,15 @@ let testLowersExactNoncapturingFunctionValuesAndIndirectCalls = fn(t: Test) {
   T.isTrue(t, contains(jlo, "= call %"));
   T.isTrue(t, Bytes.len(encoded(legalizedProgram)) > 128);
   T.isTrue(t, verifyProgram(lowered(
-    "let factorial = fn(value: I32): I32 { if (value < 2i32) { 1i32 } else { value * factorial(value - 1i32) } }; factorial(5i32)"
+    "let factorial = fn(value: I32): I32 { "
+    + "if (value < 2i32) { 1i32 } else { value * factorial(value - 1i32) } }; factorial(5i32)"
   )));
 };
 
 let testLowersTypedI32EqualityForChangingLoopConditions = fn(t: Test) {
   let hir = checked(
-    "let count = fn(limit: I32): I32 { let value = 0i32; while (value == limit) { value = value + 1i32; } value }; count(0i32)"
+    "let count = fn(limit: I32): I32 { let value = 0i32; "
+    + "while (value == limit) { value = value + 1i32; } value }; count(0i32)"
   );
   T.equal(t, printHir(hir), "program\n"
     + "  fn @1 count(%0 limit: i32) -> i32\n"
@@ -584,7 +632,8 @@ let testLowersWrappingI32SubtractionLeftToRight = fn(t: Test) {
     + "    return %1\n"
     + "}\n");
   T.isTrue(t, verifyProgram(lowered(
-    "let count = fn(start: I32): I32 { let value = start; while (value == start) { value = value - 1i32; } value }; count(2i32)"
+    "let count = fn(start: I32): I32 { let value = start; "
+    + "while (value == start) { value = value - 1i32; } value }; count(2i32)"
   )));
   T.throws(t, fn() { checked("true - false"); });
   T.throws(t, fn() { checked("1i32 - true"); });
@@ -592,7 +641,8 @@ let testLowersWrappingI32SubtractionLeftToRight = fn(t: Test) {
 
 let testDesugarsI32CompoundAssignmentThroughExistingOperations = fn(t: Test) {
   let hir = checked(
-    "let update = fn(value: I32): I32 { let result = value; result += 2i32; result -= 1i32; result }; update(3i32)"
+    "let update = fn(value: I32): I32 { let result = value; "
+    + "result += 2i32; result -= 1i32; result }; update(3i32)"
   );
   T.equal(t, printHir(hir), "program\n"
     + "  fn @1 update(%0 value: i32) -> i32\n"
@@ -656,7 +706,8 @@ let testDesugarsI32CompoundAssignmentThroughExistingOperations = fn(t: Test) {
 
 let testLowersSignedI32LessThanForBoundedLoops = fn(t: Test) {
   let hir = checked(
-    "let count = fn(limit: I32): I32 { let value = 0i32; while (value < limit) { value += 1i32; } value }; count(3i32)"
+    "let count = fn(limit: I32): I32 { let value = 0i32; "
+    + "while (value < limit) { value += 1i32; } value }; count(3i32)"
   );
   T.equal(t, printHir(hir), "program\n"
     + "  fn @1 count(%0 limit: i32) -> i32\n"
@@ -714,7 +765,8 @@ let testLowersSignedI32LessThanForBoundedLoops = fn(t: Test) {
 
 let testLegalizesTheExecutableCFGSubsetToJLOOperations = fn(t: Test) {
   let jlo = legalized(
-    "let count = fn(limit: I32): I32 { let value = 0i32; while (value < limit) { value += 1i32; } value }; count(2i32)"
+    "let count = fn(limit: I32): I32 { let value = 0i32; "
+    + "while (value < limit) { value += 1i32; } value }; count(2i32)"
   );
   let bytes = encoded(jlo);
   T.equal(t, Bytes.get_u8(bytes, 0), "B".code);
@@ -759,35 +811,30 @@ let testLegalizesTheExecutableCFGSubsetToJLOOperations = fn(t: Test) {
 
 let testCarriesADeduplicatedBytesPoolThroughSelectedJLO = fn(t: Test) {
   let jlo = legalized("\"A\"[0i32] + \"A\"[0i32]");
-
-  match (jlo) {
-    Program(_, pool, _, _, _, _, _, _) => {
-      T.equal(t, pool, ["A"]);
-    },
-  };
+  T.equal(t, jlo.bytes, ["A"]);
   T.isTrue(t, contains(printJlo(jlo), "bytes \"A\""));
   T.isTrue(t, Bytes.len(encoded(jlo)) > 0);
 };
 
 let testReusesOneCallScratchWindow = fn(t: Test) {
-  let caller = Function.Function(
+  let caller = irFunction(
     0,
     [], 0,
     [ValueType.I32, ValueType.I32, ValueType.I32],
     ValueType.I32,
-    [BasicBlock.Block(0, [
+    [basicBlock(0, [
       insn(Op.ConstI32, 0, none(), 1),
       insn(Op.Call, 1, [0], 1),
       insn(Op.Call, 2, [1], 1)
     ], Terminator.ReturnValue(2), null)],
     0
   );
-  let callee = Function.Function(
+  let callee = irFunction(
     1,
     [0], 0,
     [ValueType.I32],
     ValueType.I32,
-    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)],
+    [basicBlock(0, [], Terminator.ReturnValue(0), null)],
     0
   );
   // The constant is computed in the window, and both calls share it.
@@ -795,22 +842,22 @@ let testReusesOneCallScratchWindow = fn(t: Test) {
 };
 
 let testAllocatesCompatibleScratchWindowsForMixedCallSignatures = fn(t: Test) {
-  let caller = Function.Function(
+  let caller = irFunction(
     0, [], 0, [ValueType.Bool, ValueType.Bool, ValueType.I32, ValueType.I32], ValueType.I32,
-    [BasicBlock.Block(0, [
+    [basicBlock(0, [
       insn(Op.ConstBool, 0, none(), 1),
       insn(Op.Call, 1, [0], 1),
       insn(Op.ConstI32, 2, none(), 7),
       insn(Op.Call, 3, [2], 2)
     ], Terminator.ReturnValue(3), null)], 0
   );
-  let boolCallee = Function.Function(
+  let boolCallee = irFunction(
     1, [0], 0, [ValueType.Bool], ValueType.Bool,
-    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
+    [basicBlock(0, [], Terminator.ReturnValue(0), null)], 0
   );
-  let i32Callee = Function.Function(
+  let i32Callee = irFunction(
     2, [0], 0, [ValueType.I32], ValueType.I32,
-    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
+    [basicBlock(0, [], Terminator.ReturnValue(0), null)], 0
   );
   T.isTrue(t, contains(printJlo(program([caller, boolCallee, i32Callee])), "call @2(%"));
 };
@@ -825,9 +872,9 @@ let testAllocatesMoreThan256ShortLivedVirtualRegisters = fn(t: Test) {
     instructions.push(insn(Op.ConstI32, i, none(), i));
     i++;
   }
-  T.equal(t, registerCount(allocated(program([Function.Function(
+  T.equal(t, registerCount(allocated(program([irFunction(
     0, [], 0, registers, ValueType.I32,
-    [BasicBlock.Block(0, instructions, Terminator.ReturnValue(299), null)], 0
+    [basicBlock(0, instructions, Terminator.ReturnValue(299), null)], 0
   )]))), 1);
 };
 
@@ -852,9 +899,9 @@ let testSpillsTrulySimultaneousRegisterPressure = fn(t: Test) {
     instructions.push(insn(Op.Add, result, [result - 1, i], 0));
     i++;
   }
-  let function = allocated(program([Function.Function(
+  let function = allocated(program([irFunction(
     0, [], 0, registers, ValueType.I32,
-    [BasicBlock.Block(0, instructions, Terminator.ReturnValue(result), null)], 0
+    [basicBlock(0, instructions, Terminator.ReturnValue(result), null)], 0
   )]));
   T.isTrue(t, spillCount(function, true) > 0);
   T.isTrue(t, spillCount(function, false) > 0);
@@ -877,9 +924,9 @@ let testAllocatesThousandsOfInstructionsAcrossJoins = fn(t: Test) {
     if (i % 50 == 0) { kept.push(i); }
 
     if (i % 200 == 0) {
-      blocks.push(BasicBlock.Block(block, current, Terminator.Branch(0, block + 1, block + 2), null));
-      blocks.push(BasicBlock.Block(block + 1, [], Terminator.Jump(block + 3), null));
-      blocks.push(BasicBlock.Block(block + 2, [], Terminator.Jump(block + 3), null));
+      blocks.push(basicBlock(block, current, Terminator.Branch(0, block + 1, block + 2), null));
+      blocks.push(basicBlock(block + 1, [], Terminator.Jump(block + 3), null));
+      blocks.push(basicBlock(block + 2, [], Terminator.Jump(block + 3), null));
       block += 3;
       current = Array.new<Instruction>(0);
     }
@@ -890,25 +937,31 @@ let testAllocatesThousandsOfInstructionsAcrossJoins = fn(t: Test) {
 
   while (i < kept.len()) {
     registers.push(ValueType.I32);
-    current.push(insn(Op.Add, registers.len() as I32 - 1, [sum, kept[i]], 0));
-    sum = registers.len() as I32 - 1;
+    current.push(insn(Op.Add, registers.len() - 1, [sum, kept[i]], 0));
+    sum = registers.len() - 1;
     i++;
   }
-  blocks.push(BasicBlock.Block(block, current, Terminator.ReturnValue(sum), null));
-  let function = allocated(program([Function.Function(0, [], 0, registers, ValueType.I32, blocks, 0)]));
+  blocks.push(basicBlock(block, current, Terminator.ReturnValue(sum), null));
+  let function = allocated(program([irFunction(0, [], 0, registers, ValueType.I32, blocks, 0)]));
   T.isTrue(t, registerCount(function) < 100);
   T.equal(t, spillCount(function, true), 0);
 };
 
 let testVerifiesAllocatedCodeAgainstTheProgram = fn(t: Test) {
   // A call whose argument does not match the callee is caught after allocation too.
-  let caller = Function.Function(
+  let caller = irFunction(
     0, [], 0, [ValueType.Bool, ValueType.I32], ValueType.I32,
-    [BasicBlock.Block(0, [insn(Op.ConstBool, 0, none(), 1), insn(Op.Call, 1, [0], 1)], Terminator.ReturnValue(1), null)], 0
+    [basicBlock(
+      0,
+      [insn(Op.ConstBool, 0, none(), 1), insn(Op.Call, 1, [0], 1)],
+      Terminator.ReturnValue(1),
+      null
+    )],
+    0
   );
-  let callee = Function.Function(
+  let callee = irFunction(
     1, [0], 0, [ValueType.I32], ValueType.I32,
-    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
+    [basicBlock(0, [], Terminator.ReturnValue(0), null)], 0
   );
   T.throws(t, fn() { allocateProgram(program([caller, callee])); });
 };
@@ -996,7 +1049,8 @@ let testLowersSignedI32GreaterThanBySwappingLessThanOperands = fn(t: Test) {
   let hir = checked("if (2i32 > 1i32) { 1i32 } else { 0i32 }");
   T.isTrue(t, contains(printIr(lowerProgram(hir)), "lt.s.i32 %2, %1"));
   let effectful = printIr(lowered(
-    "let first = fn(): I32 { 2i32 }; let second = fn(): I32 { 1i32 }; if (first() > second()) { 1i32 } else { 0i32 }"
+    "let first = fn(): I32 { 2i32 }; let second = fn(): I32 { 1i32 }; "
+    + "if (first() > second()) { 1i32 } else { 0i32 }"
   ));
   T.isTrue(t, indexOf(effectful, "call @1") < indexOf(effectful, "call @2"));
   T.isTrue(t, contains(effectful, "lt.s.i32 %2, %1"));
@@ -1004,7 +1058,10 @@ let testLowersSignedI32GreaterThanBySwappingLessThanOperands = fn(t: Test) {
 };
 
 let testCarriesPrimitivesThroughIRAndJLO = fn(t: Test) {
-  let source = "let left = fn(): I32 { 2i32 }; let right = fn(): I32 { 3i32 }; let product = left() * -right(); let narrowed = (product as I64) as I32; let unequal = narrowed != 0i32; let lower = left() <= right(); let higher = left() >= right(); !unequal";
+  let source = "let left = fn(): I32 { 2i32 }; let right = fn(): I32 { 3i32 }; "
+    + "let product = left() * -right(); let narrowed = (product as I64) as I32; "
+    + "let unequal = narrowed != 0i32; let lower = left() <= right(); "
+    + "let higher = left() >= right(); !unequal";
   let program = lowerProgram(checked(source));
   let ir = printIr(program);
   T.isTrue(t, contains(ir, "mul.wrap.i32"));

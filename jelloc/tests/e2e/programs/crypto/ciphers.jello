@@ -1,0 +1,49 @@
+// expect: 530f8afbc74536b9a963b4f1c4cb738b|cea7403d4d606b6e074ec5d3baf39d18d0d1c8a799996bf0265b98b5d48ab919
+// expect: b579085837af63c64257b3f3411fa2ac05cd2b69b285725ea83ead75475f0874531048baa8627e2d8f
+// expect: f9e74cce0ced5273aa4a81200077d212268f5171a3250d9d11cffe729e1731bbb58ac9c8d44d1ba9ca
+// expect: 5fca0c2a3f82a3d4803dc734ba9f9f89e83fa1c663585091809e8d734d21106ff782228474da54241c
+// expect: Saturday 24 February 2024|Saturday 24 February 2024|Saturday 24 February 2024|16 32 32
+// expect: Cipher.open: the data is not as it was sealed|Cipher.open: the data is not as it was sealed
+// expect: Cipher.open: the data is not as it was sealed|Cipher.open: the data is not as it was sealed
+// expect: Cipher.seal: unknown cipher aes-256-cbc|Cipher.seal: the key is 16 bytes, not 32
+// expect: Cipher.open: the nonce is 8 bytes, not 12
+/* AES-256-GCM's published answers (test cases 13 and 14 of its
+ * specification, with an all-zero key and nonce), then each cipher sealing
+ * with associated data, as OpenSSL does, and opening it again; changing the
+ * sealed bytes, the associated data, the key or the length makes opening
+ * throw. */
+import std.crypto.Cipher as Cipher;
+
+let error = fn(f: () -> Bytes): Bytes { try { f() } catch (e) { Std.string(e) } };
+let zeros = fn(n: I32): Bytes { Bytes.new(n).toString() };
+let key = Bytes.fromHex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+let nonce = Bytes.fromHex("a0a1a2a3a4a5a6a7a8a9aaab");
+let text = "Saturday 24 February 2024";
+let seal = fn(algorithm: Bytes): Bytes {
+  let k = Bytes.slice(key, 0, Cipher.keySize(algorithm));
+  Cipher.seal(algorithm, k, nonce, text, "header")
+};
+let open = fn(algorithm: Bytes): Bytes {
+  let k = Bytes.slice(key, 0, Cipher.keySize(algorithm));
+  Cipher.open(algorithm, k, nonce, seal(algorithm), "header")
+};
+let sealed = seal("aes-256-gcm");
+let flipped = Bytes.copy(sealed);
+Bytes.set_u8(flipped, 0, Bytes.get_u8(sealed, 0) ^ 1);
+Bytes.join([
+  Cipher.seal("aes-256-gcm", zeros(32), zeros(12), "").toHex() + "|"
+    + Cipher.seal("aes-256-gcm", zeros(32), zeros(12), zeros(16)).toHex(),
+  sealed.toHex(),
+  seal("aes-128-gcm").toHex(),
+  seal("chacha20-poly1305").toHex(),
+  open("aes-256-gcm") + "|" + open("aes-128-gcm") + "|" + open("chacha20-poly1305") + "|"
+    + Std.string(Cipher.keySize("aes-128-gcm")) + " " + Std.string(Cipher.keySize("aes-256-gcm"))
+    + " " + Std.string(Cipher.keySize("chacha20-poly1305")),
+  error(fn() { Cipher.open("aes-256-gcm", key, nonce, flipped.toString(), "header") }) + "|"
+    + error(fn() { Cipher.open("aes-256-gcm", key, nonce, sealed, "Header") }),
+  error(fn() { Cipher.open("aes-256-gcm", zeros(32), nonce, sealed, "header") }) + "|"
+    + error(fn() { Cipher.open("aes-256-gcm", key, nonce, Bytes.slice(sealed, 0, 15), "header") }),
+  error(fn() { Cipher.seal("aes-256-cbc", key, nonce, text) }) + "|"
+    + error(fn() { Cipher.seal("aes-256-gcm", zeros(16), nonce, text) }),
+  error(fn() { Cipher.open("chacha20-poly1305", key, zeros(8), sealed) })
+], "\n")

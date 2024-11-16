@@ -1,19 +1,19 @@
 package ir;
 
-import { handlerPayload, handlerTarget, instructionMayThrow } from ir.Model;
+import { instructionMayThrow } from ir.Model;
 import type { BasicBlock, Instruction, Terminator } from ir.Model;
 
 let _terminatorThrows = fn(terminator: Terminator): Bool {
   match (terminator) { Throw(_, _) => true, _ => false }
 };
 
-export let blockId: (BasicBlock) -> I32 = fn(block) { match (block) { Block(id, _, _, _) => id } };
+export let blockId = fn(block: BasicBlock): I32 { block.id };
 
-export let terminatorRead: (Terminator) -> I32 = fn(terminator) {
+export let terminatorRead = fn(terminator: Terminator): I32 {
   match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => value, _ => -1 }
 };
 
-export let normalSuccessors: (Terminator) -> Array<I32> = fn(terminator) {
+export let normalSuccessors = fn(terminator: Terminator): Array<I32> {
   match (terminator) {
     Jump(target) => [target],
     Branch(_, thenTarget, elseTarget) => [thenTarget, elseTarget],
@@ -21,7 +21,7 @@ export let normalSuccessors: (Terminator) -> Array<I32> = fn(terminator) {
   }
 };
 
-export let blockMayThrow: (Array<Instruction>, Terminator) -> Bool = fn(instructions, terminator) {
+export let blockMayThrow = fn(instructions: Array<Instruction>, terminator: Terminator): Bool {
   if (_terminatorThrows(terminator)) { return true; }
   let i = 0;
 
@@ -32,26 +32,26 @@ export let blockMayThrow: (Array<Instruction>, Terminator) -> Bool = fn(instruct
   false
 };
 
-export let blockIndexes: (Array<BasicBlock>) -> Array<I32> = fn(blocks) {
+export let blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   let indexes = Array.new<I32>(0);
   let i = 0;
 
   while (i < blocks.len()) {
-    match (blocks[i]) {
-      Block(id, _, _, _) => {
-        while (indexes.len() <= id) { indexes.push(-1); }
-        indexes[id] = i;
-        null
-      }
-    };
+    let id = blocks[i].id;
+    while (indexes.len() <= id) { indexes.push(-1); }
+    indexes[id] = i;
     i++;
   }
+
   indexes
 };
 
-export let blockCatch: (BasicBlock, Array<I32>) -> Tuple<I32, I32> = fn(block, indexes) {
-  match (block) { Block(_, instructions, terminator, handler) => {
-    if ((handler == null) || !blockMayThrow(instructions, terminator)) { return (-1, -1); }
-    (indexes[handlerTarget(handler)], handlerPayload(handler))
-  } }
+export let blockCatch = fn(block: BasicBlock, indexes: Array<I32>): Tuple<I32, I32> {
+  let handler = block.handler;
+
+  if ((handler == null) || !blockMayThrow(block.instructions, block.terminator)) {
+    return (-1, -1);
+  }
+
+  (indexes[handler.target], handler.payload)
 };

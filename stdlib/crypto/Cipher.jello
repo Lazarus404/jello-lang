@@ -1,0 +1,44 @@
+package std.crypto;
+
+load { crypto_key_length, crypto_seal, crypto_open } from tls;
+
+let _keyLength: (Bytes) -> I32 = crypto_key_length;
+let _seal: (Bytes, Bytes, Bytes, Bytes, Bytes) -> Bytes = crypto_seal;
+let _open: (Bytes, Bytes, Bytes, Bytes, Bytes) -> Dynamic = crypto_open;
+
+export let NONCE_SIZE = 12;
+export let TAG_SIZE = 16;
+
+let _keySize = fn(who: Bytes, algorithm: Bytes): I32 {
+  let size = _keyLength(algorithm);
+  if (size == 0) { throw who + ": unknown cipher " + algorithm; };
+  size
+};
+
+let _check = fn(who: Bytes, algorithm: Bytes, key: Bytes, nonce: Bytes) {
+  let size = _keySize(who, algorithm);
+
+  if (key.len() != size) {
+    throw who + ": the key is " + Std.string(key.len()) + " bytes, not " + Std.string(size);
+  };
+
+  if (nonce.len() != NONCE_SIZE) {
+    throw who + ": the nonce is " + Std.string(nonce.len()) + " bytes, not " + Std.string(NONCE_SIZE);
+  };
+};
+
+export let keySize = fn(algorithm: Bytes): I32 { _keySize("Cipher.keySize", algorithm) };
+
+export let seal = fn(algorithm: Bytes, key: Bytes, nonce: Bytes, data: Bytes,
+  associated: Bytes = ""): Bytes {
+  _check("Cipher.seal", algorithm, key, nonce);
+  _seal(algorithm, key, nonce, data, associated)
+};
+
+export let open = fn(algorithm: Bytes, key: Bytes, nonce: Bytes, sealed: Bytes,
+  associated: Bytes = ""): Bytes {
+  _check("Cipher.open", algorithm, key, nonce);
+  let data = _open(algorithm, key, nonce, sealed, associated);
+  if (data == null) { throw "Cipher.open: the data is not as it was sealed"; };
+  data as Bytes
+};

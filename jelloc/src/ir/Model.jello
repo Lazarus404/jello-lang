@@ -20,31 +20,38 @@ export enum ValueType {
 
 export enum Op {
   ConstBool; ConstI32; ConstI64; ConstFloat; ConstBytes; ConstAtom; ConstNull; ConstFunction; Move;
-  Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; Eq; Lt; Sext; Trunc; DivU; RemU; LtU; Zext; Convert; Box; Unbox; KindOf; IsEnum; IsNull; NullCheck;
-  ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; ArrayConcat; ListNil; ListCons; ListHead; ListTail; ListIsNil; BytesNew; BytesSet; BytesBlit; BitsRead; BitsWrite; BytesRead; BytesWrite; BytesLen; BytesGet; BytesSlice; BytesConcat; BytesConcatMany; BytesEq; BytesFreeze;
+  Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; Eq; Lt; Sext; Trunc; DivU;
+  RemU; LtU; Zext; Convert; Box; Unbox; KindOf; IsEnum; IsNull; NullCheck;
+  ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; ArrayConcat; ListNil; ListCons; ListHead;
+  ListTail; ListIsNil; BytesNew; BytesSet; BytesBlit; BitsRead; BitsWrite; BytesRead; BytesWrite;
+  BytesLen; BytesGet; BytesSlice; BytesConcat; BytesConcatMany; BytesEq; BytesFreeze;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
   ObjectNew; ObjectGet; ObjectSet; ObjectHas; ObjectRemove; ObjectClear; ObjectCopy; ObjectKeys;
   Call; CallIndirect; CallNative; GlobalGet; GlobalSet;
   StructNew; StructSet; AddImm; SubImm; MulImm; EqImm; LtImm; SpillPush; SpillPop;
 }
 
-export enum Instruction {
-  Instruction(op: Op, dst: I32, args: Array<I32>, imm: I32, node: I32);
-}
-
-export let instructionAt: (Op, I32, Array<I32>, I32, I32) -> Instruction = fn(op, dst, args, imm, node) {
-  Instruction.Instruction(op, dst, args, imm, node)
+export typedef Instruction = {
+  let op: Op;
+  let dst: I32;
+  let args: Array<I32>;
+  let imm: I32;
+  let node: I32;
 };
 
-export let instruction: (Op, I32, Array<I32>, I32) -> Instruction = fn(op, dst, args, imm) {
-  Instruction.Instruction(op, dst, args, imm, -1)
+export let instructionAt = fn(
+  op: Op,
+  dst: I32,
+  args: Array<I32>,
+  imm: I32,
+  node: I32
+): Instruction {
+  { op, dst, args, imm, node }
 };
 
-export let opOf: (Instruction) -> Op = fn(instruction) { match (instruction) { Instruction(op, _, _, _, _) => op } };
-export let dstOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, dst, _, _, _) => dst } };
-export let argsOf: (Instruction) -> Array<I32> = fn(instruction) { match (instruction) { Instruction(_, _, args, _, _) => args } };
-export let immOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, _, _, imm, _) => imm } };
-export let nodeOf: (Instruction) -> I32 = fn(instruction) { match (instruction) { Instruction(_, _, _, _, node) => node } };
+export let instruction = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction {
+  { op, dst, args, imm, node: -1 }
+};
 
 export enum Terminator {
   Jump(target: I32);
@@ -53,56 +60,65 @@ export enum Terminator {
   Throw(value: I32, node: I32);
 }
 
-export enum ThrowHandler {
-  Catch(target: I32, payload: I32);
-}
-
-export let handlerTarget: (ThrowHandler) -> I32 = fn(handler) { match (handler) { Catch(target, _) => target } };
-export let handlerPayload: (ThrowHandler) -> I32 = fn(handler) { match (handler) { Catch(_, payload) => payload } };
-
-export enum BasicBlock {
-  Block(
-    id: I32,
-    instructions: Array<Instruction>,
-    terminator: Terminator,
-    handler: ?ThrowHandler
-  );
-}
-
-export enum Function {
-  Function(
-    id: I32,
-    params: Array<I32>,
-    captures: I32,
-    registers: Array<ValueType>,
-    result: ValueType,
-    blocks: Array<BasicBlock>,
-    entry: I32
-  );
-}
-
-export enum EnumSchema { Enum(variants: Array<Array<ValueType>>); Record(fields: Array<ValueType>); }
-
-export enum Native { Native(library: Bytes, name: Bytes, params: Array<ValueType>, result: ValueType); }
-
-export enum Program {
-  Program(
-    functions: Array<Function>, bytes: Array<Bytes>, wides: Array<I64>, floats: Array<I64>, atoms: Array<Bytes>,
-    enums: Array<EnumSchema>, globals: Array<ValueType>, natives: Array<Native>
-  );
-}
-
-export let argumentCount: (Function) -> I32 = fn(function) {
-  match (function) { Function(_, params, captures, _, _, _, _) => (params.len() as I32) - captures }
+export typedef ThrowHandler = {
+  let target: I32;
+  let payload: I32;
 };
 
-export let instructionMayThrow: (Instruction) -> Bool = fn(instruction) {
-  match (opOf(instruction)) { Call, CallIndirect => true, _ => false }
+export typedef BasicBlock = {
+  let id: I32;
+  let instructions: Array<Instruction>;
+  let terminator: Terminator;
+  let handler: ?ThrowHandler;
 };
 
-export let comparesByIdentity = fn(ty: ValueType): Bool { match (ty) { Atom, Object, Function(_, _) => true, _ => false } };
+export typedef Function = {
+  let id: I32;
+  let params: Array<I32>;
+  let captures: I32;
+  let registers: Array<ValueType>;
+  let result: ValueType;
+  let blocks: Array<BasicBlock>;
+  let entry: I32;
+};
 
-export let valueTypeEqual: (ValueType, ValueType) -> Bool = fn(_left, _right) { false };
+export enum EnumSchema {
+  Enum(variants: Array<Array<ValueType>>);
+  Record(fields: Array<ValueType>);
+}
+
+export typedef Native = {
+  let library: Bytes;
+  let name: Bytes;
+  let params: Array<ValueType>;
+  let result: ValueType;
+};
+
+export typedef Program = {
+  let functions: Array<Function>;
+  let bytes: Array<Bytes>;
+  let wides: Array<I64>;
+  let floats: Array<I64>;
+  let atoms: Array<Bytes>;
+  let enums: Array<EnumSchema>;
+  let globals: Array<ValueType>;
+  let natives: Array<Native>;
+};
+
+export let argumentCount = fn(function: Function): I32 {
+  function.params.len() - function.captures
+};
+
+export let instructionMayThrow = fn(instruction: Instruction): Bool {
+  match (instruction.op) { Call, CallIndirect => true, _ => false }
+};
+
+export let comparesByIdentity = fn(ty: ValueType): Bool {
+  match (ty) {
+    Atom, Object, Function(_, _) => true,
+    _ => false,
+  }
+};
 
 let _valueTypesEqual = fn(left: Array<ValueType>, right: Array<ValueType>): Bool {
   if (left.len() != right.len()) { return false; }
@@ -115,9 +131,10 @@ let _valueTypesEqual = fn(left: Array<ValueType>, right: Array<ValueType>): Bool
   true
 };
 
-valueTypeEqual = fn(left, right) {
+export let valueTypeEqual = fn(left: ValueType, right: ValueType): Bool {
   match ((left, right)) {
-    (Bool, Bool), (I32, I32), (I64, I64), (Bytes, Bytes), (Atom, Atom), (Dynamic, Dynamic), (Object, Object), (F16, F16), (F32, F32), (F64, F64) => true,
+    (Bool, Bool), (I32, I32), (I64, I64), (F16, F16), (F32, F32), (F64, F64),
+    (Bytes, Bytes), (Atom, Atom), (Dynamic, Dynamic), (Object, Object) => true,
     (Nominal(a), Nominal(b)) => a == b,
     (ArrayOf(a), ArrayOf(b)), (ListOf(a), ListOf(b)) => valueTypeEqual(a, b),
     (TupleOf(a), TupleOf(b)) => _valueTypesEqual(a, b),
@@ -135,7 +152,12 @@ export let internValueType = fn(types: Array<ValueType>, ty: ValueType): I32 {
     i++;
   }
   types.push(ty);
-  (types.len() - 1) as I32
+  types.len() - 1
 };
 
-export let canBeNull: (ValueType) -> Bool = fn(ty) { match (ty) { Bool, I32, I64, F16, F32, F64, Atom, ListOf(_) => false, _ => true } };
+export let canBeNull = fn(ty: ValueType): Bool {
+  match (ty) {
+    Bool, I32, I64, F16, F32, F64, Atom, ListOf(_) => false,
+    _ => true,
+  }
+};

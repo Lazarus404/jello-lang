@@ -1,60 +1,90 @@
 package frontend.semantics;
 
-import type { Expr as AstExpr, Stmt, StructField, Type as AstType } from frontend.syntax.Ast;
-import { indexOf } from support.Arrays;
+import type {
+  EnumConstructor,
+  Expr as AstExpr,
+  Stmt,
+  StructField,
+  Type as AstType
+} from frontend.syntax.Ast;
 import { E0302, E0400, E0402, E0802, coded } from support.Codes;
-import { Op, appliedType, defineVariants, enumParams, fieldCount, fieldType, isOpen, newVar, node, typeOf, unify, variantTag } from frontend.hir.Hir;
+import {
+  Op,
+  appliedType,
+  defineVariants,
+  enumParams,
+  fieldCount,
+  fieldType,
+  isOpen,
+  newVar,
+  node,
+  typeOf,
+  unify,
+  variantTag
+} from frontend.hir.Hir;
 import { checkMatch, checkWith, payloadMismatch } from frontend.semantics.Match;
 import { internalError } from support.Internal;
 import { scopedType } from frontend.semantics.ModuleScope;
-import { checkOperand, checkType, checkTypeArgCount, enterSyntax, paramNames, rejectAt, syntaxChild, useTypeParams, widened } from frontend.semantics.TypeCheck;
+import {
+  checkOperand,
+  checkType,
+  checkTypeArgCount,
+  enterSyntax,
+  paramNames,
+  rejectAt,
+  syntaxChild,
+  useTypeParams,
+  widened
+} from frontend.semantics.TypeCheck;
 
-export let checkFields: (Array<StructField>) -> Tuple<Array<Bytes>, Array<I32>> = fn(fields) {
+export let checkFields = fn(fields: Array<StructField>): Tuple<Array<Bytes>, Array<I32>> {
   let names = Array.new<Bytes>(0);
   let types = Array.new<I32>(0);
   let f = 0;
 
   while (f < fields.len()) {
-    match (fields[f]) {
-      Field(field, ty) => {
-        names.push(field);
-        types.push(checkType(ty));
-      }
-    };
+    names.push(fields[f].name);
+    types.push(checkType(fields[f].ty));
     f++;
   }
   (names, types)
 };
 
-export let defineEnums: (Array<Stmt>) -> Bool = fn(statements) {
+let _defineEnum = fn(index: I32, name: Bytes, constructors: Array<EnumConstructor>): Null {
+  let parent = enterSyntax(syntaxChild(index));
+  let params = enumParams(scopedType(name));
+  let (outerNames, outerTypes) = useTypeParams(paramNames(params), params);
+
+  let names = Array.new<Bytes>(0);
+  let fieldNames = Array.new<Array<Bytes>>(0);
+  let fieldTypes = Array.new<Array<I32>>(0);
+  let c = 0;
+
+  while (c < constructors.len()) {
+    let { name: variant, fields } = constructors[c];
+
+    if (names.indexOf(variant) >= 0) {
+      throw coded(E0302, `duplicate variant ${variant} of ${name}`);
+    }
+    let (fieldName, fieldType) = checkFields(fields);
+    names.push(variant);
+    fieldNames.push(fieldName);
+    fieldTypes.push(fieldType);
+    c++;
+  }
+
+  useTypeParams(outerNames, outerTypes);
+  defineVariants(scopedType(name), names, fieldNames, fieldTypes);
+  enterSyntax(parent);
+  null
+};
+
+export let defineEnums = fn(statements: Array<Stmt>): Bool {
   let i = 0;
 
   while (i < statements.len()) {
     match (statements[i]) {
-      Enum(_, name, _, constructors) => {
-        let parent = enterSyntax(syntaxChild(i));
-        let params = enumParams(scopedType(name));
-        let (outerNames, outerTypes) = useTypeParams(paramNames(params), params);
-        let names = Array.new<Bytes>(0);
-        let fieldNames = Array.new<Array<Bytes>>(0);
-        let fieldTypes = Array.new<Array<I32>>(0);
-        let c = 0;
-
-        while (c < constructors.len()) {
-          match (constructors[c]) { Constructor(variant, fields) => {
-            if (indexOf(names, variant) >= 0) { throw coded(E0302, "duplicate variant " + variant + " of " + name); }
-            let (fieldName, fieldType) = checkFields(fields);
-            names.push(variant);
-            fieldNames.push(fieldName);
-            fieldTypes.push(fieldType);
-          } };
-          c++;
-        }
-        useTypeParams(outerNames, outerTypes);
-        defineVariants(scopedType(name), names, fieldNames, fieldTypes);
-        enterSyntax(parent);
-        null
-      },
+      Enum(_, name, _, constructors) => _defineEnum(i, name, constructors),
       _ => null,
     };
     i++;
@@ -62,7 +92,14 @@ export let defineEnums: (Array<Stmt>) -> Bool = fn(statements) {
   true
 };
 
-let _construct = fn(base: AstExpr, variant: Bytes, variantTypes: Array<AstType>, args: Array<AstExpr>, called: Bool, expected: I32): I32 {
+let _construct = fn(
+  base: AstExpr,
+  variant: Bytes,
+  variantTypes: Array<AstType>,
+  args: Array<AstExpr>,
+  called: Bool,
+  expected: I32
+): I32 {
   let (enumName, typeArgs) = match (base) {
     TypeApply(Variable(name), types) => (name, types),
     Variable(name) => (name, Array.new<AstType>(0)),
@@ -71,7 +108,13 @@ let _construct = fn(base: AstExpr, variant: Bytes, variantTypes: Array<AstType>,
       ("", Array.new<AstType>(0))
     },
   };
-  if (variantTypes.len() != 0) { throw coded(E0402, "enum constructors do not take type arguments; write them on the enum: " + enumName + "<T>." + variant); }
+
+  if (variantTypes.len() != 0) {
+    let written = `${enumName}<T>.${variant}`;
+    let hint = `write them on the enum: ${written}`;
+    throw coded(E0402, `enum constructors do not take type arguments; ${hint}`);
+  }
+
   let ty = scopedType(enumName);
   let params = enumParams(ty);
   if (typeArgs.len() != 0) { checkTypeArgCount(enumName, ty, typeArgs.len()); }
@@ -81,16 +124,22 @@ let _construct = fn(base: AstExpr, variant: Bytes, variantTypes: Array<AstType>,
     let i = 0;
 
     while (i < params.len()) {
-      types.push(typeArgs.len() == 0 ? newVar(false) : checkType(typeArgs[i]));
+      types.push((typeArgs.len() == 0) ? newVar(false) : checkType(typeArgs[i]));
       i++;
     }
     ty = appliedType(ty, types);
     if (expected >= 0) { unify(ty, expected); }
   }
+
+  let qualified = `${enumName}.${variant}`;
   let tag = variantTag(ty, variant);
-  if (tag < 0) { throw coded(E0802, "unknown variant " + variant + " of " + enumName); }
+  if (tag < 0) { throw coded(E0802, `unknown variant ${variant} of ${enumName}`); }
   let count = fieldCount(ty, tag);
-  if ((called == (count == 0)) || (args.len() != count)) { throw payloadMismatch(enumName + "." + variant, count, args.len(), called); }
+
+  if ((called == (count == 0)) || (args.len() != count)) {
+    throw payloadMismatch(qualified, count, args.len(), called);
+  }
+
   let declared = Array.new<I32>(0);
   let i = 0;
 
@@ -103,19 +152,26 @@ let _construct = fn(base: AstExpr, variant: Bytes, variantTypes: Array<AstType>,
 
   while (i < count) {
     let field = widened(checkOperand(args[i], i + 1, fieldType(ty, tag, i)), declared[i]);
-    if (!unify(typeOf(field), fieldType(ty, tag, i))) { rejectAt(i + 1, coded(E0400, "wrong payload type for enum variant " + enumName + "." + variant)); }
+
+    if (!unify(typeOf(field), fieldType(ty, tag, i))) {
+      rejectAt(i + 1, coded(E0400, `wrong payload type for enum variant ${qualified}`));
+    }
     fields.push(field);
     i++;
   }
   node(Op.EnumNew, ty, tag, 0, fields)
 };
 
-export let checkEnumExpr: (AstExpr, I32, Bool) -> I32 = fn(expr, expected, statement) {
+export let checkEnumExpr = fn(expr: AstExpr, expected: I32, statement: Bool): I32 {
   match (expr) {
     Match(subject, arms) => checkMatch(subject, arms, expected, statement),
     With(clauses, body, elseArms) => checkWith(clauses, body, elseArms, expected),
-    Member(base, variant) => _construct(base, variant, Array.new<AstType>(0), Array.new<AstExpr>(0), false, expected),
-    Call(Member(base, variant), typeArgs, args) => _construct(base, variant, typeArgs, args, true, expected),
+    Member(base, variant) => {
+      _construct(base, variant, Array.new<AstType>(0), Array.new<AstExpr>(0), false, expected)
+    },
+    Call(Member(base, variant), typeArgs, args) => {
+      _construct(base, variant, typeArgs, args, true, expected)
+    },
     _ => {
       internalError("expected an enum expression");
       -1

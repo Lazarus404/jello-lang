@@ -17,19 +17,64 @@ import type {
 } from ir.Model;
 import { Op, instruction } from ir.Model;
 
-let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction { instruction(op, dst, args, imm) };
+let insn = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction {
+  instruction(op, dst, args, imm)
+};
 let none = fn(): Array<I32> { Array.new<I32>(0) };
-let program = fn(functions: Array<Function>, pool: Array<Bytes>): Program { Program.Program(functions, pool, Array.new<I64>(0), Array.new<I64>(0), Array.new<Bytes>(0), Array.new<EnumSchema>(0), Array.new<ValueType>(0), Array.new<Native>(0)) };
+
+let block = fn(
+  id: I32,
+  instructions: Array<Instruction>,
+  terminator: Terminator,
+  handler: ?ThrowHandler
+): BasicBlock {
+  { id, instructions, terminator, handler }
+};
+
+let func = fn(
+  id: I32,
+  params: Array<I32>,
+  captures: I32,
+  registers: Array<ValueType>,
+  result: ValueType,
+  blocks: Array<BasicBlock>,
+  entry: I32
+): Function {
+  { id, params, captures, registers, result, blocks, entry }
+};
+let catchInto = fn(target: I32, payload: I32): ThrowHandler { { target, payload } };
+
+// FUNCTIONS with the bytes POOL and the enum layouts ENUMS, and no other tables.
+let programWith = fn(
+  functions: Array<Function>,
+  pool: Array<Bytes>,
+  enums: Array<EnumSchema>
+): Program {
+  {
+    functions,
+    bytes: pool,
+    wides: Array.new<I64>(0),
+    floats: Array.new<I64>(0),
+    atoms: Array.new<Bytes>(0),
+    enums,
+    globals: Array.new<ValueType>(0),
+    natives: Array.new<Native>(0),
+  }
+};
+
+let program = fn(functions: Array<Function>, pool: Array<Bytes>): Program {
+  programWith(functions, pool, Array.new<EnumSchema>(0))
+};
 
 let testVerifiesATypedBranchingFunction = fn(t: Test) {
   let blocks: Array<BasicBlock> = [
-    BasicBlock.Block(0, [
+    block(0, [
       insn(Op.Eq, 2, [0, 1], 0)
     ], Terminator.Branch(2, 1, 2), null),
-    BasicBlock.Block(1, [], Terminator.ReturnValue(0), null),
-    BasicBlock.Block(2, [], Terminator.ReturnValue(1), null)
+    block(1, [], Terminator.ReturnValue(0), null),
+    block(2, [], Terminator.ReturnValue(1), null)
   ];
-  let function = Function.Function(
+  let function = func(
     0,
     [0, 1], 0,
     [ValueType.I32, ValueType.I32, ValueType.Bool],
@@ -43,12 +88,12 @@ let testVerifiesATypedBranchingFunction = fn(t: Test) {
 };
 
 let testRejectsInvalidRegisterTypesAndBlockTargets = fn(t: Test) {
-  let wrongType = Function.Function(
+  let wrongType = func(
     0,
     [], 0,
     [ValueType.Bool],
     ValueType.Bool,
-    [BasicBlock.Block(
+    [block(
       0,
       [insn(Op.ConstI32, 0, none(), 1)],
       Terminator.ReturnValue(0),
@@ -56,20 +101,24 @@ let testRejectsInvalidRegisterTypesAndBlockTargets = fn(t: Test) {
     )],
     0
   );
-  let badTarget = Function.Function(
+  let badTarget = func(
     1,
     [], 0,
     [],
     ValueType.I32,
-    [BasicBlock.Block(0, [], Terminator.Jump(9), null)],
+    [block(0, [], Terminator.Jump(9), null)],
     0
   );
-  let duplicateBlock = Function.Function(
+  let duplicateBlock = func(
     2,
     [0], 0,
     [ValueType.I32],
     ValueType.I32,
-    [BasicBlock.Block(0, [], Terminator.Jump(1), null), BasicBlock.Block(1, [], Terminator.ReturnValue(0), null), BasicBlock.Block(1, [], Terminator.ReturnValue(0), null)],
+    [
+      block(0, [], Terminator.Jump(1), null),
+      block(1, [], Terminator.ReturnValue(0), null),
+      block(1, [], Terminator.ReturnValue(0), null)
+    ],
     0
   );
 
@@ -79,20 +128,20 @@ let testRejectsInvalidRegisterTypesAndBlockTargets = fn(t: Test) {
 };
 
 let testRejectsReturnAndHandlerMismatches = fn(t: Test) {
-  let wrongReturn = Function.Function(
+  let wrongReturn = func(
     0,
     [0], 0,
     [ValueType.Bool],
     ValueType.I32,
-    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)],
+    [block(0, [], Terminator.ReturnValue(0), null)],
     0
   );
-  let badHandler = Function.Function(
+  let badHandler = func(
     1,
     [0], 0,
     [ValueType.I32],
     ValueType.I32,
-    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), ThrowHandler.Catch(4, 0))],
+    [block(0, [], Terminator.ReturnValue(0), catchInto(4, 0))],
     0
   );
 
@@ -101,29 +150,29 @@ let testRejectsReturnAndHandlerMismatches = fn(t: Test) {
 };
 
 let testRequiresDefinitionsOnEveryPathToAUse = fn(t: Test) {
-  let missingDefinition = Function.Function(
+  let missingDefinition = func(
     0,
     [0], 0,
     [ValueType.Bool, ValueType.I32],
     ValueType.I32,
     [
-      BasicBlock.Block(0, [], Terminator.Branch(0, 1, 2), null),
-      BasicBlock.Block(1, [insn(Op.ConstI32, 1, none(), 7)], Terminator.Jump(3), null),
-      BasicBlock.Block(2, [], Terminator.Jump(3), null),
-      BasicBlock.Block(3, [], Terminator.ReturnValue(1), null)
+      block(0, [], Terminator.Branch(0, 1, 2), null),
+      block(1, [insn(Op.ConstI32, 1, none(), 7)], Terminator.Jump(3), null),
+      block(2, [], Terminator.Jump(3), null),
+      block(3, [], Terminator.ReturnValue(1), null)
     ],
     0
   );
-  let definedOnBothPaths = Function.Function(
+  let definedOnBothPaths = func(
     1,
     [0], 0,
     [ValueType.Bool, ValueType.I32],
     ValueType.I32,
     [
-      BasicBlock.Block(0, [], Terminator.Branch(0, 1, 2), null),
-      BasicBlock.Block(1, [insn(Op.ConstI32, 1, none(), 7)], Terminator.Jump(3), null),
-      BasicBlock.Block(2, [insn(Op.ConstI32, 1, none(), 9)], Terminator.Jump(3), null),
-      BasicBlock.Block(3, [], Terminator.ReturnValue(1), null)
+      block(0, [], Terminator.Branch(0, 1, 2), null),
+      block(1, [insn(Op.ConstI32, 1, none(), 7)], Terminator.Jump(3), null),
+      block(2, [insn(Op.ConstI32, 1, none(), 9)], Terminator.Jump(3), null),
+      block(3, [], Terminator.ReturnValue(1), null)
     ],
     0
   );
@@ -135,58 +184,73 @@ let testRequiresDefinitionsOnEveryPathToAUse = fn(t: Test) {
 let testRequiresASpillSlotWrittenOnEveryPathToAPop = fn(t: Test) {
   // Block 1 pushes slot 0; the pop in block 3 is reached through block 2 too.
   let spilled = fn(id: I32, otherPath: Array<Instruction>, slotType: ValueType): Function {
-    Function.Function(
+    func(
       id,
       [0], 0,
       [ValueType.Bool, ValueType.I32, slotType],
       ValueType.I32,
       [
-        BasicBlock.Block(0, [insn(Op.ConstI32, 1, none(), 7)], Terminator.Branch(0, 1, 2), null),
-        BasicBlock.Block(1, [insn(Op.SpillPush, -1, [1], 0)], Terminator.Jump(3), null),
-        BasicBlock.Block(2, otherPath, Terminator.Jump(3), null),
-        BasicBlock.Block(3, [insn(Op.SpillPop, 2, none(), 0)], Terminator.ReturnValue(1), null)
+        block(0, [insn(Op.ConstI32, 1, none(), 7)], Terminator.Branch(0, 1, 2), null),
+        block(1, [insn(Op.SpillPush, -1, [1], 0)], Terminator.Jump(3), null),
+        block(2, otherPath, Terminator.Jump(3), null),
+        block(3, [insn(Op.SpillPop, 2, none(), 0)], Terminator.ReturnValue(1), null)
       ],
       0
     )
   };
   T.isTrue(t, verifyFunction(spilled(0, [insn(Op.SpillPush, -1, [1], 0)], ValueType.I32)));
   T.throws(t, fn() { verifyFunction(spilled(1, Array.new<Instruction>(0), ValueType.I32)); });
-  T.throws(t, fn() { verifyFunction(spilled(2, [insn(Op.SpillPush, -1, [1], 0)], ValueType.Bool)); });
-  T.throws(t, fn() { verifyFunction(spilled(3, [insn(Op.SpillPush, -1, [1], -1)], ValueType.I32)); });
+  T.throws(t, fn() {
+    verifyFunction(spilled(2, [insn(Op.SpillPush, -1, [1], 0)], ValueType.Bool));
+  });
+  T.throws(t, fn() {
+    verifyFunction(spilled(3, [insn(Op.SpillPush, -1, [1], -1)], ValueType.I32));
+  });
 };
 
 let testTypesSparseSpillSlotsIndependently = fn(t: Test) {
   // Slots are numbered by virtual register, so most are unused. Slot 5 holds
   // one type; slot 0, first used after it, may hold another.
   let sparse = fn(id: I32, popped: ValueType, instructions: Array<Instruction>): Function {
-    Function.Function(
+    func(
       id,
       [0], 0,
       [ValueType.Bool, ValueType.I32, popped],
       ValueType.I32,
-      [BasicBlock.Block(0, instructions, Terminator.ReturnValue(1), null)],
+      [block(0, instructions, Terminator.ReturnValue(1), null)],
       0
     )
   };
-  T.isTrue(t, verifyFunction(sparse(0, ValueType.I32, [insn(Op.ConstI32, 1, none(), 7), insn(Op.SpillPush, -1, [1], 5), insn(Op.SpillPush, -1, [0], 0), insn(Op.SpillPop, 2, none(), 5)])));
-  T.throws(t, fn() { verifyFunction(sparse(1, ValueType.Bool, [insn(Op.ConstI32, 1, none(), 7), insn(Op.SpillPush, -1, [1], 5), insn(Op.SpillPop, 2, none(), 5)])); });
+  T.isTrue(t, verifyFunction(sparse(0, ValueType.I32, [
+    insn(Op.ConstI32, 1, none(), 7),
+    insn(Op.SpillPush, -1, [1], 5),
+    insn(Op.SpillPush, -1, [0], 0),
+    insn(Op.SpillPop, 2, none(), 5)
+  ])));
+  T.throws(t, fn() {
+    verifyFunction(sparse(1, ValueType.Bool, [
+      insn(Op.ConstI32, 1, none(), 7),
+      insn(Op.SpillPush, -1, [1], 5),
+      insn(Op.SpillPop, 2, none(), 5)
+    ]));
+  });
 };
 
 let testDefinesADynamicCatchPayloadOnThrowEdges = fn(t: Test) {
-  let function = Function.Function(
+  let function = func(
     0,
     [], 0,
     [ValueType.Dynamic, ValueType.Bytes],
     ValueType.Dynamic,
     [
-      BasicBlock.Block(0, [], Terminator.Jump(2), null),
-      BasicBlock.Block(
+      block(0, [], Terminator.Jump(2), null),
+      block(
         2,
         [insn(Op.ConstBytes, 1, none(), 0)],
         Terminator.Throw(1, -1),
-        ThrowHandler.Catch(1, 0)
+        catchInto(1, 0)
       ),
-      BasicBlock.Block(1, [], Terminator.ReturnValue(0), null)
+      block(1, [], Terminator.ReturnValue(0), null)
     ],
     0
   );
@@ -195,24 +259,24 @@ let testDefinesADynamicCatchPayloadOnThrowEdges = fn(t: Test) {
 };
 
 let testDoesNotDefinePostCallValuesOnExceptionalEdges = fn(t: Test) {
-  let callee = Function.Function(
+  let callee = func(
     1, [], 0, [ValueType.I32], ValueType.I32,
-    [BasicBlock.Block(0, [insn(Op.ConstI32, 0, none(), 1)], Terminator.ReturnValue(0), null)], 0
+    [block(0, [insn(Op.ConstI32, 0, none(), 1)], Terminator.ReturnValue(0), null)], 0
   );
-  let caller = Function.Function(
+  let caller = func(
     0,
     [], 0,
     [ValueType.I32, ValueType.I32, ValueType.Dynamic],
     ValueType.I32,
     [
-      BasicBlock.Block(0, [], Terminator.Jump(2), null),
-      BasicBlock.Block(
+      block(0, [], Terminator.Jump(2), null),
+      block(
         2,
         [insn(Op.Call, 0, none(), 1), insn(Op.ConstI32, 1, none(), 2)],
         Terminator.ReturnValue(1),
-        ThrowHandler.Catch(1, 2)
+        catchInto(1, 2)
       ),
-      BasicBlock.Block(1, [], Terminator.ReturnValue(1), null)
+      block(1, [], Terminator.ReturnValue(1), null)
     ],
     0
   );
@@ -226,38 +290,40 @@ let testDoesNotDefinePostCallValuesOnExceptionalEdges = fn(t: Test) {
 // register 0 with handlers FIRST and SECOND.
 let regions = fn(entry: Terminator, first: ?ThrowHandler, second: ?ThrowHandler): Function {
   let empty = Array.new<Instruction>(0);
-  Function.Function(0, none(), 0, [ValueType.Dynamic, ValueType.Bool], ValueType.Dynamic, [
-    BasicBlock.Block(0, [insn(Op.ConstNull, 0, none(), 0), insn(Op.ConstBool, 1, none(), 1)], entry, null),
-    BasicBlock.Block(1, empty, Terminator.ReturnValue(0), first),
-    BasicBlock.Block(2, empty, Terminator.ReturnValue(0), second)
+  func(0, none(), 0, [ValueType.Dynamic, ValueType.Bool], ValueType.Dynamic, [
+    block(0, [insn(Op.ConstNull, 0, none(), 0), insn(Op.ConstBool, 1, none(), 1)], entry, null),
+    block(1, empty, Terminator.ReturnValue(0), first),
+    block(2, empty, Terminator.ReturnValue(0), second)
   ], 0)
 };
 
 let testChecksThatTryRegionsNest = fn(t: Test) {
-  T.isTrue(t, verifyFunction(regions(Terminator.Jump(1), ThrowHandler.Catch(2, 0), null)));
+  T.isTrue(t, verifyFunction(regions(Terminator.Jump(1), catchInto(2, 0), null)));
   // The entry block is in no region.
   T.throws(t, fn() {
-    verifyFunction(Function.Function(0, none(), 0, [ValueType.Dynamic], ValueType.Dynamic, [
-      BasicBlock.Block(0, Array.new<Instruction>(0), Terminator.ReturnValue(0), ThrowHandler.Catch(1, 0)),
-      BasicBlock.Block(1, Array.new<Instruction>(0), Terminator.ReturnValue(0), null)
+    verifyFunction(func(0, none(), 0, [ValueType.Dynamic], ValueType.Dynamic, [
+      block(0, Array.new<Instruction>(0), Terminator.ReturnValue(0), catchInto(1, 0)),
+      block(1, Array.new<Instruction>(0), Terminator.ReturnValue(0), null)
     ], 0));
   });
   // Only a jump opens or closes a region.
-  T.throws(t, fn() { verifyFunction(regions(Terminator.Branch(1, 1, 2), ThrowHandler.Catch(2, 0), null)); });
+  T.throws(t, fn() { verifyFunction(regions(Terminator.Branch(1, 1, 2), catchInto(2, 0), null)); });
   // Catch blocks that catch into each other never reach the outermost region.
-  T.throws(t, fn() { verifyFunction(regions(Terminator.Jump(1), ThrowHandler.Catch(2, 0), ThrowHandler.Catch(1, 0))); });
+  T.throws(t, fn() {
+    verifyFunction(regions(Terminator.Jump(1), catchInto(2, 0), catchInto(1, 0)));
+  });
 };
 
 let testConvergesOnLoopBackedges = fn(t: Test) {
-  let function = Function.Function(
+  let function = func(
     0,
     [0, 1], 0,
     [ValueType.Bool, ValueType.I32],
     ValueType.I32,
     [
-      BasicBlock.Block(0, [], Terminator.Branch(0, 1, 2), null),
-      BasicBlock.Block(1, [insn(Op.Add, 1, [1, 1], 0)], Terminator.Jump(0), null),
-      BasicBlock.Block(2, [], Terminator.ReturnValue(1), null)
+      block(0, [], Terminator.Branch(0, 1, 2), null),
+      block(1, [insn(Op.Add, 1, [1, 1], 0)], Terminator.Jump(0), null),
+      block(2, [], Terminator.ReturnValue(1), null)
     ],
     0
   );
@@ -266,52 +332,80 @@ let testConvergesOnLoopBackedges = fn(t: Test) {
 };
 
 let testChecksCallsFunctionConstantsAndTheBytesPoolAgainstTheProgram = fn(t: Test) {
-  let callee = Function.Function(
+  let callee = func(
     1, [0], 0, [ValueType.I32], ValueType.I32,
-    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
+    [block(0, [], Terminator.ReturnValue(0), null)], 0
   );
 
   let caller = fn(instructions: Array<Instruction>, registers: Array<ValueType>): Function {
-    Function.Function(0, [], 0, registers, ValueType.I32,
-      [BasicBlock.Block(0, instructions, Terminator.ReturnValue(0), null)], 0)
+    func(0, [], 0, registers, ValueType.I32,
+      [block(0, instructions, Terminator.ReturnValue(0), null)], 0)
   };
-  let good = caller([insn(Op.ConstI32, 1, none(), 7), insn(Op.Call, 0, [1], 1)], [ValueType.I32, ValueType.I32]);
+  let good = caller(
+    [insn(Op.ConstI32, 1, none(), 7), insn(Op.Call, 0, [1], 1)],
+    [ValueType.I32, ValueType.I32]
+  );
   T.isTrue(t, verifyProgram(program([callee, good], Array.new<Bytes>(0))));
-  let wrongArgument = caller([insn(Op.ConstBool, 1, none(), 1), insn(Op.Call, 0, [1], 1)], [ValueType.I32, ValueType.Bool]);
+
+  let wrongArgument = caller(
+    [insn(Op.ConstBool, 1, none(), 1), insn(Op.Call, 0, [1], 1)],
+    [ValueType.I32, ValueType.Bool]
+  );
   T.throws(t, fn() { verifyProgram(program([callee, wrongArgument], Array.new<Bytes>(0))); });
-  let unknownCallee = caller([insn(Op.ConstI32, 1, none(), 7), insn(Op.Call, 0, [1], 9)], [ValueType.I32, ValueType.I32]);
+
+  let unknownCallee = caller(
+    [insn(Op.ConstI32, 1, none(), 7), insn(Op.Call, 0, [1], 9)],
+    [ValueType.I32, ValueType.I32]
+  );
   T.throws(t, fn() { verifyProgram(program([callee, unknownCallee], Array.new<Bytes>(0))); });
-  let wrongSignature = Function.Function(0, [], 0, [ValueType.Function([ValueType.Bool], ValueType.I32), ValueType.I32],
+
+  let wrongSignature = func(
+    0, [], 0, [ValueType.Function([ValueType.Bool], ValueType.I32), ValueType.I32],
     ValueType.I32,
-    [BasicBlock.Block(0, [insn(Op.ConstFunction, 0, none(), 1), insn(Op.ConstI32, 1, none(), 0)], Terminator.ReturnValue(1), null)], 0);
+    [block(
+      0,
+      [insn(Op.ConstFunction, 0, none(), 1), insn(Op.ConstI32, 1, none(), 0)],
+      Terminator.ReturnValue(1),
+      null
+    )],
+    0
+  );
   T.throws(t, fn() { verifyProgram(program([callee, wrongSignature], Array.new<Bytes>(0))); });
-  let bytes = Function.Function(0, [], 0, [ValueType.Bytes], ValueType.Bytes,
-    [BasicBlock.Block(0, [insn(Op.ConstBytes, 0, none(), 0)], Terminator.ReturnValue(0), null)], 0);
+  let bytes = func(0, [], 0, [ValueType.Bytes], ValueType.Bytes,
+    [block(0, [insn(Op.ConstBytes, 0, none(), 0)], Terminator.ReturnValue(0), null)], 0);
   T.isTrue(t, verifyProgram(program([bytes], ["A"])));
   T.throws(t, fn() { verifyProgram(program([bytes], Array.new<Bytes>(0))); });
 };
 
 let testChecksClosuresAgainstTheCapturesOfTheirFunction = fn(t: Test) {
   // fn @1 takes an I32 and captures one boxed value after it.
-  let closure = Function.Function(
+  let closure = func(
     1, [0, 1], 1, [ValueType.I32, ValueType.Dynamic], ValueType.I32,
-    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
+    [block(0, [], Terminator.ReturnValue(0), null)], 0
   );
 
   // Boxes 5 into %2, then runs MAKE.
   let maker = fn(make: Instruction): Function {
-    let registers = [ValueType.Function([ValueType.I32], ValueType.I32), ValueType.I32, ValueType.Dynamic];
-    Function.Function(0, [], 0, registers, ValueType.I32,
-      [BasicBlock.Block(0, [insn(Op.ConstI32, 1, none(), 5), insn(Op.Box, 2, [1], 0), make], Terminator.ReturnValue(1), null)], 0)
+    let registers = [
+      ValueType.Function([ValueType.I32], ValueType.I32),
+      ValueType.I32,
+      ValueType.Dynamic
+    ];
+    let instructions = [insn(Op.ConstI32, 1, none(), 5), insn(Op.Box, 2, [1], 0), make];
+    func(0, [], 0, registers, ValueType.I32,
+      [block(0, instructions, Terminator.ReturnValue(1), null)], 0)
   };
-  let verified = fn(make: Instruction): Bool { verifyProgram(program([closure, maker(make)], Array.new<Bytes>(0))) };
+
+  let verified = fn(make: Instruction): Bool {
+    verifyProgram(program([closure, maker(make)], Array.new<Bytes>(0)))
+  };
   T.isTrue(t, verified(insn(Op.ConstFunction, 0, [2], 1)));
   T.throws(t, fn() { verified(insn(Op.ConstFunction, 0, none(), 1)); });
   T.throws(t, fn() { verified(insn(Op.ConstFunction, 0, [1], 1)); });
   T.throws(t, fn() { verified(insn(Op.Call, 1, [1], 1)); });
-  let unboxed = Function.Function(
+  let unboxed = func(
     1, [0, 1], 1, [ValueType.I32, ValueType.I32], ValueType.I32,
-    [BasicBlock.Block(0, [], Terminator.ReturnValue(0), null)], 0
+    [block(0, [], Terminator.ReturnValue(0), null)], 0
   );
   T.throws(t, fn() { verifyFunction(unboxed); });
 };
@@ -320,9 +414,10 @@ let testChecksTheFormsLegalizationLeaves = fn(t: Test) {
   // Reads field 0 of enum ID, given its instructions; enum 0, the only
   // one, has one variant holding an I32.
   let reading = fn(instructions: Array<Instruction>, id: I32): Program {
-    let function = Function.Function(0, [0], 0, [ValueType.Nominal(id), ValueType.I32, ValueType.I32], ValueType.I32,
-      [BasicBlock.Block(0, instructions, Terminator.ReturnValue(1), null)], 0);
-    Program.Program([function], Array.new<Bytes>(0), Array.new<I64>(0), Array.new<I64>(0), Array.new<Bytes>(0), [EnumSchema.Enum([[ValueType.I32]])], Array.new<ValueType>(0), Array.new<Native>(0))
+    let registers = [ValueType.Nominal(id), ValueType.I32, ValueType.I32];
+    let function = func(0, [0], 0, registers, ValueType.I32,
+      [block(0, instructions, Terminator.ReturnValue(1), null)], 0);
+    programWith([function], Array.new<Bytes>(0), [EnumSchema.Enum([[ValueType.I32]])])
   };
   let lowered = reading([insn(Op.EnumGet, 1, [0], 0)], 0);
   let legalized = reading([insn(Op.ConstI32, 2, none(), 0), insn(Op.EnumGet, 1, [0, 2], 0)], 0);
@@ -330,15 +425,18 @@ let testChecksTheFormsLegalizationLeaves = fn(t: Test) {
   T.isTrue(t, verifyLegalizedProgram(legalized));
   T.throws(t, fn() { verifyLegalizedProgram(lowered); });
   T.throws(t, fn() { verifyProgram(legalized); });
-  let tuple = program([Function.Function(0, [0], 0, [ValueType.I32, ValueType.TupleOf([ValueType.I32])], ValueType.I32,
-    [BasicBlock.Block(0, [insn(Op.TupleNew, 1, [0], 0)], Terminator.ReturnValue(0), null)], 0)], Array.new<Bytes>(0));
+  let pairing = func(0, [0], 0, [ValueType.I32, ValueType.TupleOf([ValueType.I32])], ValueType.I32,
+    [block(0, [insn(Op.TupleNew, 1, [0], 0)], Terminator.ReturnValue(0), null)], 0);
+  let tuple = program([pairing], Array.new<Bytes>(0));
   T.isTrue(t, verifyProgram(tuple));
   T.throws(t, fn() { verifyLegalizedProgram(tuple); });
 
   // A legalized throw raises a boxed value.
   let throwing = fn(value: I32): Program {
-    program([Function.Function(0, [], 0, [ValueType.I32, ValueType.Dynamic], ValueType.I32,
-      [BasicBlock.Block(0, [insn(Op.ConstI32, 0, none(), 0), insn(Op.Box, 1, [0], 0)], Terminator.Throw(value, -1), null)], 0)], Array.new<Bytes>(0))
+    let instructions = [insn(Op.ConstI32, 0, none(), 0), insn(Op.Box, 1, [0], 0)];
+    let thrower = func(0, [], 0, [ValueType.I32, ValueType.Dynamic], ValueType.I32,
+      [block(0, instructions, Terminator.Throw(value, -1), null)], 0);
+    program([thrower], Array.new<Bytes>(0))
   };
   T.isTrue(t, verifyProgram(throwing(0)));
   T.isTrue(t, verifyLegalizedProgram(throwing(1)));

@@ -1,0 +1,71 @@
+package std.crypto;
+
+let _BEGIN = "-----BEGIN ";
+let _END = "-----END ";
+let _DASHES = "-----";
+
+export typedef Block = {
+  let label: Bytes;
+  let data: Bytes;
+};
+
+export prototype Block {
+  init(label: Bytes, data: Bytes) {
+    this.label = label;
+    this.data = data;
+  };
+};
+
+let _compact = fn(text: Bytes): Bytes {
+  let out = Bytes.new(text.len());
+  let n = 0;
+  let i = 0;
+
+  while (i < text.len()) {
+    let c = Bytes.get_u8(text, i);
+
+    if ((c != 32) && ((c < 9) || (c > 13))) {
+      Bytes.set_u8(out, n, c);
+      n++;
+    }
+    i++;
+  }
+  Bytes.slice(out.toString(), 0, n)
+};
+
+export let decode = fn(text: Bytes): Array<Block> {
+  let blocks = Array.new<Block>(0);
+  let at = text.indexOf(_BEGIN);
+
+  while (at >= 0) {
+    let start = at + _BEGIN.len();
+    let close = Bytes.indexOfFrom(text, _DASHES, start);
+    if (close < 0) { throw "Pem.decode: a BEGIN line does not end"; };
+    let label = Bytes.substring(text, start, close);
+    let end = _END + label + _DASHES;
+    let stop = Bytes.indexOfFrom(text, end, close);
+    if (stop < 0) { throw "Pem.decode: the " + label + " block does not end"; };
+    let body = _compact(Bytes.substring(text, close + _DASHES.len(), stop));
+
+    let data = try { Bytes.fromBase64(body) } catch (_) {
+      throw "Pem.decode: the " + label + " block is not Base64";
+    };
+    blocks.push(new Block(label, data));
+    at = Bytes.indexOfFrom(text, _BEGIN, stop + end.len());
+  }
+  blocks
+};
+
+export let encode = fn(label: Bytes, data: Bytes): Bytes {
+  let base64 = Bytes.toBase64(data);
+  let lines = [_BEGIN + label + _DASHES];
+  let i = 0;
+
+  while (i < base64.len()) {
+    lines.push(Bytes.slice(base64, i, base64.len() - i < 64 ? base64.len() - i : 64));
+    i = i + 64;
+  }
+  lines.push(_END + label + _DASHES);
+  lines.push("");
+  Bytes.join(lines, "\n")
+};

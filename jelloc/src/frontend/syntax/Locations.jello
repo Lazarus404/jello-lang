@@ -3,19 +3,20 @@ package frontend.syntax;
 import { lineColumn, lineStarts } from frontend.syntax.Source;
 import { readText } from std.io.File;
 
-let _locatedPaths = Array.new<Bytes>(0);
-let _locatedTexts = Array.new<Bytes>(0);
-let _locatedStarts = Array.new<Array<I32>>(0);
+typedef LocatedFile = {
+  let path: Bytes;
+  let text: Bytes;
+  let starts: Array<I32>;
+};
 
-export let locate: (Bytes, I32) -> Tuple<I32, I32> = fn(path, offset) {
-  let i = 0;
-  while ((i < _locatedPaths.len()) && (_locatedPaths[i] != path)) { i++; }
+let _files = Array.new<LocatedFile>(0);
 
-  if (i == _locatedPaths.len()) {
-    let text = readText(path);
-    _locatedPaths.push(path);
-    _locatedTexts.push(text);
-    _locatedStarts.push(lineStarts(text));
-  }
-  lineColumn(_locatedTexts[i], _locatedStarts[i], offset)
+export let locate = fn(path: Bytes, offset: I32): Tuple<I32, I32> {
+  let file = _files.first(fn(known: LocatedFile): Bool { known.path == path });
+  if (file != null) { return lineColumn(file.text, file.starts, offset); }
+
+  let text = readText(path);
+  let starts = lineStarts(text);
+  _files.push({ path, text, starts });
+  lineColumn(text, starts, offset)
 };

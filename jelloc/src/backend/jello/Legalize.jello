@@ -1,7 +1,7 @@
 package backend.jello;
 
-import type { BasicBlock, Function, Instruction, Program, ValueType } from ir.Model;
-import { BasicBlock, Function, Op, Program, Terminator, ValueType, argsOf, dstOf, handlerPayload, immOf, instructionAt, nodeOf, opOf } from ir.Model;
+import type { BasicBlock, Function, Instruction, Program } from ir.Model;
+import { Op, Terminator, ValueType, instructionAt } from ir.Model;
 import { terminatorRead } from ir.Cfg;
 import { verifyProgramFrom } from ir.Verify;
 
@@ -10,8 +10,9 @@ let _out = Array.new<Instruction>(0);
 
 let _fresh = fn(ty: ValueType): I32 {
   _registers.push(ty);
-  (_registers.len() - 1) as I32
+  _registers.len() - 1
 };
+
 let _node = -1;
 
 let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
@@ -20,11 +21,11 @@ let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
 };
 
 let _instruction = fn(insn: Instruction) {
-  let dst = dstOf(insn);
-  let args = argsOf(insn);
-  _node = nodeOf(insn);
+  let dst = insn.dst;
+  let args = insn.args;
+  _node = insn.node;
 
-  match (opOf(insn)) {
+  match (insn.op) {
     TupleNew => {
       _emit(Op.StructNew, dst, Array.new<I32>(0), 0);
       let i = 0;
@@ -37,8 +38,8 @@ let _instruction = fn(insn: Instruction) {
     },
     EnumGet => {
       let index = _fresh(ValueType.I32);
-      _emit(Op.ConstI32, index, Array.new<I32>(0), immOf(insn));
-      _emit(Op.EnumGet, dst, [args[0], index], immOf(insn))
+      _emit(Op.ConstI32, index, Array.new<I32>(0), insn.imm);
+      _emit(Op.EnumGet, dst, [args[0], index], insn.imm)
     },
     _ => {
       _out.push(insn);
@@ -48,27 +49,28 @@ let _instruction = fn(insn: Instruction) {
 };
 
 let _block = fn(block: BasicBlock): BasicBlock {
-  match (block) { Block(id, instructions, terminator, handler) => {
-    _out = Array.new<Instruction>(0);
-    let i = 0;
+  _out = Array.new<Instruction>(0);
+  let instructions = block.instructions;
+  let i = 0;
 
-    while (i < instructions.len()) {
-      _instruction(instructions[i]);
-      i++;
-    }
+  while (i < instructions.len()) {
+    _instruction(instructions[i]);
+    i++;
+  }
 
-    let selected = match (terminator) {
-      Throw(value, _) when (match (_registers[value]) { Dynamic => true, _ => false }) => terminator,
-      Throw(value, node) => {
-        _node = node;
-        let payload = _fresh(ValueType.Dynamic);
-        _emit(Op.Box, payload, [value], 0);
-        Terminator.Throw(payload, node)
-      },
-      _ => terminator,
-    };
-    BasicBlock.Block(id, _out, selected, handler)
-  } }
+  let terminator = block.terminator;
+
+  let selected = match (terminator) {
+    Throw(value, _) when (match (_registers[value]) { Dynamic => true, _ => false }) => terminator,
+    Throw(value, node) => {
+      _node = node;
+      let payload = _fresh(ValueType.Dynamic);
+      _emit(Op.Box, payload, [value], 0);
+      Terminator.Throw(payload, node)
+    },
+    _ => terminator,
+  };
+  { ...block, instructions: _out, terminator: selected }
 };
 
 let _defs = Array.new<I32>(0);
@@ -77,60 +79,64 @@ let _constants = Array.new<I32>(0);
 let _isConstant = Array.new<Bool>(0);
 
 let _count = fn(params: Array<I32>, blocks: Array<BasicBlock>) {
-  _defs = Array.new<I32>(_registers.len());
-  _uses = Array.new<I32>(_registers.len());
-  _constants = Array.new<I32>(_registers.len());
-  _isConstant = Array.new<Bool>(_registers.len());
+  let n = _registers.len();
+  _defs = Array.new<I32>(n);
+  _uses = Array.new<I32>(n);
+  _constants = Array.new<I32>(n);
+  _isConstant = Array.new<Bool>(n);
   let i = 0;
 
-  while (i < _registers.len()) {
+  while (i < n) {
     _defs[i] = 0;
     _uses[i] = 0;
     _constants[i] = 0;
     _isConstant[i] = false;
     i++;
   }
+
   i = 0;
 
   while (i < params.len()) {
     _defs[params[i]]++;
     i++;
   }
+
   i = 0;
 
   while (i < blocks.len()) {
-    match (blocks[i]) { Block(_, instructions, terminator, handler) => {
-      if (handler != null) { _defs[handlerPayload(handler)]++; }
-      let j = 0;
+    let block = blocks[i];
+    let handler = block.handler;
+    if (handler != null) { _defs[handler.payload]++; }
+    let instructions = block.instructions;
+    let j = 0;
 
-      while (j < instructions.len()) {
-        let insn = instructions[j];
-        let dst = dstOf(insn);
-        let args = argsOf(insn);
-        let a = 0;
+    while (j < instructions.len()) {
+      let insn = instructions[j];
+      let dst = insn.dst;
 
-        if (dst >= 0) {
-          _defs[dst]++;
+      if (dst >= 0) {
+        _defs[dst]++;
 
-          match (opOf(insn)) {
-            ConstI32 => {
-              _isConstant[dst] = true;
-              _constants[dst] = immOf(insn);
-              null
-            }, _ => null
-          };
-        }
-
-        while (a < args.len()) {
-          _uses[args[a]]++;
-          a++;
-        }
-        j++;
+        match (insn.op) {
+          ConstI32 => {
+            _isConstant[dst] = true;
+            _constants[dst] = insn.imm;
+            null
+          },
+          _ => null,
+        };
       }
-      let used = terminatorRead(terminator);
-      if (used >= 0) { _uses[used]++; }
-      null
-    } };
+      let args = insn.args;
+      let a = 0;
+
+      while (a < args.len()) {
+        _uses[args[a]]++;
+        a++;
+      }
+      j++;
+    }
+    let used = terminatorRead(block.terminator);
+    if (used >= 0) { _uses[used]++; }
     i++;
   }
   null
@@ -139,18 +145,19 @@ let _count = fn(params: Array<I32>, blocks: Array<BasicBlock>) {
 let _known = fn(register: I32): Bool { _isConstant[register] && (_defs[register] == 1) };
 
 let _withImmediate = fn(insn: Instruction, op: Op, operand: I32, constant: I32): ?Instruction {
-  instructionAt(op, dstOf(insn), [operand], _constants[constant], nodeOf(insn))
+  instructionAt(op, insn.dst, [operand], _constants[constant], insn.node)
 };
 
 let _immediate = fn(insn: Instruction): ?Instruction {
-  let args = argsOf(insn);
+  let args = insn.args;
   if (args.len() != 2) { return null; }
   let narrow = match (_registers[args[0]]) { I32 => true, _ => false };
   if (!narrow) { return null; }
+
   let left = args[0];
   let right = args[1];
 
-  match (opOf(insn)) {
+  match (insn.op) {
     Add when (_known(right)) => _withImmediate(insn, Op.AddImm, left, right),
     Add when (_known(left)) => _withImmediate(insn, Op.AddImm, right, left),
     Sub when (_known(right)) => _withImmediate(insn, Op.SubImm, left, right),
@@ -163,112 +170,133 @@ let _immediate = fn(insn: Instruction): ?Instruction {
   }
 };
 
+let _withImmediates = fn(block: BasicBlock): BasicBlock {
+  let instructions = block.instructions;
+  let out = Array.new<Instruction>(0);
+  let j = 0;
+
+  while (j < instructions.len()) {
+    let insn = instructions[j];
+    let immediate = _immediate(insn);
+
+    if (immediate != null) {
+      let args = insn.args;
+      let a = 0;
+
+      while (a < args.len()) {
+        _uses[args[a]]--;
+        a++;
+      }
+      _uses[immediate.args[0]]++;
+      insn = immediate;
+    }
+    out.push(insn);
+    j++;
+  }
+  { ...block, instructions: out }
+};
+
+let _negatesOnly = fn(out: Array<Instruction>, condition: I32): Bool {
+  if (out.len() == 0) { return false; }
+
+  let last = out[out.len() - 1];
+  let isNot = match (last.op) { Not => true, _ => false };
+  isNot && (last.dst == condition) && (_defs[condition] == 1) && (_uses[condition] == 1)
+};
+
+let _withoutDeadCode = fn(block: BasicBlock): BasicBlock {
+  let instructions = block.instructions;
+  let out = Array.new<Instruction>(0);
+  let j = 0;
+
+  while (j < instructions.len()) {
+    let insn = instructions[j];
+    let dead = match (insn.op) { ConstI32 => _uses[insn.dst] == 0, _ => false };
+    if (!dead) { out.push(insn); }
+    j++;
+  }
+
+  let terminator = block.terminator;
+
+  let chosen = match (terminator) {
+    Branch(condition, thenTarget, elseTarget) when (_negatesOnly(out, condition)) => {
+      let negated = out.pop().args[0];
+      Terminator.Branch(negated, elseTarget, thenTarget)
+    },
+    _ => terminator,
+  };
+  { ...block, instructions: out, terminator: chosen }
+};
+
 let _select = fn(params: Array<I32>, blocks: Array<BasicBlock>): Array<BasicBlock> {
   _count(params, blocks);
+
   let folded = Array.new<BasicBlock>(0);
   let i = 0;
 
   while (i < blocks.len()) {
-    match (blocks[i]) { Block(id, instructions, terminator, handler) => {
-      let out = Array.new<Instruction>(0);
-      let j = 0;
-
-      while (j < instructions.len()) {
-        let insn = instructions[j];
-        let immediate = _immediate(insn);
-
-        if (immediate != null) {
-          let args = argsOf(insn);
-          let a = 0;
-
-          while (a < args.len()) {
-            _uses[args[a]]--;
-            a++;
-          }
-          _uses[argsOf(immediate)[0]]++;
-          insn = immediate;
-        }
-        out.push(insn);
-        j++;
-      }
-      folded.push(BasicBlock.Block(id, out, terminator, handler));
-    } };
+    folded.push(_withImmediates(blocks[i]));
     i++;
   }
+
   let selected = Array.new<BasicBlock>(0);
   i = 0;
 
   while (i < folded.len()) {
-    match (folded[i]) { Block(id, instructions, terminator, handler) => {
-      let out = Array.new<Instruction>(0);
-      let j = 0;
-
-      while (j < instructions.len()) {
-        let dst = dstOf(instructions[j]);
-        let dead = match (opOf(instructions[j])) { ConstI32 => _uses[dst] == 0, _ => false };
-        if (!dead) { out.push(instructions[j]); }
-        j++;
-      }
-      let last = out.len() - 1;
-
-      let chosen = match (terminator) {
-        Branch(condition, thenTarget, elseTarget) when ((last >= 0) && (dstOf(out[last]) == condition) && (_defs[condition] == 1) && (_uses[condition] == 1)
-          && (match (opOf(out[last])) { Not => true, _ => false })) => {
-          let negated = argsOf(out[last])[0];
-          out.pop();
-          Terminator.Branch(negated, elseTarget, thenTarget)
-        },
-        _ => terminator,
-      };
-      selected.push(BasicBlock.Block(id, out, chosen, handler));
-    } };
+    selected.push(_withoutDeadCode(folded[i]));
     i++;
   }
   selected
 };
 
 let _function = fn(function: Function): Function {
-  match (function) { Function(id, params, captures, registers, result, blocks, entry) => {
-    _registers = Array.new<ValueType>(0);
-    let r = 0;
+  _registers = Array.new<ValueType>(0);
+  let registers = function.registers;
+  let r = 0;
 
-    while (r < registers.len()) {
-      _registers.push(registers[r]);
-      r++;
-    }
-    let selected = Array.new<BasicBlock>(0);
-    let i = 0;
+  while (r < registers.len()) {
+    _registers.push(registers[r]);
+    r++;
+  }
 
-    while (i < blocks.len()) {
-      selected.push(_block(blocks[i]));
-      i++;
-    }
-    Function.Function(id, params, captures, _registers, result, _select(params, selected), entry)
-  } }
+  let blocks = function.blocks;
+  let legal = Array.new<BasicBlock>(0);
+  let i = 0;
+
+  while (i < blocks.len()) {
+    legal.push(_block(blocks[i]));
+    i++;
+  }
+
+  {
+    ...function,
+    registers: _registers,
+    blocks: _select(function.params, legal),
+  }
 };
 
 let _legalize = fn(program: Program, kept: I32): Program {
-  let legalized = match (program) { Program(functions, pool, wides, floats, atoms, enums, globals, natives) => {
-    let selected = Array.new<Function>(0);
-    let i = 0;
+  let functions = program.functions;
+  let selected = Array.new<Function>(0);
+  let i = 0;
 
-    while (i < kept) {
-      selected.push(functions[i]);
-      i++;
-    }
+  while (i < kept) {
+    selected.push(functions[i]);
+    i++;
+  }
 
-    while (i < functions.len()) {
-      selected.push(_function(functions[i]));
-      i++;
-    }
-    Program.Program(selected, pool, wides, floats, atoms, enums, globals, natives)
-  } };
+  while (i < functions.len()) {
+    selected.push(_function(functions[i]));
+    i++;
+  }
+
+  let legalized: Program = { ...program, functions: selected };
   verifyProgramFrom(legalized, true, kept);
   legalized
 };
 
-export let legalizeJlo: (Program) -> Program = fn(program) { _legalize(program, 0) };
+export let legalizeJlo = fn(program: Program): Program { _legalize(program, 0) };
 
-export let relegalizeJlo: (Program, Program) -> Program = fn(program, earlier) {
-  match (earlier) { Program(functions, _, _, _, _, _, _, _) => _legalize(program, (functions.len() - 1) as I32) }
+export let relegalizeJlo = fn(program: Program, earlier: Program): Program {
+  _legalize(program, earlier.functions.len() - 1)
 };

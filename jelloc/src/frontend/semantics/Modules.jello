@@ -2,29 +2,43 @@ package frontend.semantics;
 
 import type { Program as AstProgram, Stmt, Type as AstType } from frontend.syntax.Ast;
 import { bindPatternName, isBindPattern } from frontend.syntax.Ast;
-import { checkAggregateExpr, declareBuiltins, extendedType, isIntrinsic, useExtension, wantedExtensions } from frontend.semantics.Aggregates;
+import {
+  checkAggregateExpr, declareBuiltins, extendedType, isIntrinsic, useExtension, wantedExtensions
+} from frontend.semantics.Aggregates;
 import { checkEnumExpr } from frontend.semantics.Enums;
 import { checkCondition, checkLet } from frontend.semantics.Match;
 import { resetDerived, structuralEquality, unsupported } from frontend.semantics.Derived;
 import { checkAssertion, declareAssertions } from frontend.semantics.Testing;
 import { declareTypes, prototypeNames } from frontend.semantics.Typedefs;
 import { checkValueExpr } from frontend.semantics.Values;
-import { beginDoubt, beginTouch, failureCount, poison, recordFailure, resetFailures, sortFailures } from frontend.semantics.Failures;
+import {
+  beginDoubt, beginTouch, failureCount, poison, recordFailure, resetFailures, sortFailures
+} from frontend.semantics.Failures;
 import type { Hir } from frontend.hir.Hir;
-import { Kind, Op, TYPE_NULL, declareNative, functionType, globalNameOf, globalTypeOf, innerOf, isKind, kindOf, node, typeArg, typeArgCount, typeName, typeOf } from frontend.hir.Hir;
+import {
+  Kind, Op, TYPE_NULL, declareNative, functionType, globalNameOf, globalTypeOf, innerOf, isKind,
+  kindOf, node, opNode, typeArg, typeArgCount, typeName, typeOf
+} from frontend.hir.Hir;
 import { firstUninitializedRead } from frontend.semantics.InitOrder;
 import { internalRaised } from support.Internal;
-import { Binding, addImport, declareScoped, enterModule, exportScoped, exportedType, resetExports, scoped } from frontend.semantics.ModuleScope;
+import {
+  Binding, addImport, declareScoped, enterModule, exportScoped, exportedType, resetExports, scoped
+} from frontend.semantics.ModuleScope;
 import type { Import, Module } from frontend.Loader;
-import { Import, Module, hasExtension, isHookName, isTestModule, isTestName, loadedExtensions, moduleName, modulePath } from frontend.Loader;
-import { indexOf } from support.Arrays;
+import {
+  Import, hasExtension, isHookName, isTestModule, isTestName, loadedExtensions, localName,
+  modulePath
+} from frontend.Loader;
 import { programSyntax } from frontend.syntax.Parser;
 import type { Syntax } from frontend.syntax.Source;
-import { Syntax } from frontend.syntax.Source;
 import {
-  annotatedGlobal, beginCheck, checkAnnotation, bindingType, checkDestructure, checkDirect, checkEffect, checkLiteralRanges, checkOperand, currentSpan, declareFunctions, declareGlobal, enterNode, enterSpan, enterSyntax,
-  finishProgram, checkGlobalInitializer, checkTemplate, checkThrow, checkDoWhile, checkWhile, instantiateTemplates, isDirectFunction, withInstances, isLoaded, isTemplate, patternNames, poisonDeclared, recoverTopLevel, syntaxChild, takeRegexpInits,
-  unsupportedStatement, useAggregateChecks, useAssertionChecks, useConditionChecks, useEnumChecks, useLetChecks, useStructuralEquality, useUnsupported, useValueChecks,
+  annotatedGlobal, beginCheck, bindingType, checkAnnotation, checkDestructure, checkDirect,
+  checkDoWhile, checkEffect, checkGlobalInitializer, checkLiteralRanges, checkOperand,
+  checkTemplate, checkThrow, checkWhile, currentSpan, declareFunctions, declareGlobal, enterNode,
+  enterSpan, enterSyntax, finishProgram, instantiateTemplates, isDirectFunction, isLoaded,
+  isTemplate, patternNames, poisonDeclared, recoverTopLevel, syntaxChild, takeRegexpInits,
+  unsupportedStatement, useAggregateChecks, useAssertionChecks, useConditionChecks, useEnumChecks,
+  useLetChecks, useStructuralEquality, useUnsupported, useValueChecks, withInstances
 } from frontend.semantics.TypeCheck;
 import { checkPrototype, instantiatePrototypes } from frontend.semantics.Prototypes;
 import { verifyHir } from frontend.hir.Verify;
@@ -34,22 +48,33 @@ let _initializers = Array.new<I32>(0);
 let _testing = -1;
 
 let _returnsVoid = fn(ty: AstType): Bool {
-  match (ty) { Function(_, result) => match (result) { Named(name) => name == "Void", _ => false }, _ => false }
+  match (ty) {
+    Function(_, Named(name)) => name == "Void",
+    _ => false,
+  }
 };
 
 let _marshalled = fn(ty: I32, name: Bytes): I32 {
   let count = typeArgCount(ty);
-  if (count > 8) { throw coded(E0901, "native " + name + " takes " + Std.string(count) + " arguments; at most 8 are supported"); }
+
+  if (count > 8) {
+    throw coded(E0901, `native ${name} takes ${count} arguments; at most 8 are supported`);
+  }
+
   let i = 0;
 
   while (i <= count) {
     let part = i < count ? typeArg(ty, i) : innerOf(ty);
 
     match (kindOf(part)) {
-      Bool, I32, I64, F32, F64, Bytes, Dynamic => null, _ => {
-        throw coded(E0213, "native " + name + " cannot pass " + typeName(part) + "; natives take and return Bool, I32, I64, F32, F64, Bytes or Dynamic");
-        null
-      }
+      Bool, I32, I64, F32, F64, Bytes, Dynamic => null,
+      _ => {
+        throw coded(
+          E0213,
+          `native ${name} cannot pass ${typeName(part)}; `
+          + "natives take and return Bool, I32, I64, F32, F64, Bytes or Dynamic"
+        );
+      },
     };
     i++;
   }
@@ -58,26 +83,10 @@ let _marshalled = fn(ty: I32, name: Bytes): I32 {
 
 let _initializeFirst = fn(first: I32, inits: Array<I32>) {
   if (inits.len() == 0) { return null; }
-  let out = Array.new<I32>(0);
-  let i = 0;
-
-  while (i < first) {
-    out.push(_initializers[i]);
-    i++;
-  }
-  i = 0;
-
-  while (i < inits.len()) {
-    out.push(inits[i]);
-    i++;
-  }
-  i = first;
-
-  while (i < _initializers.len()) {
-    out.push(_initializers[i]);
-    i++;
-  }
-  _initializers = out;
+  _initializers = _initializers
+    .slice(0, first)
+    .appendFrom(inits, 0)
+    .appendFrom(_initializers, first);
   null
 };
 
@@ -95,7 +104,11 @@ let _checkSignature = fn(statement: Stmt, test: I32) {
         let params = isTestName(name) ? [test] : Array.new<I32>(0);
 
         if (bindingType(scoped(name)) != functionType(params, TYPE_NULL)) {
-          throw coded(E0210, "wrong signature for " + name + ", must be: let " + name + " = fn(" + (params.len() == 0 ? "" : "t: Test") + ") { ... }");
+          let param = params.len() == 0 ? "" : "t: Test";
+          throw coded(
+            E0210,
+            `wrong signature for ${name}, must be: let ${name} = fn(${param}) { ... }`
+          );
         }
       }
       null
@@ -105,204 +118,244 @@ let _checkSignature = fn(statement: Stmt, test: I32) {
 };
 
 let _exportedName = fn(statement: Stmt): Bytes {
-  match (statement) { LetStmt(_, exported, pattern, _, _, _, _) when (exported && isBindPattern(pattern)) => bindPatternName(pattern), _ => "" }
+  match (statement) {
+    LetStmt(_, exported, pattern, _, _, _, _) when (exported && isBindPattern(pattern)) =>
+      bindPatternName(pattern),
+    _ => "",
+  }
 };
 
 let _exportNames = fn(statements: Array<Stmt>): Array<Bytes> {
-  let names = Array.new<Bytes>(0);
-  let i = 0;
-
-  while (i < statements.len()) {
-    let name = _exportedName(statements[i]);
-    if (name != "") { names.push(name); }
-    i++;
-  }
-  names
+  statements.map(_exportedName).filter(fn(name: Bytes): Bool { name != "" })
 };
 
 let _prototypeHome = fn(modules: Array<Module>, module: I32, name: Bytes): I32 {
-  match (modules[module]) { Module(_, _, statements, _, _, imports) => {
-    let prototypes = prototypeNames(statements);
-    if (indexOf(prototypes, name) >= 0) { return module; }
-    let named = "";
-    let i = 0;
+  let { statements, imports } = modules[module];
+  let prototypes = prototypeNames(statements);
+  if (prototypes.indexOf(name) >= 0) { return module; }
 
-    while (i < statements.len()) {
-      match (statements[i]) {
-        Typedef(_, declared, _, Alias(Named(target))) when (declared == name) => {
-          named = target;
-          null
-        },
-        Typedef(_, declared, _, Alias(Generic(target, _))) when (declared == name) => {
-          named = target;
-          null
-        },
-        _ => null,
-      };
-      i++;
-    }
-    if (named == "") { return -1; }
-    if (indexOf(prototypes, named) >= 0) { return module; }
-    i = 0;
+  let named = "";
+  let i = 0;
 
-    while (i < imports.len()) {
-      match (imports[i]) {
-        Import(local, source, exported, _, _, _) when (local == named) => { return _prototypeHome(modules, source, exported); },
-        _ => null,
-      };
-      i++;
+  while (i < statements.len()) {
+    match (statements[i]) {
+      Typedef(_, declared, _, Alias(Named(target))) when (declared == name) => {
+        named = target;
+        null
+      },
+      Typedef(_, declared, _, Alias(Generic(target, _))) when (declared == name) => {
+        named = target;
+        null
+      },
+      _ => null,
+    };
+    i++;
+  }
+  if (named == "") { return -1; }
+  if (prototypes.indexOf(named) >= 0) { return module; }
+
+  i = 0;
+
+  while (i < imports.len()) {
+    if (let Import(local, source, exported, _, _, _) = imports[i]) {
+      if (local == named) { return _prototypeHome(modules, source, exported); }
     }
-    -1
-  } }
+    i++;
+  }
+  -1
 };
 
 let _checkExtension = fn(statement: Stmt, owner: Bytes) {
   let name = _exportedName(statement);
-  if ((name != "") && isIntrinsic(owner, name)) { throw coded(E0214, owner + "." + name + " is intrinsic, so std.core." + owner + " cannot export " + name); }
+
+  if ((name != "") && isIntrinsic(owner, name)) {
+    throw coded(
+      E0214,
+      `${owner}.${name} is intrinsic, so std.core.${owner} cannot export ${name}`
+    );
+  }
   null
 };
 
 let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bool): I32 {
-  match (modules[index]) { Module(_, dotted, statements, syntax, tail, imports) => {
-    let outer = enterSyntax(syntax);
-    enterModule(index, imports, modules);
-    let k = 0;
+  let { name: dotted, statements, syntax, tail, imports } = modules[index];
+  let outer = enterSyntax(syntax);
+  enterModule(index, imports, modules);
+  let k = 0;
 
-    while (k < imports.len()) {
-      let at = match (imports[k]) { Import(_, _, _, _, _, statement), Namespace(_, _, _, statement) => statement };
+  while (k < imports.len()) {
+    let at = match (imports[k]) {
+      Import(_, _, _, _, _, statement), Namespace(_, _, _, statement) => statement,
+    };
 
-      if (at < 0) { addImport(imports[k], modules, !runs); } else {
-        let parent = enterSyntax(syntaxChild(at));
-        addImport(imports[k], modules, !runs);
-        enterSyntax(parent);
-      }
-      k++;
-    }
-    declareTypes(statements, index, opened);
-
-    if (!runs) {
-      enterSyntax(outer);
-      return -1;
-    }
-    if (index == _testing) { declareAssertions(index); }
-    let test = isTestModule(dotted) && (_testing >= 0) ? exportedType(_testing, "Test") : -1;
-    let first = _initializers.len() as I32;
-    let functionIndex = declareFunctions(statements);
-    let extended = extendedType(dotted);
-    let i = 0;
-
-    while (i < statements.len()) {
-      let parent = enterSyntax(syntaxChild(i));
-      beginTouch();
-      beginDoubt();
-
-      try {
-        if (extended != "") { _checkExtension(statements[i], extended); }
-
-        match (statements[i]) {
-          ImportFrom(Native, items, library) => {
-            if (library.len() != 1) { throw coded(E0206, "a native library is named by one identifier: load { ... } from std;"); }
-            let j = 0;
-
-            while (j < items.len()) {
-              match (items[j]) { Item(name, alias) => declareScoped(alias == null ? name : alias, Binding.Loaded(library[0], name)) };
-              j++;
-            }
-            null
-          },
-          ImportFrom(_, _, _), ImportModule(_, _, _) => null,
-          LetStmt(_, exported, pattern, _, annotation, value, _) when (isBindPattern(pattern) && isLoaded(value)) => {
-            let name = bindPatternName(pattern);
-            if ((annotation != null) && _returnsVoid(annotation)) { throw coded(E0900, "native " + name + " needs a result type: natives without a result are not supported yet"); }
-            let ty = checkAnnotation(annotation);
-            if ((ty < 0) || !isKind(ty, Kind.Function)) { throw coded(E0213, "a native needs a function type: let " + name + ": (Bytes) -> I32 = ...;"); }
-
-            match (value) { Variable(loaded) => match (scoped(loaded)) {
-              Loaded(library, native) => declareScoped(name, Binding.Native(declareNative(library, native, _marshalled(ty, native)))),
-              _ => false,
-            }, _ => false };
-            _publish(index, name, exported, opened);
-            null
-          },
-          LetStmt(_, exported, pattern, _, _, _, _) when (isTemplate(statements[i])) => {
-            let name = bindPatternName(pattern);
-            checkTemplate(name);
-            _publish(index, name, exported, opened);
-            null
-          },
-          LetStmt(_, exported, pattern, _, _, value, _) when (isDirectFunction(statements[i])) => {
-            checkDirect(functionIndex);
-            functionIndex++;
-            _publish(index, bindPatternName(pattern), exported, opened);
-            null
-          },
-          LetStmt(isConst, exported, pattern, typeParams, annotation, value, _) when (isBindPattern(pattern)) => {
-            let name = bindPatternName(pattern);
-            if (typeParams.len() != 0) { throw coded(E0605, "globals do not support type parameters"); }
-            let global = annotation == null ? -1 : annotatedGlobal(i);
-            let (checked, suspect) = checkGlobalInitializer(value, global < 0 ? -1 : globalTypeOf(global), name);
-            let init = global < 0 ? declareGlobal(name, checked, !isConst) : node(Op.InitGlobal, typeOf(checked), global, 0, [checked]);
-            if (suspect) { poison(name); }
-            _initializers.push(node(Op.Declare, 0, 0, 0, [init]));
-            _publish(index, name, exported, opened);
-            null
-          },
-          LetStmt(isConst, exported, pattern, typeParams, annotation, value, otherwise) => {
-            _initializers.push(checkDestructure(pattern, isConst, typeParams, annotation, value, otherwise, true));
-            let names = patternNames(pattern);
-            let n = 0;
-
-            while (n < names.len()) {
-              _publish(index, names[n], exported, opened);
-              n++;
-            }
-            null
-          },
-          Expression(value) => {
-            _initializers.push(checkEffect(value, 0));
-            null
-          },
-          While(condition, body) => {
-            _initializers.push(checkWhile(condition, body));
-            null
-          },
-          DoWhile(body, condition) => {
-            _initializers.push(checkDoWhile(body, condition));
-            null
-          },
-          Throw(value) => {
-            _initializers.push(checkThrow(value));
-            null
-          },
-          Prototype(_, name, _, fields) => {
-            _initializers.push(checkPrototype(name, fields));
-            null
-          },
-          Enum(_, _, _, _), Typedef(_, _, _, _) => null,
-          _ => {
-            throw unsupportedStatement(statements[i]);
-            null
-          },
-        };
-        if (test >= 0) { _checkSignature(statements[i], test); }
-      } catch (e) {
-        recoverTopLevel(e, syntax);
-        poisonDeclared(statements[i], false);
-      }
+    if (at < 0) {
+      addImport(imports[k], modules, !runs);
+    } else {
+      let parent = enterSyntax(syntaxChild(at));
+      addImport(imports[k], modules, !runs);
       enterSyntax(parent);
-      i++;
     }
-    let checkedTail = -1;
+    k++;
+  }
+  declareTypes(statements, index, opened);
 
-    if (tail != null) {
-      beginTouch();
-      beginDoubt();
-      try { checkedTail = checkOperand(tail, statements.len() as I32, -1); } catch (e) { recoverTopLevel(e, syntax); }
-    }
-    _initializeFirst(first, takeRegexpInits());
+  if (!runs) {
     enterSyntax(outer);
-    checkedTail
-  } }
+    return -1;
+  }
+
+  if (index == _testing) { declareAssertions(index); }
+  let test = isTestModule(dotted) && (_testing >= 0) ? exportedType(_testing, "Test") : -1;
+  let first = _initializers.len();
+  let functionIndex = declareFunctions(statements);
+  let extended = extendedType(dotted);
+  let i = 0;
+
+  while (i < statements.len()) {
+    let parent = enterSyntax(syntaxChild(i));
+    beginTouch();
+    beginDoubt();
+
+    try {
+      if (extended != "") { _checkExtension(statements[i], extended); }
+
+      match (statements[i]) {
+        ImportFrom(Native, items, library) => {
+          if (library.len() != 1) {
+            throw coded(
+              E0206,
+              "a native library is named by one identifier: load { ... } from std;"
+            );
+          }
+          let j = 0;
+
+          while (j < items.len()) {
+            let { name, alias } = items[j];
+            declareScoped(localName(name, alias), Binding.Loaded(library[0], name));
+            j++;
+          }
+          null
+        },
+        ImportFrom(_, _, _), ImportModule(_, _, _) => null,
+        LetStmt(_, exported, pattern, _, annotation, value, _)
+          when (isBindPattern(pattern) && isLoaded(value)) => {
+          let name = bindPatternName(pattern);
+
+          if ((annotation != null) && _returnsVoid(annotation)) {
+            throw coded(
+              E0900,
+              `native ${name} needs a result type: natives without a result are not supported yet`
+            );
+          }
+          let ty = checkAnnotation(annotation);
+
+          if ((ty < 0) || !isKind(ty, Kind.Function)) {
+            throw coded(
+              E0213,
+              `a native needs a function type: let ${name}: (Bytes) -> I32 = ...;`
+            );
+          }
+
+          if (let Variable(loaded) = value) {
+            if (let Loaded(library, native) = scoped(loaded)) {
+              let id = declareNative(library, native, _marshalled(ty, native));
+              declareScoped(name, Binding.Native(id));
+            }
+          }
+          _publish(index, name, exported, opened);
+          null
+        },
+        LetStmt(_, exported, pattern, _, _, _, _) when (isTemplate(statements[i])) => {
+          let name = bindPatternName(pattern);
+          checkTemplate(name);
+          _publish(index, name, exported, opened);
+          null
+        },
+        LetStmt(_, exported, pattern, _, _, _, _) when (isDirectFunction(statements[i])) => {
+          checkDirect(functionIndex);
+          functionIndex++;
+          _publish(index, bindPatternName(pattern), exported, opened);
+          null
+        },
+        LetStmt(isConst, exported, pattern, typeParams, annotation, value, _)
+          when (isBindPattern(pattern)) => {
+          let name = bindPatternName(pattern);
+
+          if (typeParams.len() != 0) {
+            throw coded(E0605, "globals do not support type parameters");
+          }
+
+          let global = annotation == null ? -1 : annotatedGlobal(i);
+          let declared = global < 0 ? -1 : globalTypeOf(global);
+          let (checked, suspect) = checkGlobalInitializer(value, declared, name);
+          let init = global < 0
+            ? declareGlobal(name, checked, !isConst)
+            : node(Op.InitGlobal, typeOf(checked), global, 0, [checked]);
+          if (suspect) { poison(name); }
+          _initializers.push(opNode(Op.Declare, 0, [init]));
+          _publish(index, name, exported, opened);
+          null
+        },
+        LetStmt(isConst, exported, pattern, typeParams, annotation, value, otherwise) => {
+          _initializers.push(
+            checkDestructure(pattern, isConst, typeParams, annotation, value, otherwise, true)
+          );
+          let names = patternNames(pattern);
+          let n = 0;
+
+          while (n < names.len()) {
+            _publish(index, names[n], exported, opened);
+            n++;
+          }
+          null
+        },
+        Expression(value) => {
+          _initializers.push(checkEffect(value, 0));
+          null
+        },
+        While(condition, body) => {
+          _initializers.push(checkWhile(condition, body));
+          null
+        },
+        DoWhile(body, condition) => {
+          _initializers.push(checkDoWhile(body, condition));
+          null
+        },
+        Throw(value) => {
+          _initializers.push(checkThrow(value));
+          null
+        },
+        Prototype(_, name, _, fields) => {
+          _initializers.push(checkPrototype(name, fields));
+          null
+        },
+        Enum(_, _, _, _), Typedef(_, _, _, _) => null,
+        _ => { throw unsupportedStatement(statements[i]); },
+      };
+      if (test >= 0) { _checkSignature(statements[i], test); }
+    } catch (e) {
+      recoverTopLevel(e, syntax);
+      poisonDeclared(statements[i], false);
+    }
+    enterSyntax(parent);
+    i++;
+  }
+
+  let checkedTail = -1;
+
+  if (tail != null) {
+    beginTouch();
+    beginDoubt();
+
+    try {
+      checkedTail = checkOperand(tail, statements.len(), -1);
+    } catch (e) {
+      recoverTopLevel(e, syntax);
+    }
+  }
+  _initializeFirst(first, takeRegexpInits());
+  enterSyntax(outer);
+  checkedTail
 };
 
 let _checkInitOrder = fn() {
@@ -310,27 +363,51 @@ let _checkInitOrder = fn() {
 
   if (binding >= 0) {
     enterNode(binding);
-    throw coded(E0304, "global " + globalNameOf(global) + " is read before it is initialised");
+    throw coded(E0304, `global ${globalNameOf(global)} is read before it is initialised`);
   }
   null
 };
 
 let _failChecked = fn(modules: Array<Module>) {
   checkLiteralRanges();
-  let paths = Array.new<Bytes>(0);
-  let i = 0;
-
-  while (i < modules.len()) {
-    paths.push(modulePath(modules[i]));
-    i++;
-  }
-  let (span, message) = sortFailures(paths);
+  let (span, message) = sortFailures(modules.map(modulePath));
   enterSpan(span);
   throw message;
+};
+
+let _markRunning = fn(modules: Array<Module>, runs: Array<Bool>, opened: Array<Bool>) {
+  let i = modules.len() - 1;
+
+  while (i >= 0) {
+    if (runs[i]) {
+      let imports = modules[i].imports;
+      let j = 0;
+
+      while (j < imports.len()) {
+        match (imports[j]) {
+          Import(_, module, name, typeOnly, privately, _) => {
+            if (!typeOnly) {
+              runs[module] = true;
+            } else {
+              let home = _prototypeHome(modules, module, name);
+              if (home >= 0) { runs[home] = true; }
+            }
+            if (privately) { opened[module] = true; }
+          },
+          Namespace(_, module, privately, _) => {
+            runs[module] = true;
+            if (privately) { opened[module] = true; }
+          },
+        };
+        j++;
+      }
+    }
+    i--;
+  }
   null
 };
 
-export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
+export let typeCheckModules = fn(modules: Array<Module>): Hir {
   beginCheck();
   resetExports();
   useEnumChecks(checkEnumExpr);
@@ -344,18 +421,19 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
   useUnsupported(unsupported);
   resetDerived();
   _initializers = Array.new<I32>(0);
-  let entry = (modules.len() - 1) as I32;
-  let i = 0;
-  let tail = -1;
+
+  let entry = modules.len() - 1;
   _testing = -1;
+  let i = 0;
 
   while (i <= entry) {
-    if (moduleName(modules[i]) == "std.testing") { _testing = i; }
+    if (modules[i].name == "std.testing") { _testing = i; }
     i++;
   }
-  i = 0;
+
   let runs = Array.new<Bool>(0);
   let opened = Array.new<Bool>(0);
+  i = 0;
 
   while (i <= entry) {
     runs.push(i == entry);
@@ -366,43 +444,27 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
   i = 0;
 
   while (i < extensions.len()) {
-    if ((extensions[i] < entry) && (extendedType(moduleName(modules[extensions[i]])) != "")) { runs[extensions[i]] = true; }
+    let extension = extensions[i];
+
+    if ((extension < entry) && (extendedType(modules[extension].name) != "")) {
+      runs[extension] = true;
+    }
     i++;
   }
-  i = entry;
+  _markRunning(modules, runs, opened);
 
-  while (i >= 0) {
-    if (runs[i]) {
-      match (modules[i]) { Module(_, _, _, _, _, imports) => {
-        let j = 0;
-
-        while (j < imports.len()) {
-          match (imports[j]) {
-            Import(_, module, name, typeOnly, privately, _) => {
-              if (!typeOnly) { runs[module] = true; } else {
-                let home = _prototypeHome(modules, module, name);
-                if (home >= 0) { runs[home] = true; }
-              }
-              if (privately) { opened[module] = true; }
-            },
-            Namespace(_, module, privately, _) => {
-              runs[module] = true;
-              if (privately) { opened[module] = true; }
-            },
-          };
-          j++;
-        }
-      } };
-    }
-    i--;
-  }
   i = 0;
 
   while (i <= entry) {
-    let extended = extendedType(moduleName(modules[i]));
-    if (runs[i] && (extended != "")) { match (modules[i]) { Module(_, _, statements, _, _, _) => useExtension(extended, i, _exportNames(statements)) }; }
+    let extended = extendedType(modules[i].name);
+
+    if (runs[i] && (extended != "")) {
+      useExtension(extended, i, _exportNames(modules[i].statements));
+    }
     i++;
   }
+
+  let tail = -1;
   i = 0;
 
   try {
@@ -416,14 +478,15 @@ export let typeCheckModules: (Array<Module>) -> Hir = fn(modules) {
       while (instantiatePrototypes()) { instantiateTemplates(); }
       _initializers = withInstances(_initializers);
       _initializeFirst(0, takeRegexpInits());
-      match (modules[entry]) { Module(_, _, _, syntax, _, _) => enterSyntax(syntax) };
-      if (tail < 0) { tail = node(Op.Null, TYPE_NULL, 0, 0, []); }
+      enterSyntax(modules[entry].syntax);
+      if (tail < 0) { tail = opNode(Op.Null, TYPE_NULL, []); }
     }
   } catch (e) {
     if (internalRaised()) { throw e; }
     recordFailure(currentSpan(), e);
   }
   if (failureCount() > 0) { _failChecked(modules); }
+
   _initializers.push(tail);
   let hir = finishProgram(node(Op.Block, typeOf(tail), 0, 1, _initializers));
   _checkInitOrder();
@@ -435,14 +498,16 @@ let _checkWith = fn(loader: (Array<Bytes>) -> Array<Module>, types: Array<Bytes>
   resetFailures();
   let modules = loader(types);
 
-  try { typeCheckModules(modules) } catch (e) {
+  try {
+    typeCheckModules(modules)
+  } catch (e) {
     if (internalRaised()) { throw e; }
-    let wanted = wantedExtensions();
     let count = types.len();
+    let wanted = wantedExtensions();
     let i = 0;
 
     while (i < wanted.len()) {
-      if ((indexOf(types, wanted[i]) < 0) && hasExtension(wanted[i])) { types.push(wanted[i]); }
+      if ((types.indexOf(wanted[i]) < 0) && hasExtension(wanted[i])) { types.push(wanted[i]); }
       i++;
     }
     if (types.len() == count) { throw e; }
@@ -450,13 +515,23 @@ let _checkWith = fn(loader: (Array<Bytes>) -> Array<Module>, types: Array<Bytes>
   }
 };
 
-export let checkProgram: ((Array<Bytes>) -> Array<Module>) -> Hir = fn(loader) { _checkWith(loader, Array.new<Bytes>(0)) };
-
-export let typeCheckProgramWithSyntax: (AstProgram, Syntax) -> Hir = fn(program, syntax) {
-  match (program) { Program(_, statements, tail) => {
-    let path = match (syntax) { Node(path, _, _, _, _) => path };
-    typeCheckModules([Module.Module(path, "", statements, syntax, tail, Array.new<Import>(0))])
-  } }
+export let checkProgram = fn(loader: (Array<Bytes>) -> Array<Module>): Hir {
+  _checkWith(loader, Array.new<Bytes>(0))
 };
 
-export let typeCheckProgram: (AstProgram) -> Hir = fn(program) { typeCheckProgramWithSyntax(program, programSyntax(program)) };
+export let typeCheckProgramWithSyntax = fn(program: AstProgram, syntax: Syntax): Hir {
+  let { statements, tail } = program;
+  let module: Module = {
+    path: syntax.path,
+    name: "",
+    statements,
+    syntax,
+    tail,
+    imports: Array.new<Import>(0)
+  };
+  typeCheckModules([module])
+};
+
+export let typeCheckProgram = fn(program: AstProgram): Hir {
+  typeCheckProgramWithSyntax(program, programSyntax(program))
+};

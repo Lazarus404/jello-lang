@@ -7,7 +7,8 @@ import { assignmentMark, enterLoop, leaveLoop, narrowings } from frontend.semant
 import { bindGenerator } from frontend.semantics.Match;
 import { expressionOf } from frontend.semantics.Derived;
 import {
-  beginLoopScope, checkOperand, endLoopScope, enterSyntax, hideValue, newBinding, rejectAt, syntaxChild, widened,
+  beginLoopScope, checkOperand, endLoopScope, enterSyntax, hideValue, newBinding, rejectAt,
+  syntaxChild, widened,
 } from frontend.semantics.TypeCheck;
 import { E0400, coded } from support.Codes;
 
@@ -24,7 +25,10 @@ let _items = fn(items: Array<AstExpr>, first: I32, element: I32, values: Array<I
   while (i < items.len()) {
     let value = widened(checkOperand(items[i], first + i, ty), declared);
     if (ty < 0) { ty = H.typeOf(value); }
-    if (!H.unify(H.typeOf(value), ty)) { rejectAt(first + i, coded(E0400, "list element must be " + H.typeName(ty))); }
+
+    if (!H.unify(H.typeOf(value), ty)) {
+      rejectAt(first + i, coded(E0400, `list element must be ${H.typeName(ty)}`));
+    }
     values.push(value);
     i++;
   }
@@ -37,12 +41,13 @@ let _listOperand = fn(operand: AstExpr, index: I32, element: I32, what: Bytes): 
 
   if (!H.isKind(ty, Kind.List)) {
     enterSyntax(syntaxChild(index));
-    throw coded(E0400, what + " must be a List, not " + H.typeName(ty));
+    throw coded(E0400, `${what} must be a List, not ${H.typeName(ty)}`);
   }
 
   if ((element >= 0) && !H.unify(ty, H.listType(element))) {
-    rejectAt(index, coded(E0400, what + " must be " + H.typeName(H.listType(element)) + ", not " + H.typeName(ty)));
-    return H.node(Op.ListNil, H.listType(element), 0, 0, []);
+    let wanted = H.typeName(H.listType(element));
+    rejectAt(index, coded(E0400, `${what} must be ${wanted}, not ${H.typeName(ty)}`));
+    return H.opNode(Op.ListNil, H.listType(element), []);
   }
   checked
 };
@@ -52,22 +57,27 @@ let _consed = fn(values: Array<I32>, tail: I32, ty: I32): I32 {
   let i = values.len() - 1;
 
   while (i >= 0) {
-    list = H.node(Op.ListCons, ty, 0, 0, [values[i], list]);
+    list = H.opNode(Op.ListCons, ty, [values[i], list]);
     i--;
   }
   list
 };
 
 let _more = fn(binding: I32, ty: I32): I32 {
-  H.node(Op.Not, H.TYPE_BOOL, 0, 0, [H.node(Op.ListIsNil, H.TYPE_BOOL, 0, 0, [H.local(binding, ty)])])
+  let empty = H.opNode(Op.ListIsNil, H.TYPE_BOOL, [H.local(binding, ty)]);
+  H.opNode(Op.Not, H.TYPE_BOOL, [empty])
 };
 
-let _assign = fn(binding: I32, ty: I32, value: I32): I32 { expressionOf(H.node(Op.Assign, ty, binding, 0, [value])) };
+let _assign = fn(binding: I32, ty: I32, value: I32): I32 {
+  expressionOf(H.node(Op.Assign, ty, binding, 0, [value]))
+};
 
 let _reverseOnto = fn(source: I32, onto: I32, ty: I32, statements: Array<I32>) {
-  let cons = H.node(Op.ListCons, ty, 0, 0, [H.node(Op.ListHead, H.innerOf(ty), 0, 0, [H.local(source, ty)]), H.local(onto, ty)]);
-  let body = [_assign(onto, ty, cons), _assign(source, ty, H.node(Op.ListTail, ty, 0, 0, [H.local(source, ty)]))];
-  statements.push(H.node(Op.While, 0, 0, 0, [_more(source, ty), H.node(Op.Block, 0, 0, 0, body)]));
+  let head = H.opNode(Op.ListHead, H.innerOf(ty), [H.local(source, ty)]);
+  let push = _assign(onto, ty, H.opNode(Op.ListCons, ty, [head, H.local(onto, ty)]));
+  let tail = H.opNode(Op.ListTail, ty, [H.local(source, ty)]);
+  let body = [push, _assign(source, ty, tail)];
+  statements.push(H.opNode(Op.While, 0, [_more(source, ty), H.opNode(Op.Block, 0, body)]));
   null
 };
 
@@ -77,16 +87,27 @@ let _variable = fn(statements: Array<I32>, name: Bytes, ty: I32, value: I32): I3
   binding
 };
 
-let _prefixed = fn(prefix: Array<AstExpr>, tail: AstExpr, expected: I32, what: Bytes): Tuple<Array<I32>, I32> {
+let _prefixed = fn(
+  prefix: Array<AstExpr>,
+  tail: AstExpr,
+  expected: I32,
+  what: Bytes
+): Tuple<Array<I32>, I32> {
   let values = Array.new<I32>(0);
   let element = _items(prefix, 0, _element(expected, false), values);
-  (values, _listOperand(tail, prefix.len() as I32, element, what))
+  (values, _listOperand(tail, prefix.len(), element, what))
 };
 
-let _spread = fn(prefix: Array<AstExpr>, rest: AstExpr, suffix: Array<AstExpr>, expected: I32): I32 {
+let _spread = fn(
+  prefix: Array<AstExpr>,
+  rest: AstExpr,
+  suffix: Array<AstExpr>,
+  expected: I32
+): I32 {
   let (values, list) = _prefixed(prefix, rest, expected, "spread operand");
   let ty = H.typeOf(list);
   if (suffix.len() == 0) { return _consed(values, list, ty); }
+
   let statements = Array.new<I32>(0);
   let reads = Array.new<I32>(0);
   let i = 0;
@@ -97,9 +118,10 @@ let _spread = fn(prefix: Array<AstExpr>, rest: AstExpr, suffix: Array<AstExpr>, 
   }
   let copied = _variable(statements, "rest", ty, list);
   let after = Array.new<I32>(0);
-  _items(suffix, (prefix.len() as I32) + 1, H.innerOf(ty), after);
-  let out = _variable(statements, "list", ty, _consed(after, H.node(Op.ListNil, ty, 0, 0, []), ty));
-  let reversed = _variable(statements, "reversed", ty, H.node(Op.ListNil, ty, 0, 0, []));
+  _items(suffix, prefix.len() + 1, H.innerOf(ty), after);
+  let suffixed = _consed(after, H.opNode(Op.ListNil, ty, []), ty);
+  let out = _variable(statements, "list", ty, suffixed);
+  let reversed = _variable(statements, "reversed", ty, H.opNode(Op.ListNil, ty, []));
   _reverseOnto(copied, reversed, ty, statements);
   _reverseOnto(reversed, out, ty, statements);
   statements.push(_consed(reads, H.local(out, ty), ty));
@@ -110,7 +132,8 @@ let _collect = fn(body: AstExpr, index: I32, result: I32, element: I32, loop: Ar
   let values = Array.new<I32>(0);
   _items([body], index, element, values);
   let ty = H.listType(element);
-  loop.push(_assign(result, ty, H.node(Op.ListCons, ty, 0, 0, [values[0], H.local(result, ty)])));
+  let cons = H.opNode(Op.ListCons, ty, [values[0], H.local(result, ty)]);
+  loop.push(_assign(result, ty, cons));
   null
 };
 
@@ -121,32 +144,44 @@ let _guard = fn(guard: AstExpr, index: I32, loop: Array<I32>) {
     enterSyntax(syntaxChild(index));
     throw coded(E0400, "comprehension guard must be a Bool");
   }
-  let skip = H.node(Op.Block, 0, 0, 0, [H.node(Op.Continue, 0, 0, 0, [])]);
-  loop.push(H.node(Op.IfStatement, 0, 0, 0, [H.node(Op.Not, H.TYPE_BOOL, 0, 0, [test]), skip]));
+  let skip = H.opNode(Op.Block, 0, [H.opNode(Op.Continue, 0, [])]);
+  loop.push(H.opNode(Op.IfStatement, 0, [H.opNode(Op.Not, H.TYPE_BOOL, [test]), skip]));
   null
 };
 
-let _generator: (Array<ListGenerator>, I32, I32, AstExpr, I32, I32) -> Array<I32> = fn(_generators, _g, _index, _body, _result, _element) { Array.new<I32>(0) };
-_generator = fn(generators, g, index, body, result, element) {
+let _generator = fn(
+  generators: Array<ListGenerator>,
+  g: I32,
+  index: I32,
+  body: AstExpr,
+  result: I32,
+  element: I32
+): Array<I32> {
   let statements = Array.new<I32>(0);
   let loop = Array.new<I32>(0);
   let next = index + 1;
+  let { pattern, source, guard } = generators[g];
+  let list = _listOperand(source, index, -1, "comprehension source");
+  let ty = H.typeOf(list);
+  let item = H.innerOf(ty);
+  let cursor = _variable(statements, "source", ty, list);
+  let head = hideValue(loop, "item", H.opNode(Op.ListHead, item, [H.local(cursor, ty)]));
+  loop.push(_assign(cursor, ty, H.opNode(Op.ListTail, ty, [H.local(cursor, ty)])));
+  loop.push(bindGenerator(pattern, g, H.local(head, item)));
 
-  match (generators[g]) { Generator(pattern, source, guard) => {
-    let list = _listOperand(source, index, -1, "comprehension source");
-    let ty = H.typeOf(list);
-    let cursor = _variable(statements, "source", ty, list);
-    let item = hideValue(loop, "item", H.node(Op.ListHead, H.innerOf(ty), 0, 0, [H.local(cursor, ty)]));
-    loop.push(_assign(cursor, ty, H.node(Op.ListTail, ty, 0, 0, [H.local(cursor, ty)])));
-    loop.push(bindGenerator(pattern, g, H.local(item, H.innerOf(ty))));
+  if (guard != null) {
+    _guard(guard, next, loop);
+    next++;
+  }
 
-    if (guard != null) {
-      _guard(guard, next, loop);
-      next++;
-    }
-    if (g + 1 < generators.len()) { loop.push(H.node(Op.Block, 0, 0, 0, _generator(generators, g + 1, next, body, result, element))); } else { _collect(body, next, result, element, loop); }
-    statements.push(H.node(Op.While, 0, 0, 0, [_more(cursor, ty), H.node(Op.Block, 0, 0, 0, loop)]));
-  } };
+  if (g + 1 < generators.len()) {
+    let inner = _generator(generators, g + 1, next, body, result, element);
+    loop.push(H.opNode(Op.Block, 0, inner));
+  } else {
+    _collect(body, next, result, element, loop);
+  }
+  let more = _more(cursor, ty);
+  statements.push(H.opNode(Op.While, 0, [more, H.opNode(Op.Block, 0, loop)]));
   statements
 };
 
@@ -154,7 +189,8 @@ let _comprehension = fn(generators: Array<ListGenerator>, body: AstExpr, expecte
   let element = _element(expected, true);
   let ty = H.listType(element);
   let statements = Array.new<I32>(0);
-  let result = _variable(statements, "list", ty, H.node(Op.ListNil, ty, 0, 0, []));
+  let result = _variable(statements, "list", ty, H.opNode(Op.ListNil, ty, []));
+
   let before = narrowings();
   let mark = assignmentMark();
   enterLoop();
@@ -162,23 +198,22 @@ let _comprehension = fn(generators: Array<ListGenerator>, body: AstExpr, expecte
   let loops = _generator(generators, 0, 0, body, result, element);
   endLoopScope(outer);
   leaveLoop(before, mark);
-  statements.push(H.node(Op.Block, 0, 0, 0, loops));
-  let out = _variable(statements, "reversed", ty, H.node(Op.ListNil, ty, 0, 0, []));
+
+  statements.push(H.opNode(Op.Block, 0, loops));
+  let out = _variable(statements, "reversed", ty, H.opNode(Op.ListNil, ty, []));
   _reverseOnto(result, out, ty, statements);
   statements.push(H.local(out, ty));
   H.node(Op.Block, ty, 0, 1, statements)
 };
 
-export let checkList: (ListLiteral, I32) -> I32 = fn(value, expected) {
+export let checkList = fn(value: ListLiteral, expected: I32): I32 {
   match (value) {
-    Empty => {
-      let element = _element(expected, true);
-      H.node(Op.ListNil, H.listType(element), 0, 0, [])
-    },
+    Empty => H.opNode(Op.ListNil, H.listType(_element(expected, true)), []),
     Elements(items) => {
       let values = Array.new<I32>(0);
-      let ty = H.listType(H.resolve(_items(items, 0, _element(expected, false), values)));
-      _consed(values, H.node(Op.ListNil, ty, 0, 0, []), ty)
+      let element = _items(items, 0, _element(expected, false), values);
+      let ty = H.listType(H.resolve(element));
+      _consed(values, H.opNode(Op.ListNil, ty, []), ty)
     },
     Cons(prefix, tail) => {
       let (values, list) = _prefixed(prefix, tail, expected, "list tail");

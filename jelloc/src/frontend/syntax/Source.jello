@@ -2,9 +2,11 @@ package frontend.syntax;
 
 import { wideRanges, zeroWidthRanges } from frontend.syntax.UnicodeWidth;
 
-export enum SourceSpan {
-  Span(path: Bytes, start: I32, end: I32);
-}
+export typedef SourceSpan = {
+  let path: Bytes;
+  let start: I32;
+  let end: I32;
+};
 
 export enum SyntaxKind {
   Expression;
@@ -14,62 +16,74 @@ export enum SyntaxKind {
   Type;
 }
 
-export enum SyntaxMark {
-  Mark(kind: SyntaxKind, tag: I32, start: I32, end: I32);
-}
-
-export enum Syntax {
-  Node(path: Bytes, start: I32, end: I32, children: Array<Syntax>, patterns: Array<Syntax>);
-}
-
-export let spanPath: (SourceSpan) -> Bytes = fn(span) { match (span) { Span(path, _, _) => path } };
-export let spanStart: (SourceSpan) -> I32 = fn(span) { match (span) { Span(_, start, _) => start } };
-export let spanEnd: (SourceSpan) -> I32 = fn(span) { match (span) { Span(_, _, end) => end } };
-export let syntaxSpan = fn(syntax: Syntax): SourceSpan { match (syntax) { Node(path, start, end, _, _) => SourceSpan.Span(path, start, end) } };
-export let syntaxChildren = fn(syntax: Syntax): Array<Syntax> { match (syntax) { Node(_, _, _, children, _) => children } };
-export let syntaxPatterns = fn(syntax: Syntax): Array<Syntax> { match (syntax) { Node(_, _, _, _, patterns) => patterns } };
-
-let _relocated: (Syntax, Bytes, I32, I32) -> Syntax = fn(syntax, _path, _start, _end) { syntax };
-_relocated = fn(syntax, path, start, end) {
-  match (syntax) { Node(_, _, _, children, patterns) => {
-    let movedChildren = Array.new<Syntax>(0);
-    let movedPatterns = Array.new<Syntax>(0);
-    let i = 0;
-
-    while (i < children.len()) {
-      movedChildren.push(_relocated(children[i], path, start, end));
-      i++;
-    }
-    i = 0;
-
-    while (i < patterns.len()) {
-      movedPatterns.push(_relocated(patterns[i], path, start, end));
-      i++;
-    }
-    Syntax.Node(path, start, end, movedChildren, movedPatterns)
-  } }
+export typedef SyntaxMark = {
+  let kind: SyntaxKind;
+  let tag: I32;
+  let start: I32;
+  let end: I32;
 };
-export let relocated = fn(syntax: Syntax, path: Bytes, start: I32, end: I32): Syntax { _relocated(syntax, path, start, end) };
+
+export typedef Syntax = {
+  let path: Bytes;
+  let start: I32;
+  let end: I32;
+  let children: Array<Syntax>;
+  let patterns: Array<Syntax>;
+};
+
+export let syntaxSpan = fn(syntax: Syntax): SourceSpan {
+  { path: syntax.path, start: syntax.start, end: syntax.end }
+};
+
+export let relocated = fn(syntax: Syntax, path: Bytes, start: I32, end: I32): Syntax {
+  let moved = fn(node: Syntax): Syntax { relocated(node, path, start, end) };
+  {
+    path,
+    start,
+    end,
+    children: syntax.children.map(moved),
+    patterns: syntax.patterns.map(moved)
+  }
+};
 
 let _byteAt = fn(src: Bytes, i: I32): I32 {
   ((i < 0) || (i >= src.len())) ? -1 : Bytes.get_u8(src, i)
 };
 
-export let utf8CharLength: (Bytes, I32) -> I32 = fn(src, i) {
+let _leadLength = fn(c: I32): I32 {
+  if (c < 0) { return 0; }
+  if (c < 128) { return 1; }
+  if (c < 194) { return 0; }
+  if (c < 224) { return 2; }
+  if (c < 240) { return 3; }
+  if (c < 245) { return 4; }
+  0
+};
+
+export let utf8CharLength = fn(src: Bytes, i: I32): I32 {
   let c = _byteAt(src, i);
-  let n = (c < 0) ? 0 : (c < 128) ? 1 : (c < 194) ? 0 : (c < 224) ? 2 : (c < 240) ? 3 : (c < 245) ? 4 : 0;
+  let n = _leadLength(c);
   let lo = (c == 224) ? 160 : (c == 240) ? 144 : 128;
   let hi = (c == 237) ? 159 : (c == 244) ? 143 : 191;
   let k = 1;
 
-  while ((k < n) && (_byteAt(src, i + k) >= ((k == 1) ? lo : 128))
-    && (_byteAt(src, i + k) <= ((k == 1) ? hi : 191))) { k++; }
+  while ((k < n)
+    && (_byteAt(src, i + k) >= ((k == 1) ? lo : 128))
+    && (_byteAt(src, i + k) <= ((k == 1) ? hi : 191))) {
+    k++;
+  }
   (k == n) ? n : 0
 };
 
 let _codepoint = fn(src: Bytes, i: I32, n: I32): I32 {
   let c = Bytes.get_u8(src, i);
-  let cp = (n == 1) ? c : (n == 2) ? c - 192 : (n == 3) ? c - 224 : c - 240;
+
+  let cp = match (n) {
+    1 => c,
+    2 => c - 192,
+    3 => c - 224,
+    _ => c - 240,
+  };
   let k = 1;
 
   while (k < n) {
@@ -97,13 +111,20 @@ let _inRanges = fn(table: Bytes, cp: I32): Bool {
 
   while (lo < hi) {
     let mid = (lo + hi) / 2;
-    if (_rangeBound(table, mid, 6) < cp) { lo = mid + 1; } else { hi = mid; }
+
+    if (_rangeBound(table, mid, 6) < cp) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
   }
   (lo < table.len() / 12) && (_rangeBound(table, lo, 0) <= cp)
 };
 
 let _codepointWidth = fn(cp: I32): I32 {
-  (cp < 128) ? 1 : _inRanges(zeroWidthRanges, cp) ? 0 : _inRanges(wideRanges, cp) ? 2 : 1
+  if (cp < 128) { return 1; }
+  if (_inRanges(zeroWidthRanges, cp)) { return 0; }
+  _inRanges(wideRanges, cp) ? 2 : 1
 };
 
 let _step = fn(source: Bytes, i: I32): I32 {
@@ -117,7 +138,7 @@ let _lineStart = fn(source: Bytes, offset: I32): I32 {
   i
 };
 
-export let sourceLocation: (Bytes, I32) -> Tuple<I32, I32> = fn(source, offset) {
+export let sourceLocation = fn(source: Bytes, offset: I32): Tuple<I32, I32> {
   let line = 1;
   let column = 1;
   let i = 0;
@@ -135,7 +156,7 @@ export let sourceLocation: (Bytes, I32) -> Tuple<I32, I32> = fn(source, offset) 
   (line, column)
 };
 
-export let lineStarts: (Bytes) -> Array<I32> = fn(source) {
+export let lineStarts = fn(source: Bytes): Array<I32> {
   let starts = [0];
   let i = 0;
 
@@ -146,14 +167,20 @@ export let lineStarts: (Bytes) -> Array<I32> = fn(source) {
   starts
 };
 
-export let lineColumn: (Bytes, Array<I32>, I32) -> Tuple<I32, I32> = fn(source, starts, offset) {
+export let lineColumn = fn(source: Bytes, starts: Array<I32>, offset: I32): Tuple<I32, I32> {
   let low = 0;
-  let high = (starts.len() as I32) - 1;
+  let high = starts.len() - 1;
 
   while (low < high) {
     let middle = (low + high + 1) / 2;
-    if (starts[middle] <= offset) { low = middle; } else { high = middle - 1; }
+
+    if (starts[middle] <= offset) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
   }
+
   let column = 1;
   let i = starts[low];
 
@@ -164,20 +191,29 @@ export let lineColumn: (Bytes, Array<I32>, I32) -> Tuple<I32, I32> = fn(source, 
   (low + 1, column)
 };
 
-export let sourceDiagnostic: (Bytes, Bytes, I32, Bytes) -> Bytes = fn(path, source, offset, message) {
+let _padding = fn(source: Bytes, i: I32): Bytes {
+  if (Bytes.get_u8(source, i) == "\t".code) { return "\t"; }
+  let n = utf8CharLength(source, i);
+
+  match (n == 0 ? 1 : _codepointWidth(_codepoint(source, i, n))) {
+    2 => "  ",
+    1 => " ",
+    _ => "",
+  }
+};
+
+export let sourceDiagnostic = fn(path: Bytes, source: Bytes, offset: I32, message: Bytes): Bytes {
   let (line, column) = sourceLocation(source, offset);
   let start = _lineStart(source, offset);
   let end = offset;
   while ((end < source.len()) && (Bytes.get_u8(source, end) != "\n".code)) { end++; }
+
   let caret = "";
   let i = start;
 
   while (i < offset) {
-    let n = utf8CharLength(source, i);
-    let width = (n == 0) ? 1 : _codepointWidth(_codepoint(source, i, n));
-    caret += (Bytes.get_u8(source, i) == "\t".code) ? "\t" : (width == 2) ? "  " : (width == 1) ? " " : "";
-    i += (n == 0) ? 1 : n;
+    caret += _padding(source, i);
+    i += _step(source, i);
   }
-  path + ":" + Std.string(line) + ":" + Std.string(column) + ": " + message + "\n"
-    + Bytes.slice(source, start, end - start) + "\n" + caret + "^"
+  `${path}:${line}:${column}: ${message}\n${Bytes.slice(source, start, end - start)}\n${caret}^`
 };

@@ -6,6 +6,10 @@ load {
   unicode_get,
   unicode_from_codepoint,
   bytes_u8,
+  bytes_hex,
+  bytes_from_hex,
+  bytes_base64,
+  bytes_from_base64,
 } from std;
 
 export let utf8Validate: (Bytes) -> Bool = unicode_validate;
@@ -13,6 +17,26 @@ export let utf8Length: (Bytes) -> I32 = unicode_length;
 export let utf8CharAt: (Bytes, I32) -> I32 = unicode_get;
 export let utf8FromCodepoint: (I32) -> Bytes = unicode_from_codepoint;
 export let u8: (I32) -> Bytes = bytes_u8;
+
+let _fromHex: (Bytes) -> Dynamic = bytes_from_hex;
+let _base64: (Bytes, Bool) -> Bytes = bytes_base64;
+let _fromBase64: (Bytes, Bool) -> Dynamic = bytes_from_base64;
+
+export let toHex: (Bytes) -> Bytes = bytes_hex;
+
+export let fromHex = fn(text: Bytes): Bytes {
+  let data = _fromHex(text);
+  if (data == null) { throw "Bytes.fromHex: not hexadecimal"; };
+  data as Bytes
+};
+
+export let toBase64 = fn(data: Bytes, url: Bool = false): Bytes { _base64(data, url) };
+
+export let fromBase64 = fn(text: Bytes, url: Bool = false): Bytes {
+  let data = _fromBase64(text, url);
+  if (data == null) { throw "Bytes.fromBase64: not Base64"; };
+  data as Bytes
+};
 
 let _isSpace = fn(byte: I32): Bool { (byte == 32) || ((byte >= 9) && (byte <= 13)) };
 

@@ -2,16 +2,17 @@ package frontend.semantics;
 
 import type { BinaryOp } from frontend.syntax.Ast;
 import { BinaryOp } from frontend.syntax.Ast;
-import { indexOf } from support.Arrays;
 import frontend.hir.Hir as H;
 import { Kind, Op } from frontend.hir.Hir;
 import { equalValues } from frontend.semantics.Values;
 import { Binding } from frontend.semantics.ModuleScope;
-import { bufferHint, callFunction, defineFunction, enterSyntax, generateFunction, inTemplate, isNullaryVariant, needsBound, newBinding, syntaxChild, unknownType } from frontend.semantics.TypeCheck;
+import {
+  bufferHint, callFunction, defineFunction, enterSyntax, generateFunction, inTemplate,
+  isNullaryVariant, needsBound, newBinding, syntaxChild, unknownType,
+} from frontend.semantics.TypeCheck;
 import { E0500, coded } from support.Codes;
 
 let _deciding = Array.new<I32>(0);
-let _unsupported: (I32, Bool) -> I32 = fn(_ty, _printing) { -1 };
 
 let _fieldsUnsupported = fn(ty: I32, printing: Bool): I32 {
   _deciding.push(ty);
@@ -30,7 +31,8 @@ let _fieldsUnsupported = fn(ty: I32, printing: Bool): I32 {
   _deciding.pop();
   found
 };
-_unsupported = fn(ty, printing) {
+
+let _unsupported = fn(ty: I32, printing: Bool): I32 {
   match (H.kindOf(ty)) {
     Function => printing ? ty : -1,
     ByteBuffer => ty,
@@ -47,13 +49,16 @@ _unsupported = fn(ty, printing) {
       }
       found
     },
-    Enum, Applied, Record => indexOf(_deciding, ty) < 0 ? _fieldsUnsupported(ty, printing) : -1,
+    Enum, Applied, Record => _deciding.indexOf(ty) < 0 ? _fieldsUnsupported(ty, printing) : -1,
     Param => H.hasBounds(ty, printing ? H.BOUND_SHOW : H.BOUND_EQ) ? -1 : ty,
     _ => -1,
   }
 };
-export let unsupported: (I32, Bool) -> I32 = fn(ty, printing) { _unsupported(ty, printing) };
-let _boundHint = fn(bad: I32, printing: Bool): Bytes { H.isKind(bad, Kind.Param) ? "; it " + needsBound(bad, printing ? "Show" : "Eq") : "" };
+export let unsupported = fn(ty: I32, printing: Bool): I32 { _unsupported(ty, printing) };
+
+let _boundHint = fn(bad: I32, printing: Bool): Bytes {
+  H.isKind(bad, Kind.Param) ? `; it ${needsBound(bad, printing ? "Show" : "Eq")}` : ""
+};
 
 let _tagOnly = fn(ty: I32): Bool {
   let tag = 0;
@@ -65,20 +70,41 @@ let _tagOnly = fn(ty: I32): Bool {
   true
 };
 
-export let boolOf: (Bool) -> I32 = fn(value) { H.node(Op.Bool, H.TYPE_BOOL, value ? 1 : 0, 0, []) };
-export let i32Of: (I32) -> I32 = fn(value) { H.node(Op.I32, H.TYPE_I32, value, 0, []) };
+export let boolOf = fn(value: Bool): I32 { H.node(Op.Bool, H.TYPE_BOOL, value ? 1 : 0, 0, []) };
+export let i32Of = fn(value: I32): I32 { H.node(Op.I32, H.TYPE_I32, value, 0, []) };
 
-export let lengthTest: (I32, I32, Bool) -> I32 = fn(length, count, open) {
-  open ? H.node(Op.Gt, H.TYPE_BOOL, 0, 0, [length, i32Of(count - 1)]) : H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [length, i32Of(count)])
+export let lengthTest = fn(length: I32, count: I32, open: Bool): I32 {
+  if (open) {
+    H.opNode(Op.Gt, H.TYPE_BOOL, [length, i32Of(count - 1)])
+  } else {
+    H.opNode(Op.Eq, H.TYPE_BOOL, [length, i32Of(count)])
+  }
 };
-let _and = fn(left: I32, right: I32): I32 { H.node(Op.And, H.TYPE_BOOL, 0, 0, [left, right]) };
-let _not = fn(value: I32): I32 { H.node(Op.Not, H.TYPE_BOOL, 0, 0, [value]) };
-let _tag = fn(value: I32): I32 { H.node(Op.EnumTag, H.TYPE_I32, 0, 0, [value]) };
+let _and = fn(left: I32, right: I32): I32 { H.opNode(Op.And, H.TYPE_BOOL, [left, right]) };
+let _not = fn(value: I32): I32 { H.opNode(Op.Not, H.TYPE_BOOL, [value]) };
+let _tag = fn(value: I32): I32 { H.opNode(Op.EnumTag, H.TYPE_I32, [value]) };
 
 let _unlessEqual = fn(equal: I32): I32 {
-  H.node(Op.IfStatement, 0, 0, 0, [_not(equal), H.node(Op.Block, 0, 0, 0, [H.node(Op.Return, 0, 0, 0, [boolOf(false)])])])
+  let unequal = _not(equal);
+  let bail = H.opNode(Op.Block, 0, [H.opNode(Op.Return, 0, [boolOf(false)])]);
+  H.opNode(Op.IfStatement, 0, [unequal, bail])
 };
-export let expressionOf: (I32) -> I32 = fn(value) { H.node(Op.Expression, 0, 0, 0, [value]) };
+export let expressionOf = fn(value: I32): I32 { H.opNode(Op.Expression, 0, [value]) };
+
+export typedef IndexLoop = {
+  let index: I32;
+  let start: I32;
+  let more: I32;
+  let next: I32;
+};
+
+export let indexLoop = fn(length: () -> I32): IndexLoop {
+  let index = newBinding();
+  let start = H.declareBinding(Op.Let, index, "index", i32Of(0));
+  let more = H.opNode(Op.Lt, H.TYPE_BOOL, [H.local(index, H.TYPE_I32), length()]);
+  let sum = H.opNode(Op.Add, H.TYPE_I32, [H.local(index, H.TYPE_I32), i32Of(1)]);
+  { index, start, more, next: H.node(Op.Assign, H.TYPE_I32, index, 0, [sum]) }
+};
 
 let _tuples = fn(left: I32, right: I32, ty: I32): Array<I32> {
   let equal = -1;
@@ -86,7 +112,9 @@ let _tuples = fn(left: I32, right: I32, ty: I32): Array<I32> {
 
   while (i >= 0) {
     let field = H.memberType(ty, i);
-    let same = equalValues(BinaryOp.Equal, H.node(Op.TupleField, field, i, 0, [H.local(left, ty)]), H.node(Op.TupleField, field, i, 0, [H.local(right, ty)]));
+    let mine = H.node(Op.TupleField, field, i, 0, [H.local(left, ty)]);
+    let theirs = H.node(Op.TupleField, field, i, 0, [H.local(right, ty)]);
+    let same = equalValues(BinaryOp.Equal, mine, theirs);
     equal = equal < 0 ? same : _and(same, equal);
     i--;
   }
@@ -109,30 +137,43 @@ let _enums = fn(left: I32, right: I32, ty: I32): Array<I32> {
       let field = count - 1;
 
       while (field >= 0) {
-        let same = equalValues(BinaryOp.Equal, _field(left, ty, tag, field), _field(right, ty, tag, field));
+        let mine = _field(left, ty, tag, field);
+        let same = equalValues(BinaryOp.Equal, mine, _field(right, ty, tag, field));
         equal = equal < 0 ? same : _and(same, equal);
         field--;
       }
-      fields = H.node(Op.If, H.TYPE_BOOL, 0, 0, [H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(H.local(left, ty)), i32Of(tag)]), equal, fields]);
+      let chosen = H.opNode(Op.Eq, H.TYPE_BOOL, [_tag(H.local(left, ty)), i32Of(tag)]);
+      fields = H.opNode(Op.If, H.TYPE_BOOL, [chosen, equal, fields]);
     }
     tag--;
   }
-  [_and(H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(H.local(left, ty)), _tag(H.local(right, ty))]), fields)]
+  let tags = H.opNode(Op.Eq, H.TYPE_BOOL, [_tag(H.local(left, ty)), _tag(H.local(right, ty))]);
+  [_and(tags, fields)]
 };
 
 let _arrays = fn(left: I32, right: I32, ty: I32): Array<I32> {
   let length = newBinding();
-  let index = newBinding();
+  let loop = indexLoop(fn() { H.local(length, H.TYPE_I32) });
   let element = H.innerOf(ty);
-  let lengthOf = fn(binding: I32): I32 { H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [H.local(binding, ty)]) };
-  let at = fn(binding: I32): I32 { H.node(Op.ArrayGet, element, 0, 0, [H.local(binding, ty), H.local(index, H.TYPE_I32)]) };
-  let next = H.node(Op.Assign, H.TYPE_I32, index, 0, [H.node(Op.Add, H.TYPE_I32, 0, 0, [H.local(index, H.TYPE_I32), i32Of(1)])]);
-  let more = H.node(Op.Lt, H.TYPE_BOOL, 0, 0, [H.local(index, H.TYPE_I32), H.local(length, H.TYPE_I32)]);
+
+  let lengthOf = fn(binding: I32): I32 {
+    H.opNode(Op.ArrayLen, H.TYPE_I32, [H.local(binding, ty)])
+  };
+
+  let at = fn(binding: I32): I32 {
+    H.opNode(Op.ArrayGet, element, [H.local(binding, ty), H.local(loop.index, H.TYPE_I32)])
+  };
   [
     H.declareBinding(Op.Const, length, "length", lengthOf(left)),
-    _unlessEqual(H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [H.local(length, H.TYPE_I32), lengthOf(right)])),
-    H.declareBinding(Op.Let, index, "index", i32Of(0)),
-    H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, [_unlessEqual(equalValues(BinaryOp.Equal, at(left), at(right))), expressionOf(next)])]),
+    _unlessEqual(H.opNode(Op.Eq, H.TYPE_BOOL, [H.local(length, H.TYPE_I32), lengthOf(right)])),
+    loop.start,
+    H.opNode(Op.While, 0, [
+      loop.more,
+      H.opNode(Op.Block, 0, [
+        _unlessEqual(equalValues(BinaryOp.Equal, at(left), at(right))),
+        expressionOf(loop.next)
+      ])
+    ]),
     boolOf(true)
   ]
 };
@@ -141,14 +182,26 @@ let _lists = fn(left: I32, right: I32, ty: I32): Array<I32> {
   let a = newBinding();
   let b = newBinding();
   let element = H.innerOf(ty);
-  let isNil = fn(binding: I32): I32 { H.node(Op.ListIsNil, H.TYPE_BOOL, 0, 0, [H.local(binding, ty)]) };
-  let head = fn(binding: I32): I32 { H.node(Op.ListHead, element, 0, 0, [H.local(binding, ty)]) };
-  let advance = fn(binding: I32): I32 { expressionOf(H.node(Op.Assign, ty, binding, 0, [H.node(Op.ListTail, ty, 0, 0, [H.local(binding, ty)])])) };
-  let same = H.node(Op.And, H.TYPE_BOOL, 0, 0, [_not(isNil(b)), equalValues(BinaryOp.Equal, head(a), head(b))]);
+
+  let isNil = fn(binding: I32): I32 {
+    H.opNode(Op.ListIsNil, H.TYPE_BOOL, [H.local(binding, ty)])
+  };
+  let head = fn(binding: I32): I32 { H.opNode(Op.ListHead, element, [H.local(binding, ty)]) };
+
+  let advance = fn(binding: I32): I32 {
+    let tail = H.opNode(Op.ListTail, ty, [H.local(binding, ty)]);
+    expressionOf(H.node(Op.Assign, ty, binding, 0, [tail]))
+  };
+  let more = _not(isNil(b));
+  let heads = equalValues(BinaryOp.Equal, head(a), head(b));
+  let same = H.opNode(Op.And, H.TYPE_BOOL, [more, heads]);
   [
     H.declareBinding(Op.Let, a, "left", H.local(left, ty)),
     H.declareBinding(Op.Let, b, "right", H.local(right, ty)),
-    H.node(Op.While, 0, 0, 0, [_not(isNil(a)), H.node(Op.Block, 0, 0, 0, [_unlessEqual(same), advance(a), advance(b)])]),
+    H.opNode(Op.While, 0, [
+      _not(isNil(a)),
+      H.opNode(Op.Block, 0, [_unlessEqual(same), advance(a), advance(b)])
+    ]),
     isNil(b)
   ]
 };
@@ -158,7 +211,7 @@ let _equalFunctions = Array.new<I32>(0);
 let _stringTypes = Array.new<I32>(0);
 let _stringFunctions = Array.new<I32>(0);
 
-export let resetDerived: () -> Bool = fn() {
+export let resetDerived = fn(): Bool {
   _equalTypes = Array.new<I32>(0);
   _equalFunctions = Array.new<I32>(0);
   _stringTypes = Array.new<I32>(0);
@@ -166,9 +219,17 @@ export let resetDerived: () -> Bool = fn() {
   true
 };
 
-let _derived = fn(types: Array<I32>, functions: Array<I32>, name: Bytes, params: Array<Bytes>, ty: I32, result: I32, body: (Array<I32>, I32) -> Array<I32>): I32 {
+let _derived = fn(
+  types: Array<I32>,
+  functions: Array<I32>,
+  name: Bytes,
+  params: Array<Bytes>,
+  ty: I32,
+  result: I32,
+  body: (Array<I32>, I32) -> Array<I32>
+): I32 {
   if (H.isOpen(ty)) { throw unknownType("this value"); }
-  let found = indexOf(types, ty);
+  let found = types.indexOf(ty);
   if (found >= 0) { return functions[found]; }
   let paramTypes = Array.new<I32>(0);
   let bindings = Array.new<I32>(0);
@@ -200,26 +261,42 @@ let _equalBody = fn(params: Array<I32>, ty: I32): Array<I32> {
   }
 };
 
-export let structuralEquality: (BinaryOp, I32, I32) -> I32 = fn(op, left, right) {
+export let structuralEquality = fn(op: BinaryOp, left: I32, right: I32): I32 {
   let ty = H.defaultIntegers(H.typeOf(left));
   let bad = _unsupported(ty, false);
-  if (bad >= 0) { throw coded(E0500, "operator == is not defined for " + H.typeName(ty) + ", which holds " + H.typeName(bad) + _boundHint(bad, false)); }
-  let equal = inTemplate() ? H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [left, right])
-    : H.isKind(ty, Kind.Enum) && _tagOnly(ty) ? H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(left), _tag(right)])
-    : callFunction(Binding.Function(_derived(_equalTypes, _equalFunctions, "equal", ["left", "right"], ty, H.TYPE_BOOL, _equalBody)), "equal", [left, right]);
+
+  if (bad >= 0) {
+    let undefined = `operator == is not defined for ${H.typeName(ty)}`;
+    throw coded(E0500, `${undefined}, which holds ${H.typeName(bad)}${_boundHint(bad, false)}`);
+  }
+
+  let equal = if (inTemplate()) {
+    H.opNode(Op.Eq, H.TYPE_BOOL, [left, right])
+  } else if (H.isKind(ty, Kind.Enum) && _tagOnly(ty)) {
+    H.opNode(Op.Eq, H.TYPE_BOOL, [_tag(left), _tag(right)])
+  } else {
+    let derived = _derived(
+      _equalTypes, _equalFunctions, "equal", ["left", "right"], ty, H.TYPE_BOOL, _equalBody
+    );
+    callFunction(Binding.Function(derived), "equal", [left, right])
+  };
   match (op) { NotEqual => _not(equal), _ => equal }
 };
 
-export let bytesOf: (Bytes) -> I32 = fn(value) { H.node(Op.Bytes, H.TYPE_BYTES, H.bytesId(value), 0, []) };
-export let concatOf: (I32, I32) -> I32 = fn(left, right) { H.node(Op.BytesConcat, H.TYPE_BYTES, 0, 0, [left, right]) };
+export let bytesOf = fn(value: Bytes): I32 {
+  H.node(Op.Bytes, H.TYPE_BYTES, H.bytesId(value), 0, [])
+};
 
-export let joinOf: (Array<I32>) -> I32 = fn(parts) {
+export let concatOf = fn(left: I32, right: I32): I32 {
+  H.opNode(Op.BytesConcat, H.TYPE_BYTES, [left, right])
+};
+
+export let joinOf = fn(parts: Array<I32>): I32 {
   if (parts.len() == 0) { return bytesOf(""); }
   if (parts.len() == 1) { return parts[0]; }
   if (parts.len() == 2) { return concatOf(parts[0], parts[1]); }
-  H.node(Op.BytesConcatMany, H.TYPE_BYTES, 0, 0, parts)
+  H.opNode(Op.BytesConcatMany, H.TYPE_BYTES, parts)
 };
-let _shown: (I32, Bool) -> I32 = fn(_value, _quoted) { -1 };
 
 let _listed = fn(open: Bytes, names: Array<Bytes>, texts: Array<I32>, close: Bytes): I32 {
   let parts = Array.new<I32>(0);
@@ -227,11 +304,11 @@ let _listed = fn(open: Bytes, names: Array<Bytes>, texts: Array<I32>, close: Byt
 
   while (i < texts.len()) {
     let lead = i == 0 ? open : ", ";
-    parts.push(bytesOf(names.len() > 0 ? lead + names[i] + ": " : lead));
+    parts.push(bytesOf(names.len() > 0 ? `${lead}${names[i]}: ` : lead));
     parts.push(texts[i]);
     i++;
   }
-  parts.push(bytesOf(texts.len() == 0 ? open + close : close));
+  parts.push(bytesOf(texts.len() == 0 ? `${open}${close}` : close));
   joinOf(parts)
 };
 
@@ -243,13 +320,19 @@ let _tupleText = fn(value: I32, ty: I32): Array<I32> {
 
   while (i < H.memberCount(ty)) {
     if (record) { names.push(H.fieldName(ty, 0, i)); }
-    texts.push(_shown(H.node(Op.TupleField, H.memberType(ty, i), i, 0, [H.local(value, ty)]), true));
+    let field = H.node(Op.TupleField, H.memberType(ty, i), i, 0, [H.local(value, ty)]);
+    texts.push(_shown(field, true));
     i++;
   }
-  [record ? _listed("{", names, texts, "}") : _listed("(", names, texts, texts.len() == 1 ? ",)" : ")")]
+
+  if (record) {
+    [_listed("{", names, texts, "}")]
+  } else {
+    [_listed("(", names, texts, texts.len() == 1 ? ",)" : ")")]
+  }
 };
 
-let _variantName = fn(ty: I32, tag: I32): Bytes { H.enumName(ty) + "." + H.variantName(ty, tag) };
+let _variantName = fn(ty: I32, tag: I32): Bytes { `${H.enumName(ty)}.${H.variantName(ty, tag)}` };
 
 let _variantText = fn(value: I32, ty: I32, tag: I32): I32 {
   let name = _variantName(ty, tag);
@@ -261,7 +344,7 @@ let _variantText = fn(value: I32, ty: I32, tag: I32): I32 {
     texts.push(_shown(_field(value, ty, tag, field), true));
     field++;
   }
-  _listed(name + "(", Array.new<Bytes>(0), texts, ")")
+  _listed(`${name}(`, Array.new<Bytes>(0), texts, ")")
 };
 
 let _enumText = fn(value: I32, ty: I32): Array<I32> {
@@ -270,73 +353,77 @@ let _enumText = fn(value: I32, ty: I32): Array<I32> {
 
   while (tag > 0) {
     tag--;
-    let same = H.node(Op.Eq, H.TYPE_BOOL, 0, 0, [_tag(H.local(value, ty)), i32Of(tag)]);
-    text = H.node(Op.If, H.TYPE_BYTES, 0, 0, [same, _variantText(value, ty, tag), text]);
+    let same = H.opNode(Op.Eq, H.TYPE_BOOL, [_tag(H.local(value, ty)), i32Of(tag)]);
+    text = H.opNode(Op.If, H.TYPE_BYTES, [same, _variantText(value, ty, tag), text]);
   }
   [text]
 };
 
 let _stackOf = fn(parts: I32): I32 { H.local(parts, H.arrayType(H.TYPE_BYTES)) };
-let _countOf = fn(parts: I32): I32 { H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [_stackOf(parts)]) };
+let _countOf = fn(parts: I32): I32 { H.opNode(Op.ArrayLen, H.TYPE_I32, [_stackOf(parts)]) };
 
 let _fromTop = fn(parts: I32, depth: I32, length: Bool): I32 {
-  let text = H.node(Op.ArrayGet, H.TYPE_BYTES, 0, 0, [_stackOf(parts), H.node(Op.Sub, H.TYPE_I32, 0, 0, [_countOf(parts), i32Of(depth)])]);
-  length ? H.node(Op.BytesLen, H.TYPE_I32, 0, 0, [text]) : text
+  let stack = _stackOf(parts);
+  let index = H.opNode(Op.Sub, H.TYPE_I32, [_countOf(parts), i32Of(depth)]);
+  let text = H.opNode(Op.ArrayGet, H.TYPE_BYTES, [stack, index]);
+  length ? H.opNode(Op.BytesLen, H.TYPE_I32, [text]) : text
 };
 
 let _merging = fn(parts: I32, condition: ?I32): I32 {
-  let several = H.node(Op.Gt, H.TYPE_BOOL, 0, 0, [_countOf(parts), i32Of(1)]);
+  let several = H.opNode(Op.Gt, H.TYPE_BOOL, [_countOf(parts), i32Of(1)]);
   let merged = concatOf(_fromTop(parts, 2, false), _fromTop(parts, 1, false));
-  H.node(Op.While, 0, 0, 0, [
-    condition == null ? several : H.node(Op.And, H.TYPE_BOOL, 0, 0, [several, condition]),
-    H.node(Op.Block, 0, 0, 0, [
-      expressionOf(H.node(Op.ArraySet, H.TYPE_BYTES, 0, 0, [_stackOf(parts), H.node(Op.Sub, H.TYPE_I32, 0, 0, [_countOf(parts), i32Of(2)]), merged])),
-      expressionOf(H.node(Op.ArrayPop, H.TYPE_BYTES, 0, 0, [_stackOf(parts)]))
-    ])
-  ])
+  let test = condition == null ? several : H.opNode(Op.And, H.TYPE_BOOL, [several, condition]);
+  let stack = _stackOf(parts);
+  let below = H.opNode(Op.Sub, H.TYPE_I32, [_countOf(parts), i32Of(2)]);
+  let merge = expressionOf(H.opNode(Op.ArraySet, H.TYPE_BYTES, [stack, below, merged]));
+  let pop = expressionOf(H.opNode(Op.ArrayPop, H.TYPE_BYTES, [_stackOf(parts)]));
+  H.opNode(Op.While, 0, [test, H.opNode(Op.Block, 0, [merge, pop])])
 };
 
 let _bracketed = fn(setup: I32, more: I32, element: I32, next: I32): Array<I32> {
   let parts = newBinding();
   let separator = newBinding();
-  let twice = H.node(Op.Shl, H.TYPE_I32, 0, 0, [_fromTop(parts, 1, true), i32Of(1)]);
-  let shorter = H.node(Op.Lt, H.TYPE_BOOL, 0, 0, [twice, _fromTop(parts, 2, true)]);
+  let twice = H.opNode(Op.Shl, H.TYPE_I32, [_fromTop(parts, 1, true), i32Of(1)]);
+  let shorter = H.opNode(Op.Lt, H.TYPE_BOOL, [twice, _fromTop(parts, 2, true)]);
+  let stack = _stackOf(parts);
+  let text = concatOf(H.local(separator, H.TYPE_BYTES), _shown(element, true));
   let body = [
-    expressionOf(H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [_stackOf(parts), concatOf(H.local(separator, H.TYPE_BYTES), _shown(element, true))])),
+    expressionOf(H.opNode(Op.ArrayPush, H.TYPE_I32, [stack, text])),
     expressionOf(H.node(Op.Assign, H.TYPE_BYTES, separator, 0, [bytesOf(", ")])),
     _merging(parts, _not(shorter)),
     expressionOf(next)
   ];
+  let opened = H.opNode(Op.ArrayLiteral, H.arrayType(H.TYPE_BYTES), [bytesOf("[")]);
   [
     setup,
-    H.declareBinding(Op.Let, parts, "parts", H.node(Op.ArrayLiteral, H.arrayType(H.TYPE_BYTES), 0, 0, [bytesOf("[")])),
+    H.declareBinding(Op.Let, parts, "parts", opened),
     H.declareBinding(Op.Let, separator, "separator", bytesOf("")),
-    H.node(Op.While, 0, 0, 0, [more, H.node(Op.Block, 0, 0, 0, body)]),
-    expressionOf(H.node(Op.ArrayPush, H.TYPE_I32, 0, 0, [_stackOf(parts), bytesOf("]")])),
+    H.opNode(Op.While, 0, [more, H.opNode(Op.Block, 0, body)]),
+    expressionOf(H.opNode(Op.ArrayPush, H.TYPE_I32, [_stackOf(parts), bytesOf("]")])),
     _merging(parts, null),
     _fromTop(parts, 1, false)
   ]
 };
 
 let _arrayText = fn(value: I32, ty: I32): Array<I32> {
-  let index = newBinding();
-  let more = H.node(Op.Lt, H.TYPE_BOOL, 0, 0, [H.local(index, H.TYPE_I32), H.node(Op.ArrayLen, H.TYPE_I32, 0, 0, [H.local(value, ty)])]);
-  let element = H.node(Op.ArrayGet, H.innerOf(ty), 0, 0, [H.local(value, ty), H.local(index, H.TYPE_I32)]);
-  let next = H.node(Op.Assign, H.TYPE_I32, index, 0, [H.node(Op.Add, H.TYPE_I32, 0, 0, [H.local(index, H.TYPE_I32), i32Of(1)])]);
-  _bracketed(H.declareBinding(Op.Let, index, "index", i32Of(0)), more, element, next)
+  let loop = indexLoop(fn() { H.opNode(Op.ArrayLen, H.TYPE_I32, [H.local(value, ty)]) });
+  let at = H.local(loop.index, H.TYPE_I32);
+  let element = H.opNode(Op.ArrayGet, H.innerOf(ty), [H.local(value, ty), at]);
+  _bracketed(loop.start, loop.more, element, loop.next)
 };
 
 let _listText = fn(value: I32, ty: I32): Array<I32> {
   let rest = newBinding();
-  let more = _not(H.node(Op.ListIsNil, H.TYPE_BOOL, 0, 0, [H.local(rest, ty)]));
-  let head = H.node(Op.ListHead, H.innerOf(ty), 0, 0, [H.local(rest, ty)]);
-  let next = H.node(Op.Assign, ty, rest, 0, [H.node(Op.ListTail, ty, 0, 0, [H.local(rest, ty)])]);
+  let more = _not(H.opNode(Op.ListIsNil, H.TYPE_BOOL, [H.local(rest, ty)]));
+  let head = H.opNode(Op.ListHead, H.innerOf(ty), [H.local(rest, ty)]);
+  let next = H.node(Op.Assign, ty, rest, 0, [H.opNode(Op.ListTail, ty, [H.local(rest, ty)])]);
   _bracketed(H.declareBinding(Op.Let, rest, "rest", H.local(value, ty)), more, head, next)
 };
 
 let _nullableText = fn(value: I32, ty: I32): Array<I32> {
-  let present = _shown(H.node(Op.Unwrap, H.innerOf(ty), 0, 0, [H.local(value, ty)]), true);
-  [H.node(Op.If, H.TYPE_BYTES, 0, 0, [H.node(Op.IsNull, H.TYPE_BOOL, 0, 0, [H.local(value, ty)]), bytesOf("null"), present])]
+  let present = _shown(H.opNode(Op.Unwrap, H.innerOf(ty), [H.local(value, ty)]), true);
+  let missing = H.opNode(Op.IsNull, H.TYPE_BOOL, [H.local(value, ty)]);
+  [H.opNode(Op.If, H.TYPE_BYTES, [missing, bytesOf("null"), present])]
 };
 
 let _stringBody = fn(params: Array<I32>, ty: I32): Array<I32> {
@@ -349,7 +436,7 @@ let _stringBody = fn(params: Array<I32>, ty: I32): Array<I32> {
   }
 };
 
-_shown = fn(value, quoted) {
+let _shown = fn(value: I32, quoted: Bool): I32 {
   let present = H.typeOf(value);
   let ty = H.isInteger(present) ? present : H.defaultIntegers(present);
   if (isNullaryVariant(value)) { return bytesOf(_variantName(ty, H.valueOf(value))); }
@@ -357,25 +444,42 @@ _shown = fn(value, quoted) {
   match (H.kindOf(ty)) {
     Bytes => quoted ? H.callStd("quote", [H.TYPE_BYTES], H.TYPE_BYTES, [value]) : value,
     Atom when (quoted) => concatOf(bytesOf(":"), _shown(value, false)),
-    Bool, I32, I64, Atom, I8, I16, U8, U16, U32, F64, F32, F16, Var => H.callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [value])]),
+    Bool, I32, I64, Atom, I8, I16, U8, U16, U32, F64, F32, F16, Var => {
+      let boxed = H.opNode(Op.ToDynamic, H.TYPE_DYNAMIC, [value]);
+      H.callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [boxed])
+    },
     U64 => H.callStd("u64_string", [H.TYPE_U64], H.TYPE_BYTES, [value]),
     Dynamic => H.callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [value]),
-    Object => H.callStd("object_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [H.node(Op.ToDynamic, H.TYPE_DYNAMIC, 0, 0, [value])]),
-    Null when (H.innerOf(ty) < 0) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("null")]),
-    _ when (inTemplate()) => H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("")]),
-    _ => callFunction(Binding.Function(_derived(_stringTypes, _stringFunctions, "string", ["value"], ty, H.TYPE_BYTES, _stringBody)), "string", [value]),
+    Object => {
+      let boxed = H.opNode(Op.ToDynamic, H.TYPE_DYNAMIC, [value]);
+      H.callStd("object_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [boxed])
+    },
+    Null when (H.innerOf(ty) < 0) => {
+      H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("null")])
+    },
+    _ when (inTemplate()) => {
+      H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("")])
+    },
+    _ => {
+      let derived = _derived(
+        _stringTypes, _stringFunctions, "string", ["value"], ty, H.TYPE_BYTES, _stringBody
+      );
+      callFunction(Binding.Function(derived), "string", [value])
+    },
   }
 };
 
-export let printed: (I32, Bytes, I32) -> I32 = fn(value, what, at) {
+export let printed = fn(value: I32, what: Bytes, at: I32): I32 {
   let ty = H.typeOf(value);
   let bad = _unsupported(ty, true);
 
   if (bad >= 0) {
     if (at >= 0) { enterSyntax(syntaxChild(at)); }
-    throw coded(E0500, what + " cannot print " + H.typeName(ty) + (bad == ty ? "" : ", which holds " + H.typeName(bad)) + bufferHint(bad) + _boundHint(bad, true));
+    let shown = `${what} cannot print ${H.typeName(ty)}`;
+    let held = bad == ty ? "" : `, which holds ${H.typeName(bad)}`;
+    throw coded(E0500, `${shown}${held}${bufferHint(bad)}${_boundHint(bad, true)}`);
   }
   _shown(value, false)
 };
 
-export let literalOf: (I32) -> I32 = fn(value) { _shown(value, true) };
+export let literalOf = fn(value: I32): I32 { _shown(value, true) };

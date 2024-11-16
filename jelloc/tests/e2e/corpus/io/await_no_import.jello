@@ -1,8 +1,0 @@
-// error: 3:1: await f desugars to awaitFuture(loop, f), which must be in scope
-// pending: std.io.EventLoop is not ported
-import { create, registerPoll } from std.io.EventLoop;
-import { pending } from std.concurrency.Future;
-let loop = create();
-let f = pending();
-await f;
-"ok"
