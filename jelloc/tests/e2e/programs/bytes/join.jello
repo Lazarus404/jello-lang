@@ -1,0 +1,15 @@
+// expect: a, bb, , ccc|abbccc||solo||xy|p.q
+/* `join` copies each part once into Bytes sized up front, whether called as a
+ * method, through Array or on a list. */
+let parts = ["a", "bb", "", "ccc"];
+let none = Array.new<Bytes>(0);
+let listed = List.cons("p", List.cons("q", List.nil<Bytes>()));
+[
+  parts.join(", "),
+  Array.join(parts, ""),
+  none.join("-"),
+  ["solo"].join("-"),
+  Array.join([], "+"),
+  ["x", "y"].join(""),
+  listed.join("."),
+].join("|")

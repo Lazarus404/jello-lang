@@ -245,6 +245,7 @@ export enum Expr {
   Quote(kind: QuoteKind, body: QuoteBody);
   Unquote(value: Expr);
   Interpolation(texts: Array<Bytes>, holes: Array<Expr>);
+  Coalesce(value: Expr, fallback: Expr);
 }
 
 export enum ImportKind {
@@ -330,6 +331,7 @@ export enum Stmt {
   Throw(value: Expr);
   Return(value: ?Expr);
   Expression(value: Expr);
+  For(index: ?Pattern, item: Pattern, items: Expr, body: Array<Stmt>);
 }
 
 export enum Package {

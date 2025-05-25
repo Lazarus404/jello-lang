@@ -1,7 +1,6 @@
 package std.core;
 
 import { sort as sortArray } from std.core.Array;
-import { join as joinBytes } from std.core.Bytes;
 
 export let isEmpty<T> = fn(values: List<T>): Bool { List.is_nil(values) };
 
@@ -197,7 +196,7 @@ export let toArray<T> = fn(values: List<T>): Array<T> {
   out
 };
 
-export let join = fn(parts: List<Bytes>, separator: Bytes): Bytes { joinBytes(toArray(parts), separator) };
+export let join = fn(parts: List<Bytes>, separator: Bytes): Bytes { toArray(parts).join(separator) };
 
 export let concat<T> = fn(values: List<T>, more: List<T>): List<T> {
   if (List.is_nil(more)) { return values; }

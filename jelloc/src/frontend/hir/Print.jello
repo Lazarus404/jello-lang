@@ -7,7 +7,7 @@ import {
   spanPathOf, spanStartOf, typeArgCount, typeOf, useHir, valueOf, variantName, wideValueOf,
 } from frontend.hir.Hir;
 import { internalError } from support.Internal;
-import { bytesLiteral, concatAll } from support.Text;
+import { bytesLiteral } from support.Text;
 
 let _withSpans = false;
 
@@ -33,7 +33,7 @@ let _children = fn(parent: I32, start: I32, end: I32, indent: Bytes): Bytes {
     output.push(_expr(childOf(parent, i), `${indent}  `));
     i++;
   }
-  concatAll(output)
+  output.join("")
 };
 
 let _binding = fn(id: I32, indent: Bytes): Bytes {
@@ -56,6 +56,10 @@ let _operation = fn(name: Bytes, id: I32, indent: Bytes): Bytes {
 
 let _section = fn(name: Bytes, id: I32, index: I32, indent: Bytes): Bytes {
   `${indent}  ${name}\n${_expr(childOf(id, index), indent + "    ")}`
+};
+
+let _blockSection = fn(name: Bytes, id: I32, index: I32, indent: Bytes): Bytes {
+  `${indent}  ${name}\n${_statements(childOf(id, index), indent + "    ")}`
 };
 
 let _key = fn(id: I32): Bytes { valueOf(id) < 0 ? "" : ` :${bytesOf(valueOf(id))}` };
@@ -155,6 +159,7 @@ let _expr = fn(id: I32, indent: Bytes): Bytes {
     BytesGet => _operation("bytes.get_u8", id, indent),
     BytesSlice => _operation("bytes.slice", id, indent),
     BytesConcat => _operation("bytes.concat", id, indent),
+    BytesJoin => _operation("bytes.join", id, indent),
     BytesConcatMany => _operation("bytes.concat_many", id, indent),
     BytesEq => _operation("bytes.eq", id, indent),
     Tuple => _operation("tuple", id, indent),
@@ -202,7 +207,7 @@ let _statement = fn(id: I32, indent: Bytes): Bytes {
         output.push(_binding(childOf(id, i), indent));
         i++;
       }
-      concatAll(output)
+      output.join("")
     },
     Expression => `${indent}expression${_at(id)}\n${_expr(childOf(id, 0), deeper)}`,
     Block => `${indent}block${_at(id)}\n${_statements(id, deeper)}`,
@@ -212,21 +217,24 @@ let _statement = fn(id: I32, indent: Bytes): Bytes {
     Continue => `${indent}continue${_at(id)}\n`,
     While => {
       let keyword = auxOf(id) == 0 ? "while" : "do-while";
+      let step = childCount(id) < 3 ? "" : _blockSection("step", id, 2, indent);
       `${indent}${keyword}${_at(id)}\n`
         + _section("condition", id, 0, indent)
-        + `${indent}  body\n${_statements(childOf(id, 1), indent + "    ")}`
+        + _blockSection("body", id, 1, indent)
+        + step
     },
     IfStatement => {
       let output = `${indent}if${_at(id)}\n`
         + _section("condition", id, 0, indent)
-        + `${indent}  then\n${_statements(childOf(id, 1), indent + "    ")}`;
+        + _blockSection("then", id, 1, indent);
       if (childCount(id) < 3) { return output; }
 
       `${output}${indent}  else\n${_otherwise(id, indent)}`
     },
     TryStatement => {
-      `${indent}try${_at(id)}\n${indent}  body\n${_statements(childOf(id, 0), indent + "    ")}`
-        + `${indent}  ${_catch(id)}\n${_statements(childOf(id, 1), indent + "    ")}`
+      `${indent}try${_at(id)}\n`
+        + _blockSection("body", id, 0, indent)
+        + _blockSection(_catch(id), id, 1, indent)
     },
     _ => {
       internalError("invalid HIR statement op");
@@ -243,7 +251,7 @@ let _statements = fn(id: I32, indent: Bytes): Bytes {
     output.push(_statement(childOf(id, i), indent));
     i++;
   }
-  concatAll(output)
+  output.join("")
 };
 
 let _function = fn(id: I32, functionId: I32): Bytes {
@@ -278,7 +286,7 @@ let _print = fn(program: Hir): Bytes {
   let body = lastChild(root);
   output.push(_statements(body, "  "));
   output.push(_expr(lastChild(body), "  "));
-  concatAll(output)
+  output.join("")
 };
 
 export let printHir = fn(program: Hir): Bytes {

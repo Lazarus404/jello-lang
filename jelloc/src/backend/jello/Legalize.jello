@@ -28,11 +28,9 @@ let _instruction = fn(insn: Instruction) {
   match (insn.op) {
     TupleNew => {
       _emit(Op.StructNew, dst, Array.new<I32>(0), 0);
-      let i = 0;
 
-      while (i < args.len()) {
-        _emit(Op.StructSet, -1, [dst, args[i]], i);
-        i++;
+      for (i, arg in args) {
+        _emit(Op.StructSet, -1, [dst, arg], i);
       }
       null
     },
@@ -50,12 +48,9 @@ let _instruction = fn(insn: Instruction) {
 
 let _block = fn(block: BasicBlock): BasicBlock {
   _out = Array.new<Instruction>(0);
-  let instructions = block.instructions;
-  let i = 0;
 
-  while (i < instructions.len()) {
-    _instruction(instructions[i]);
-    i++;
+  for (insn in block.instructions) {
+    _instruction(insn);
   }
 
   let terminator = block.terminator;
@@ -94,24 +89,15 @@ let _count = fn(params: Array<I32>, blocks: Array<BasicBlock>) {
     i++;
   }
 
-  i = 0;
-
-  while (i < params.len()) {
-    _defs[params[i]]++;
-    i++;
+  for (param in params) {
+    _defs[param]++;
   }
 
-  i = 0;
-
-  while (i < blocks.len()) {
-    let block = blocks[i];
+  for (block in blocks) {
     let handler = block.handler;
     if (handler != null) { _defs[handler.payload]++; }
-    let instructions = block.instructions;
-    let j = 0;
 
-    while (j < instructions.len()) {
-      let insn = instructions[j];
+    for (insn in block.instructions) {
       let dst = insn.dst;
 
       if (dst >= 0) {
@@ -126,18 +112,13 @@ let _count = fn(params: Array<I32>, blocks: Array<BasicBlock>) {
           _ => null,
         };
       }
-      let args = insn.args;
-      let a = 0;
 
-      while (a < args.len()) {
-        _uses[args[a]]++;
-        a++;
+      for (arg in insn.args) {
+        _uses[arg]++;
       }
-      j++;
     }
     let used = terminatorRead(block.terminator);
     if (used >= 0) { _uses[used]++; }
-    i++;
   }
   null
 };
@@ -180,12 +161,8 @@ let _withImmediates = fn(block: BasicBlock): BasicBlock {
     let immediate = _immediate(insn);
 
     if (immediate != null) {
-      let args = insn.args;
-      let a = 0;
-
-      while (a < args.len()) {
-        _uses[args[a]]--;
-        a++;
+      for (arg in insn.args) {
+        _uses[arg]--;
       }
       _uses[immediate.args[0]]++;
       insn = immediate;
@@ -205,15 +182,11 @@ let _negatesOnly = fn(out: Array<Instruction>, condition: I32): Bool {
 };
 
 let _withoutDeadCode = fn(block: BasicBlock): BasicBlock {
-  let instructions = block.instructions;
   let out = Array.new<Instruction>(0);
-  let j = 0;
 
-  while (j < instructions.len()) {
-    let insn = instructions[j];
+  for (insn in block.instructions) {
     let dead = match (insn.op) { ConstI32 => _uses[insn.dst] == 0, _ => false };
     if (!dead) { out.push(insn); }
-    j++;
   }
 
   let terminator = block.terminator;
@@ -230,43 +203,13 @@ let _withoutDeadCode = fn(block: BasicBlock): BasicBlock {
 
 let _select = fn(params: Array<I32>, blocks: Array<BasicBlock>): Array<BasicBlock> {
   _count(params, blocks);
-
-  let folded = Array.new<BasicBlock>(0);
-  let i = 0;
-
-  while (i < blocks.len()) {
-    folded.push(_withImmediates(blocks[i]));
-    i++;
-  }
-
-  let selected = Array.new<BasicBlock>(0);
-  i = 0;
-
-  while (i < folded.len()) {
-    selected.push(_withoutDeadCode(folded[i]));
-    i++;
-  }
-  selected
+  blocks.map(_withImmediates).map(_withoutDeadCode)
 };
 
 let _function = fn(function: Function): Function {
-  _registers = Array.new<ValueType>(0);
-  let registers = function.registers;
-  let r = 0;
+  _registers = function.registers.copy();
 
-  while (r < registers.len()) {
-    _registers.push(registers[r]);
-    r++;
-  }
-
-  let blocks = function.blocks;
-  let legal = Array.new<BasicBlock>(0);
-  let i = 0;
-
-  while (i < blocks.len()) {
-    legal.push(_block(blocks[i]));
-    i++;
-  }
+  let legal = function.blocks.map(_block);
 
   {
     ...function,

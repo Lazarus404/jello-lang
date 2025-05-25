@@ -5,10 +5,11 @@
 
 import type { Test } from std.testing;
 import std.testing as T;
-import { join, split, startsWith } from std.core.Bytes;
+import { contains, join, split, startsWith } from std.core.Bytes;
 import { exists, makeDirs, readText, writeText } from std.io.File;
 import { dirname } from std.io.Path;
 import { result } from std.io.Command;
+import { replace } from std.core.RegExp;
 import degust.Golden as G;
 import { NONE, badCommandLines, concat, finish, fresh, has, jelloc, jellocIn, startJelloc, startVm, stdDir, withStd } from support.Run;
 import { jloTool, vmCommand, vmEnv } from degust.Programs;
@@ -103,19 +104,71 @@ let testDumps = fn(t: Test) {
   has(t, _dump(t, [_P + "/bytes/escapes.jello", "--ir"]), escapes);
 };
 
-// A function of a type's extension module is one direct call however it is
-// named: as a method, through the type, or imported. The first two load
-// std.core.Array, or std.core.List, only once checking needs it, and the IR
-// is the same.
+/* A function of a type's extension module is one direct call however it is
+ * named: as a method, through the type, or imported. A method name can load
+ * the extension modules of other types that export it too, `map` both
+ * std.core.Array's and std.core.List's, which numbers the functions apart but
+ * leaves the code the same. */
 let testCallsAnExtensionFunctionEachWay = fn(t: Test) {
   let dir = _CLI + "/extension";
-  let called = _dump(t, withStd([dir + "/method.jello", "--ir"]));
-  has(t, called, "= call @");
-  T.equal(t, _dump(t, withStd([dir + "/static.jello", "--ir"])), called);
-  T.equal(t, _dump(t, withStd([dir + "/imported.jello", "--ir"])), called);
-  let listed = _dump(t, withStd([dir + "/list_method.jello", "--ir"]));
-  has(t, listed, "= call @");
-  T.equal(t, _dump(t, withStd([dir + "/list_static.jello", "--ir"])), listed);
+
+  let ir = fn(name: Bytes): Bytes {
+    replace(_dump(t, withStd([`${dir}/${name}.jello`, "--ir"])), ~r/@[0-9]+/, "@")
+  };
+  let called = ir("method");
+  has(t, called, "= call @(");
+  T.equal(t, ir("static"), called);
+  T.equal(t, ir("imported"), called);
+  let listed = ir("list_method");
+  has(t, listed, "= call @(");
+  T.equal(t, ir("list_static"), listed);
+};
+
+// A function with an annotated type compiles as the same function unannotated.
+let testCompilesAnAnnotatedFunctionDirectly = fn(t: Test) {
+  let ir = fn(name: Bytes): Bytes { _dump(t, [`${_CLI}/annotated/${name}.jello`, "--ir"]) };
+  let annotated = ir("annotated");
+  has(t, annotated, "= call @");
+  T.equal(t, annotated, ir("plain"));
+};
+
+// A `const` of a constant costs no global read: `LIMIT`, global g0, reads as 10.
+let testFoldsConstants = fn(t: Test) {
+  let ir = _dump(t, [`${_CLI}/const/fold.jello`, "--ir"]);
+  has(t, ir, "= i32 10");
+  T.equal(t, contains(ir, "global.get g0"), false);
+};
+
+// A literal passed to `map` is called directly by a copy of `map` made for it, and inlined
+// there: the one indirect call left is the original `map`'s, which nothing calls now.
+let testCallsAPassedLiteralDirectly = fn(t: Test) {
+  let listing = _dump(t, withStd([`${_CLI}/specialise/map.jello`, "--jlo"]));
+  T.equal(t, split(listing, "call %").len(), 2);
+  T.equal(t, split(listing, "mul.wrap.i32").len(), 3);
+};
+
+// Literals bound before a branch reach the calls in its arms, so each arm's copy multiplies
+// inline: two multiplications in the literals and two more in the copies.
+let testCallsALiteralBoundBeforeABranchDirectly = fn(t: Test) {
+  let listing = _dump(t, withStd([`${_CLI}/specialise/branches.jello`, "--jlo"]));
+  T.equal(t, split(listing, "mul.wrap.i32").len(), 5);
+};
+
+// A `for` costs what the hand-written loop does: its counter steps in place, with no copy,
+// and a `_` item is never read. The only moves are the entry's, before the calls.
+let testLoopsOverAnArrayWithoutCopies = fn(t: Test) {
+  let listing = _dump(t, [`${_CLI}/loops/for.jello`, "--jlo"]);
+  let loops = split(listing, "fn @0(")[0];
+  T.equal(t, contains(loops, "move"), false);
+  T.equal(t, split(loops, "array.get").len(), 2);
+};
+
+// A linked prototype's method is called directly, so it inlines; only the field is looked up.
+let testCallsALinkedMethodDirectly = fn(t: Test) {
+  let listing = _dump(t, [`${_CLI}/prototypes/linked.jello`, "--jlo"]);
+  let step = split(split(listing, "fn @1(")[1], "fn @2(")[0];
+  T.equal(t, contains(step, "call"), false);
+  T.equal(t, split(step, "object.get").len(), 2);
 };
 
 // An extension module may not export a name its type's intrinsics have; the

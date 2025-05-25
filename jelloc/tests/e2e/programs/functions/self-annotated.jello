@@ -1,6 +1,5 @@
 // expect: 120037
-// A global with a declared function type is in scope in its own value, so it
-// can recurse; Tokens' `_tokenLines` does.
+// A function whose type is annotated can call itself.
 let factorial: (I32) -> I32 = fn(n) { n < 2 ? 1 : n * factorial(n - 1) };
 let halves: (I32, I32) -> I32 = fn(lo, hi) { hi - lo <= 1 ? 1 : halves(lo, lo + (hi - lo) / 2) + halves(lo + (hi - lo) / 2, hi) };
 let five = factorial(5);

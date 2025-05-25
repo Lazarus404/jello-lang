@@ -1,0 +1,33 @@
+// expect: 1 3 5 | 2 | 7 9 | 0 2 3 | 0 2
+// `continue` moves on to the next item and `break` leaves the loop, with or without an index.
+let odd = Array.new<I32>(0);
+for (x in [1, 2, 3, 4, 5]) {
+  if (x % 2 == 0) { continue; }
+  odd.push(x);
+}
+
+let at = -1;
+for (i, x in list[4, 8, 15, 16]) {
+  if (x > 10) {
+    at = i;
+    break;
+  }
+}
+
+let kept = Array.new<I32>(0);
+for (i, x in [6, 7, 8, 9]) {
+  if (i % 2 == 0) { continue; }
+  kept.push(x);
+}
+
+// A `continue` still moves the index on, and an item `_` is never read.
+let marks = Array.new<I32>(0);
+let seen = Array.new<() -> I32>(0);
+for (i, _ in "abcd") {
+  if (i == 1) { continue; }
+  marks.push(i);
+  if (i < 3) { seen.push(fn() { i }); }
+}
+
+`${Bytes.join(odd.map(fn(n) { Std.string(n) }), " ")} | ${at} | ${kept[0]} ${kept[1]}`
+  + ` | ${marks[0]} ${marks[1]} ${marks[2]} | ${seen[0]()} ${seen[1]()}`

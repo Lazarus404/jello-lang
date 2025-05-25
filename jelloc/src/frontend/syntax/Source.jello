@@ -158,11 +158,9 @@ export let sourceLocation = fn(source: Bytes, offset: I32): Tuple<I32, I32> {
 
 export let lineStarts = fn(source: Bytes): Array<I32> {
   let starts = [0];
-  let i = 0;
 
-  while (i < source.len()) {
-    if (Bytes.get_u8(source, i) == "\n".code) { starts.push(i + 1); }
-    i++;
+  for (i, byte in source) {
+    if (byte == "\n".code) { starts.push(i + 1); }
   }
   starts
 };

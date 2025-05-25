@@ -4,9 +4,9 @@ import type { BasicBlock, Function, Instruction, Terminator } from ir.Model;
 import { Op, Terminator, instructionAt } from ir.Model;
 import { blockIndexes, normalSuccessors, terminatorRead } from ir.Cfg;
 
-let _UNKNOWN = 0;
-let _INT = 1;
-let _BOOL = 2;
+const _UNKNOWN = 0;
+const _INT = 1;
+const _BOOL = 2;
 
 let _kinds = Array.new<I32>(0);
 let _values = Array.new<I32>(0);
@@ -21,30 +21,22 @@ let _forget = fn(register: I32) {
 
   let copies = _copiesOf[register];
   if (copies.len() == 0) { return null; }
-  let i = 0;
 
-  while (i < copies.len()) {
-    if (_copies[copies[i]] == register) { _copies[copies[i]] = -1; }
-    i++;
+  for (copy in copies) {
+    if (_copies[copy] == register) { _copies[copy] = -1; }
   }
   _copiesOf[register] = Array.new<I32>(0);
   null
 };
 
 let _forgetAll = fn() {
-  let i = 0;
-
-  while (i < _copied.len()) {
-    _copies[_copied[i]] = -1;
-    i++;
+  for (register in _copied) {
+    _copies[register] = -1;
   }
   _copied = Array.new<I32>(0);
 
-  i = 0;
-
-  while (i < _known.len()) {
-    _kinds[_known[i]] = _UNKNOWN;
-    i++;
+  for (register in _known) {
+    _kinds[register] = _UNKNOWN;
   }
   _known = Array.new<I32>(0);
   null
@@ -67,27 +59,20 @@ let _merged = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
   let lasts = Array.new<Terminator>(0);
 
   entries[indexes[entry]] = 2;
-  let i = 0;
 
-  while (i < count) {
-    let block = blocks[i];
-    let targets = normalSuccessors(block.terminator);
-    let t = 0;
-
-    while (t < targets.len()) {
-      entries[indexes[targets[t]]] = entries[indexes[targets[t]]] + 1;
-      t++;
+  for (i, block in blocks) {
+    for (target in normalSuccessors(block.terminator)) {
+      entries[indexes[target]] = entries[indexes[target]] + 1;
     }
     if (block.handler != null) { entries[indexes[block.handler.target]] = 2; }
     code.push(block.instructions);
     lasts.push(block.terminator);
     outside[i] = block.handler == null;
-    i++;
   }
 
   let gone = Array.new<Bool>(count);
   let joined = false;
-  i = 0;
+  let i = 0;
 
   while (i < count) {
     let joining = !gone[i] && outside[i];
@@ -120,11 +105,9 @@ let _merged = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
   if (!joined) { return blocks; }
 
   let out = Array.new<BasicBlock>(0);
-  i = 0;
 
-  while (i < count) {
-    if (!gone[i]) { out.push(_rebuilt(blocks[i], code[i], lasts[i])); }
-    i++;
+  for (i, block in blocks) {
+    if (!gone[i]) { out.push(_rebuilt(block, code[i], lasts[i])); }
   }
   out
 };
@@ -148,12 +131,10 @@ let _folded = fn(insn: Instruction, args: Array<I32>): ?Instruction {
   let n = args.len();
   let ints = n > 0;
   let bools = n > 0;
-  let i = 0;
 
-  while (i < n) {
-    if (_kinds[args[i]] != _INT) { ints = false; }
-    if (_kinds[args[i]] != _BOOL) { bools = false; }
-    i++;
+  for (arg in args) {
+    if (_kinds[arg] != _INT) { ints = false; }
+    if (_kinds[arg] != _BOOL) { bools = false; }
   }
   if (!ints && !bools) { return null; }
 
@@ -173,25 +154,14 @@ let _folded = fn(insn: Instruction, args: Array<I32>): ?Instruction {
 };
 
 let _countReads = fn(blocks: Array<BasicBlock>, reads: Array<I32>) {
-  let i = 0;
-
-  while (i < blocks.len()) {
-    let instructions = blocks[i].instructions;
-    let j = 0;
-
-    while (j < instructions.len()) {
-      let args = instructions[j].args;
-      let a = 0;
-
-      while (a < args.len()) {
-        reads[args[a]] = reads[args[a]] + 1;
-        a++;
+  for (block in blocks) {
+    for (insn in block.instructions) {
+      for (arg in insn.args) {
+        reads[arg] = reads[arg] + 1;
       }
-      j++;
     }
-    let last = terminatorRead(blocks[i].terminator);
+    let last = terminatorRead(block.terminator);
     if (last >= 0) { reads[last] = reads[last] + 1; }
-    i++;
   }
   null
 };
@@ -206,11 +176,9 @@ let _onlyReadAfter = fn(
 
   while ((j < instructions.len()) && (seen < _reads[copy])) {
     let insn = instructions[j];
-    let a = 0;
 
-    while (a < insn.args.len()) {
-      if (insn.args[a] == copy) { seen++; }
-      a++;
+    for (arg in insn.args) {
+      if (arg == copy) { seen++; }
     }
     if ((insn.dst == copy) || (insn.dst == source)) { return seen == _reads[copy]; }
     j++;
@@ -227,23 +195,11 @@ let _propagated = fn(
   let insn = instructions[at];
   let args = insn.args;
   let copied = false;
-  let i = 0;
 
-  while (i < args.len()) {
-    if (_copies[args[i]] >= 0) { copied = true; }
-    i++;
+  for (arg in args) {
+    if (_copies[arg] >= 0) { copied = true; }
   }
-  let read = args;
-
-  if (copied) {
-    read = Array.new<I32>(0);
-    i = 0;
-
-    while (i < args.len()) {
-      read.push(_source(args[i]));
-      i++;
-    }
-  }
+  let read = copied ? args.map(_source) : args;
 
   let dst = insn.dst;
   let folded = _folded(insn, read);
@@ -318,25 +274,19 @@ let _propagateAll = fn(blocks: Array<BasicBlock>): Array<BasicBlock> {
   let out = Array.new<BasicBlock>(0);
   _anyChanged = false;
 
-  let i = 0;
-
-  while (i < blocks.len()) {
-    let block = blocks[i];
+  for (block in blocks) {
     _forgetAll();
     _changed = false;
 
     let code = Array.new<Instruction>(0);
-    let j = 0;
 
-    while (j < block.instructions.len()) {
+    for (j, _ in block.instructions) {
       code.push(_propagated(block.instructions, j, block.terminator));
-      j++;
     }
     let last = _terminator(block.terminator);
 
     out.push(_changed ? _rebuilt(block, code, last) : block);
     if (_changed) { _anyChanged = true; }
-    i++;
   }
   out
 };
@@ -351,34 +301,26 @@ let _reachable = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
   while (pending.len() > 0) {
     let block = blocks[pending.pop()];
     let next = Array.new<I32>(0);
-    let targets = normalSuccessors(block.terminator);
-    let t = 0;
 
-    while (t < targets.len()) {
-      next.push(indexes[targets[t]]);
-      t++;
+    for (target in normalSuccessors(block.terminator)) {
+      next.push(indexes[target]);
     }
     if (block.handler != null) { next.push(indexes[block.handler.target]); }
 
-    t = 0;
-
-    while (t < next.len()) {
-      if (!seen[next[t]]) {
-        seen[next[t]] = true;
-        pending.push(next[t]);
+    for (successor in next) {
+      if (!seen[successor]) {
+        seen[successor] = true;
+        pending.push(successor);
         reached++;
       }
-      t++;
     }
   }
   if (reached == blocks.len()) { return blocks; }
 
   let out = Array.new<BasicBlock>(0);
-  let i = 0;
 
-  while (i < blocks.len()) {
-    if (seen[i]) { out.push(blocks[i]); }
-    i++;
+  for (i, block in blocks) {
+    if (seen[i]) { out.push(block); }
   }
   out
 };
@@ -397,15 +339,13 @@ let _removable = fn(insn: Instruction): Bool {
 let _without = fn(instructions: Array<Instruction>, removed: Array<I32>): Array<Instruction> {
   let kept = Array.new<Instruction>(0);
   let r = removed.len() - 1;
-  let j = 0;
 
-  while (j < instructions.len()) {
+  for (j, insn in instructions) {
     if ((r >= 0) && (removed[r] == j)) {
       r--;
     } else {
-      kept.push(instructions[j]);
+      kept.push(insn);
     }
-    j++;
   }
   kept
 };
@@ -417,10 +357,8 @@ let _withoutDead = fn(blocks: Array<BasicBlock>, reads: Array<I32>): Array<Basic
   while (again) {
     again = false;
     let out = Array.new<BasicBlock>(0);
-    let i = 0;
 
-    while (i < current.len()) {
-      let block = current[i];
+    for (block in current) {
       let instructions = block.instructions;
       let removed = Array.new<I32>(0);
       let j = instructions.len() - 1;
@@ -429,13 +367,9 @@ let _withoutDead = fn(blocks: Array<BasicBlock>, reads: Array<I32>): Array<Basic
         let insn = instructions[j];
 
         if (_removable(insn) && (reads[insn.dst] == 0)) {
-          let a = 0;
-
-          while (a < insn.args.len()) {
-            let arg = insn.args[a];
+          for (arg in insn.args) {
             reads[arg] = reads[arg] - 1;
             if (reads[arg] == 0) { again = true; }
-            a++;
           }
           removed.push(j);
         }
@@ -445,7 +379,6 @@ let _withoutDead = fn(blocks: Array<BasicBlock>, reads: Array<I32>): Array<Basic
         ? _rebuilt(block, _without(instructions, removed), block.terminator)
         : block;
       out.push(kept);
-      i++;
     }
     current = out;
   }

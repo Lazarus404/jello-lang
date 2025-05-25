@@ -1,0 +1,16 @@
+// expect: 21 -3 4 a.b null 7 0.5
+/* A `const` of a constant reads as the constant, through other constants
+ * too; one read ahead of its statement reads the global, which holds the same
+ * value. */
+const LIMIT = 10;
+const NEG = -3;
+const MAYBE: ?I32 = 4;
+const COPY = LIMIT;
+const SEP = ".";
+const NOTHING: ?I32 = null;
+// Boxed once in its global rather than at every read.
+const HALF: ?F64 = 0.5;
+let reach = fn(n: I32): I32 { n + LIMIT + COPY };
+let late = fn(): I32 { LATE };
+const LATE: I32 = 7;
+`${reach(1)} ${NEG} ${MAYBE} ${"a" + SEP + "b"} ${NOTHING} ${late()} ${HALF}`

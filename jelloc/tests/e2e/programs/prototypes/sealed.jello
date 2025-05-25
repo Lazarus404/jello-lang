@@ -1,0 +1,41 @@
+// expect: 9 10 shape:25 10 | 7 hi | sub sub 2 | 8
+// A linked prototype's methods are fixed, as a class's are, so a call that can only find one
+// calls it directly; a call that a prototype below may override still looks it up.
+typedef Shape = { let w: I32; };
+prototype Shape {
+  init(w: I32) { this.w = w; };
+  area(): I32 { this.w * this.w };
+  name(): Bytes { "shape" };
+};
+typedef Wide = { let w: I32; };
+prototype Wide {
+  __proto__: Shape;
+  area(): I32 { this.w * 2 };
+  label(): Bytes { `${this.name()}:${super.area()}` };
+};
+let total = fn(s: Shape): I32 { s.area() };
+let w = new Wide(5);
+let classes = `${total(new Shape(3))} ${total(w)} ${w.label()} ${w.area()}`;
+
+typedef Box<T> = { let value: T; };
+prototype Box<T> {
+  init(value: T) { this.value = value; };
+  get(): T { this.value };
+};
+let generic = `${new Box<I32>(7).get()} ${new Box("hi").get()}`;
+
+// A prototype whose `__proto__` the compiler cannot name may still override.
+typedef Base<T> = { let v: T; };
+prototype Base<T> { show(): Bytes { "base" }; };
+prototype Sub<T> { __proto__: Base<T>; show(): Bytes { "sub" }; };
+let sub = new Sub<I32>();
+let parent: Object = Shape;
+prototype Odd { __proto__: parent; area(): I32 { 2 }; };
+let odd = (new Odd() as Dynamic) as Shape;
+let unnamed = `${sub.show()} ${((sub as Dynamic) as Base<I32>).show()} ${odd.area()}`;
+
+// Without a typedef along the way, a method can be replaced.
+prototype Plain { scaled(x: I32): I32 { x * 2 }; };
+let p = new Plain();
+p.scaled = fn(self: Plain, x: I32): I32 { x * 4 };
+`${classes} | ${generic} | ${unnamed} | ${p.scaled(2)}`

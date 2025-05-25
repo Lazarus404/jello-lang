@@ -40,12 +40,10 @@ import {
 export let checkFields = fn(fields: Array<StructField>): Tuple<Array<Bytes>, Array<I32>> {
   let names = Array.new<Bytes>(0);
   let types = Array.new<I32>(0);
-  let f = 0;
 
-  while (f < fields.len()) {
-    names.push(fields[f].name);
-    types.push(checkType(fields[f].ty));
-    f++;
+  for (field in fields) {
+    names.push(field.name);
+    types.push(checkType(field.ty));
   }
   (names, types)
 };
@@ -58,11 +56,8 @@ let _defineEnum = fn(index: I32, name: Bytes, constructors: Array<EnumConstructo
   let names = Array.new<Bytes>(0);
   let fieldNames = Array.new<Array<Bytes>>(0);
   let fieldTypes = Array.new<Array<I32>>(0);
-  let c = 0;
 
-  while (c < constructors.len()) {
-    let { name: variant, fields } = constructors[c];
-
+  for ({ name: variant, fields } in constructors) {
     if (names.indexOf(variant) >= 0) {
       throw coded(E0302, `duplicate variant ${variant} of ${name}`);
     }
@@ -70,7 +65,6 @@ let _defineEnum = fn(index: I32, name: Bytes, constructors: Array<EnumConstructo
     names.push(variant);
     fieldNames.push(fieldName);
     fieldTypes.push(fieldType);
-    c++;
   }
 
   useTypeParams(outerNames, outerTypes);
@@ -80,14 +74,11 @@ let _defineEnum = fn(index: I32, name: Bytes, constructors: Array<EnumConstructo
 };
 
 export let defineEnums = fn(statements: Array<Stmt>): Bool {
-  let i = 0;
-
-  while (i < statements.len()) {
-    match (statements[i]) {
+  for (i, statement in statements) {
+    match (statement) {
       Enum(_, name, _, constructors) => _defineEnum(i, name, constructors),
       _ => null,
     };
-    i++;
   }
   true
 };
@@ -121,11 +112,9 @@ let _construct = fn(
 
   if (params.len() != 0) {
     let types = Array.new<I32>(0);
-    let i = 0;
 
-    while (i < params.len()) {
+    for (i, _ in params) {
       types.push((typeArgs.len() == 0) ? newVar(false) : checkType(typeArgs[i]));
-      i++;
     }
     ty = appliedType(ty, types);
     if (expected >= 0) { unify(ty, expected); }

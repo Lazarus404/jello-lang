@@ -1,0 +1,7 @@
+// Each arm passes a literal bound before the branch, and each gets its own copy of `map`.
+let scaled = fn(xs: Array<I32>, up: Bool): Array<I32> {
+  let triple = fn(x: I32): I32 { x * 3 };
+  let quintuple = fn(x: I32): I32 { x * 5 };
+  up ? xs.map(triple) : xs.map(quintuple)
+};
+scaled([1, 2], true)[1]

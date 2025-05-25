@@ -408,6 +408,40 @@ let testDefinesComparisonTernaryAndAwaitAssociativity = fn(t: Test) {
   };
 };
 
+let testCoalescesBetweenOrAndTheConditional = fn(t: Test) {
+  let program = parse("a ?? b ?? c; a || b ?? c; a ?? b ? c : d; x |> % ?? y");
+  let v = fn(name: Bytes): Expr { Expr.Variable(name) };
+
+  match (program) {
+    { statements, tail } => {
+      T.equal(t, statements[0],
+        Stmt.Expression(Expr.Coalesce(v("a"), Expr.Coalesce(v("b"), v("c")))));
+      T.equal(t, statements[1],
+        Stmt.Expression(Expr.Coalesce(Expr.Binary(BinaryOp.Or, v("a"), v("b")), v("c"))));
+      T.equal(t, statements[2],
+        Stmt.Expression(Expr.Conditional(Expr.Coalesce(v("a"), v("b")), v("c"), v("d"))));
+      T.equal(t, tail, Expr.Pipe(v("x"), Expr.Coalesce(Expr.Topic, v("y")), true));
+    }
+  };
+};
+
+let testParsesForLoopsWithAnOptionalIndex = fn(t: Test) {
+  let program = parse("for (x in xs) { x } for (i, (a, _) in ys) { break; }");
+  let v = fn(name: Bytes): Expr { Expr.Variable(name) };
+
+  match (program) {
+    { statements, tail } => {
+      T.equal(t, statements[0],
+        Stmt.For(null, Pattern.BindPattern("x"), v("xs"), [Stmt.Expression(v("x"))]));
+      let pair = Pattern.Tuple([Pattern.BindPattern("a"), Pattern.Wildcard]);
+      T.equal(t, statements[1], Stmt.For(Pattern.BindPattern("i"), pair, v("ys"), [Stmt.Break]));
+      T.equal(t, tail, null);
+    }
+  };
+  T.throws(t, fn() { parse("for (x of xs) { x }"); });
+  T.throws(t, fn() { parse("for ((a, b), x in xs) { x }"); });
+};
+
 let testValidatesGrammarOnlyRestrictionsAndResetsParserState = fn(t: Test) {
   T.throws(t, fn() { parse("let f = fn(...xs, y) { y };"); });
   T.throws(t, fn() { parse("let f = fn(...?xs) { 0 };"); });
@@ -430,10 +464,11 @@ let testValidatesGrammarOnlyRestrictionsAndResetsParserState = fn(t: Test) {
   T.throws(t, fn() { parse("bits[u8.be(x)]"); });
   T.throws(t, fn() { parse("bits[rest.le(x)]"); });
   parse("bits[u16.be(x), rest(y)]");
-  T.throws(t, fn() { parse("f(x,)"); });
-  T.throws(t, fn() { parse("[x,]"); });
-  T.throws(t, fn() { parse("fn(x,) { x }"); });
-  T.throws(t, fn() { parse("let f: (I32,) -> I32 = value;"); });
+  parse("f(x,); [x,]; fn(x,) { x }; let f: (I32,) -> I32 = value;");
+  T.throws(t, fn() { parse("f(,)"); });
+  T.throws(t, fn() { parse("[x,,]"); });
+  T.throws(t, fn() { parse("fn(...xs,) { xs }"); });
+  T.throws(t, fn() { parse("let x: ??I32 = value;"); });
   T.throws(t, fn() { parse("typedef B = bytes-layout { let x: bits(0); };"); });
   T.throws(t, fn() { parse("typedef B = bytes-layout { let x: bits(8); };"); });
   T.throws(t, fn() { parse("typedef B = bytes-layout { let x: bits(999999999999999999999); };"); });

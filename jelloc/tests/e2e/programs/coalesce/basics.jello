@@ -1,0 +1,21 @@
+// expect: 0 7 none b null 4 1 7
+// `??` gives its left side unless that is null, and joins the two sides' types.
+let orZero = fn(x: ?I64) { x ?? 0 };
+let firstOf = fn(a: ?Bytes, b: ?Bytes): Bytes { a ?? b ?? "none" };
+let either = fn(a: ?Bytes, b: ?Bytes) { a ?? b };
+let half = fn(x: ?I32): I32 {
+  let n = x ?? { return 1; };
+  n / 2
+};
+let none: ?I32 = null;
+
+Bytes.join([
+  Std.string(orZero(null)),
+  Std.string(orZero(7)),
+  firstOf(null, null),
+  firstOf(null, "b"),
+  Std.string(either(null, null)),
+  Std.string(half(8)),
+  Std.string(half(null)),
+  Std.string(none ?? 3 + 4),
+], " ")

@@ -17,13 +17,13 @@ program
               local %1: bytes @1168..1173 ../stdlib/core/RegExp.jello
     tail
       local %2: dynamic @1180..1182 ../stdlib/core/RegExp.jello
-  fn @2 fn(%3 s: bytes @2945..2953 ../stdlib/core/RegExp.jello, %4 re: dynamic @2955..2966 ../stdlib/core/RegExp.jello) -> bool @2942..2997 ../stdlib/core/RegExp.jello
+  fn @2 matches(%3 s: bytes @2945..2953 ../stdlib/core/RegExp.jello, %4 re: dynamic @2955..2966 ../stdlib/core/RegExp.jello) -> bool @2942..2997 ../stdlib/core/RegExp.jello
     tail
       is_present: bool @2976..2995 ../stdlib/core/RegExp.jello
         call.native std.regexp_match: dynamic @2976..2987 ../stdlib/core/RegExp.jello
           local %3: bytes @2981..2982 ../stdlib/core/RegExp.jello
           local %4: dynamic @2984..2986 ../stdlib/core/RegExp.jello
-  fn @3 fn(%5 s: bytes @3111..3119 ../stdlib/core/RegExp.jello, %6 m: dynamic @3121..3131 ../stdlib/core/RegExp.jello) -> bytes @3108..3199 ../stdlib/core/RegExp.jello
+  fn @3 advance(%5 s: bytes @3111..3119 ../stdlib/core/RegExp.jello, %6 m: dynamic @3121..3131 ../stdlib/core/RegExp.jello) -> bytes @3108..3199 ../stdlib/core/RegExp.jello
     let %7 n: i32 @3144..3159 ../stdlib/core/RegExp.jello
       call.native std.regexp_match_len: i32 @3152..3158 ../stdlib/core/RegExp.jello
         local %6: dynamic @3156..3157 ../stdlib/core/RegExp.jello
@@ -35,7 +35,7 @@ program
           bytes.len: i32 @3180..3192 ../stdlib/core/RegExp.jello
             local %5: bytes @3190..3191 ../stdlib/core/RegExp.jello
           local %7: i32 @3195..3196 ../stdlib/core/RegExp.jello
-  fn @4 fn(%8 s: bytes @3483..3491 ../stdlib/core/RegExp.jello, %9 re: dynamic @3493..3504 ../stdlib/core/RegExp.jello) -> array<bytes> @3480..4186 ../stdlib/core/RegExp.jello
+  fn @4 split(%8 s: bytes @3483..3491 ../stdlib/core/RegExp.jello, %9 re: dynamic @3493..3504 ../stdlib/core/RegExp.jello) -> array<bytes> @3480..4186 ../stdlib/core/RegExp.jello
     let %10 parts: array<bytes> @3524..3556 ../stdlib/core/RegExp.jello
       array.new: array<bytes> @3536..3555 ../stdlib/core/RegExp.jello
         i32 0: i32 @3553..3554 ../stdlib/core/RegExp.jello
@@ -255,7 +255,7 @@ program
               assign %31: dynamic @512..534
                 call.native std.regexp_match_prefix: dynamic @512..534
                   local %30: bytes @512..534
-                  global g4: dynamic @512..534
+                  global g1: dynamic @512..534
           then
             block: i32 @497..570
               const %32 m: dynamic @497..570
@@ -282,7 +282,7 @@ program
       assign %35: i32 @630..640
         add.wrap: i32 @630..640
           local %35: i32 @630..631
-          global g3: i32 @635..640
+          global g0: i32 @635..640
     if @644..670
       condition
         is_present: bool @648..657
@@ -298,17 +298,11 @@ program
       add.wrap: i32 @673..678
         local %35: i32 @673..674
         local %36: i32 @677..678
-  global g0 matches: (bytes, dynamic) -> bool @2895..2998 ../stdlib/core/RegExp.jello
-    function @2: (bytes, dynamic) -> bool @2942..2997 ../stdlib/core/RegExp.jello
-  global g1 advance: (bytes, dynamic) -> bytes @3060..3200 ../stdlib/core/RegExp.jello
-    function @3: (bytes, dynamic) -> bytes @3108..3199 ../stdlib/core/RegExp.jello
-  global g2 split: (bytes, dynamic) -> array<bytes> @3427..4187 ../stdlib/core/RegExp.jello
-    function @4: (bytes, dynamic) -> array<bytes> @3480..4186 ../stdlib/core/RegExp.jello
-  global g3 limit: i32 @14..39 tests/e2e/programs/spans/lib/Limits.jello
+  global g0 limit: i32 @14..39 tests/e2e/programs/spans/lib/Limits.jello
     add.wrap: i32 @33..38 tests/e2e/programs/spans/lib/Limits.jello
       i32 2: i32 @33..34 tests/e2e/programs/spans/lib/Limits.jello
       i32 1: i32 @37..38 tests/e2e/programs/spans/lib/Limits.jello
-  global g4 ~r/([a-z]+)/: dynamic @512..534
+  global g1 ~r/([a-z]+)/: dynamic @512..534
     call.native std.regexp_compile: dynamic @512..534
       bytes "([a-z]+)": bytes @512..534
       bytes "": bytes @512..534

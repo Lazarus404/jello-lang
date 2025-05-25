@@ -19,12 +19,9 @@ import { E0400, E0408, E0600, coded } from support.Codes;
 let _ASSERTIONS = ["equal", "notEqual", "isTrue", "isNull", "throws"];
 
 export let declareAssertions = fn(module: I32): Bool {
-  let i = 0;
-
-  while (i < _ASSERTIONS.len()) {
-    declareScoped(_ASSERTIONS[i], Binding.Intrinsic(module, _ASSERTIONS[i]));
-    exportScoped(module, _ASSERTIONS[i], true);
-    i++;
+  for (name in _ASSERTIONS) {
+    declareScoped(name, Binding.Intrinsic(module, name));
+    exportScoped(module, name, true);
   }
   true
 };

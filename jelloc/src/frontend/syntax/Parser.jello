@@ -46,7 +46,7 @@ import { syntaxTree } from frontend.syntax.SyntaxTree;
 import { exprTag, isBindPattern, patternTag, stmtTag } from frontend.syntax.Ast;
 import { isKeyword, tokenText } from frontend.syntax.Tokens;
 import {
-  E0008, E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, coded
+  E0008, E0100, E0102, E0103, E0104, E0105, E0106, E0107, E0108, coded
 } from support.Codes;
 import { internalError } from support.Internal;
 import { utf8CharAt, utf8Length, utf8Validate } from std.core.Bytes;
@@ -231,11 +231,9 @@ let _eatIdent = fn(name: Bytes): Bool {
 
 let _digitsI32 = fn(digits: Bytes): I32 {
   let n = 0;
-  let i = 0;
 
-  while (i < digits.len()) {
-    n = n * 10 + Bytes.get_u8(digits, i) - "0".code;
-    i++;
+  for (digit in digits) {
+    n = n * 10 + digit - "0".code;
   }
   n
 };
@@ -313,25 +311,20 @@ let _parseTypeAtom = fn(): Type {
   if (peek() == Token.LParen) {
     next();
     let items = Array.new<Type>(0);
+    let comma = false;
 
-    if (peek() != Token.RParen) {
+    while (peek() != Token.RParen) {
       items.push(_parseTypeArg());
+      if (peek() != Token.Comma) { break; }
+      next();
 
-      while (peek() == Token.Comma) {
-        next();
-
-        if (let VarargsArg(_) = items[items.len() - 1]) {
-          _error(E0102, "varargs type must be the last parameter");
-        }
-
-        if (peek() == Token.RParen) {
-          _error(E0101, "trailing comma is not supported in function types");
-        }
-        items.push(_parseTypeArg());
+      if (let VarargsArg(_) = items[items.len() - 1]) {
+        _error(E0102, "varargs type must be the last parameter");
       }
+      comma = true;
     }
     expect(Token.RParen);
-    return items.len() == 1 ? items[0] : Type.Tuple(items);
+    return ((items.len() == 1) && !comma) ? items[0] : Type.Tuple(items);
   }
 
   let name = _typeName();
@@ -769,14 +762,10 @@ let _element = fn(): Expr {
 let _exprList = fn(end: Token): Array<Expr> {
   let out = Array.new<Expr>(0);
 
-  if (peek() != end) {
+  while (peek() != end) {
     out.push(_element());
-
-    while (peek() == Token.Comma) {
-      next();
-      if (peek() == end) { _error(E0101, "trailing comma is not supported in calls"); }
-      out.push(_element());
-    }
+    if (peek() != Token.Comma) { break; }
+    next();
   }
   expect(end);
   out
@@ -818,10 +807,6 @@ let _parseParams = fn(): Array<Parameter> {
     if (peek() != Token.Comma) { break; }
     next();
     if (varargs) { _error(E0102, "varargs parameter must be last"); }
-
-    if (peek() == Token.RParen) {
-      _error(E0101, "trailing comma is not supported in parameters");
-    }
   }
   expect(Token.RParen);
   out
@@ -1263,21 +1248,7 @@ let _parsePrimary = fn(): Expr {
 
 let _parseArray = fn(): Expr {
   expect(Token.LBracket);
-  let items = Array.new<Expr>(0);
-
-  if (peek() != Token.RBracket) {
-    while (true) {
-      items.push(_element());
-      if (peek() != Token.Comma) { break; }
-      next();
-
-      if (peek() == Token.RBracket) {
-        _error(E0101, "trailing comma is not supported in arrays");
-      }
-    }
-  }
-  expect(Token.RBracket);
-  Expr.Array(items)
+  Expr.Array(_exprList(Token.RBracket))
 };
 
 let _typeArgs = fn(): Array<Type> {
@@ -1443,6 +1414,7 @@ let _precedence = fn(tok: Token): I32 {
     Pipe => 30,
     And => 25,
     PipePipe => 20,
+    QuestionQuestion => 17,
     Question => 15,
     PipeGreater => 10,
     Equal, PlusEqual, MinusEqual, StarEqual, SlashEqual, PercentEqual, LessLessEqual,
@@ -1521,6 +1493,9 @@ let _parseBinary = fn(minPrec: I32, element: Bool): Expr {
         _markExpr(Expr.Null, start)
       };
       left = Expr.Conditional(left, thenBranch, elseBranch);
+    } else if (tok == Token.QuestionQuestion) {
+      next();
+      left = Expr.Coalesce(left, _parseBinary(prec, element));
     } else if (tok == Token.PipeGreater) {
       next();
       let outerTopic = pipelineTopic;
@@ -1556,7 +1531,7 @@ let _parseBinary = fn(minPrec: I32, element: Bool): Expr {
 let _stmtStarts = fn(tok: Token): Bool {
   match (tok) {
     Export, Let, Const, Prototype, Typedef, EnumDecl, Macro,
-    Import, Load, While, Do, Break, Continue, Throw, Return => true,
+    Import, Load, While, For, Do, Break, Continue, Throw, Return => true,
     _ => false,
   }
 };
@@ -2028,6 +2003,33 @@ let _parseStmtInner = fn(): Stmt {
       let { statements, tail } = block;
       if (tail != null) { statements.push(_loopTail(tail)); }
       Stmt.While(condition, statements)
+    },
+    For => {
+      expect(Token.LParen);
+      let first = _parsePattern();
+      let index: ?Pattern = null;
+      let item = first;
+
+      if (peek() == Token.Comma) {
+        next();
+        if (!isBindPattern(first)) { _error(E0100, "the index of a for loop must be a name"); }
+        index = first;
+        item = _parsePattern();
+      }
+
+      match (next()) {
+        Ident(word) when (word == "in") => null,
+        actual => {
+          _expected("'in'", actual);
+          null
+        },
+      };
+      let items = _parseExpr(0);
+      expect(Token.RParen);
+      let { statements, tail } = _parseBlock();
+      _optionalSemicolon();
+      if (tail != null) { statements.push(_loopTail(tail)); }
+      Stmt.For(index, item, items, statements)
     },
     Do => {
       let { statements: body, tail } = _parseBlock();

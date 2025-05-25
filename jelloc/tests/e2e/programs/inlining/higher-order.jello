@@ -1,0 +1,48 @@
+// expect: [2, 4, 6] [2] 6 3|true true|boom at 2|[11, 12]|[3, 6] [-1, -2]|[-1, -2] [1, 2, 2, 4]
+/* A small function that only calls a function it is passed is copied for each literal passed
+ * to it, and the copy calls the literal directly; one that keeps, compares or returns it is
+ * not, so a function value is still itself. A closure is called as it always was. */
+import { forEach, reduce } from std.core.Array;
+
+let xs = [1, 2, 3];
+let seen = 0;
+let used = `${xs.map(fn(x) { x * 2 })} ${xs.filter(fn(x) { x % 2 == 0 })} `
+  + `${xs.reduce(0, fn(sum, x) { sum + x })} ${{ xs.forEach(fn(_) { seen++; }); seen }}`;
+
+let double = fn(x: I32): I32 { x * 2 };
+let same = fn(f: (I32) -> I32): (I32) -> I32 { f };
+let isDouble = fn(f: (I32) -> I32): Bool { f == double };
+let kept = `${same(double) == double} ${isDouble(double)}`;
+
+let thrown = try {
+  xs.map(fn(x) { if (x == 2) { throw `boom at ${x}`; } x });
+  "none"
+} catch (e) { e as Bytes };
+
+let tens = fn(base: I32): Array<I32> { [1, 2].map(fn(x) { x + base }) };
+// A literal bound before a branch is still the one each arm passes.
+let scaled = fn(xs: Array<I32>, up: Bool): Array<I32> {
+  let triple = fn(x: I32): I32 { x * 3 };
+  let negate = fn(x: I32): I32 { -x };
+  up ? xs.map(triple) : xs.map(negate)
+};
+
+// One that holds either, or one then another, is no one literal, so no copy assumes it.
+let picked = fn(xs: Array<I32>, up: Bool): Array<I32> {
+  let pick = up ? double : fn(x: I32): I32 { -x };
+  xs.map(pick)
+};
+let passes = fn(xs: Array<I32>): Array<I32> {
+  let out: Array<I32> = [];
+  let f = fn(x: I32): I32 { x };
+  let i = 0;
+  while (i < 2) {
+    out = [...out, ...xs.map(f)];
+    f = double;
+    i++;
+  }
+  out
+};
+
+`${used}|${kept}|${thrown}|${tens(10)}|${scaled([1, 2], true)} ${scaled([1, 2], false)}`
+  + `|${picked([1, 2], false)} ${passes([1, 2])}`

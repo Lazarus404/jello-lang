@@ -4,6 +4,161 @@ import type { BasicBlock, Function, Instruction, Program, Terminator, ValueType 
 import { ValueType, argumentCount, comparesByIdentity, valueTypeEqual } from ir.Model;
 import { internalError } from support.Internal;
 
+const JOP_RET = 1;
+const JOP_JMP = 2;
+const JOP_JMP_IF = 3;
+const JOP_MOV = 4;
+const JOP_TRY = 5;
+const JOP_ENDTRY = 6;
+const JOP_THROW = 7;
+const JOP_CALL = 11;
+const JOP_CALLR = 12;
+const JOP_CONST_FUN = 15;
+const JOP_CLOSURE = 16;
+const JOP_CONST_I32 = 19;
+const JOP_CONST_I64 = 20;
+const JOP_CONST_F16 = 21;
+const JOP_CONST_F32 = 22;
+const JOP_CONST_F64 = 23;
+const JOP_CONST_BOOL = 24;
+const JOP_CONST_NULL = 25;
+const JOP_CONST_ATOM = 26;
+const JOP_CONST_BYTES = 27;
+const JOP_ADD_I32 = 28;
+const JOP_SUB_I32 = 29;
+const JOP_MUL_I32 = 30;
+const JOP_DIV_I32 = 31;
+const JOP_MOD_I32 = 32;
+const JOP_ADD_I32_IMM = 33;
+const JOP_SUB_I32_IMM = 34;
+const JOP_MUL_I32_IMM = 35;
+const JOP_NEG_I32 = 36;
+const JOP_SHL_I32 = 37;
+const JOP_SHR_I32 = 38;
+const JOP_BITAND_I32 = 39;
+const JOP_BITOR_I32 = 40;
+const JOP_BITXOR_I32 = 41;
+const JOP_ADD_I64 = 42;
+const JOP_SUB_I64 = 43;
+const JOP_MUL_I64 = 44;
+const JOP_DIV_I64 = 45;
+const JOP_MOD_I64 = 46;
+const JOP_NEG_I64 = 47;
+const JOP_SHL_I64 = 48;
+const JOP_SHR_I64 = 49;
+const JOP_BITAND_I64 = 50;
+const JOP_BITOR_I64 = 51;
+const JOP_BITXOR_I64 = 52;
+const JOP_ADD_F16 = 53;
+const JOP_SUB_F16 = 54;
+const JOP_MUL_F16 = 55;
+const JOP_ADD_F32 = 56;
+const JOP_SUB_F32 = 57;
+const JOP_MUL_F32 = 58;
+const JOP_DIV_F32 = 59;
+const JOP_NEG_F32 = 60;
+const JOP_ADD_F64 = 61;
+const JOP_SUB_F64 = 62;
+const JOP_MUL_F64 = 63;
+const JOP_DIV_F64 = 64;
+const JOP_NEG_F64 = 65;
+const JOP_NOT_BOOL = 66;
+const JOP_EQ_I32 = 67;
+const JOP_LT_I32 = 68;
+const JOP_EQ_I32_IMM = 69;
+const JOP_LT_I32_IMM = 70;
+const JOP_EQ_I64 = 71;
+const JOP_LT_I64 = 72;
+const JOP_EQ_F32 = 73;
+const JOP_LT_F32 = 74;
+const JOP_EQ_F64 = 75;
+const JOP_LT_F64 = 76;
+const JOP_SEXT_I64 = 77;
+const JOP_I32_FROM_I64 = 81;
+const JOP_F64_FROM_I32 = 82;
+const JOP_I32_FROM_F64 = 83;
+const JOP_F64_FROM_I64 = 84;
+const JOP_I64_FROM_F64 = 85;
+const JOP_F32_FROM_I32 = 86;
+const JOP_I32_FROM_F32 = 87;
+const JOP_F64_FROM_F32 = 88;
+const JOP_F32_FROM_F64 = 89;
+const JOP_F32_FROM_I64 = 90;
+const JOP_I64_FROM_F32 = 91;
+const JOP_F16_FROM_F32 = 92;
+const JOP_F32_FROM_F16 = 93;
+const JOP_F16_FROM_I32 = 94;
+const JOP_I32_FROM_F16 = 95;
+const JOP_TO_DYN = 96;
+const JOP_FROM_DYN_I32 = 99;
+const JOP_FROM_DYN_I64 = 100;
+const JOP_FROM_DYN_F16 = 101;
+const JOP_FROM_DYN_F32 = 102;
+const JOP_FROM_DYN_F64 = 103;
+const JOP_FROM_DYN_BOOL = 104;
+const JOP_FROM_DYN_ATOM = 105;
+const JOP_FROM_DYN_PTR = 106;
+const JOP_SPILL_PUSH = 107;
+const JOP_SPILL_POP = 108;
+const JOP_PHYSEQ = 109;
+const JOP_KINDOF = 110;
+const JOP_LIST_NIL = 111;
+const JOP_LIST_CONS = 112;
+const JOP_LIST_HEAD = 113;
+const JOP_LIST_TAIL = 114;
+const JOP_LIST_IS_NIL = 115;
+const JOP_ARRAY_NEW = 116;
+const JOP_ARRAY_LEN = 117;
+const JOP_ARRAY_GET = 118;
+const JOP_ARRAY_SET = 119;
+const JOP_ARRAY_CONCAT2 = 120;
+const JOP_ARRAY_RESIZE = 121;
+const JOP_BYTES_NEW = 122;
+const JOP_BYTES_LEN = 123;
+const JOP_BYTES_GET_U8 = 124;
+const JOP_BYTES_SET_U8 = 125;
+const JOP_BYTES_CONCAT2 = 126;
+const JOP_BYTES_CONCAT_MANY = 127;
+const JOP_BYTES_EQ = 128;
+const JOP_BYTES_READ_U16_LE = 132;
+const JOP_BYTES_WRITE_U16_LE = 140;
+const JOP_BITS_WRITE = 148;
+const JOP_BITS_READ = 149;
+const JOP_STRUCT_NEW = 150;
+const JOP_STRUCT_GET = 151;
+const JOP_STRUCT_SET = 152;
+const JOP_OBJ_NEW = 153;
+const JOP_OBJ_HAS_ATOM = 154;
+const JOP_OBJ_GET_ATOM = 155;
+const JOP_OBJ_SET_ATOM = 156;
+const JOP_OBJ_GET = 157;
+const JOP_OBJ_SET = 158;
+const JOP_OBJ_HAS = 159;
+const JOP_OBJ_REMOVE = 160;
+const JOP_OBJ_CLEAR = 161;
+const JOP_OBJ_COPY = 162;
+const JOP_OBJ_KEYS = 163;
+const JOP_ENUM_NEW = 164;
+const JOP_ENUM_TAG = 165;
+const JOP_ENUM_GET = 166;
+const JOP_CALL_NATIVE = 167;
+const JOP_BYTES_BLIT = 176;
+const JOP_DIV_U32 = 177;
+const JOP_MOD_U32 = 178;
+const JOP_DIV_U64 = 179;
+const JOP_MOD_U64 = 180;
+const JOP_LT_U32 = 181;
+const JOP_LT_U64 = 182;
+const JOP_ZEXT_I64 = 183;
+const JOP_GLOBAL_GET = 187;
+const JOP_GLOBAL_SET = 188;
+const JOP_BYTES_SLICE = 189;
+const JOP_IS_NULL = 190;
+const JOP_NULL_CHECK = 191;
+const JOP_IS_ENUM = 192;
+const JOP_BYTES_FREEZE = 193;
+const JOP_BYTES_JOIN = 194;
+
 let _buffer = Bytes.new(0);
 let _size = 0;
 
@@ -59,11 +214,8 @@ let _sleb = fn(value: I32) {
 };
 
 let _bytes = fn(value: Bytes) {
-  let i = 0;
-
-  while (i < value.len()) {
-    _byte(Bytes.get_u8(value, i));
-    i++;
+  for (byte in value) {
+    _byte(byte);
   }
   null
 };
@@ -79,11 +231,9 @@ let _buckets = Array.new<Array<I32>>(0);
 let _hash = fn(ty: ValueType): I32 {
   let combine = fn(seed: I32, types: Array<ValueType>): I32 {
     let h = seed;
-    let i = 0;
 
-    while (i < types.len()) {
-      h = h * 31 + _hash(types[i]);
-      i++;
+    for (ty in types) {
+      h = h * 31 + _hash(ty);
     }
     h
   };
@@ -111,11 +261,9 @@ let _bucket = fn(ty: ValueType): Array<I32> { _buckets[_hash(ty) & (_buckets.len
 
 let _find = fn(ty: ValueType): I32 {
   let bucket = _bucket(ty);
-  let i = 0;
 
-  while (i < bucket.len()) {
-    if (valueTypeEqual(_types[bucket[i]], ty)) { return bucket[i]; }
-    i++;
+  for (index in bucket) {
+    if (valueTypeEqual(_types[index], ty)) { return index; }
   }
   -1
 };
@@ -147,21 +295,15 @@ let _typeIndex = fn(ty: ValueType): I32 {
     ArrayOf(element) => _add(ty, 13, _typeIndex(element)),
     ListOf(element) => _add(ty, 12, _typeIndex(element)),
     TupleOf(elements) => {
-      let i = 0;
-
-      while (i < elements.len()) {
-        _typeIndex(elements[i]);
-        i++;
+      for (element in elements) {
+        _typeIndex(element);
       }
       _structs.push(elements);
       _add(ty, 14, _structs.len() - 1)
     },
     Function(args, result) => {
-      let i = 0;
-
-      while (i < args.len()) {
-        _typeIndex(args[i]);
-        i++;
+      for (arg in args) {
+        _typeIndex(arg);
       }
       _typeIndex(result);
       _signatures.push(ty);
@@ -222,20 +364,20 @@ let _numeric = fn(register: I32, i32: I32, i64: I32, f16: I32, f32: I32, f64: I3
 
 let _conversion = fn(source: ValueType, target: ValueType): I32 {
   match ((source, target)) {
-    (I32, F64) => 82,
-    (F64, I32) => 83,
-    (I64, F64) => 84,
-    (F64, I64) => 85,
-    (I32, F32) => 86,
-    (F32, I32) => 87,
-    (F32, F64) => 88,
-    (F64, F32) => 89,
-    (I64, F32) => 90,
-    (F32, I64) => 91,
-    (F32, F16) => 92,
-    (F16, F32) => 93,
-    (I32, F16) => 94,
-    (F16, I32) => 95,
+    (I32, F64) => JOP_F64_FROM_I32,
+    (F64, I32) => JOP_I32_FROM_F64,
+    (I64, F64) => JOP_F64_FROM_I64,
+    (F64, I64) => JOP_I64_FROM_F64,
+    (I32, F32) => JOP_F32_FROM_I32,
+    (F32, I32) => JOP_I32_FROM_F32,
+    (F32, F64) => JOP_F64_FROM_F32,
+    (F64, F32) => JOP_F32_FROM_F64,
+    (I64, F32) => JOP_F32_FROM_I64,
+    (F32, I64) => JOP_I64_FROM_F32,
+    (F32, F16) => JOP_F16_FROM_F32,
+    (F16, F32) => JOP_F32_FROM_F16,
+    (I32, F16) => JOP_F16_FROM_I32,
+    (F16, I32) => JOP_I32_FROM_F16,
     _ => -1,
   }
 };
@@ -257,23 +399,23 @@ let _bitsOrBytes = fn(insn: Instruction) {
   let imm = insn.imm;
 
   match (insn.op) {
-    BitsRead => _insn(149, insn.dst, args[0], imm % 16, imm / 16),
-    BitsWrite => _insn(148, args[0], args[1], imm % 16, imm / 16),
-    BytesRead => _insn(132 + imm, insn.dst, args[0], args[1], 0),
-    _ => _insn(140 + imm, args[2], args[0], args[1], 0),
+    BitsRead => _insn(JOP_BITS_READ, insn.dst, args[0], imm % 16, imm / 16),
+    BitsWrite => _insn(JOP_BITS_WRITE, args[0], args[1], imm % 16, imm / 16),
+    BytesRead => _insn(JOP_BYTES_READ_U16_LE + imm, insn.dst, args[0], args[1], 0),
+    _ => _insn(JOP_BYTES_WRITE_U16_LE + imm, args[2], args[0], args[1], 0),
   }
 };
 
 let _unboxOpcode = fn(ty: ValueType): I32 {
   match (ty) {
-    Bool => 104,
-    I32 => 99,
-    I64 => 100,
-    Atom => 105,
-    F64 => 103,
-    F32 => 102,
-    F16 => 101,
-    _ => 106,
+    Bool => JOP_FROM_DYN_BOOL,
+    I32 => JOP_FROM_DYN_I32,
+    I64 => JOP_FROM_DYN_I64,
+    Atom => JOP_FROM_DYN_ATOM,
+    F64 => JOP_FROM_DYN_F64,
+    F32 => JOP_FROM_DYN_F32,
+    F16 => JOP_FROM_DYN_F16,
+    _ => JOP_FROM_DYN_PTR,
   }
 };
 
@@ -285,98 +427,110 @@ let _instruction = fn(insn: Instruction) {
   let b = args.len() > 1 ? args[1] : 0;
 
   match (insn.op) {
-    ConstBool => _insn(24, dst, 0, 0, imm),
-    ConstI32 => _insn(19, dst, 0, 0, imm),
-    ConstI64 => _insn(20, dst, 0, 0, imm),
-    ConstBytes => _insn(27, dst, 0, 0, imm),
-    ConstNull => _insn(25, dst, 0, 0, 0),
+    ConstBool => _insn(JOP_CONST_BOOL, dst, 0, 0, imm),
+    ConstI32 => _insn(JOP_CONST_I32, dst, 0, 0, imm),
+    ConstI64 => _insn(JOP_CONST_I64, dst, 0, 0, imm),
+    ConstBytes => _insn(JOP_CONST_BYTES, dst, 0, 0, imm),
+    ConstNull => _insn(JOP_CONST_NULL, dst, 0, 0, 0),
     ConstFunction => (args.len() == 0)
-      ? _insn(15, dst, 0, 0, _functionIndex(imm))
-      : _insn(16, dst, _window(args, 0), args.len(), _functionIndex(imm)),
-    Move => _insn(4, dst, a, 0, 0),
-    Add => _insn(_numeric(a, 28, 42, 53, 56, 61), dst, a, b, 0),
-    Sub => _insn(_numeric(a, 29, 43, 54, 57, 62), dst, a, b, 0),
-    Mul => _insn(_numeric(a, 30, 44, 55, 58, 63), dst, a, b, 0),
-    Div => _insn(_numeric(a, 31, 45, -1, 59, 64), dst, a, b, 0),
-    Rem => _insn(_wide(a) ? 46 : 32, dst, a, b, 0),
-    Shl => _insn(_wide(a) ? 48 : 37, dst, a, b, 0),
-    Shr => _insn(_wide(a) ? 49 : 38, dst, a, b, 0),
-    BitAnd => _insn(_wide(a) ? 50 : 39, dst, a, b, 0),
-    BitOr => _insn(_wide(a) ? 51 : 40, dst, a, b, 0),
-    BitXor => _insn(_wide(a) ? 52 : 41, dst, a, b, 0),
-    Neg => _insn(_numeric(a, 36, 47, -1, 60, 65), dst, a, 0, 0),
-    Not => _insn(66, dst, a, 0, 0),
+      ? _insn(JOP_CONST_FUN, dst, 0, 0, _functionIndex(imm))
+      : _insn(JOP_CLOSURE, dst, _window(args, 0), args.len(), _functionIndex(imm)),
+    Move => _insn(JOP_MOV, dst, a, 0, 0),
+    Add => _insn(_numeric(a, JOP_ADD_I32, JOP_ADD_I64, JOP_ADD_F16, JOP_ADD_F32, JOP_ADD_F64),
+      dst, a, b, 0),
+    Sub => _insn(_numeric(a, JOP_SUB_I32, JOP_SUB_I64, JOP_SUB_F16, JOP_SUB_F32, JOP_SUB_F64),
+      dst, a, b, 0),
+    Mul => _insn(_numeric(a, JOP_MUL_I32, JOP_MUL_I64, JOP_MUL_F16, JOP_MUL_F32, JOP_MUL_F64),
+      dst, a, b, 0),
+    Div => _insn(_numeric(a, JOP_DIV_I32, JOP_DIV_I64, -1, JOP_DIV_F32, JOP_DIV_F64), dst, a, b, 0),
+    Rem => _insn(_wide(a) ? JOP_MOD_I64 : JOP_MOD_I32, dst, a, b, 0),
+    Shl => _insn(_wide(a) ? JOP_SHL_I64 : JOP_SHL_I32, dst, a, b, 0),
+    Shr => _insn(_wide(a) ? JOP_SHR_I64 : JOP_SHR_I32, dst, a, b, 0),
+    BitAnd => _insn(_wide(a) ? JOP_BITAND_I64 : JOP_BITAND_I32, dst, a, b, 0),
+    BitOr => _insn(_wide(a) ? JOP_BITOR_I64 : JOP_BITOR_I32, dst, a, b, 0),
+    BitXor => _insn(_wide(a) ? JOP_BITXOR_I64 : JOP_BITXOR_I32, dst, a, b, 0),
+    Neg => _insn(_numeric(a, JOP_NEG_I32, JOP_NEG_I64, -1, JOP_NEG_F32, JOP_NEG_F64), dst, a, 0, 0),
+    Not => _insn(JOP_NOT_BOOL, dst, a, 0, 0),
     Eq => {
-      let opcode = comparesByIdentity(_registerTypes[a]) ? 109 : _numeric(a, 67, 71, -1, 73, 75);
+      let opcode = comparesByIdentity(_registerTypes[a])
+        ? JOP_PHYSEQ
+        : _numeric(a, JOP_EQ_I32, JOP_EQ_I64, -1, JOP_EQ_F32, JOP_EQ_F64);
       _insn(opcode, dst, a, b, 0)
     },
-    Lt => _insn(_numeric(a, 68, 72, -1, 74, 76), dst, a, b, 0),
-    Sext => _insn(77, dst, a, 0, 0),
-    Trunc => _insn(81, dst, a, 0, 0),
-    Box => _insn(96, dst, a, 0, 0),
+    Lt => _insn(_numeric(a, JOP_LT_I32, JOP_LT_I64, -1, JOP_LT_F32, JOP_LT_F64), dst, a, b, 0),
+    Sext => _insn(JOP_SEXT_I64, dst, a, 0, 0),
+    Trunc => _insn(JOP_I32_FROM_I64, dst, a, 0, 0),
+    Box => _insn(JOP_TO_DYN, dst, a, 0, 0),
     Unbox => _insn(_unboxOpcode(_registerTypes[dst]), dst, a, 0, 0),
-    KindOf => _insn(110, dst, a, 0, 0),
-    IsEnum => _insn(192, dst, a, 0, _find(ValueType.Nominal(imm))),
-    IsNull => _insn(190, dst, a, 0, 0),
-    NullCheck => _insn(191, a, 0, 0, 0),
-    ArrayNew => _insn(116, dst, a, 0, 0),
-    ArrayLen => _insn(117, dst, a, 0, 0),
-    ArrayGet => _insn(118, dst, a, b, 0),
-    ArraySet => _insn(119, args[2], a, b, 0),
-    ArrayConcat => _insn(120, dst, a, b, 0),
-    ArrayResize => _insn(121, 0, a, b, 0),
-    ListNil => _insn(111, dst, 0, 0, 0),
-    ListCons => _insn(112, dst, a, b, 0),
-    ListHead => _insn(113, dst, a, 0, 0),
-    ListTail => _insn(114, dst, a, 0, 0),
-    ListIsNil => _insn(115, dst, a, 0, 0),
-    BytesNew => _insn(122, dst, a, 0, 0),
-    BytesSet => _insn(125, args[2], a, b, 0),
-    BytesBlit => _insn(176, a, b, args[2], 0),
-    BytesFreeze => _insn(193, a, 0, 0, 0),
+    KindOf => _insn(JOP_KINDOF, dst, a, 0, 0),
+    IsEnum => _insn(JOP_IS_ENUM, dst, a, 0, _find(ValueType.Nominal(imm))),
+    IsNull => _insn(JOP_IS_NULL, dst, a, 0, 0),
+    NullCheck => _insn(JOP_NULL_CHECK, a, 0, 0, 0),
+    ArrayNew => _insn(JOP_ARRAY_NEW, dst, a, 0, 0),
+    ArrayLen => _insn(JOP_ARRAY_LEN, dst, a, 0, 0),
+    ArrayGet => _insn(JOP_ARRAY_GET, dst, a, b, 0),
+    ArraySet => _insn(JOP_ARRAY_SET, args[2], a, b, 0),
+    ArrayConcat => _insn(JOP_ARRAY_CONCAT2, dst, a, b, 0),
+    ArrayResize => _insn(JOP_ARRAY_RESIZE, 0, a, b, 0),
+    ListNil => _insn(JOP_LIST_NIL, dst, 0, 0, 0),
+    ListCons => _insn(JOP_LIST_CONS, dst, a, b, 0),
+    ListHead => _insn(JOP_LIST_HEAD, dst, a, 0, 0),
+    ListTail => _insn(JOP_LIST_TAIL, dst, a, 0, 0),
+    ListIsNil => _insn(JOP_LIST_IS_NIL, dst, a, 0, 0),
+    BytesNew => _insn(JOP_BYTES_NEW, dst, a, 0, 0),
+    BytesSet => _insn(JOP_BYTES_SET_U8, args[2], a, b, 0),
+    BytesBlit => _insn(JOP_BYTES_BLIT, a, b, args[2], 0),
+    BytesFreeze => _insn(JOP_BYTES_FREEZE, a, 0, 0, 0),
     BitsRead, BitsWrite, BytesRead, BytesWrite => _bitsOrBytes(insn),
-    BytesLen => _insn(123, dst, a, 0, 0),
-    BytesGet => _insn(124, dst, a, b, 0),
-    BytesSlice => _insn(189, dst, a, _window(args, 1), 0),
-    BytesConcat => _insn(126, dst, a, b, 0),
-    BytesConcatMany => _insn(127, dst, _window(args, 0), args.len(), 0),
-    BytesEq => _insn(128, dst, a, b, 0),
-    StructNew => _insn(150, dst, 0, 0, 0),
-    TupleGet => _insn(151, dst, a, 0, imm),
-    StructSet => _insn(152, b, a, 0, imm),
-    Call => _insn(11, dst, _window(args, 0), args.len(), _functionIndex(imm)),
-    CallIndirect => _insn(12, dst, a, args.len() - 1, _window(args, 1)),
-    CallNative => _insn(167, dst, _window(args, 0), args.len(), imm),
-    EnumNew => _insn(164, dst, _window(args, 0), args.len(), imm),
-    EnumTag => _insn(165, dst, a, 0, 0),
-    EnumGet => _insn(166, dst, a, b, 0),
-    ObjectNew => _insn(153, dst, 0, 0, 0),
-    ObjectHas => imm < 0 ? _insn(159, dst, a, b, 0) : _insn(154, dst, a, 0, imm),
-    ObjectGet => imm < 0 ? _insn(157, dst, a, b, 0) : _insn(155, dst, a, 0, imm),
-    ObjectSet => imm < 0 ? _insn(158, args[2], a, b, 0) : _insn(156, b, a, 0, imm),
-    ObjectRemove => _insn(160, dst, a, b, 0),
-    ObjectClear => _insn(161, 0, a, 0, 0),
-    ObjectCopy => _insn(162, dst, a, 0, 0),
-    ObjectKeys => _insn(163, dst, a, 0, 0),
-    AddImm => _insn(33, dst, a, 0, imm),
-    SubImm => _insn(34, dst, a, 0, imm),
-    MulImm => _insn(35, dst, a, 0, imm),
-    EqImm => _insn(69, dst, a, 0, imm),
-    LtImm => _insn(70, dst, a, 0, imm),
-    SpillPush => _insn(107, a, 0, 0, imm),
-    SpillPop => _insn(108, dst, 0, 0, imm),
-    GlobalGet => _insn(187, dst, 0, 0, imm),
-    GlobalSet => _insn(188, a, 0, 0, imm),
-    ConstAtom => _insn(26, dst, 0, 0, imm),
-    DivU => _insn(_wide(a) ? 179 : 177, dst, a, b, 0),
-    RemU => _insn(_wide(a) ? 180 : 178, dst, a, b, 0),
-    LtU => _insn(_wide(a) ? 182 : 181, dst, a, b, 0),
-    Zext => _insn(183, dst, a, 0, 0),
+    BytesLen => _insn(JOP_BYTES_LEN, dst, a, 0, 0),
+    BytesGet => _insn(JOP_BYTES_GET_U8, dst, a, b, 0),
+    BytesSlice => _insn(JOP_BYTES_SLICE, dst, a, _window(args, 1), 0),
+    BytesConcat => _insn(JOP_BYTES_CONCAT2, dst, a, b, 0),
+    BytesJoin => _insn(JOP_BYTES_JOIN, dst, a, b, 0),
+    BytesConcatMany => _insn(JOP_BYTES_CONCAT_MANY, dst, _window(args, 0), args.len(), 0),
+    BytesEq => _insn(JOP_BYTES_EQ, dst, a, b, 0),
+    StructNew => _insn(JOP_STRUCT_NEW, dst, 0, 0, 0),
+    TupleGet => _insn(JOP_STRUCT_GET, dst, a, 0, imm),
+    StructSet => _insn(JOP_STRUCT_SET, b, a, 0, imm),
+    Call => _insn(JOP_CALL, dst, _window(args, 0), args.len(), _functionIndex(imm)),
+    CallIndirect => _insn(JOP_CALLR, dst, a, args.len() - 1, _window(args, 1)),
+    CallNative => _insn(JOP_CALL_NATIVE, dst, _window(args, 0), args.len(), imm),
+    EnumNew => _insn(JOP_ENUM_NEW, dst, _window(args, 0), args.len(), imm),
+    EnumTag => _insn(JOP_ENUM_TAG, dst, a, 0, 0),
+    EnumGet => _insn(JOP_ENUM_GET, dst, a, b, 0),
+    ObjectNew => _insn(JOP_OBJ_NEW, dst, 0, 0, 0),
+    ObjectHas => imm < 0
+      ? _insn(JOP_OBJ_HAS, dst, a, b, 0)
+      : _insn(JOP_OBJ_HAS_ATOM, dst, a, 0, imm),
+    ObjectGet => imm < 0
+      ? _insn(JOP_OBJ_GET, dst, a, b, 0)
+      : _insn(JOP_OBJ_GET_ATOM, dst, a, 0, imm),
+    ObjectSet => imm < 0
+      ? _insn(JOP_OBJ_SET, args[2], a, b, 0)
+      : _insn(JOP_OBJ_SET_ATOM, b, a, 0, imm),
+    ObjectRemove => _insn(JOP_OBJ_REMOVE, dst, a, b, 0),
+    ObjectClear => _insn(JOP_OBJ_CLEAR, 0, a, 0, 0),
+    ObjectCopy => _insn(JOP_OBJ_COPY, dst, a, 0, 0),
+    ObjectKeys => _insn(JOP_OBJ_KEYS, dst, a, 0, 0),
+    AddImm => _insn(JOP_ADD_I32_IMM, dst, a, 0, imm),
+    SubImm => _insn(JOP_SUB_I32_IMM, dst, a, 0, imm),
+    MulImm => _insn(JOP_MUL_I32_IMM, dst, a, 0, imm),
+    EqImm => _insn(JOP_EQ_I32_IMM, dst, a, 0, imm),
+    LtImm => _insn(JOP_LT_I32_IMM, dst, a, 0, imm),
+    SpillPush => _insn(JOP_SPILL_PUSH, a, 0, 0, imm),
+    SpillPop => _insn(JOP_SPILL_POP, dst, 0, 0, imm),
+    GlobalGet => _insn(JOP_GLOBAL_GET, dst, 0, 0, imm),
+    GlobalSet => _insn(JOP_GLOBAL_SET, a, 0, 0, imm),
+    ConstAtom => _insn(JOP_CONST_ATOM, dst, 0, 0, imm),
+    DivU => _insn(_wide(a) ? JOP_DIV_U64 : JOP_DIV_U32, dst, a, b, 0),
+    RemU => _insn(_wide(a) ? JOP_MOD_U64 : JOP_MOD_U32, dst, a, b, 0),
+    LtU => _insn(_wide(a) ? JOP_LT_U64 : JOP_LT_U32, dst, a, b, 0),
+    Zext => _insn(JOP_ZEXT_I64, dst, a, 0, 0),
     ConstFloat => {
       let opcode = match (_registerTypes[dst]) {
-        F64 => 23,
-        F32 => 22,
-        _ => 21,
+        F64 => JOP_CONST_F64,
+        F32 => JOP_CONST_F32,
+        _ => JOP_CONST_F16,
       };
       _insn(opcode, dst, 0, 0, imm)
     },
@@ -517,14 +671,9 @@ let _layout = fn(entry: I32): Array<BasicBlock> {
   let threaded = Array.new<BasicBlock>(count);
   let reachable = Array.new<Bool>(count);
   let placed = Array.new<Bool>(count);
-  let i = 0;
 
-  while (i < count) {
-    let block = _blocks[i];
+  for (i, block in _blocks) {
     threaded[i] = { ...block, terminator: _threaded(block.id, block.terminator) };
-    reachable[i] = false;
-    placed[i] = false;
-    i++;
   }
 
   let work = [entry];
@@ -535,15 +684,13 @@ let _layout = fn(entry: I32): Array<BasicBlock> {
     let id = work.pop();
     let next = _successors(threaded[_indexes[id]].terminator);
     if (_catchTargets[id] >= 0) { next.push(_catchTargets[id]); }
-    let s = 0;
 
-    while (s < next.len()) {
-      if (!reachable[_indexes[next[s]]]) {
-        reachable[_indexes[next[s]]] = true;
+    for (successor in next) {
+      if (!reachable[_indexes[successor]]) {
+        reachable[_indexes[successor]] = true;
         reached++;
-        work.push(next[s]);
+        work.push(successor);
       }
-      s++;
     }
   }
 
@@ -592,10 +739,9 @@ let _function = fn(function: Function) {
   _isCatch = Array.new<Bool>(0);
   _catchTargets = Array.new<I32>(0);
   _catchPayloads = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < blocks.len()) {
-    let id = blocks[i].id;
+  for (i, block in blocks) {
+    let id = block.id;
 
     while (_indexes.len() <= id) {
       _indexes.push(-1);
@@ -604,12 +750,9 @@ let _function = fn(function: Function) {
       _catchPayloads.push(-1);
     }
     _indexes[id] = i;
-    i++;
   }
-  i = 0;
 
-  while (i < blocks.len()) {
-    let block = blocks[i];
+  for (block in blocks) {
     let handler = block.handler;
 
     if (handler != null) {
@@ -617,27 +760,21 @@ let _function = fn(function: Function) {
       _catchPayloads[block.id] = handler.payload;
       _isCatch[handler.target] = true;
     }
-    i++;
   }
 
   let order = _layout(function.entry);
   let nexts = Array.new<I32>(order.len());
-  i = 0;
 
-  while (i < order.len()) {
+  for (i, _ in order) {
     nexts[i] = i + 1 < order.len() ? order[i + 1].id : -1;
-    i++;
   }
   let pcs = Array.new<I32>(0);
   let count = 0;
-  i = 0;
 
-  while (i < order.len()) {
-    let block = order[i];
+  for (i, block in order) {
     while (pcs.len() <= block.id) { pcs.push(-1); }
     pcs[block.id] = count;
     count += block.instructions.len() + _terminatorSize(block.id, block.terminator, nexts[i]);
-    i++;
   }
 
   _run = Array.new<I32>(0);
@@ -648,72 +785,62 @@ let _function = fn(function: Function) {
   _u32(function.captures > 0 ? args : registers.len());
   _u32(args);
   _u32(count);
-  i = 0;
 
-  while (i < registers.len()) {
-    _u32(_typeIndex(registers[i]));
-    i++;
+  for (register in registers) {
+    _u32(_typeIndex(register));
   }
 
   let pc = 0;
-  i = 0;
 
-  while (i < order.len()) {
-    let id = order[i].id;
-    let instructions = order[i].instructions;
-    let j = 0;
+  for (i, block in order) {
+    let id = block.id;
 
-    while (j < instructions.len()) {
-      _at(pc, instructions[j].node);
-      _instruction(instructions[j]);
+    for (insn in block.instructions) {
+      _at(pc, insn.node);
+      _instruction(insn);
       pc++;
-      j++;
     }
 
-    match (order[i].terminator) {
+    match (block.terminator) {
       Jump(target) => {
         let (left, opened) = _transition(id, target);
-        j = 0;
+        let j = 0;
 
         while (j < left) {
-          _insn(6, 0, 0, 0, 0);
+          _insn(JOP_ENDTRY, 0, 0, 0, 0);
           pc++;
           j++;
         }
-        j = 0;
 
-        while (j < opened.len()) {
-          let region = opened[j];
-          _insn(5, _catchPayloads[region], 0, 0, pcs[_catchTargets[region]] - pc - 1);
+        for (region in opened) {
+          _insn(JOP_TRY, _catchPayloads[region], 0, 0, pcs[_catchTargets[region]] - pc - 1);
           pc++;
-          j++;
         }
 
         if (target != nexts[i]) {
-          _insn(2, 0, 0, 0, pcs[target] - pc - 1);
+          _insn(JOP_JMP, 0, 0, 0, pcs[target] - pc - 1);
           pc++;
         }
       },
       Branch(condition, thenTarget, elseTarget) => {
-        _insn(3, condition, 0, 0, pcs[thenTarget] - pc - 1);
+        _insn(JOP_JMP_IF, condition, 0, 0, pcs[thenTarget] - pc - 1);
         pc++;
 
         if (elseTarget != nexts[i]) {
-          _insn(2, 0, 0, 0, pcs[elseTarget] - pc - 1);
+          _insn(JOP_JMP, 0, 0, 0, pcs[elseTarget] - pc - 1);
           pc++;
         }
       },
       ReturnValue(value) => {
-        _insn(1, value, 0, 0, 0);
+        _insn(JOP_RET, value, 0, 0, 0);
         pc++;
       },
       Throw(value, node) => {
         _at(pc, node);
-        _insn(7, value, 0, 0, 0);
+        _insn(JOP_THROW, value, 0, 0, 0);
         pc++;
       },
     };
-    i++;
   }
 
   if (pc != count) {
@@ -750,11 +877,10 @@ let _module = fn(program: Program): Bytes {
   _buckets = Array.new<Array<I32>>(0);
   while (_buckets.len() < 256) { _buckets.push(Array.new<I32>(0)); }
 
-  let i = 0;
   let enumCount = 0;
 
-  while (i < enums.len()) {
-    match (enums[i]) {
+  for (i, schema in enums) {
+    match (schema) {
       Enum(_) => {
         _add(ValueType.Nominal(i), 19, enumCount);
         enumCount++;
@@ -764,73 +890,49 @@ let _module = fn(program: Program): Bytes {
         _add(ValueType.Nominal(i), 14, _structs.len() - 1);
       },
     };
-    i++;
   }
-  i = 0;
 
-  while (i < enums.len()) {
-    match (enums[i]) {
+  for (schema in enums) {
+    match (schema) {
       Enum(variants) => {
-        let v = 0;
-
-        while (v < variants.len()) {
-          let f = 0;
-
-          while (f < variants[v].len()) {
-            _typeIndex(variants[v][f]);
-            f++;
+        for (variant in variants) {
+          for (field in variant) {
+            _typeIndex(field);
           }
-          v++;
         }
       },
       Record(fields) => {
-        let f = 0;
-
-        while (f < fields.len()) {
-          _typeIndex(fields[f]);
-          f++;
+        for (field in fields) {
+          _typeIndex(field);
         }
       },
     };
-    i++;
   }
-  i = 0;
 
-  while (i < globals.len()) {
-    _typeIndex(globals[i]);
-    i++;
+  for (global in globals) {
+    _typeIndex(global);
   }
   _functionIndexes = Array.new<I32>(0);
-  i = 0;
 
-  while (i < functions.len()) {
-    let function = functions[i];
+  for (i, function in functions) {
     while (_functionIndexes.len() <= function.id) { _functionIndexes.push(-1); }
     _functionIndexes[function.id] = i;
-    let r = 0;
 
-    while (r < function.registers.len()) {
-      _typeIndex(function.registers[r]);
-      r++;
+    for (register in function.registers) {
+      _typeIndex(register);
     }
-    i++;
   }
   _buffer = Bytes.new(4096);
   _size = 0;
-  i = 0;
 
-  while (i < natives.len()) {
-    let native = natives[i];
+  for (native in natives) {
     atoms.internIndex(native.library);
     atoms.internIndex(native.name);
     _typeIndex(native.result);
-    let a = 0;
 
-    while (a < native.params.len()) {
-      _typeIndex(native.params[a]);
-      a++;
+    for (param in native.params) {
+      _typeIndex(param);
     }
-    i++;
   }
 
   let constants64 = (wides.len() + floats.len()) > 0;
@@ -859,79 +961,57 @@ let _module = fn(program: Program): Bytes {
   if (pool.len() > 0) { _u32(pool.len()); }
   if (globals.len() > 0) { _u32(globals.len()); }
 
-  i = 0;
-
-  while (i < _types.len()) {
-    _typeEntry(_typeKinds[i], _typeDetails[i]);
-    i++;
+  for (i, kind in _typeKinds) {
+    _typeEntry(kind, _typeDetails[i]);
   }
-  i = 0;
 
-  while (i < _signatures.len()) {
-    match (_signatures[i]) {
+  for (signature in _signatures) {
+    match (signature) {
       Function(args, result) => {
         _u32(_find(result));
         _u16(args.len());
-        let a = 0;
 
-        while (a < args.len()) {
-          _u32(_find(args[a]));
-          a++;
+        for (arg in args) {
+          _u32(_find(arg));
         }
       },
       _ => null,
     };
-    i++;
   }
-  i = 0;
 
-  while (i < _structs.len()) {
-    _u16(_structs[i].len());
+  for (layout in _structs) {
+    _u16(layout.len());
     _byte(0);
     _byte(1);
-    let f = 0;
 
-    while (f < _structs[i].len()) {
-      _u32(_find(_structs[i][f]));
-      f++;
+    for (field in layout) {
+      _u32(_find(field));
     }
-    i++;
   }
-  i = 0;
 
-  while (i < enums.len()) {
-    match (enums[i]) {
+  for (schema in enums) {
+    match (schema) {
       Enum(variants) => {
         _u16(variants.len());
-        let v = 0;
 
-        while (v < variants.len()) {
-          _u16(variants[v].len());
-          let f = 0;
+        for (variant in variants) {
+          _u16(variant.len());
 
-          while (f < variants[v].len()) {
-            _u32(_find(variants[v][f]));
-            f++;
+          for (field in variant) {
+            _u32(_find(field));
           }
-          v++;
         }
       },
       Record(_) => null,
     };
-    i++;
   }
 
-  i = 0;
-
-  while (i < atoms.len()) {
-    _u32(atoms[i].len());
-    _bytes(atoms[i]);
-    i++;
+  for (atom in atoms) {
+    _u32(atom.len());
+    _bytes(atom);
   }
-  i = 0;
 
-  while (i < natives.len()) {
-    let native = natives[i];
+  for (native in natives) {
     let params = native.params;
     _u32(atoms.internIndex(native.library));
     _u32(atoms.internIndex(native.name));
@@ -943,58 +1023,42 @@ let _module = fn(program: Program): Bytes {
       _byte(a < params.len() ? _typeKinds[_find(params[a])] : 0);
       a++;
     }
-    i++;
   }
 
-  i = 0;
-
-  while (i < wides.len()) {
-    _u32(wides[i] as I32);
-    _u32((wides[i] >> 32) as I32);
-    i++;
+  for (wide in wides) {
+    _u32(wide as I32);
+    _u32((wide >> 32) as I32);
   }
-  i = 0;
 
-  while (i < floats.len()) {
-    _u32(floats[i] as I32);
-    _u32((floats[i] >> 32) as I32);
-    i++;
+  for (float in floats) {
+    _u32(float as I32);
+    _u32((float >> 32) as I32);
   }
-  i = 0;
 
-  while (i < pool.len()) {
-    _u32(pool[i].len());
-    _bytes(pool[i]);
-    i++;
+  for (constant in pool) {
+    _u32(constant.len());
+    _bytes(constant);
   }
-  i = 0;
 
-  while (i < globals.len()) {
-    _u32(_find(globals[i]));
-    i++;
+  for (global in globals) {
+    _u32(_find(global));
   }
 
   _files = Array.new<Bytes>(0);
   _runs = Array.new<Array<I32>>(0);
-  i = 0;
 
-  while (i < functions.len()) {
-    try { _function(functions[i]); } catch (e) { throw `function ${i}: ${e}`; }
-    i++;
+  for (i, function in functions) {
+    try { _function(function); } catch (e) { throw `function ${i}: ${e}`; }
   }
 
   _u32(_files.len());
-  i = 0;
 
-  while (i < _files.len()) {
-    _u32(_files[i].len());
-    _bytes(_files[i]);
-    i++;
+  for (file in _files) {
+    _u32(file.len());
+    _bytes(file);
   }
-  i = 0;
 
-  while (i < _runs.len()) {
-    let run = _runs[i];
+  for (run in _runs) {
     let r = 0;
     let pc = 0;
     let line = 0;
@@ -1009,7 +1073,6 @@ let _module = fn(program: Program): Bytes {
       line = run[r + 2];
       r = r + 4;
     }
-    i++;
   }
 
   Bytes.slice(_buffer, 0, _size)

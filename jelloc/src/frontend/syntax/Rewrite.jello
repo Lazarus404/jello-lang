@@ -83,11 +83,9 @@ let _type = fn(value: Type): Type {
 
 let _fields = fn(fields: Array<StructField>): Array<StructField> {
   let out = Array.new<StructField>(0);
-  let i = 0;
 
-  while (i < fields.len()) {
-    out.push({ name: fields[i].name, ty: _type(fields[i].ty) });
-    i++;
+  for (field in fields) {
+    out.push({ name: field.name, ty: _type(field.ty) });
   }
   out
 };
@@ -118,18 +116,14 @@ let _children = fn(cursor: Cursor, values: Array<Expr>): Array<Expr> {
 
 let _statements = fn(cursor: Cursor, values: Array<Stmt>): Array<Stmt> {
   let out = Array.new<Stmt>(0);
-  let i = 0;
 
-  while (i < values.len()) {
-    let (made, syntax) = _statement(values[i], _nextChild(cursor));
-    let j = 0;
+  for (value in values) {
+    let (made, syntax) = _statement(value, _nextChild(cursor));
 
-    while (j < made.len()) {
-      out.push(made[j]);
+    for (j, stmt in made) {
+      out.push(stmt);
       cursor.made.push(syntax[j]);
-      j++;
     }
-    i++;
   }
   out
 };
@@ -153,12 +147,10 @@ let _annotation = fn(cursor: Cursor, value: ?Type): ?Type {
 
 let _parameters = fn(cursor: Cursor, params: Array<Parameter>): Array<Parameter> {
   let out = Array.new<Parameter>(0);
-  let i = 0;
 
-  while (i < params.len()) {
+  for ({ name, annotation, kind } in params) {
     let syntax = _nextChild(cursor);
     let inner = _cursor(syntax);
-    let { name, annotation, kind } = params[i];
 
     let made = match (kind) {
       Default(value) => ParameterKind.Default(_child(inner, value)),
@@ -167,28 +159,22 @@ let _parameters = fn(cursor: Cursor, params: Array<Parameter>): Array<Parameter>
     };
     out.push({ name, annotation: _optionalType(annotation), kind: made });
     cursor.made.push(_made(syntax, inner));
-    i++;
   }
   out
 };
 
 let _arms = fn(cursor: Cursor, arms: Array<MatchArm>): Array<MatchArm> {
   let out = Array.new<MatchArm>(0);
-  let i = 0;
 
-  while (i < arms.len()) {
-    let { alternatives, guard, body } = arms[i];
+  for ({ alternatives, guard, body } in arms) {
     let made = Array.new<MatchAlternative>(0);
-    let j = 0;
 
-    while (j < alternatives.len()) {
-      let pattern = _patternChild(cursor, alternatives[j].pattern);
-      made.push({ pattern, guard: _optionalChild(cursor, alternatives[j].guard) });
-      j++;
+    for ({ pattern, guard: own } in alternatives) {
+      let rewritten = _patternChild(cursor, pattern);
+      made.push({ pattern: rewritten, guard: _optionalChild(cursor, own) });
     }
     let shared = _optionalChild(cursor, guard);
     out.push({ alternatives: made, guard: shared, body: _block(cursor, body) });
-    i++;
   }
   out
 };
@@ -208,14 +194,11 @@ let _list = fn(cursor: Cursor, value: ListLiteral): ListLiteral {
     },
     Comprehension(generators, body) => {
       let made = Array.new<ListGenerator>(0);
-      let i = 0;
 
-      while (i < generators.len()) {
-        let { pattern, source, guard } = generators[i];
+      for ({ pattern, source, guard } in generators) {
         let p = _patternChild(cursor, pattern);
         let s = _child(cursor, source);
         made.push({ pattern: p, source: s, guard: _optionalChild(cursor, guard) });
-        i++;
       }
       ListLiteral.Comprehension(made, _child(cursor, body))
     },
@@ -224,10 +207,9 @@ let _list = fn(cursor: Cursor, value: ListLiteral): ListLiteral {
 
 let _entries = fn(cursor: Cursor, entries: Array<ObjectEntry>): Array<ObjectEntry> {
   let made = Array.new<ObjectEntry>(0);
-  let i = 0;
 
-  while (i < entries.len()) {
-    made.push(match (entries[i]) {
+  for (member in entries) {
+    made.push(match (member) {
       Field(name, entry) => ObjectEntry.Field(name, _child(cursor, entry)),
       Computed(key, entry) => {
         let k = _child(cursor, key);
@@ -235,30 +217,26 @@ let _entries = fn(cursor: Cursor, entries: Array<ObjectEntry>): Array<ObjectEntr
       },
       Spread(entry) => ObjectEntry.Spread(_child(cursor, entry)),
     });
-    i++;
   }
   made
 };
 
 let _bitSegments = fn(cursor: Cursor, segments: Array<BitExprSegment>): Array<BitExprSegment> {
   let made = Array.new<BitExprSegment>(0);
-  let i = 0;
 
-  while (i < segments.len()) {
-    let value = _child(cursor, segments[i].value);
-    let segment: BitExprSegment = { ...segments[i], value };
+  for (original in segments) {
+    let value = _child(cursor, original.value);
+    let segment: BitExprSegment = { ...original, value };
     made.push(segment);
-    i++;
   }
   made
 };
 
 let _clauses = fn(cursor: Cursor, clauses: Array<WithClause>): Array<WithClause> {
   let made = Array.new<WithClause>(0);
-  let i = 0;
 
-  while (i < clauses.len()) {
-    made.push(match (clauses[i]) {
+  for (withClause in clauses) {
+    made.push(match (withClause) {
       Clause(pattern, guard, clause) => {
         let p = _patternChild(cursor, pattern);
         let g = _optionalChild(cursor, guard);
@@ -269,7 +247,6 @@ let _clauses = fn(cursor: Cursor, clauses: Array<WithClause>): Array<WithClause>
         WithClause.Let(p, _child(cursor, clause))
       },
     });
-    i++;
   }
   made
 };
@@ -322,6 +299,10 @@ let _expressionChildren = fn(cursor: Cursor, value: Expr): Expr {
     Pipe(left, right, topic) => {
       let l = _child(cursor, left);
       Expr.Pipe(l, _child(cursor, right), topic)
+    },
+    Coalesce(left, right) => {
+      let l = _child(cursor, left);
+      Expr.Coalesce(l, _child(cursor, right))
     },
     Assign(op, left, right) => {
       let l = _child(cursor, left);
@@ -403,11 +384,9 @@ let _statementChildren = fn(cursor: Cursor, value: Stmt): Stmt {
     Expression(inner) => Stmt.Expression(_child(cursor, inner)),
     Prototype(exported, name, typeParams, fields) => {
       let made = Array.new<PrototypeField>(0);
-      let i = 0;
 
-      while (i < fields.len()) {
-        made.push({ name: fields[i].name, value: _child(cursor, fields[i].value) });
-        i++;
+      for (field in fields) {
+        made.push({ name: field.name, value: _child(cursor, field.value) });
       }
       Stmt.Prototype(exported, name, typeParams, made)
     },
@@ -421,6 +400,12 @@ let _statementChildren = fn(cursor: Cursor, value: Stmt): Stmt {
       let b = _statements(cursor, body);
       Stmt.DoWhile(b, _child(cursor, condition))
     },
+    For(index, item, items, body) => {
+      let i = index == null ? null : _patternChild(cursor, index);
+      let p = _patternChild(cursor, item);
+      let c = _child(cursor, items);
+      Stmt.For(i, p, c, _statements(cursor, body))
+    },
     Return(inner) => Stmt.Return(_optionalChild(cursor, inner)),
     Typedef(exported, name, typeParams, body) => {
       let made = match (body) {
@@ -432,11 +417,9 @@ let _statementChildren = fn(cursor: Cursor, value: Stmt): Stmt {
     },
     Enum(exported, name, typeParams, constructors) => {
       let made = Array.new<EnumConstructor>(0);
-      let i = 0;
 
-      while (i < constructors.len()) {
-        made.push({ name: constructors[i].name, fields: _fields(constructors[i].fields) });
-        i++;
+      for (constructor in constructors) {
+        made.push({ name: constructor.name, fields: _fields(constructor.fields) });
       }
       Stmt.Enum(exported, name, typeParams, made)
     },
@@ -467,13 +450,11 @@ let _bitPatternSegments = fn(
   segments: Array<BitPatternSegment>
 ): Array<BitPatternSegment> {
   let made = Array.new<BitPatternSegment>(0);
-  let i = 0;
 
-  while (i < segments.len()) {
-    let value = _subPattern(cursor, segments[i].value);
-    let segment: BitPatternSegment = { ...segments[i], value };
+  for (original in segments) {
+    let value = _subPattern(cursor, original.value);
+    let segment: BitPatternSegment = { ...original, value };
     made.push(segment);
-    i++;
   }
   made
 };
@@ -499,11 +480,9 @@ let _pattern = fn(value: Pattern, syntax: Syntax): Tuple<Pattern, Syntax> {
     IsType(ty, binding) => Pattern.IsType(_type(ty), binding),
     Object(fields) => {
       let made = Array.new<Tuple<Bytes, Pattern>>(0);
-      let i = 0;
 
-      while (i < fields.len()) {
-        made.push((fields[i].0, _subPattern(cursor, fields[i].1)));
-        i++;
+      for ((name, field) in fields) {
+        made.push((name, _subPattern(cursor, field)));
       }
       Pattern.Object(made)
     },

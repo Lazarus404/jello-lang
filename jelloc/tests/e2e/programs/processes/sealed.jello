@@ -1,0 +1,13 @@
+// expect: crashed 4
+// A process has its own prototypes, and a linked one's methods are sealed there too.
+import std.concurrent.Process as Process;
+import type { Inbox } from std.concurrent.Process;
+import { Exit } from std.concurrent.Process;
+typedef Shape = { let w: I32; };
+prototype Shape { init(w: I32) { this.w = w; }; area(): I32 { this.w * this.w }; };
+let child = Process.spawn<I32>(fn(own: Inbox<I32>) {
+  let o = new Shape(2) as Object;
+  o.area = fn(self: Shape): I32 { 0 };
+});
+let exit = match (child.join()) { Crashed(_) => "crashed", _ => "ran" };
+`${exit} ${new Shape(2).area()}`

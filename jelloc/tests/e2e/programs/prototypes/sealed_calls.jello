@@ -1,0 +1,24 @@
+// expect: 31 wide | 13 | 4
+// `new` on a value that may be a sub-prototype's runs whichever init that one finds, and a call
+// with spread arguments is direct like any other.
+typedef Shape = { let w: I32; };
+prototype Shape {
+  init(w: I32) { this.w = w; };
+  count(first: I32, ...rest: I32): I32 { first + rest.len() };
+};
+typedef Wide = { let w: I32; };
+prototype Wide {
+  __proto__: Shape;
+  init(w: I32) { this.w = w * 10; };
+  name(): Bytes { "wide" };
+};
+let maker: Shape = new Wide(1);
+let made = new maker(3);
+let wide = (made as Dynamic) as Wide;
+let parts = [3, 4, 5];
+
+// A prototype whose `__proto__` is null delegates to nothing, so its methods can be replaced.
+prototype Lone { __proto__: null; scaled(x: I32): I32 { x * 2 }; };
+let l = new Lone();
+l.scaled = fn(self: Lone, x: I32): I32 { x * 4 };
+`${made.w + 1} ${wide.name()} | ${new Shape(0).count(10, ...parts)} | ${l.scaled(1)}`

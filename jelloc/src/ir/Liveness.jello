@@ -26,11 +26,8 @@ let _add = fn(set: Array<I32>, marks: Array<I32>, stamp: I32, value: I32) {
 };
 
 let _mark = fn(values: Array<I32>, marks: Array<I32>, stamp: I32) {
-  let i = 0;
-
-  while (i < values.len()) {
-    marks[values[i]] = stamp;
-    i++;
+  for (value in values) {
+    marks[value] = stamp;
   }
   null
 };
@@ -66,52 +63,37 @@ export let liveness = fn(
   let payloads = Array.new<I32>(0);
   let liveIn = Array.new<Array<I32>>(0);
   let liveOut = Array.new<Array<I32>>(0);
-  i = 0;
 
-  while (i < blocks.len()) {
-    let instructions = blocks[i].instructions;
-    let terminator = blocks[i].terminator;
+  for (block in blocks) {
+    let terminator = block.terminator;
     stamp++;
 
     let used = Array.new<I32>(0);
     let defined = Array.new<I32>(0);
     let killed = Array.new<I32>(0);
     let throwing = false;
-    let j = 0;
 
-    while (j < instructions.len()) {
-      if (!fromStart && instructionMayThrow(instructions[j])) { throwing = true; }
+    for (insn in block.instructions) {
+      if (!fromStart && instructionMayThrow(insn)) { throwing = true; }
 
-      let reads = _reads(instructions[j]);
-      let a = 0;
-
-      while (a < reads.len()) {
-        if (written[reads[a]] != stamp) { _add(used, marks, stamp, reads[a]); }
-        a++;
+      for (register in _reads(insn)) {
+        if (written[register] != stamp) { _add(used, marks, stamp, register); }
       }
 
-      let writes = _writes(instructions[j]);
-      a = 0;
-
-      while (a < writes.len()) {
-        _add(defined, written, stamp, writes[a]);
-        if (!fromStart && !throwing) { killed.push(writes[a]); }
-        a++;
+      for (register in _writes(insn)) {
+        _add(defined, written, stamp, register);
+        if (!fromStart && !throwing) { killed.push(register); }
       }
-      j++;
     }
 
     let last = terminatorRead(terminator);
     if ((last >= 0) && (written[last] != stamp)) { _add(used, marks, stamp, last); }
-    let targets = normalSuccessors(terminator);
     let next = Array.new<I32>(0);
-    let a = 0;
 
-    while (a < targets.len()) {
-      next.push(indexes[targets[a]]);
-      a++;
+    for (target in normalSuccessors(terminator)) {
+      next.push(indexes[target]);
     }
-    let (catchBlock, payload) = blockCatch(blocks[i], indexes);
+    let (catchBlock, payload) = blockCatch(block, indexes);
 
     uses.push(used);
     defs.push(defined);
@@ -121,7 +103,6 @@ export let liveness = fn(
     payloads.push(payload);
     liveIn.push(Array.new<I32>(0));
     liveOut.push(Array.new<I32>(0));
-    i++;
   }
 
   let changed = true;
@@ -134,25 +115,16 @@ export let liveness = fn(
       stamp++;
       let out = Array.new<I32>(0);
       let catchBlock = catches[i];
-      let s = 0;
-      let m = 0;
 
-      while (s < successors[i].len()) {
-        let into = liveIn[successors[i][s]];
-        m = 0;
-
-        while (m < into.len()) {
-          _add(out, marks, stamp, into[m]);
-          m++;
+      for (successor in successors[i]) {
+        for (member in liveIn[successor]) {
+          _add(out, marks, stamp, member);
         }
-        s++;
       }
       let caught = (catchBlock >= 0) ? liveIn[catchBlock] : Array.new<I32>(0);
-      m = 0;
 
-      while (m < caught.len()) {
-        if (caught[m] != payloads[i]) { _add(out, marks, stamp, caught[m]); }
-        m++;
+      for (member in caught) {
+        if (member != payloads[i]) { _add(out, marks, stamp, member); }
       }
       liveOut[i] = out;
 
@@ -160,25 +132,19 @@ export let liveness = fn(
       let live = Array.new<I32>(0);
       _mark(defs[i], written, stamp);
       _mark(kills[i], early, stamp);
-      m = 0;
 
-      while (m < uses[i].len()) {
-        _add(live, marks, stamp, uses[i][m]);
-        m++;
+      for (member in uses[i]) {
+        _add(live, marks, stamp, member);
       }
-      m = 0;
 
-      while (m < out.len()) {
-        if (written[out[m]] != stamp) { _add(live, marks, stamp, out[m]); }
-        m++;
+      for (member in out) {
+        if (written[member] != stamp) { _add(live, marks, stamp, member); }
       }
-      m = 0;
 
-      while (m < caught.len()) {
-        if ((caught[m] != payloads[i]) && (early[caught[m]] != stamp)) {
-          _add(live, marks, stamp, caught[m]);
+      for (member in caught) {
+        if ((member != payloads[i]) && (early[member] != stamp)) {
+          _add(live, marks, stamp, member);
         }
-        m++;
       }
 
       if (live.len() > liveIn[i].len()) {

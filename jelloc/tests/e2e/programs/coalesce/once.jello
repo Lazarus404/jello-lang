@@ -1,0 +1,11 @@
+// expect: 4 1 0 5
+/* The left side runs once, and the right side only when the left is null; a `%` on either side
+ * is the enclosing pipeline's. */
+let calls = 0;
+let fallbacks = 0;
+let counted = fn(x: ?I32): ?I32 { calls++; x };
+let spare = fn(): I32 { fallbacks++; 0 };
+let none: ?I32 = null;
+
+let n = counted(4) ?? spare();
+`${n} ${calls} ${fallbacks} ${5 |> (none ?? %)}`

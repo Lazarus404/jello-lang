@@ -1,0 +1,14 @@
+// expect: 10 [3, 2, 1]
+let sum = fn(xs: Array<I32>): I32 {
+  let total = 0;
+  for (x in xs) { total += x; }
+  total
+};
+
+let reversed = fn(xs: List<I32>): List<I32> {
+  let out = list[];
+  for (x in xs) { out = list[x | out]; }
+  out
+};
+
+`${sum([1, 2, 3, 4])} ${reversed(list[1, 2, 3])}`

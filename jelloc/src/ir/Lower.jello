@@ -14,7 +14,9 @@ import type {
   BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram,
   Terminator, ThrowHandler, ValueType
 } from ir.Model;
-import { EnumSchema, Op, Terminator, ValueType, instructionAt, internValueType } from ir.Model;
+import {
+  EnumSchema, Op, Terminator, ValueType, instructionAt, internValueType, nextFunctionId,
+} from ir.Model;
 import { blockMayThrow } from ir.Cfg;
 import { verifyProgramFrom } from ir.Verify;
 import { internalError } from support.Internal;
@@ -25,9 +27,9 @@ let _blocks = Array.new<BasicBlock>(0);
 let _block = 0;
 let _nextBlock = 1;
 let _bindings = Array.new<I32>(0);
-let _ASSIGNED = 1;
-let _OVERTAKEN = 2;
-let _UNBOXED = 4;
+const _ASSIGNED = 1;
+const _OVERTAKEN = 2;
+const _UNBOXED = 4;
 let _uses = Array.new<I32>(0);
 let _lastRead = Array.new<I32>(0);
 let _walked = 0;
@@ -316,8 +318,8 @@ let _head = fn(condition: I32): I32 {
   }
 };
 
-let _RETURNED = -1;
-let _DISCARDED = -2;
+const _RETURNED = -1;
+const _DISCARDED = -2;
 
 let _chains = fn(value: I32, result: I32): Bool {
   match (opOf(value)) {
@@ -351,10 +353,9 @@ let _decided = fn(value: I32, result: I32, join: I32): Bool {
   let nexts = Array.new<I32>(0);
   let firsts = Array.new<I32>(0);
   let later = Array.new<Bool>(0);
-  let a = 0;
 
-  while (a < n) {
-    if (childOf(arms[a], 0) == heads[a]) {
+  for (a, arm in arms) {
+    if (childOf(arm, 0) == heads[a]) {
       entries.push(bodies + a);
     } else {
       entries.push(_nextBlock);
@@ -362,9 +363,8 @@ let _decided = fn(value: I32, result: I32, join: I32): Bool {
     }
     nexts.push(-1);
     later.push(false);
-    a++;
   }
-  a = 0;
+  let a = 0;
 
   while (a < n) {
     if (!later[a]) { firsts.push(a); }
@@ -377,31 +377,25 @@ let _decided = fn(value: I32, result: I32, join: I32): Bool {
     }
     a++;
   }
-  let f = 0;
 
-  while (f < firsts.len()) {
+  for (f, first in firsts) {
     let last = f + 1 == firsts.len();
     let next = last ? after : _nextBlock;
     if (!last) { _nextBlock += 1; }
-    _end(Terminator.Branch(_expr(heads[firsts[f]]), entries[firsts[f]], next), last ? -1 : next);
-    f++;
+    _end(Terminator.Branch(_expr(heads[first]), entries[first], next), last ? -1 : next);
   }
-  a = 0;
 
-  while (a < n) {
+  for (a, arm in arms) {
     if (entries[a] != bodies + a) {
       _open(entries[a]);
       let otherwise = nexts[a] < 0 ? after : entries[nexts[a]];
-      _branchAfter(childOf(arms[a], 0), heads[a], bodies + a, otherwise, -1);
+      _branchAfter(childOf(arm, 0), heads[a], bodies + a, otherwise, -1);
     }
-    a++;
   }
-  a = 0;
 
-  while (a < n) {
+  for (a, arm in arms) {
     _open(bodies + a);
-    _tail(childOf(arms[a], 1), result, join);
-    a++;
+    _tail(childOf(arm, 1), result, join);
   }
   _open(after);
   if (rest >= 0) { _tail(rest, result, join); } else { _end(Terminator.Jump(join), -1); }
@@ -486,6 +480,7 @@ let _operation = fn(id: I32): Op {
     BytesGet => Op.BytesGet,
     BytesSlice => Op.BytesSlice,
     BytesConcat => Op.BytesConcat,
+    BytesJoin => Op.BytesJoin,
     BytesEq => Op.BytesEq,
 
     Tuple => Op.TupleNew,
@@ -524,7 +519,7 @@ let _nativeIndex = fn(native: I32): I32 {
   _nativeIndexes[native]
 };
 
-let _JOIN_PARTS = 64;
+const _JOIN_PARTS = 64;
 
 let _joined = fn(id: I32): I32 {
   let joined = -1;
@@ -638,11 +633,8 @@ let _float = fn(id: I32): I32 {
   let operands = _values(id, 0);
 
   if (typeOf(childOf(id, 0)) == TYPE_F16) {
-    let i = 0;
-
-    while (i < operands.len()) {
-      operands[i] = _converted(TYPE_F32, operands[i]);
-      i++;
+    for (i, operand in operands) {
+      operands[i] = _converted(TYPE_F32, operand);
     }
   }
 
@@ -818,11 +810,9 @@ let _arrayLiteral = fn(id: I32): I32 {
   let items = _values(id, 0);
   let array = _fresh(typeOf(id));
   _emit(Op.ArrayNew, array, [_i32(items.len())], 0);
-  let i = 0;
 
-  while (i < items.len()) {
-    _emit(Op.ArraySet, -1, [array, _i32(i), items[i]], 0);
-    i++;
+  for (i, item in items) {
+    _emit(Op.ArraySet, -1, [array, _i32(i), item], 0);
   }
   array
 };
@@ -847,21 +837,18 @@ let _bitsPack = fn(id: I32): I32 {
   let bytes = _fresh(TYPE_BYTES);
   _emit(Op.BytesNew, bytes, [length], 0);
 
-  i = 0;
-
-  while (i < values.len()) {
+  for (i, value in values) {
     let field = childOf(id, i);
     let width = segmentWidth(auxOf(field));
 
     if (width == 0) {
-      _emit(Op.BytesBlit, -1, [bytes, values[i], _i32(fixed)], 0);
+      _emit(Op.BytesBlit, -1, [bytes, value, _i32(fixed)], 0);
     } else if (width <= 8) {
-      _emit(Op.BitsWrite, -1, [bytes, values[i]], valueOf(field) * 16 + width);
+      _emit(Op.BitsWrite, -1, [bytes, value], valueOf(field) * 16 + width);
     } else {
       let offset = _i32(valueOf(field) / 8);
-      _emit(Op.BytesWrite, -1, [bytes, offset, values[i]], _bytesFormat(auxOf(field)));
+      _emit(Op.BytesWrite, -1, [bytes, offset, value], _bytesFormat(auxOf(field)));
     }
-    i++;
   }
   _emit(Op.BytesFreeze, -1, [bytes], 0);
   bytes
@@ -1139,17 +1126,24 @@ let _while = fn(id: I32) {
   let conditionBlock = _nextBlock;
   let bodyBlock = conditionBlock + 1;
   let exitBlock = conditionBlock + 2;
-  _nextBlock += 3;
+  let stepped = childCount(id) == 3;
+  let next = stepped ? conditionBlock + 3 : conditionBlock;
+  _nextBlock += stepped ? 4 : 3;
   _end(Terminator.Jump(conditionBlock), conditionBlock);
   _branch(childOf(id, 0), bodyBlock, exitBlock, bodyBlock);
 
   let outerBreak = _breakTarget;
   let outerContinue = _continueTarget;
   _breakTarget = exitBlock;
-  _continueTarget = conditionBlock;
+  _continueTarget = next;
   _lowerBlock(childOf(id, 1));
   _breakTarget = outerBreak;
   _continueTarget = outerContinue;
+
+  if (stepped) {
+    _end(Terminator.Jump(next), next);
+    _lowerBlock(childOf(id, 2));
+  }
   _end(Terminator.Jump(conditionBlock), exitBlock);
   null
 };
@@ -1175,21 +1169,17 @@ let _doWhile = fn(id: I32) {
 
 let _restart = fn(id: I32) {
   let args = _values(id, 0);
-  let i = 0;
 
-  while (i < args.len()) {
-    let held = _params.indexOf(args[i]);
+  for (i, arg in args) {
+    let held = _params.indexOf(arg);
 
     if ((held >= 0) && (held < i) && (args[held] != _params[held])) {
-      args[i] = _copy(typeOf(childOf(id, i)), args[i]);
+      args[i] = _copy(typeOf(childOf(id, i)), arg);
     }
-    i++;
   }
-  i = 0;
 
-  while (i < args.len()) {
-    if (args[i] != _params[i]) { _move(_params[i], args[i]); }
-    i++;
+  for (i, arg in args) {
+    if (arg != _params[i]) { _move(_params[i], arg); }
   }
   _exit(Terminator.Jump(_start))
 };
@@ -1442,18 +1432,18 @@ let _reachableFunctions = fn(): Array<Bool> {
 };
 
 let _partStarts = Array.new<I32>(0);
+let _firstPart = 0;
 
 export let functionNode = fn(functionId: I32): I32 {
   let root = rootNode();
-  let first = childCount(root);
 
-  if (functionId >= first) {
-    return childOf(lastChild(root), _partStarts[functionId - first]);
+  if ((_partStarts.len() > 0) && (functionId >= _firstPart)) {
+    return childOf(lastChild(root), _partStarts[functionId - _firstPart]);
   }
   functionId == 0 ? lastChild(root) : childOf(root, functionId - 1)
 };
 
-let _PART_TYPES = 128;
+const _PART_TYPES = 128;
 
 let _part = fn(body: I32, start: I32, functionId: I32): Tuple<IrFunction, I32> {
   _begin(childOf(body, start), functionId);
@@ -1573,11 +1563,8 @@ let _findCells = fn() {
 let _poolSizes = Array.new<I32>(0);
 
 let _forgetIndexes = fn(indexes: Array<I32>, size: I32) {
-  let i = 0;
-
-  while (i < indexes.len()) {
-    if (indexes[i] >= size) { indexes[i] = -1; }
-    i++;
+  for (i, index in indexes) {
+    if (index >= size) { indexes[i] = -1; }
   }
   null
 };
@@ -1590,20 +1577,22 @@ let _lowerBody = fn(
 ): IrProgram {
   let root = rootNode();
   let body = lastChild(root);
-  let first = childCount(root);
   let result = -1;
 
   if (!inParts) {
+    _partStarts = [];
     _begin(body, -1);
     result = _lowerBlock(body);
   } else {
     let statements = childCount(body) - 1;
     let next = 0;
+    let free = nextFunctionId(functions);
+    _firstPart = (free > childCount(root)) ? free : childCount(root);
     _partStarts = [];
 
     while (next < statements) {
       _partStarts.push(next);
-      let (part, after) = _part(body, next, first + _partStarts.len() - 1);
+      let (part, after) = _part(body, next, _firstPart + _partStarts.len() - 1);
       functions.push(part);
       next = after;
     }
@@ -1611,7 +1600,7 @@ let _lowerBody = fn(
     let part = 0;
 
     while (part < _partStarts.len()) {
-      _emit(Op.Call, _fresh(TYPE_NULL), [], first + part);
+      _emit(Op.Call, _fresh(TYPE_NULL), [], _firstPart + part);
       part++;
     }
     result = _expr(lastChild(body));
@@ -1665,25 +1654,23 @@ export let lowerProgram = fn(program: Hir): IrProgram {
     ty++;
   }
   let enums = Array.new<EnumSchema>(0);
-  let e = 0;
 
-  while (e < enumTypes.len()) {
+  for (enumType in enumTypes) {
     let variants = Array.new<Array<ValueType>>(0);
     let tag = 0;
 
-    while (tag < variantCount(enumTypes[e])) {
+    while (tag < variantCount(enumType)) {
       let fields = Array.new<ValueType>(0);
       let f = 0;
 
-      while (f < fieldCount(enumTypes[e], tag)) {
-        fields.push(_valueType(fieldType(enumTypes[e], tag, f)));
+      while (f < fieldCount(enumType, tag)) {
+        fields.push(_valueType(fieldType(enumType, tag, f)));
         f++;
       }
       variants.push(fields);
       tag++;
     }
-    enums.push(isRecord(enumTypes[e]) ? EnumSchema.Record(variants[0]) : EnumSchema.Enum(variants));
-    e++;
+    enums.push(isRecord(enumType) ? EnumSchema.Record(variants[0]) : EnumSchema.Enum(variants));
   }
 
   _findCells();

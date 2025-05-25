@@ -6,7 +6,7 @@ import frontend.hir.Hir as H;
 import { internalError } from support.Internal;
 import { Kind, Op } from frontend.hir.Hir;
 import {
-  binaryValues, bufferHint, checkOperand, checkType, enterSyntax, hideValue, inTemplate,
+  binaryValues, bufferHint, checkOperand, checkType, coerceAt, enterSyntax, hideValue, inTemplate,
   integerConversion, isNullaryVariant, presentAt, presentKnown, prototypeValue, syntaxChild,
   upcasts,
 } from frontend.semantics.TypeCheck;
@@ -159,7 +159,7 @@ export let checkedKind = fn(ty: I32): I32 {
   }
 };
 
-export let UNCHECKED_KINDS: Bytes =
+export const UNCHECKED_KINDS: Bytes =
   ": only Bool, I32, I64, F16, F32, F64, Atom, Bytes, enums and Object are checked";
 
 let _negative = fn(ty: I32, limit: Bytes): Bytes {
@@ -228,6 +228,8 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   let operand = checkOperand(value, 0, -1);
   let ty = H.typeOf(operand);
   if (ty == target) { return operand; }
+  if (H.holdsUnknown(ty) && H.unify(ty, target)) { return operand; }
+  if ((ty == H.TYPE_NULL) && H.holdsNull(target)) { return coerceAt(operand, target, 0); }
 
   if (ty == H.TYPE_BYTE_BUFFER) {
     throw coded(E0406, "`as` cannot convert a buffer from Bytes.new" + bufferHint(ty));

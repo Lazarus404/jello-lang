@@ -1,6 +1,6 @@
 package support;
 
-import { concatAll, hexValue } from support.Text;
+import { hexValue } from support.Text;
 import { u8, utf8FromCodepoint } from std.core.Bytes;
 
 export enum Json {
@@ -123,7 +123,7 @@ let _string = fn(): Bytes {
   }
   parts.push(Bytes.slice(_text, run, _pos - run));
   _pos++;
-  concatAll(parts)
+  parts.join("")
 };
 
 let _digits = fn(): I32 {

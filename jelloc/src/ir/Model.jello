@@ -24,7 +24,7 @@ export enum Op {
   RemU; LtU; Zext; Convert; Box; Unbox; KindOf; IsEnum; IsNull; NullCheck;
   ArrayNew; ArrayLen; ArrayGet; ArraySet; ArrayResize; ArrayConcat; ListNil; ListCons; ListHead;
   ListTail; ListIsNil; BytesNew; BytesSet; BytesBlit; BitsRead; BitsWrite; BytesRead; BytesWrite;
-  BytesLen; BytesGet; BytesSlice; BytesConcat; BytesConcatMany; BytesEq; BytesFreeze;
+  BytesLen; BytesGet; BytesSlice; BytesConcat; BytesConcatMany; BytesJoin; BytesEq; BytesFreeze;
   TupleNew; TupleGet; EnumNew; EnumTag; EnumGet;
   ObjectNew; ObjectGet; ObjectSet; ObjectHas; ObjectRemove; ObjectClear; ObjectCopy; ObjectKeys;
   Call; CallIndirect; CallNative; GlobalGet; GlobalSet;
@@ -105,6 +105,15 @@ export typedef Program = {
   let natives: Array<Native>;
 };
 
+export let nextFunctionId = fn(functions: Array<Function>): I32 {
+  let next = 0;
+
+  for (function in functions) {
+    if (function.id >= next) { next = function.id + 1; }
+  }
+  next
+};
+
 export let argumentCount = fn(function: Function): I32 {
   function.params.len() - function.captures
 };
@@ -122,11 +131,9 @@ export let comparesByIdentity = fn(ty: ValueType): Bool {
 
 let _valueTypesEqual = fn(left: Array<ValueType>, right: Array<ValueType>): Bool {
   if (left.len() != right.len()) { return false; }
-  let i = 0;
 
-  while (i < left.len()) {
-    if (!valueTypeEqual(left[i], right[i])) { return false; }
-    i++;
+  for (i, ty in left) {
+    if (!valueTypeEqual(ty, right[i])) { return false; }
   }
   true
 };
@@ -145,11 +152,8 @@ export let valueTypeEqual = fn(left: ValueType, right: ValueType): Bool {
 };
 
 export let internValueType = fn(types: Array<ValueType>, ty: ValueType): I32 {
-  let i = 0;
-
-  while (i < types.len()) {
-    if (valueTypeEqual(types[i], ty)) { return i; }
-    i++;
+  for (i, known in types) {
+    if (valueTypeEqual(known, ty)) { return i; }
   }
   types.push(ty);
   types.len() - 1

@@ -1,16 +1,6 @@
 package frontend;
 
-export let bitsNew = fn(size: I32): Array<I32> {
-  let words = (size + 31) >> 5;
-  let set = Array.new<I32>(words);
-  let i = 0;
-
-  while (i < words) {
-    set[i] = 0;
-    i++;
-  }
-  set
-};
+export let bitsNew = fn(size: I32): Array<I32> { Array.new<I32>((size + 31) >> 5) };
 
 export let bitsHas = fn(set: Array<I32>, value: I32): Bool {
   ((set[value >> 5] >> (value & 31)) & 1) == 1
@@ -23,27 +13,22 @@ export let bitsAdd = fn(set: Array<I32>, value: I32): Bool {
 
 export let bitsUnion = fn(dst: Array<I32>, src: Array<I32>): Bool {
   let changed = false;
-  let i = 0;
 
-  while (i < dst.len()) {
-    let word = dst[i] | src[i];
+  for (i, old in dst) {
+    let word = old | src[i];
 
-    if (word != dst[i]) {
+    if (word != old) {
       dst[i] = word;
       changed = true;
     }
-    i++;
   }
   changed
 };
 
 export let bitsMembers = fn(set: Array<I32>): Array<I32> {
   let members = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < set.len()) {
-    let word = set[i];
-
+  for (i, word in set) {
     if (word != 0) {
       let bit = 0;
 
@@ -52,7 +37,6 @@ export let bitsMembers = fn(set: Array<I32>): Array<I32> {
         bit++;
       }
     }
-    i++;
   }
   members
 };

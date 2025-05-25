@@ -170,11 +170,9 @@ let _useScope = fn(scope: Scope) {
   _names = scope.names;
   _places = scope.places;
   _nameIsType = scope.isType;
-  let i = 0;
 
-  while (i < _names.len()) {
-    _place(_names[i], _nameIsType[i], _places[i]);
-    i++;
+  for (i, name in _names) {
+    _place(name, _nameIsType[i], _places[i]);
   }
   null
 };
@@ -193,22 +191,15 @@ export let enterModule = fn(module: I32, imports: Array<Import>, modules: Array<
   _useScope(scope);
   _module = module;
 
-  let i = 0;
+  _opened.resize(_opened.len() + modules.len());
 
-  while (i < modules.len()) {
-    _opened.push(false);
-    i++;
-  }
-  i = 0;
-
-  while (i < imports.len()) {
-    match (imports[i]) {
+  for (clause in imports) {
+    match (clause) {
       Import(_, module, _, _, true, _), Namespace(_, module, true, _) => {
         _opened[module] = true;
       },
       _ => null,
     };
-    i++;
   }
   true
 };

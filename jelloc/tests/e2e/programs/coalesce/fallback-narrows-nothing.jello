@@ -1,0 +1,7 @@
+// trap: NULL_DEREF 5:7
+// A null test in the fallback proves nothing afterwards, since the fallback may not run.
+let f = fn(a: ?I32, b: ?I32): I32 {
+  let v = a ?? { if (b == null) { return 0; } 1 };
+  v + b
+};
+f(1, null)

@@ -1,6 +1,6 @@
 package ir;
 
-import { bytesLiteral, concatAll } from support.Text;
+import { bytesLiteral } from support.Text;
 import type {
   BasicBlock, Function, Instruction, Native, Program, Terminator, ThrowHandler, ValueType
 } from ir.Model;
@@ -8,12 +8,10 @@ import { ValueType, argumentCount } from ir.Model;
 
 let _types = fn(types: Array<ValueType>): Bytes {
   let out = "";
-  let i = 0;
 
-  while (i < types.len()) {
+  for (i, ty in types) {
     if (i > 0) { out += ", "; }
-    out += _type(types[i]);
-    i++;
+    out += _type(ty);
   }
   out
 };
@@ -152,6 +150,7 @@ let _instruction = fn(
     BytesGet => `bytes.get_u8 ${operands}`,
     BytesSlice => `bytes.slice ${operands}`,
     BytesConcat => `bytes.concat ${operands}`,
+    BytesJoin => `bytes.join ${operands}`,
     BytesConcatMany => `bytes.concat_many ${operands}`,
     BytesEq => `bytes.eq ${operands}`,
     TupleNew => `tuple ${operands}`,
@@ -212,47 +211,33 @@ let _block = fn(
   if (handler != null) { label += _handler(handler); }
   out.push(`${label}:\n`);
 
-  let instructions = block.instructions;
-  let i = 0;
-
-  while (i < instructions.len()) {
-    out.push(`    ${_instruction(instructions[i], registers, pool)}\n`);
-    i++;
+  for (insn in block.instructions) {
+    out.push(`    ${_instruction(insn, registers, pool)}\n`);
   }
   out.push(`    ${_terminator(block.terminator)}\n`);
   null
 };
 
 let _function = fn(function: Function, pool: Array<Bytes>, out: Array<Bytes>) {
-  let params = function.params;
   let registers = function.registers;
   let header = `fn @${function.id}(`;
-  let i = 0;
 
-  while (i < params.len()) {
+  for (i, param in function.params) {
     if (i == argumentCount(function)) {
       header += ") captures(";
     } else if (i > 0) {
       header += ", ";
     }
-    header += `${_register(params[i])}: ${_type(registers[params[i]])}`;
-    i++;
+    header += `${_register(param)}: ${_type(registers[param])}`;
   }
   out.push(`${header}) -> ${_type(function.result)} entry ${function.entry} {\n`);
 
-  i = 0;
-
-  while (i < registers.len()) {
-    out.push(`  register ${_register(i)}: ${_type(registers[i])}\n`);
-    i++;
+  for (i, ty in registers) {
+    out.push(`  register ${_register(i)}: ${_type(ty)}\n`);
   }
 
-  let blocks = function.blocks;
-  i = 0;
-
-  while (i < blocks.len()) {
-    _block(blocks[i], registers, pool, out);
-    i++;
+  for (block in function.blocks) {
+    _block(block, registers, pool, out);
   }
   out.push("}\n");
   null
@@ -262,60 +247,45 @@ export let printIr = fn(program: Program): Bytes {
   let out = Array.new<Bytes>(0);
 
   let globals = program.globals;
-  let i = 0;
 
-  while (i < globals.len()) {
-    out.push(`global g${i}: ${_type(globals[i])}\n`);
-    i++;
+  for (i, ty in globals) {
+    out.push(`global g${i}: ${_type(ty)}\n`);
   }
   if (globals.len() > 0) { out.push("\n"); }
 
   let natives = program.natives;
-  i = 0;
 
-  while (i < natives.len()) {
-    let native = natives[i];
+  for (i, native in natives) {
     let signature = _type(ValueType.Function(native.params, native.result));
     out.push(`native n${i}: ${native.library}.${native.name} ${signature}\n`);
-    i++;
   }
   if (natives.len() > 0) { out.push("\n"); }
 
   let wides = program.wides;
-  i = 0;
 
-  while (i < wides.len()) {
-    out.push(`i64 #${i} = ${wides[i]}\n`);
-    i++;
+  for (i, wide in wides) {
+    out.push(`i64 #${i} = ${wide}\n`);
   }
   if (wides.len() > 0) { out.push("\n"); }
 
   let floats = program.floats;
-  i = 0;
 
-  while (i < floats.len()) {
-    out.push(`f64 #${i} = bits ${floats[i]}\n`);
-    i++;
+  for (i, float in floats) {
+    out.push(`f64 #${i} = bits ${float}\n`);
   }
   if (floats.len() > 0) { out.push("\n"); }
 
   let atoms = program.atoms;
-  i = 0;
 
-  while (i < atoms.len()) {
-    out.push(`atom #${i} = :${atoms[i]}\n`);
-    i++;
+  for (i, atom in atoms) {
+    out.push(`atom #${i} = :${atom}\n`);
   }
   if (atoms.len() > 0) { out.push("\n"); }
 
-  let functions = program.functions;
-  i = 0;
-
-  while (i < functions.len()) {
+  for (i, function in program.functions) {
     if (i > 0) { out.push("\n"); }
-    _function(functions[i], program.bytes, out);
-    i++;
+    _function(function, program.bytes, out);
   }
 
-  concatAll(out)
+  out.join("")
 };

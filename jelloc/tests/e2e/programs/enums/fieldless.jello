@@ -1,0 +1,40 @@
+// expect: true true false|Colour.Red Option.None|2 1|true|true true
+// schedulers: 2
+/* A variant without fields is one shared value for each enum type, so naming it never
+ * allocates; it still compares, prints, matches and travels between processes as before, and
+ * each instance of a generic enum keeps its own. */
+import std.concurrent.Process as Process;
+import type { Inbox } from std.concurrent.Process;
+
+enum Colour { Red; Green; Mix(a: I32); }
+enum Option<T> { Some(value: T); None; }
+
+let red = Colour.Red;
+let none: Option<I32> = Option.None;
+let noText: Option<Bytes> = Option.None;
+let same = `${red == Colour.Red} ${none == Option.None} ${Colour.Green == red}`;
+let shown = `${Enum.toString(red)} ${Std.string(noText)}`;
+
+// Many of them, each matched as its own variant.
+let reds = 0;
+let greens = 0;
+let i = 0;
+while (i < 3) {
+  match (i == 1 ? Colour.Red : Colour.Green) { Red => { reds++; }, Green => { greens++; }, _ => {} }
+  i++;
+}
+
+// Boxed, a variant is still equal to itself.
+let boxed = Colour.Green as Dynamic;
+let alike = (boxed as Colour) == Colour.Green;
+
+// Sent to another process and back.
+let back = new Inbox<Colour>();
+let me = Process.self<Colour>(back);
+let echo = Process.spawn<Colour>(fn(inbox: Inbox<Colour>) { me.send(inbox.receive()); });
+echo.send(Colour.Red);
+let returned = back.receive();
+echo.join();
+let mixed: Option<I32> = Option.Some(3);
+
+`${same}|${shown}|${greens} ${reds}|${alike}|${returned == Colour.Red} ${mixed != none}`

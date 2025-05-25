@@ -2,7 +2,6 @@ import { Json, jsonAt, jsonField, parseJson } from support.Json;
 import { sourceDiagnostic } from frontend.syntax.Source;
 import { E0211, E0212, coded } from support.Codes;
 import { exists, readText } from std.io.File;
-import { joined } from support.Text;
 
 load { file_real_path } from std;
 
@@ -126,15 +125,10 @@ let _dependencies = fn(manifest: Json, found: Array<Dependency>) {
   match (field) {
     Null(_) => null,
     Object(_, keys, values) => {
-      let i = 0;
-
-      while (i < keys.len()) {
-        let name = keys[i];
-
+      for (i, name in keys) {
         if (found.first(fn(known: Dependency): Bool { known.name == name }) == null) {
           found.push({ name: name, at: jsonAt(values[i]), namedIn: _path });
         }
-        i++;
       }
       null
     },
@@ -153,12 +147,9 @@ let _within = fn(dir: Bytes, names: Array<Bytes>): Array<Bytes> {
 };
 
 let _locate = fn(places: Array<Bytes>, name: Bytes): Bytes {
-  let p = 0;
-
-  while (p < places.len()) {
-    let candidate = inDirectory(places[p], name);
+  for (place in places) {
+    let candidate = inDirectory(place, name);
     if (exists(candidate)) { return candidate; }
-    p++;
   }
   ""
 };
@@ -197,7 +188,7 @@ export let loadProject = fn(root: Bytes): Project {
       _fail(
         dependency.at,
         E0212,
-        `package ${dependency.name} is in none of ${joined(places, ", ")}; run \`jelloc deps.get\``
+        `package ${dependency.name} is in none of ${places.join(", ")}; run \`jelloc deps.get\``
       );
     }
 

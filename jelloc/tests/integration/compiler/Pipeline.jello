@@ -12,7 +12,6 @@ import { lowerProgram } from ir.Lower;
 import { legalizeJlo } from backend.jello.Legalize;
 import { allocateProgram } from backend.jello.Allocate;
 import { emitAllocated, noSource } from backend.jello.Emit;
-import type { Module } from frontend.Loader;
 import { loadModules, loadTests } from frontend.Loader;
 import { printIr } from ir.Print;
 
@@ -32,9 +31,9 @@ let _STD = "../stdlib";
 
 // The program at PATH, with its imports under ROOTS after its directory,
 // checked.
-export let checkedFile = fn(path: Bytes, roots: Array<Bytes>): Hir { checkProgram(fn(types: Array<Bytes>): Array<Module> { loadModules(path, _STD, roots, types) }) };
+export let checkedFile = fn(path: Bytes, roots: Array<Bytes>): Hir { checkProgram(loadModules(path, _STD, roots)) };
 // The program at PATH allocated; and as --jlo prints it.
 export let allocatedFile = fn(path: Bytes, roots: Array<Bytes>): Program { allocateProgram(legalizeJlo(lowerProgram(checkedFile(path, roots)))) };
 export let jloOf = fn(path: Bytes, roots: Array<Bytes>): Bytes { printIr(allocatedFile(path, roots)) };
 // The test binary of FILES, each under one of ROOTS, checked.
-export let checkedTests = fn(files: Array<Bytes>, roots: Array<Bytes>): Hir { checkProgram(fn(types: Array<Bytes>): Array<Module> { loadTests(files, _STD, roots, types) }) };
+export let checkedTests = fn(files: Array<Bytes>, roots: Array<Bytes>): Hir { checkProgram(loadTests(files, _STD, roots)) };

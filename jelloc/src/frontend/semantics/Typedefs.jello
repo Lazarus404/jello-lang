@@ -64,29 +64,23 @@ let _declareAlias = fn(alias: I32) {
 };
 
 let _later = fn(name: Bytes): I32 {
-  let alias = 0;
-
-  while (alias < _aliases.len()) {
-    match (_statements[_aliases[alias]]) {
+  for (alias, statement in _aliases) {
+    match (_statements[statement]) {
       Typedef(_, declared, _, _) when ((declared == name) && (_states[alias] != State.Done)) => {
         _declareAlias(alias);
         return scopedType(name);
       },
       _ => null,
     };
-    alias++;
   }
   -1
 };
 
 let _defineRecord = fn(name: Bytes, names: Array<Bytes>, types: Array<I32>) {
-  let f = 0;
-
-  while (f < names.len()) {
-    if (names.indexOf(names[f]) < f) {
-      throw coded(E0302, `duplicate field ${names[f]} of ${name}`);
+  for (f, field in names) {
+    if (names.indexOf(field) < f) {
+      throw coded(E0302, `duplicate field ${field} of ${name}`);
     }
-    f++;
   }
   defineVariants(scopedType(name), [name], [names], [types]);
   null
@@ -105,11 +99,9 @@ let _layoutCode = fn(ty: BytesLayoutType): I32 {
 
 let _declareLayout = fn(name: Bytes, fields: Array<BytesLayoutField>): I32 {
   let codes = Array.new<I32>(0);
-  let f = 0;
 
-  while (f < fields.len()) {
-    codes.push(_layoutCode(fields[f].ty));
-    f++;
+  for (field in fields) {
+    codes.push(_layoutCode(field.ty));
   }
   let (offsets, fixed) = placeSegments(codes);
   declareLayout(name, codes, offsets, fixed)
@@ -136,23 +128,19 @@ let _defineLayout = fn(name: Bytes, fields: Array<BytesLayoutField>) {
   let codes = layoutCodes(scopedType(name));
   let names = Array.new<Bytes>(0);
   let types = Array.new<I32>(0);
-  let f = 0;
 
-  while (f < fields.len()) {
-    names.push(fields[f].name);
+  for (f, field in fields) {
+    names.push(field.name);
     types.push(segmentType(codes[f]));
-    f++;
   }
   _defineRecord(name, names, types)
 };
 
 let _paramKey = fn(params: Array<TypeParam>): Bytes {
   let names = "";
-  let i = 0;
 
-  while (i < params.len()) {
-    names = `${names}${params[i].name},`;
-    i++;
+  for (param in params) {
+    names = `${names}${param.name},`;
   }
   names
 };
@@ -165,11 +153,10 @@ let _linksPrototype = fn(
 ): Bool {
   if (_prototypeNames.indexOf(name) < 0) { return false; }
   let linked = `typedef ${name} and prototype ${name} are linked`;
-  let i = 0;
   let found = false;
 
-  while (i < _statements.len()) {
-    match (_statements[i]) {
+  for (i, stmt in _statements) {
+    match (stmt) {
       Typedef(_, declared, _, Struct(_)) when ((declared == name) && (i < statement)) => {
         return false;
       },
@@ -185,18 +172,15 @@ let _linksPrototype = fn(
       },
       _ => null,
     };
-    i++;
   }
   found
 };
 
 export let prototypeNames = fn(statements: Array<Stmt>): Array<Bytes> {
   let names = Array.new<Bytes>(0);
-  let i = 0;
 
-  while (i < statements.len()) {
-    if (let Prototype(_, name, _, _) = statements[i]) { names.push(name); }
-    i++;
+  for (statement in statements) {
+    if (let Prototype(_, name, _, _) = statement) { names.push(name); }
   }
   names
 };
@@ -209,10 +193,9 @@ export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool)
   _syntaxes = Array.new<Syntax>(0);
   _states = Array.new<State>(0);
   _prototypeNames = prototypeNames(statements);
-  let i = 0;
 
-  while (i < statements.len()) {
-    match (statements[i]) {
+  for (i, statement in statements) {
+    match (statement) {
       Enum(exported, name, typeParams, _) => {
         let parent = enterSyntax(syntaxChild(i));
 
@@ -264,21 +247,17 @@ export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool)
       },
       _ => null,
     };
-    i++;
   }
   useTypedefs(_later);
   defineEnums(statements);
-  let alias = 0;
 
-  while (alias < _aliases.len()) {
+  for (alias, _ in _aliases) {
     _declareAlias(alias);
-    alias++;
   }
   useTypedefs(fn(_name: Bytes): I32 { -1 });
-  i = 0;
 
-  while (i < statements.len()) {
-    match (statements[i]) {
+  for (i, statement in statements) {
+    match (statement) {
       Typedef(_, name, _, Struct(fields)) => {
         let parent = enterSyntax(syntaxChild(i));
         _defineStruct(name, fields);
@@ -291,7 +270,6 @@ export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool)
       },
       _ => null,
     };
-    i++;
   }
   true
 };

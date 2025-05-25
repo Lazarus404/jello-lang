@@ -1,0 +1,7 @@
+// trap: SEALED 6:1
+// A linked value keeps its prototype.
+typedef Shape = { let w: I32; };
+prototype Shape { init(w: I32) { this.w = w; }; area(): I32 { this.w * this.w }; };
+let o = new Shape(3) as Object;
+o.__proto__ = {};
+1

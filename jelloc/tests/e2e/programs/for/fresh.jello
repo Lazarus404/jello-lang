@@ -1,0 +1,10 @@
+// expect: 0 11 22 3
+/* Each pass binds fresh names, so a closure keeps the item and index it saw; the array's length
+ * is read on every pass, so items pushed by the body are walked too. */
+let thunks = Array.new<() -> I32>(0);
+for (i, x in [0, 10, 20]) { thunks.push(fn() { x + i }); }
+
+let growing = [1];
+for (x in growing) { if (growing.len() < 3) { growing.push(x + 1); } }
+
+`${thunks[0]()} ${thunks[1]()} ${thunks[2]()} ${growing.len()}`

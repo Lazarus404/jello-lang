@@ -23,24 +23,20 @@ export let normalSuccessors = fn(terminator: Terminator): Array<I32> {
 
 export let blockMayThrow = fn(instructions: Array<Instruction>, terminator: Terminator): Bool {
   if (_terminatorThrows(terminator)) { return true; }
-  let i = 0;
 
-  while (i < instructions.len()) {
-    if (instructionMayThrow(instructions[i])) { return true; }
-    i++;
+  for (instruction in instructions) {
+    if (instructionMayThrow(instruction)) { return true; }
   }
   false
 };
 
 export let blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   let indexes = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < blocks.len()) {
-    let id = blocks[i].id;
+  for (i, block in blocks) {
+    let id = block.id;
     while (indexes.len() <= id) { indexes.push(-1); }
     indexes[id] = i;
-    i++;
   }
 
   indexes

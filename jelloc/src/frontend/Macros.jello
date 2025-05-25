@@ -14,15 +14,14 @@ import {
 } from frontend.syntax.Parser;
 import { E0901, E1000, E1001, E1002, E1003, coded, uncoded } from support.Codes;
 import { internalError } from support.Internal;
-import { concatAll, joined } from support.Text;
 
 load { image_run } from vm;
 
 let _imageRun: (Bytes, Bytes, I64) -> Bytes = image_run;
 
-let _MAX_DEPTH = 32;
-let _MAX_NODES = 4096;
-let _FUEL: I64 = 100000000;
+const _MAX_DEPTH = 32;
+const _MAX_NODES = 4096;
+const _FUEL: I64 = 100000000;
 
 typedef Definition = {
   let path: Bytes;
@@ -105,13 +104,10 @@ let _quotedCall = fn(
 ): Tuple<Expr, Syntax> {
   let values = Array.new<Expr>(0);
   let valueSyntax = Array.new<Syntax>(0);
-  let i = 0;
 
-  while (i < holes.len()) {
-    let (value, at) = holes[i];
+  for ((value, at) in holes) {
     values.push(Expr.Cast(value, Type.Named("Dynamic")));
     valueSyntax.push(_node(at, [at]));
-    i++;
   }
 
   let callee = Expr.Member(Expr.Variable("Macro"), "quoted");
@@ -186,16 +182,12 @@ let _body = fn(body: Located, quotes: Array<Tuple<QuoteBody, Syntax>>): Located 
 
         let holes = _holes(quoted, syntax);
         let made = Array.new<Tuple<Expr, Syntax>>(0);
-        let i = 0;
 
-        while (i < holes.len()) {
-          let (value, at) = holes[i];
-
+        for ((value, at) in holes) {
           match (_body(Located.Expression(value, at), quotes)) {
             Expression(out, outAt) => made.push((out, outAt)),
             _ => null,
           };
-          i++;
         }
 
         let (call, at) = _quotedCall(index, made, syntax);
@@ -211,20 +203,18 @@ let _body = fn(body: Located, quotes: Array<Tuple<QuoteBody, Syntax>>): Located 
 
 let _macros = fn(statements: Array<Stmt>, syntax: Array<Syntax>): Array<Tuple<Stmt, Syntax>> {
   let out = Array.new<Tuple<Stmt, Syntax>>(0);
-  let i = 0;
 
-  while (i < statements.len()) {
-    match (statements[i]) {
-      Macro(_, _, _, _) => out.push((statements[i], syntax[i])),
+  for (i, statement in statements) {
+    match (statement) {
+      Macro(_, _, _, _) => out.push((statement, syntax[i])),
       _ => null,
     };
-    i++;
   }
   out
 };
 
-let _ARGUMENTS = "__arguments";
-let _BODY = "__body";
+const _ARGUMENTS = "__arguments";
+const _BODY = "__body";
 
 export let expanderSource = fn(
   statements: Array<Stmt>,
@@ -233,32 +223,28 @@ export let expanderSource = fn(
   let macros = _macros(statements, syntax);
   let functions = Array.new<Bytes>(0);
   let bodies = Array.new<Located>(0);
-  let i = 0;
 
-  while (i < macros.len()) {
-    match (macros[i]) {
+  for (defined in macros) {
+    match (defined) {
       (Macro(_, _, params, body), at) => {
         let quotes = Array.new<Tuple<QuoteBody, Syntax>>(0);
         bodies.push(_body(Located.Statements(body, at.children), quotes));
 
         let bindings = Array.new<Bytes>(0);
-        let p = 0;
 
-        while (p < params.len()) {
-          bindings.push(`let ${params[p]} = ${_ARGUMENTS}[${p}]; `);
-          p++;
+        for (p, param in params) {
+          bindings.push(`let ${param} = ${_ARGUMENTS}[${p}]; `);
         }
         let params = `${_ARGUMENTS}: Array<Fragment>`;
-        functions.push(`fn(${params}): Null { ${concatAll(bindings)}${_BODY}; }`);
+        functions.push(`fn(${params}): Null { ${bindings.join("")}${_BODY}; }`);
       },
       _ => null,
     };
-    i++;
   }
 
   let source = "import std.macro.Macro as Macro;\n"
     + "import type { Fragment } from std.macro.Macro;\n"
-    + `Macro.run([\n  ${joined(functions, ",\n  ")}\n])\n`;
+    + `Macro.run([\n  ${functions.join(",\n  ")}\n])\n`;
   (source, bodies)
 };
 
@@ -278,8 +264,8 @@ export let spliceBodies = fn(node: Located, bodies: Array<Located>): Located {
   out
 };
 
-let _RAN = 0;
-let _OUT_OF_FUEL = 2;
+const _RAN = 0;
+const _OUT_OF_FUEL = 2;
 
 let _image = fn(path: Bytes): Bytes {
   let known = _imagePaths.indexOf(path);
@@ -318,11 +304,8 @@ let _define = fn(path: Bytes, index: I32, statement: Stmt, syntax: Syntax) {
 };
 
 let _scopeIndex = fn(scope: Array<Tuple<Bytes, I32>>, name: Bytes): I32 {
-  let i = 0;
-
-  while (i < scope.len()) {
-    if (scope[i].0 == name) { return scope[i].1; }
-    i++;
+  for ((local, index) in scope) {
+    if (local == name) { return index; }
   }
   -1
 };
@@ -333,11 +316,7 @@ let _importMacro = fn(local: Bytes, path: Bytes, module: Bytes, name: Bytes, at:
   _failure = at;
   if (_visibleIndex(local) >= 0) { throw coded(E1000, `macro ${local} is already defined`); }
 
-  let i = 0;
-
-  while (i < _definitions.len()) {
-    let definition = _definitions[i];
-
+  for (i, definition in _definitions) {
     if ((definition.path == path) && (definition.name == name)) {
       if (!definition.exported) {
         throw coded(E1000, `macro ${name} is not exported by ${module}`);
@@ -346,7 +325,6 @@ let _importMacro = fn(local: Bytes, path: Bytes, module: Bytes, name: Bytes, at:
       _failure = null;
       return null;
     }
-    i++;
   }
   throw coded(E1000, `${module} defines no macro ${name}`);
 };
@@ -544,7 +522,7 @@ let _made = fn(n: I32) {
   null
 };
 
-let _MARK = "\0";
+const _MARK = "\0";
 
 let _marked = fn(node: Located, scope: Array<Tuple<Bytes, I32>>): Located {
   rewrite(node, fn(inner: Located): ?Located {
@@ -553,14 +531,12 @@ let _marked = fn(node: Located, scope: Array<Tuple<Bytes, I32>>): Located {
       Expression(Call(Variable(name), [], args), at) when (_scopeIndex(scope, name) >= 0) => {
         let children = at.children;
         let marked = Array.new<Expr>(0);
-        let i = 0;
 
-        while (i < args.len()) {
-          match (_marked(Located.Expression(args[i], children[i + 1]), scope)) {
+        for (i, arg in args) {
+          match (_marked(Located.Expression(arg, children[i + 1]), scope)) {
             Expression(value, _) => marked.push(value),
             _ => null,
           };
-          i++;
         }
         let callee = Expr.Variable(_MARK + Std.string(_scopeIndex(scope, name)));
         Located.Expression(Expr.Call(callee, [], marked), at)
@@ -680,17 +656,13 @@ let _typeOf = fn(fragment: Fragment): Type {
 let _count = fn(syntax: Syntax): I32 {
   let { children, patterns } = syntax;
   let n = 1;
-  let i = 0;
 
-  while (i < children.len()) {
-    n += _count(children[i]);
-    i++;
+  for (child in children) {
+    n += _count(child);
   }
-  i = 0;
 
-  while (i < patterns.len()) {
-    n += _count(patterns[i]);
-    i++;
+  for (pattern in patterns) {
+    n += _count(pattern);
   }
   n
 };
@@ -700,8 +672,7 @@ let _run = fn(index: I32, call: Expr, syntax: Syntax): Array<Fragment> {
   _macro = index;
   _arguments = args;
   _call = syntax;
-  _placed = Array.new<Bool>(0);
-  while (_placed.len() < args.len()) { _placed.push(false); }
+  _placed = Array.new<Bool>(args.len());
 
   let definition = _definitions[index];
   let params = definition.params;
@@ -712,14 +683,12 @@ let _run = fn(index: I32, call: Expr, syntax: Syntax): Array<Fragment> {
   }
 
   let entries = [Std.string(definition.index), Std.string(_names)];
-  let i = 0;
 
-  while (i < args.len()) {
-    entries.push(_form(args[i]));
-    i++;
+  for (arg in args) {
+    entries.push(_form(arg));
   }
   let image = _image(definition.path);
-  let out = _imageRun(image, `${joined(entries, "\0")}\0`, _FUEL);
+  let out = _imageRun(image, `${entries.join("\0")}\0`, _FUEL);
 
   let tag = Bytes.get_u8(out, 0);
 
@@ -759,25 +728,21 @@ let _expandStatement = fn(index: I32, call: Expr, syntax: Syntax): Located {
   let fragments = _run(index, call, syntax.children[0]);
   let statements = Array.new<Stmt>(0);
   let made = Array.new<Syntax>(0);
-  let i = 0;
 
-  while (i < fragments.len()) {
-    let (values, at) = _statementsOf(fragments[i]);
-    let j = 0;
+  for (fragment in fragments) {
+    let (values, at) = _statementsOf(fragment);
 
-    while (j < values.len()) {
-      match (values[j]) {
+    for (j, value in values) {
+      match (value) {
         ImportModule(_, _, _), ImportFrom(_, _, _) => {
           throw _failed(E1003, "emitted an import, which a module makes itself");
         },
         Macro(_, _, _, _) => { throw _failed(E1003, "emitted a macro definition"); },
         _ => null,
       };
-      statements.push(values[j]);
+      statements.push(value);
       made.push(at[j]);
-      j++;
     }
-    i++;
   }
   _deeper(Located.Statements(statements, made))
 };
@@ -812,14 +777,11 @@ let _expandIn = fn(node: Located): Located {
 };
 
 export let hasMacros = fn(statements: Array<Stmt>): Bool {
-  let i = 0;
-
-  while (i < statements.len()) {
-    match (statements[i]) {
+  for (statement in statements) {
+    match (statement) {
       Macro(_, _, _, _), ImportFrom(MacroOnly, _, _) => { return true; },
       _ => null,
     };
-    i++;
   }
   false
 };
@@ -837,32 +799,25 @@ export let expandModule = fn(
   let children = syntax.children;
   let macros = _macros(statements, children);
 
-  let i = 0;
-
-  while (i < imported.len()) {
-    let (local, file, module, name, at) = imported[i];
+  for ((local, file, module, name, at) in imported) {
     _importMacro(local, file, module, name, at);
-    i++;
   }
-  i = 0;
 
-  while (i < macros.len()) {
-    _define(path, i, macros[i].0, macros[i].1);
-    i++;
+  for (i, (definition, at) in macros) {
+    _define(path, i, definition, at);
   }
 
   let out = Array.new<Stmt>(0);
   let outSyntax = Array.new<Syntax>(0);
   let moved = Array.new<I32>(0);
-  i = 0;
 
-  while (i < statements.len()) {
-    match (statements[i]) {
+  for (i, statement in statements) {
+    match (statement) {
       Macro(_, _, _, _), ImportFrom(MacroOnly, _, _) => moved.push(-1),
       _ => {
         moved.push(out.len());
 
-        match (_expandIn(Located.Statements([statements[i]], [children[i]]))) {
+        match (_expandIn(Located.Statements([statement], [children[i]]))) {
           Statements(values, at) => {
             out.appendFrom(values, 0);
             outSyntax.appendFrom(at, 0);
@@ -872,7 +827,6 @@ export let expandModule = fn(
         };
       },
     };
-    i++;
   }
 
   let expandedTail = tail;

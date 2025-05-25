@@ -21,11 +21,8 @@ let _sameKind = fn(left: SyntaxKind, right: SyntaxKind): Bool {
 };
 
 let _contains = fn(start: I32, end: I32, inner: Array<Syntax>): Bool {
-  let i = 0;
-
-  while (i < inner.len()) {
-    if ((inner[i].start < start) || (inner[i].end > end)) { return false; }
-    i++;
+  for (node in inner) {
+    if ((node.start < start) || (node.end > end)) { return false; }
   }
   true
 };
@@ -68,11 +65,8 @@ let _addPattern = fn(out: Array<Syntax>, value: Pattern) {
 let _annotation = fn(): Syntax { _take(SyntaxKind.Type, 0, []) };
 
 let _patternList = fn(values: Array<Pattern>, out: Array<Syntax>) {
-  let i = 0;
-
-  while (i < values.len()) {
-    _addPattern(out, values[i]);
-    i++;
+  for (pattern in values) {
+    _addPattern(out, pattern);
   }
   null
 };
@@ -84,22 +78,16 @@ let _pattern = fn(value: Pattern): Syntax {
     Wildcard, BindPattern(_), Pin(_), Bool(_), Integer(_, _), Float(_, _), Bytes(_), Atom(_),
     RegExp(_, _, _), IsType(_, _), Null, Spread(_) => null,
     Object(fields) => {
-      let i = 0;
-
-      while (i < fields.len()) {
-        _addPattern(out, fields[i].1);
-        i++;
+      for ((_, field) in fields) {
+        _addPattern(out, field);
       }
       null
     },
     Tuple(items), Array(items) => _patternList(items, out),
     Enum(_, args) => _patternList(args, out),
     Bits(segments) => {
-      let i = 0;
-
-      while (i < segments.len()) {
-        _addPattern(out, segments[i].value);
-        i++;
+      for (segment in segments) {
+        _addPattern(out, segment.value);
       }
       null
     },
@@ -122,11 +110,8 @@ let _addStmt = fn(out: Array<Syntax>, value: Stmt) {
 };
 
 let _exprs = fn(values: Array<Expr>, out: Array<Syntax>) {
-  let i = 0;
-
-  while (i < values.len()) {
-    _add(out, values[i]);
-    i++;
+  for (value in values) {
+    _add(out, value);
   }
   null
 };
@@ -137,11 +122,8 @@ let _optional = fn(value: ?Expr, out: Array<Syntax>) {
 };
 
 let _stmts = fn(values: Array<Stmt>, out: Array<Syntax>) {
-  let i = 0;
-
-  while (i < values.len()) {
-    _addStmt(out, values[i]);
-    i++;
+  for (stmt in values) {
+    _addStmt(out, stmt);
   }
   null
 };
@@ -152,37 +134,27 @@ let _block = fn(block: Block, out: Array<Syntax>) {
 };
 
 let _arms = fn(arms: Array<MatchArm>, out: Array<Syntax>, patterns: Array<Syntax>) {
-  let i = 0;
-
-  while (i < arms.len()) {
-    let { alternatives, guard, body } = arms[i];
-    let j = 0;
-
-    while (j < alternatives.len()) {
-      _addPattern(patterns, alternatives[j].pattern);
-      _optional(alternatives[j].guard, out);
-      j++;
+  for ({ alternatives, guard, body } in arms) {
+    for ({ pattern, guard: own } in alternatives) {
+      _addPattern(patterns, pattern);
+      _optional(own, out);
     }
     _optional(guard, out);
     _block(body, out);
-    i++;
   }
   null
 };
 
 let _parameters = fn(params: Array<Parameter>, out: Array<Syntax>) {
-  let i = 0;
-
-  while (i < params.len()) {
+  for (param in params) {
     let defaults = Array.new<Syntax>(0);
 
-    match (params[i].kind) {
+    match (param.kind) {
       Default(value) => _add(defaults, value),
       Optional(value) => _optional(value, defaults),
       _ => null,
     };
     out.push(_take(SyntaxKind.Parameter, 0, defaults));
-    i++;
   }
   null
 };
@@ -202,14 +174,10 @@ let _list = fn(value: ListLiteral, out: Array<Syntax>, patterns: Array<Syntax>) 
       _exprs(suffix, out)
     },
     Comprehension(generators, body) => {
-      let i = 0;
-
-      while (i < generators.len()) {
-        let { pattern, source, guard } = generators[i];
+      for ({ pattern, source, guard } in generators) {
         _addPattern(patterns, pattern);
         _add(out, source);
         _optional(guard, out);
-        i++;
       }
       _add(out, body);
       null
@@ -227,10 +195,8 @@ let _expr = fn(value: Expr): Syntax {
     Array(items), Tuple(items), Interpolation(_, items) => _exprs(items, out),
     List(list) => _list(list, out, patterns),
     Object(entries) => {
-      let i = 0;
-
-      while (i < entries.len()) {
-        match (entries[i]) {
+      for (member in entries) {
+        match (member) {
           Field(_, entry) => _add(out, entry),
           Computed(key, entry) => {
             _add(out, key);
@@ -238,7 +204,6 @@ let _expr = fn(value: Expr): Syntax {
           },
           Spread(entry) => _add(out, entry),
         };
-        i++;
       }
       null
     },
@@ -250,15 +215,13 @@ let _expr = fn(value: Expr): Syntax {
       _add(out, inner)
     },
     Bits(segments) => {
-      let i = 0;
-
-      while (i < segments.len()) {
-        _add(out, segments[i].value);
-        i++;
+      for (segment in segments) {
+        _add(out, segment.value);
       }
       null
     },
-    Index(left, right), Binary(_, left, right), Pipe(left, right, _), Assign(_, left, right) => {
+    Index(left, right), Binary(_, left, right), Pipe(left, right, _), Assign(_, left, right),
+    Coalesce(left, right) => {
       _add(out, left);
       _add(out, right)
     },
@@ -285,10 +248,8 @@ let _expr = fn(value: Expr): Syntax {
       _arms(arms, out, patterns)
     },
     With(clauses, body, elseArms) => {
-      let i = 0;
-
-      while (i < clauses.len()) {
-        match (clauses[i]) {
+      for (withClause in clauses) {
+        match (withClause) {
           Clause(pattern, guard, clause) => {
             _addPattern(patterns, pattern);
             _optional(guard, out);
@@ -299,7 +260,6 @@ let _expr = fn(value: Expr): Syntax {
             _add(out, clause)
           },
         };
-        i++;
       }
       _block(body, out);
 
@@ -337,11 +297,8 @@ let _stmt = fn(value: Stmt): Syntax {
     },
     Throw(inner), Expression(inner) => _add(out, inner),
     Prototype(_, _, _, fields) => {
-      let i = 0;
-
-      while (i < fields.len()) {
-        _add(out, fields[i].value);
-        i++;
+      for (field in fields) {
+        _add(out, field.value);
       }
       null
     },
@@ -353,6 +310,12 @@ let _stmt = fn(value: Stmt): Syntax {
     DoWhile(body, condition) => {
       _stmts(body, out);
       _add(out, condition)
+    },
+    For(index, item, items, body) => {
+      if (index != null) { _addPattern(patterns, index); }
+      _addPattern(patterns, item);
+      _add(out, items);
+      _stmts(body, out)
     },
     Return(inner) => _optional(inner, out),
     Typedef(_, _, _, _), Enum(_, _, _, _), ImportModule(_, _, _), ImportFrom(_, _, _), Break,

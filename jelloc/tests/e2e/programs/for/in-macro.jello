@@ -1,0 +1,14 @@
+// expect: 17
+// A macro's quoted code may use `for` and `??`, which expand like any other syntax.
+macro total(xs, d) {
+  Macro.emit(quote.expr {
+    {
+      let sum = 0;
+      for (i, x in unquote(xs)) { sum += (x ?? unquote(d)) + i; }
+      sum
+    }
+  });
+}
+
+let values: Array<?I32> = [1, null, 3];
+Std.string(total(values, 10))

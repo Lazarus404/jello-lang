@@ -1,0 +1,13 @@
+// expect: 3 3 7 8 31 true
+/* A function with an annotated type is a direct function unless something
+ * assigns to it, so top-level code may call it before its statement, as it may
+ * an unannotated one. */
+let early = later(3);
+let inc: (I32) -> I32 = fn(x) { x + 1 };
+let twice: (I32, ?I32) -> I32 = fn(x, ?y) { x + inc(y ?? 1) };
+let swap: (I32) -> I32 = fn(x) { x * 10 };
+let later: (I32) -> I32 = fn(x) { swap(x) + 1 };
+// Assigned, so a global; the new value is the one called.
+let scaled: (I32) -> I32 = fn(x) { x };
+scaled = fn(x) { x * 2 };
+`${inc(2)} ${twice(1)} ${twice(1, 5)} ${scaled(4)} ${early} ${inc == inc}`

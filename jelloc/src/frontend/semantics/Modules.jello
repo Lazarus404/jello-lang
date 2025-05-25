@@ -3,7 +3,8 @@ package frontend.semantics;
 import type { Program as AstProgram, Stmt, Type as AstType } from frontend.syntax.Ast;
 import { bindPatternName, isBindPattern } from frontend.syntax.Ast;
 import {
-  checkAggregateExpr, declareBuiltins, extendedType, isIntrinsic, useExtension, wantedExtensions
+  checkAggregateExpr, declareBuiltins, extendedType, extensibleTypes, isIntrinsic,
+  isIntrinsicMethod, useExtension, wantedExtensions
 } from frontend.semantics.Aggregates;
 import { checkEnumExpr } from frontend.semantics.Enums;
 import { checkCondition, checkLet } from frontend.semantics.Match;
@@ -26,19 +27,20 @@ import {
 } from frontend.semantics.ModuleScope;
 import type { Import, Module } from frontend.Loader;
 import {
-  Import, hasExtension, isHookName, isTestModule, isTestName, loadedExtensions, localName,
-  modulePath
+  Import, addExtensions, extensionsWanted, hasExtension, isHookName, isTestModule, isTestName,
+  loadedExtensions, localName, modulePath
 } from frontend.Loader;
 import { programSyntax } from frontend.syntax.Parser;
 import type { Syntax } from frontend.syntax.Source;
 import {
   annotatedGlobal, beginCheck, bindingType, checkAnnotation, checkDestructure, checkDirect,
-  checkDoWhile, checkEffect, checkGlobalInitializer, checkLiteralRanges, checkOperand,
+  checkDoWhile, checkEffect, checkFor, checkGlobalInitializer, checkLiteralRanges, checkOperand,
   checkTemplate, checkThrow, checkWhile, currentSpan, declareFunctions, declareGlobal, enterNode,
-  enterSpan, enterSyntax, finishProgram, instantiateTemplates, isDirectFunction, isLoaded,
-  isTemplate, patternNames, poisonDeclared, recoverTopLevel, syntaxChild, takeRegexpInits,
-  unsupportedStatement, useAggregateChecks, useAssertionChecks, useConditionChecks, useEnumChecks,
-  useLetChecks, useStructuralEquality, useUnsupported, useValueChecks, withInstances
+  enterSpan, enterSyntax, finishProgram, initGlobal, instantiateTemplates, isDirectFunction,
+  isLoaded, isTemplate, patternNames, poisonDeclared, recoverTopLevel, syntaxChild,
+  takeRegexpInits, unsupportedStatement, useAggregateChecks, useAssertionChecks,
+  useConditionChecks, useEnumChecks, useLetChecks, useStructuralEquality, useUnsupported,
+  useValueChecks, withInstances
 } from frontend.semantics.TypeCheck;
 import { checkPrototype, instantiatePrototypes } from frontend.semantics.Prototypes;
 import { verifyHir } from frontend.hir.Verify;
@@ -135,10 +137,9 @@ let _prototypeHome = fn(modules: Array<Module>, module: I32, name: Bytes): I32 {
   if (prototypes.indexOf(name) >= 0) { return module; }
 
   let named = "";
-  let i = 0;
 
-  while (i < statements.len()) {
-    match (statements[i]) {
+  for (statement in statements) {
+    match (statement) {
       Typedef(_, declared, _, Alias(Named(target))) when (declared == name) => {
         named = target;
         null
@@ -149,18 +150,14 @@ let _prototypeHome = fn(modules: Array<Module>, module: I32, name: Bytes): I32 {
       },
       _ => null,
     };
-    i++;
   }
   if (named == "") { return -1; }
   if (prototypes.indexOf(named) >= 0) { return module; }
 
-  i = 0;
-
-  while (i < imports.len()) {
-    if (let Import(local, source, exported, _, _, _) = imports[i]) {
+  for (clause in imports) {
+    if (let Import(local, source, exported, _, _, _) = clause) {
       if (local == named) { return _prototypeHome(modules, source, exported); }
     }
-    i++;
   }
   -1
 };
@@ -181,21 +178,19 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
   let { name: dotted, statements, syntax, tail, imports } = modules[index];
   let outer = enterSyntax(syntax);
   enterModule(index, imports, modules);
-  let k = 0;
 
-  while (k < imports.len()) {
-    let at = match (imports[k]) {
+  for (clause in imports) {
+    let at = match (clause) {
       Import(_, _, _, _, _, statement), Namespace(_, _, _, statement) => statement,
     };
 
     if (at < 0) {
-      addImport(imports[k], modules, !runs);
+      addImport(clause, modules, !runs);
     } else {
       let parent = enterSyntax(syntaxChild(at));
-      addImport(imports[k], modules, !runs);
+      addImport(clause, modules, !runs);
       enterSyntax(parent);
     }
-    k++;
   }
   declareTypes(statements, index, opened);
 
@@ -209,17 +204,16 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
   let first = _initializers.len();
   let functionIndex = declareFunctions(statements);
   let extended = extendedType(dotted);
-  let i = 0;
 
-  while (i < statements.len()) {
+  for (i, statement in statements) {
     let parent = enterSyntax(syntaxChild(i));
     beginTouch();
     beginDoubt();
 
     try {
-      if (extended != "") { _checkExtension(statements[i], extended); }
+      if (extended != "") { _checkExtension(statement, extended); }
 
-      match (statements[i]) {
+      match (statement) {
         ImportFrom(Native, items, library) => {
           if (library.len() != 1) {
             throw coded(
@@ -227,12 +221,9 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
               "a native library is named by one identifier: load { ... } from std;"
             );
           }
-          let j = 0;
 
-          while (j < items.len()) {
-            let { name, alias } = items[j];
+          for ({ name, alias } in items) {
             declareScoped(localName(name, alias), Binding.Loaded(library[0], name));
-            j++;
           }
           null
         },
@@ -265,13 +256,13 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
           _publish(index, name, exported, opened);
           null
         },
-        LetStmt(_, exported, pattern, _, _, _, _) when (isTemplate(statements[i])) => {
+        LetStmt(_, exported, pattern, _, _, _, _) when (isTemplate(statement)) => {
           let name = bindPatternName(pattern);
           checkTemplate(name);
           _publish(index, name, exported, opened);
           null
         },
-        LetStmt(_, exported, pattern, _, _, _, _) when (isDirectFunction(statements[i])) => {
+        LetStmt(_, exported, pattern, _, _, _, _) when (isDirectFunction(i)) => {
           checkDirect(functionIndex);
           functionIndex++;
           _publish(index, bindPatternName(pattern), exported, opened);
@@ -290,7 +281,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
           let (checked, suspect) = checkGlobalInitializer(value, declared, name);
           let init = global < 0
             ? declareGlobal(name, checked, !isConst)
-            : node(Op.InitGlobal, typeOf(checked), global, 0, [checked]);
+            : initGlobal(global, checked);
           if (suspect) { poison(name); }
           _initializers.push(opNode(Op.Declare, 0, [init]));
           _publish(index, name, exported, opened);
@@ -301,11 +292,9 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
             checkDestructure(pattern, isConst, typeParams, annotation, value, otherwise, true)
           );
           let names = patternNames(pattern);
-          let n = 0;
 
-          while (n < names.len()) {
-            _publish(index, names[n], exported, opened);
-            n++;
+          for (name in names) {
+            _publish(index, name, exported, opened);
           }
           null
         },
@@ -321,6 +310,10 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
           _initializers.push(checkDoWhile(body, condition));
           null
         },
+        For(index, item, items, body) => {
+          _initializers.push(checkFor(index, item, items, body));
+          null
+        },
         Throw(value) => {
           _initializers.push(checkThrow(value));
           null
@@ -330,15 +323,14 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
           null
         },
         Enum(_, _, _, _), Typedef(_, _, _, _) => null,
-        _ => { throw unsupportedStatement(statements[i]); },
+        _ => { throw unsupportedStatement(statement); },
       };
-      if (test >= 0) { _checkSignature(statements[i], test); }
+      if (test >= 0) { _checkSignature(statement, test); }
     } catch (e) {
       recoverTopLevel(e, syntax);
-      poisonDeclared(statements[i], false);
+      poisonDeclared(statement, false);
     }
     enterSyntax(parent);
-    i++;
   }
 
   let checkedTail = -1;
@@ -380,11 +372,8 @@ let _markRunning = fn(modules: Array<Module>, runs: Array<Bool>, opened: Array<B
 
   while (i >= 0) {
     if (runs[i]) {
-      let imports = modules[i].imports;
-      let j = 0;
-
-      while (j < imports.len()) {
-        match (imports[j]) {
+      for (clause in modules[i].imports) {
+        match (clause) {
           Import(_, module, name, typeOnly, privately, _) => {
             if (!typeOnly) {
               runs[module] = true;
@@ -399,7 +388,6 @@ let _markRunning = fn(modules: Array<Module>, runs: Array<Bool>, opened: Array<B
             if (privately) { opened[module] = true; }
           },
         };
-        j++;
       }
     }
     i--;
@@ -424,48 +412,33 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
 
   let entry = modules.len() - 1;
   _testing = -1;
-  let i = 0;
 
-  while (i <= entry) {
-    if (modules[i].name == "std.testing") { _testing = i; }
-    i++;
+  for (i, module in modules) {
+    if (module.name == "std.testing") { _testing = i; }
   }
 
-  let runs = Array.new<Bool>(0);
-  let opened = Array.new<Bool>(0);
-  i = 0;
-
-  while (i <= entry) {
-    runs.push(i == entry);
-    opened.push(false);
-    i++;
-  }
+  let runs = Array.new<Bool>(modules.len());
+  runs[entry] = true;
+  let opened = Array.new<Bool>(modules.len());
   let extensions = loadedExtensions();
-  i = 0;
 
-  while (i < extensions.len()) {
-    let extension = extensions[i];
-
+  for (extension in extensions) {
     if ((extension < entry) && (extendedType(modules[extension].name) != "")) {
       runs[extension] = true;
     }
-    i++;
   }
   _markRunning(modules, runs, opened);
 
-  i = 0;
-
-  while (i <= entry) {
-    let extended = extendedType(modules[i].name);
+  for (i, module in modules) {
+    let extended = extendedType(module.name);
 
     if (runs[i] && (extended != "")) {
-      useExtension(extended, i, _exportNames(modules[i].statements));
+      useExtension(extended, i, _exportNames(module.statements));
     }
-    i++;
   }
 
   let tail = -1;
-  i = 0;
+  let i = 0;
 
   try {
     while ((i <= entry) && (failureCount() == 0)) {
@@ -494,29 +467,25 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
   hir
 };
 
-let _checkWith = fn(loader: (Array<Bytes>) -> Array<Module>, types: Array<Bytes>): Hir {
+let _checkWith = fn(modules: Array<Module>, types: Array<Bytes>): Hir {
   resetFailures();
-  let modules = loader(types);
 
   try {
     typeCheckModules(modules)
   } catch (e) {
     if (internalRaised()) { throw e; }
-    let count = types.len();
-    let wanted = wantedExtensions();
-    let i = 0;
-
-    while (i < wanted.len()) {
-      if ((types.indexOf(wanted[i]) < 0) && hasExtension(wanted[i])) { types.push(wanted[i]); }
-      i++;
-    }
-    if (types.len() == count) { throw e; }
-    _checkWith(loader, types)
+    let wanted = wantedExtensions().filter(fn(name) {
+      (types.indexOf(name) < 0) && hasExtension(name)
+    });
+    if (wanted.len() == 0) { throw e; }
+    types.appendFrom(wanted, 0);
+    _checkWith(addExtensions(wanted), types)
   }
 };
 
-export let checkProgram = fn(loader: (Array<Bytes>) -> Array<Module>): Hir {
-  _checkWith(loader, Array.new<Bytes>(0))
+export let checkProgram = fn(modules: Array<Module>): Hir {
+  let types = extensionsWanted(extensibleTypes(), isIntrinsicMethod);
+  _checkWith(types.len() == 0 ? modules : addExtensions(types), types)
 };
 
 export let typeCheckProgramWithSyntax = fn(program: AstProgram, syntax: Syntax): Hir {

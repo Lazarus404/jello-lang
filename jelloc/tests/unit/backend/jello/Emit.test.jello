@@ -1,0 +1,30 @@
+package backend.jello;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { split, startsWith } from std.core.Bytes;
+import { readText } from std.io.File;
+
+// An opcode's number is its place in the VM's JELLO_OP_LIST, which Emit restates as
+// `const JOP_X = n;`. A VM opcode inserted out of order would otherwise go unnoticed until
+// some program ran the wrong instruction.
+let testOpcodesMatchTheVm = fn(t: Test) {
+  let names = Array.new<Bytes>(0);
+
+  for (line in split(readText("../vm/src/include/jello/internal/bytecode.h"), "\n")) {
+    if (startsWith(line, "  OP(JOP_")) {
+      names.push(split(Bytes.slice(line, 5, line.len() - 5), ",")[0]);
+    }
+  }
+
+  let checked = 0;
+
+  for (line in split(readText("src/backend/jello/Emit.jello"), "\n")) {
+    if (startsWith(line, "const JOP_")) {
+      let parts = split(Bytes.slice(line, 6, line.len() - 7), " = ");
+      T.equal(t, `${parts[0]} = ${names.indexOf(parts[0])}`, `${parts[0]} = ${parts[1]}`);
+      checked++;
+    }
+  }
+  T.equal(t, checked > 100, true);
+};

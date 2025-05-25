@@ -1,0 +1,38 @@
+// expect: 6 [1, 2] 3 0 9 (1,) 8
+/* A trailing comma is allowed wherever a list is written one item per line: parameters,
+ * arguments, array items, parameter types and `new`'s arguments. */
+let sum = fn(
+  a: I32,
+  b: I32,
+  c: I32,
+): I32 {
+  a + b + c
+};
+
+let apply: (
+  (I32) -> I32,
+  I32,
+) -> I32 = fn(f, x) { f(x) };
+
+prototype Point {
+  x: 0;
+  init(x: I32, y: I32,) { this.x = x; };
+};
+
+let p = new Point(
+  3,
+  4,
+);
+let none = fn() { 0 };
+let one: Tuple<I32> = (1,);
+let twice: (I32,) -> I32 = fn(n) { n * 2 };
+
+Bytes.join([
+  Std.string(sum(1, 2, 3,)),
+  Std.string([1, 2,]),
+  Std.string(p.x as I32),
+  Std.string(none()),
+  Std.string(apply(fn(n) { n * 3 }, 3,)),
+  Std.string(one),
+  Std.string(twice(4)),
+], " ")

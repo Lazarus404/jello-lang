@@ -5,21 +5,24 @@ import { Expr as AstExpr } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { Op } from frontend.hir.Hir;
 import { expressionOf } from frontend.semantics.Derived;
-import { storable } from frontend.semantics.Values;
+import { storable, toDynamic } from frontend.semantics.Values;
 import { callField, namedKey, readObject, storeField, writeField } from frontend.semantics.Objects;
 import { scopedType } from frontend.semantics.ModuleScope;
 import { E0302, E0402, E0805, coded } from support.Codes;
 import {
   buildInstances, checkGenericPrototype, checkMethodCall, checkOperand, checkPresent, delegates,
   enterSyntax, fieldMismatch, findMethod, hasInitField, hideValue, linkedMember, methodValue,
-  objectValue, prototypeGlobal, prototypeField, prototypeNamed, prototypeParent, prototypeValue,
-  receiverMethodType, rejectAt, requireThis, resolveInstanceReads, syntaxChild, widened,
+  noteMethodCall, objectValue, prototypeGlobal, prototypeField, prototypeNamed, prototypeParent,
+  prototypeValue, receiverMethodType, rejectAt, requireThis, resolveInstanceReads, sealedPrototype,
+  syntaxChild, widened,
 } from frontend.semantics.TypeCheck;
 
 let _methodCall = fn(
   holder: I32,
   receiver: I32,
   index: I32,
+  origin: I32,
+  exact: Bool,
   name: Bytes,
   args: Array<AstExpr>
 ): I32 {
@@ -32,13 +35,15 @@ let _methodCall = fn(
   let first = H.local(held, H.typeOf(receiver));
   if (H.typeOf(receiver) != self) { first = H.opNode(Op.Convert, self, [first]); }
   let call = checkMethodCall(callee, index, first, args);
+  let site = H.opOf(call) == Op.Block ? H.lastChild(call) : call;
+  noteMethodCall(site, origin, name, exact);
   statements.push(call);
   H.node(Op.Block, H.typeOf(call), 0, 1, statements)
 };
 
 export let checkPrototypeCall = fn(receiver: I32, name: Bytes, args: Array<AstExpr>): I32 {
   let found = findMethod(H.typeOf(receiver), name);
-  found < 0 ? -1 : _methodCall(-1, receiver, found, name, args)
+  found < 0 ? -1 : _methodCall(-1, receiver, found, H.typeOf(receiver), false, name, args)
 };
 
 export let checkSuperCall = fn(name: Bytes, types: Array<AstType>, args: Array<AstExpr>): I32 {
@@ -56,21 +61,24 @@ export let checkSuperCall = fn(name: Bytes, types: Array<AstType>, args: Array<A
   let found = parent >= 0 ? findMethod(parent, name) : -1;
 
   if (found >= 0) {
-    _methodCall(holder, receiver, found, name, args)
+    _methodCall(holder, receiver, found, parent, true, name, args)
   } else {
     callField(holder, receiver, name, args)
   }
+};
+
+let _writeMethod = fn(object: I32, ty: I32, name: Bytes, value: I32): I32 {
+  if (!sealedPrototype(ty)) { return writeField(object, name, value); }
+  let args = [toDynamic(object), toDynamic(namedKey(name)), toDynamic(value)];
+  H.callStd("object_seal", [H.TYPE_DYNAMIC, H.TYPE_DYNAMIC, H.TYPE_DYNAMIC], H.TYPE_BOOL, args)
 };
 
 let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): I32 {
   let statements = Array.new<I32>(0);
   let object = hideValue(statements, "prototype", H.opNode(Op.ObjectNew, ty, []));
   let names = Array.new<Bytes>(0);
-  let f = 0;
 
-  while (f < fields.len()) {
-    let { name: field, value } = fields[f];
-
+  for (f, { name: field, value } in fields) {
     if (names.indexOf(field) >= 0) {
       enterSyntax(syntaxChild(f));
       throw coded(E0302, `${name} declares ${field} twice`);
@@ -85,7 +93,7 @@ let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): 
           enterSyntax(syntaxChild(f));
           throw coded(E0302, `${field} is a method of ${name} and a field of its typedef`);
         }
-        writeField(H.local(object, ty), field, methodValue(ty, field, f, body))
+        _writeMethod(H.local(object, ty), ty, field, methodValue(ty, field, f, body))
       },
       _ => {
         let outer = enterSyntax(syntaxChild(f));
@@ -105,7 +113,6 @@ let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): 
       },
     };
     statements.push(expressionOf(stored));
-    f++;
   }
   statements.push(H.local(object, ty));
   let global = prototypeGlobal(ty);
@@ -150,7 +157,8 @@ let _checkNew = fn(proto: AstExpr, args: Array<AstExpr>): I32 {
   let init = H.isPrototype(ty) ? findMethod(ty, "init") : -1;
 
   if (init >= 0) {
-    statements.push(expressionOf(_methodCall(-1, H.local(object, made), init, "init", args)));
+    let call = _methodCall(-1, H.local(object, made), init, ty, named >= 0, "init", args);
+    statements.push(expressionOf(call));
   } else if (args.len() != 0) {
     if (hasInitField(ty)) {
       throw coded(E0805, "the init of " + H.typeName(ty)

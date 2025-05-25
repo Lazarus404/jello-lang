@@ -3,7 +3,7 @@ package frontend.syntax;
 import type { FloatSize, IntSize } from frontend.syntax.Ast;
 import { sourceDiagnostic, utf8CharLength } from frontend.syntax.Source;
 import { E0001, E0002, E0003, E0004, E0005, E0006, coded } from support.Codes;
-import { concatAll, hexValue } from support.Text;
+import { hexValue } from support.Text;
 import { u8, utf8FromCodepoint, utf8Validate } from std.core.Bytes;
 
 export enum Token {
@@ -66,6 +66,7 @@ export enum Token {
   Dot;
   DotDotDot;
   Question;
+  QuestionQuestion;
   Semicolon;
 
   Ampersand;
@@ -482,7 +483,7 @@ let _lexBytesLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
       i++;
     }
   }
-  (Token.BytesLiteral(concatAll(out)), i)
+  (Token.BytesLiteral(out.join("")), i)
 };
 
 let _lexTemplate = fn(src: Bytes, at: I32, tick: I32, head: Bool): Tuple<Token, I32> {
@@ -504,7 +505,7 @@ let _lexTemplate = fn(src: Bytes, at: I32, tick: I32, head: Bool): Tuple<Token, 
 
       if (out.len() > 0) {
         out.push(text);
-        text = concatAll(out);
+        text = out.join("");
       }
       if (hole) { return (head ? Token.TemplateHead(text) : Token.TemplateMiddle(text), i + 2); }
       return (head ? Token.BytesLiteral(text) : Token.TemplateTail(text), i + 1);
@@ -598,6 +599,7 @@ let _opToken = fn(op: Bytes): Token {
     "&&" => Token.And,
     "||" => Token.PipePipe,
     "|>" => Token.PipeGreater,
+    "??" => Token.QuestionQuestion,
     "%=" => Token.PercentEqual,
     "&=" => Token.AmpersandEqual,
     "|=" => Token.PipeEqual,

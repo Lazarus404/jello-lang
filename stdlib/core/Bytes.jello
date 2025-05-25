@@ -121,25 +121,7 @@ export let split = fn(text: Bytes, separator: Bytes): Array<Bytes> {
   parts
 };
 
-export let join = fn(parts: Array<Bytes>, separator: Bytes): Bytes {
-  if (parts.len() == 0) { return ""; }
-  let length = Bytes.len(separator) * (parts.len() - 1);
-  let i = 0;
-
-  while (i < parts.len()) {
-    length = length + Bytes.len(parts[i]);
-    i++;
-  }
-  let buffer = Bytes.new(length);
-  let at = _put(buffer, 0, parts[0]);
-  i = 1;
-
-  while (i < parts.len()) {
-    at = _put(buffer, _put(buffer, at, separator), parts[i]);
-    i++;
-  }
-  Bytes.toString(buffer)
-};
+export let join = fn(parts: Array<Bytes>, separator: Bytes): Bytes { parts.join(separator) };
 
 export let replace = fn(text: Bytes, pattern: Bytes, replacement: Bytes): Bytes {
   if (Bytes.len(pattern) == 0) { throw "Bytes.replace requires a pattern"; }

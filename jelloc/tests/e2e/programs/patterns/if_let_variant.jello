@@ -1,0 +1,16 @@
+// expect: not red green 2 bound not
+/* In a condition, a bare name of one of the value's variants tests for that variant, as in a
+ * `match`, and null fails it; any other name, capitalised or not, still binds. */
+enum Light { Red; Green; Amber(n: I32); }
+let l = Light.Green;
+let b = if (let Red = l) { "red" } else { "not red" };
+let c = if (let Green = l) { "green" } else { "not green" };
+
+let lights = [Light.Red, Light.Red, Light.Green];
+let i = 0;
+while (let Red = lights[i]) { i++; }
+
+let other = if (let Red2 = l) { "bound" } else { "no" };
+let maybe: ?Light = null;
+let absent = if (let Red = maybe) { "red" } else { "not" };
+`${b} ${c} ${i} ${other} ${absent}`

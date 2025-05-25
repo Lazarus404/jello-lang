@@ -1,0 +1,16 @@
+// expect: y zero b null 2
+/* An arm that is itself a conditional or a `match` joins like any other value, so these give
+ * Bytes, which a template prints bare, not ?Bytes, which it would print quoted. A nullable arm
+ * still makes the whole match nullable. */
+enum E { A; B; C; }
+let word = fn(e: E, n: I32) {
+  match (e) {
+    A => "z",
+    B => n > 0 ? "y" : "n",
+    C => match (n) { 0 => "zero", _ => "many" },
+  }
+};
+let sure = fn(e: E) { match (e) { A => "a", _ => if (true) { "b" } else { throw "no" } } };
+let maybe = fn(e: E, n: ?I32) { match (e) { A => 1, B => n, C => n == null ? 0 : 2 } };
+
+`${word(E.B, 1)} ${word(E.C, 0)} ${sure(E.B)} ${maybe(E.B, null)} ${maybe(E.C, 5)}`

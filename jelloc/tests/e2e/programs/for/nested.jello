@@ -1,0 +1,15 @@
+// expect: 0:a0 0:a1 1:b0 1:b1 | 6
+// Nested loops each keep their own hidden counter, and a buffer is walked like Bytes.
+let pairs = Array.new<Bytes>(0);
+for (i, word in ["a", "b"]) {
+  for (j, _ in list[1, 2]) { pairs.push(`${i}:${word}${j}`); }
+}
+
+let buffer = Bytes.new(3);
+buffer[0] = 1;
+buffer[1] = 2;
+buffer[2] = 3;
+let sum = 0;
+for (b in buffer) { sum += b; }
+
+`${Bytes.join(pairs, " ")} | ${sum}`

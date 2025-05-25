@@ -2,7 +2,7 @@ package frontend.syntax;
 
 import type { FloatSize, IntSize } from frontend.syntax.Ast;
 import type { Token } from frontend.syntax.Lexer;
-import { bytesLiteral, concatAll } from support.Text;
+import { bytesLiteral } from support.Text;
 
 let _integerSize = fn(size: IntSize): Bytes {
   match (size) {
@@ -86,6 +86,7 @@ let _tokenName = fn(token: Token): Bytes {
     Colon => "Colon",
     Comma => "Comma",
     Question => "Question",
+    QuestionQuestion => "QuestionQuestion",
     Dot => "Dot",
     DotDotDot => "DotDotDot",
     Equal => "Equal",
@@ -186,6 +187,7 @@ export let tokenText = fn(token: Token): Bytes {
     Colon => ":",
     Comma => ",",
     Question => "?",
+    QuestionQuestion => "??",
     Dot => ".",
     DotDotDot => "...",
     Equal => "=",
@@ -238,5 +240,5 @@ export let isKeyword = fn(token: Token): Bool {
 };
 
 export let printTokens = fn(tokens: Array<Token>): Bytes {
-  concatAll(tokens.map(fn(token: Token): Bytes { `${_tokenName(token)}\n` }))
+  tokens.map(fn(token: Token): Bytes { `${_tokenName(token)}\n` }).join("")
 };

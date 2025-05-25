@@ -1,0 +1,7 @@
+// trap: SEALED 6:1
+// Through an Object, replacing a linked prototype's method traps rather than being overlooked.
+typedef Shape = { let w: I32; };
+prototype Shape { init(w: I32) { this.w = w; }; area(): I32 { this.w * this.w }; };
+let o = new Shape(3) as Object;
+o.area = fn(self: Shape): I32 { 0 };
+1

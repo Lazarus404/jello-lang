@@ -6,15 +6,13 @@ import { checkOperand } from frontend.semantics.TypeCheck;
 
 export let checkInterpolation = fn(texts: Array<Bytes>, holes: Array<AstExpr>): I32 {
   let parts = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < texts.len()) {
-    if (texts[i].len() > 0) { parts.push(bytesOf(texts[i])); }
+  for (i, text in texts) {
+    if (text.len() > 0) { parts.push(bytesOf(text)); }
 
     if (i < holes.len()) {
       parts.push(printed(checkOperand(holes[i], i, -1), "a template hole", i));
     }
-    i++;
   }
   joinOf(parts)
 };

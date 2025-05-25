@@ -16,10 +16,9 @@ export let segmentCode = fn(width: I32, endian: Endian, kind: BitValueKind): I32
 export let placeSegments = fn(codes: Array<I32>): Tuple<Array<I32>, I32> {
   let offsets = Array.new<I32>(0);
   let bit = 0;
-  let i = 0;
 
-  while (i < codes.len()) {
-    let width = segmentWidth(codes[i]);
+  for (i, code in codes) {
+    let width = segmentWidth(code);
 
     if (width == 0) {
       let later = i + 1;
@@ -38,7 +37,6 @@ export let placeSegments = fn(codes: Array<I32>): Tuple<Array<I32>, I32> {
     }
     offsets.push(bit);
     bit += width;
-    i++;
   }
   if (bit % 8 != 0) { throw coded(E0104, "the segments of a bits value must fill whole bytes"); }
   (offsets, bit / 8)
@@ -67,10 +65,9 @@ let _fits = fn(code: I32, signed: Bool, value: AstExpr): Bool {
 
 export let checkLayoutLiterals = fn(ty: I32, entries: Array<ObjectEntry>): Bool {
   let codes = H.layoutCodes(ty);
-  let i = 0;
 
-  while (i < entries.len()) {
-    match (entries[i]) {
+  for (i, entry in entries) {
+    match (entry) {
       Field(name, value) => {
         let field = H.recordField(ty, name);
 
@@ -82,38 +79,29 @@ export let checkLayoutLiterals = fn(ty: I32, entries: Array<ObjectEntry>): Bool 
       },
       _ => null,
     };
-    i++;
   }
   true
 };
 
 let _pack = fn(codes: Array<I32>, offsets: Array<I32>, fixed: I32, values: Array<I32>): I32 {
   let fields = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < codes.len()) {
-    let code = codes[i];
+  for (i, code in codes) {
     fields.push(H.node(Op.BitsField, segmentType(code), offsets[i], code, [values[i]]));
-    i++;
   }
   H.node(Op.BitsPack, H.TYPE_BYTES, fixed, 0, fields)
 };
 
 export let checkBits = fn(segments: Array<BitExprSegment>): I32 {
   let codes = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < segments.len()) {
-    let { width, endian, kind } = segments[i];
+  for ({ width, endian, kind } in segments) {
     codes.push(segmentCode(width, endian, kind));
-    i++;
   }
   let (offsets, fixed) = placeSegments(codes);
   let values = Array.new<I32>(0);
-  i = 0;
 
-  while (i < segments.len()) {
-    let { signed, value } = segments[i];
+  for (i, { signed, value } in segments) {
     _fits(codes[i], signed, value);
     let ty = segmentType(codes[i]);
     let checked = widened(checkOperand(value, i, ty), ty);
@@ -124,7 +112,6 @@ export let checkBits = fn(segments: Array<BitExprSegment>): I32 {
       throw coded(E0400, `this segment holds ${H.typeName(ty)}, not ${H.typeName(got)}`);
     }
     values.push(checked);
-    i++;
   }
   _pack(codes, offsets, fixed, values)
 };

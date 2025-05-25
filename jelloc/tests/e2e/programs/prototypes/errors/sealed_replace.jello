@@ -1,0 +1,6 @@
+// error: 5:1: area cannot be replaced; a linked prototype's methods, and those of any that may delegate to one, are fixed [E0805]
+typedef Shape = { let w: I32; };
+prototype Shape { init(w: I32) { this.w = w; }; area(): I32 { this.w * this.w }; };
+let s = new Shape(3);
+s.area = fn(self: Shape): I32 { 0 };
+s.area()

@@ -338,11 +338,8 @@ let _width = fn(ty: I32): I32 { isNumberType(ty) ? ty : TYPE_I32 };
 let _typed = fn(id: I32, operands: Array<I32>, result: I32, message: Bytes): I32 {
   _arity(id, operands.len());
 
-  let i = 0;
-
-  while (i < operands.len()) {
-    if (_operand(id, i) != operands[i]) { _fail(message); }
-    i++;
+  for (i, expected in operands) {
+    if (_operand(id, i) != expected) { _fail(message); }
   }
 
   result
@@ -619,6 +616,16 @@ let _expr = fn(id: I32): I32 {
       _uniform(id, TYPE_BYTES, "bytes concat many operand type");
       TYPE_BYTES
     },
+    BytesJoin => {
+      _arity(id, 2);
+      let parts = _operand(id, 0);
+
+      if (!isKind(parts, Kind.Array) || (innerOf(parts) != TYPE_BYTES)) {
+        _fail("bytes join of an array that does not hold Bytes");
+      }
+      if (_operand(id, 1) != TYPE_BYTES) { _fail("bytes join separator type"); }
+      TYPE_BYTES
+    },
     BytesEq => _typed(id, [TYPE_BYTES, TYPE_BYTES], TYPE_BOOL, "bytes eq operand type"),
     BytesGet => _typed(id, [_readable(id), TYPE_I32], TYPE_I32, "bytes get operand type"),
 
@@ -822,13 +829,16 @@ let _statement = fn(id: I32, programBody: Bool): Bool {
       _arity(id, 0)
     },
     While => {
-      _arity(id, 2);
+      let stepped = childCount(id) == 3;
+      if (!stepped) { _arity(id, 2); }
       if ((auxOf(id) != 0) && (auxOf(id) != 1)) { _fail("loop body-first flag"); }
+      if (stepped && (auxOf(id) != 0)) { _fail("a do loop has no step"); }
       if (_operand(id, 0) != TYPE_BOOL) { _fail("while condition must be bool"); }
 
       _loops++;
       _block(_child(id, 1), false);
       _loops--;
+      if (stepped) { _block(_child(id, 2), false); }
       null
     },
     TryStatement => _try(id, false),
@@ -976,11 +986,8 @@ export let verifyHir = fn(program: Hir): Bool {
   _loops = 0;
   _block(body, true);
 
-  i = 0;
-
-  while (i < _initialized.len()) {
-    if (!_initialized[i]) { _fail("global never initialized"); }
-    i++;
+  for (initialized in _initialized) {
+    if (!initialized) { _fail("global never initialized"); }
   }
 
   _spans();

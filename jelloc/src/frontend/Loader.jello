@@ -2,7 +2,7 @@ package frontend;
 
 import type { Expr, Package, Stmt } from frontend.syntax.Ast;
 import { ImportKind, bindPatternName, isBindPattern } from frontend.syntax.Ast;
-import { lexFile } from frontend.syntax.Lexer;
+import { Token, lexFile } from frontend.syntax.Lexer;
 import { noteFailure } from frontend.semantics.Failures;
 import {
   E0200, E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0209, E1000, coded
@@ -15,7 +15,7 @@ import {
   beginMacros, expandModule, expanderSource, hasMacros, spliceBodies
 } from frontend.Macros;
 import { Located } from frontend.syntax.Rewrite;
-import { bytesLiteral, joined } from support.Text;
+import { bytesLiteral } from support.Text;
 import { exists, readText } from std.io.File;
 load { file_real_path } from std;
 
@@ -52,7 +52,7 @@ let _trimmed = fn(directory: Bytes): Bytes {
 };
 
 let _packageText = fn(parts: Array<Bytes>): Bytes {
-  parts.len() == 0 ? "no package" : "`package " + joined(parts, ".") + ";`"
+  parts.len() == 0 ? "no package" : "`package " + parts.join(".") + ";`"
 };
 
 let _checkPackage = fn(
@@ -68,7 +68,7 @@ let _checkPackage = fn(
   let expected = _packageText(parts.slice(0, parts.len() - 1));
 
   if (declared != expected) {
-    let dotted = joined(parts, ".");
+    let dotted = parts.join(".");
     throw noteFailure(
       declaration,
       "its package is declared here",
@@ -86,11 +86,9 @@ let _localOf = fn(imported: Import): Bytes {
 };
 
 let _repeats = fn(imports: Array<Import>, added: Import): Bool {
-  let i = 0;
-
-  while (i < imports.len()) {
-    if (_localOf(imports[i]) == _localOf(added)) {
-      let allowed = match ((imports[i], added)) {
+  for (existing in imports) {
+    if (_localOf(existing) == _localOf(added)) {
+      let allowed = match ((existing, added)) {
         (
           Import(_, module, name, typeOnly, _, _),
           Import(_, addedModule, addedName, addedTypeOnly, _, _)
@@ -103,7 +101,6 @@ let _repeats = fn(imports: Array<Import>, added: Import): Bool {
       };
       if (!allowed) { return true; }
     }
-    i++;
   }
   false
 };
@@ -116,6 +113,8 @@ let _roots = Array.new<Bytes>(0);
 let _stdRoot = "";
 
 let _extensionIndexes = Array.new<I32>(0);
+let _methodNames = Array.new<Bytes>(0);
+let _listsNamed = false;
 
 let _failure: ?SourceSpan = null;
 
@@ -134,7 +133,7 @@ let _modulePath = fn(parts: Array<Bytes>): Bytes {
     if (_stdRoot == "") {
       throw coded(
         E0201,
-        `module ${joined(parts, ".")} is in the standard library; `
+        `module ${parts.join(".")} is in the standard library; `
         + "pass its directory with --std <dir> or set JELLO_STD_PATH"
       );
     }
@@ -151,15 +150,13 @@ let _modulePath = fn(parts: Array<Bytes>): Bytes {
   relative += ".jello";
 
   let tried = Array.new<Bytes>(0);
-  i = 0;
 
-  while (i < roots.len()) {
-    let path = roots[i] + relative;
+  for (root in roots) {
+    let path = root + relative;
     if ((_paths.indexOf(path) >= 0) || exists(path)) { return path; }
     tried.push(path);
-    i++;
   }
-  throw coded(E0200, `module ${joined(parts, ".")} not found: ${joined(tried, ", ")}`);
+  throw coded(E0200, `module ${parts.join(".")} not found: ${tried.join(", ")}`);
 };
 
 let _import = fn(parts: Array<Bytes>): I32 {
@@ -169,8 +166,8 @@ let _import = fn(parts: Array<Bytes>): I32 {
   dependency
 };
 
-let _TEST = ".test";
-let _TEST_FILE = `${_TEST}.jello`;
+const _TEST = ".test";
+const _TEST_FILE = `${_TEST}.jello`;
 
 export let isTestFile = fn(path: Bytes): Bool { path.endsWith(_TEST_FILE) };
 
@@ -197,12 +194,14 @@ export let isTestName = fn(name: Bytes): Bool {
 
 export let isHookName = fn(name: Bytes): Bool { (name == "beforeAll") || (name == "afterAll") };
 
-export let localName = fn(name: Bytes, alias: ?Bytes): Bytes { alias == null ? name : alias };
+export let localName = fn(name: Bytes, alias: ?Bytes): Bytes { alias ?? name };
 
 let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<Import>): Module {
   let importing = _failure;
   _failure = null;
-  let program = parseProgram(lexFile(text, path));
+  let lexed = lexFile(text, path);
+  _noteMethodNames(lexed.0);
+  let program = parseProgram(lexed);
   let syntax = programSyntax(program);
   _failure = importing;
 
@@ -221,25 +220,21 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
     }
   }
 
-  let dotted = joined(parts, ".");
+  let dotted = parts.join(".");
   let testFile = isTestModule(dotted);
   let macros = Array.new<Tuple<Bytes, Bytes, Bytes, Bytes, SourceSpan>>(0);
-  let i = 0;
 
-  while (i < statements.len()) {
-    match (statements[i]) {
+  for (i, statement in statements) {
+    match (statement) {
       ImportFrom(Native, _, _) => null,
       ImportFrom(MacroOnly, items, importParts) => {
         let at = _statementSpan(syntax, i);
         _failure = at;
         let provider = _paths[_import(importParts)];
-        let module = joined(importParts, ".");
-        let j = 0;
+        let module = importParts.join(".");
 
-        while (j < items.len()) {
-          let { name, alias } = items[j];
+        for ({ name, alias } in items) {
           macros.push((localName(name, alias), provider, module, name, at));
-          j++;
         }
         null
       },
@@ -248,10 +243,8 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
         let typeOnly = kind == ImportKind.TypeOnly;
         let dependency = _import(importParts);
         let privately = testFile && _tests(parts, importParts);
-        let j = 0;
 
-        while (j < items.len()) {
-          let { name, alias } = items[j];
+        for ({ name, alias } in items) {
           let local = localName(name, alias);
           let added = Import.Import(local, dependency, name, typeOnly, privately, i);
 
@@ -259,13 +252,12 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
             throw coded(E0205, `duplicate import name: ${_localOf(added)}`);
           }
           imports.push(added);
-          j++;
         }
         null
       },
       ImportModule(kind, importParts, alias) => {
         _failure = _statementSpan(syntax, i);
-        let imported = joined(importParts, ".");
+        let imported = importParts.join(".");
 
         match (kind) {
           Value => null,
@@ -297,7 +289,6 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
       },
       _ => null,
     };
-    i++;
   }
   _failure = null;
 
@@ -314,17 +305,15 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
 
   let (expanded, expandedSyntax, expandedTail, moved) =
     expandModule(path, statements, syntax, tail, macros);
-  i = 0;
 
-  while (i < imports.len()) {
-    imports[i] = match (imports[i]) {
+  for (i, found in imports) {
+    imports[i] = match (found) {
       Import(local, module, name, typeOnly, privately, statement) when (statement >= 0) =>
         Import.Import(local, module, name, typeOnly, privately, moved[statement]),
       Namespace(local, module, privately, statement) when (statement >= 0) =>
         Import.Namespace(local, module, privately, moved[statement]),
       unchanged => unchanged,
     };
-    i++;
   }
   {
     path,
@@ -348,7 +337,7 @@ let _load = fn(path: Bytes, parts: Array<Bytes>): I32 {
 
   if (loaded >= 0) {
     let name = _modules[loaded].name;
-    let dotted = joined(parts, ".");
+    let dotted = parts.join(".");
 
     if (name != dotted) {
       throw noteFailure(
@@ -382,7 +371,101 @@ export let hasExtension = fn(name: Bytes): Bool {
 
 export let loadedExtensions = fn(): Array<I32> { _extensionIndexes };
 
-let _begin = fn(std: Bytes, roots: Array<Bytes>, extensions: Array<Bytes>) {
+let _noteMethodNames = fn(tokens: Array<Token>) {
+  for (i, token in tokens) {
+    match (token) {
+      ListLiteral, Ident("List") => { _listsNamed = true; },
+      LParen, Less when ((i >= 2) && (tokens[i - 2] == Token.Dot)) => {
+        if (let Ident(name) = tokens[i - 1]) { _methodNames.internIndex(name); }
+      },
+      _ => null,
+    };
+  }
+  null
+};
+
+export let extensionsWanted = fn(types: Array<Bytes>, intrinsic: (Bytes) -> Bool): Array<Bytes> {
+  types.filter(fn(extended) {
+    if (!hasExtension(extended)) { return false; }
+    let path = _modulePath(["std", "core", extended]);
+    if (_paths.indexOf(path) >= 0) { return true; }
+    if ((_methodNames.len() == 0) || ((extended == "List") && !_listsNamed)) { return false; }
+    let (tokens, _, _, _) = lexFile(readText(path), path);
+    let i = 2;
+
+    while (i < tokens.len()) {
+      if ((tokens[i - 2] == Token.Export) && (tokens[i - 1] == Token.Let)) {
+        if (let Ident(name) = tokens[i]) {
+          if ((_methodNames.indexOf(name) >= 0) && !intrinsic(name)) { return true; }
+        }
+      }
+      i++;
+    }
+    false
+  })
+};
+
+let _movedImport = fn(found: Import, moved: Array<I32>): Import {
+  match (found) {
+    Import(local, module, name, typeOnly, privately, statement) =>
+      Import.Import(local, moved[module], name, typeOnly, privately, statement),
+    Namespace(local, module, privately, statement) =>
+      Import.Namespace(local, moved[module], privately, statement),
+  }
+};
+
+export let addExtensions = fn(types: Array<Bytes>): Array<Module> {
+  types.forEach(fn(extended) {
+    let parts = ["std", "core", extended];
+    _extensionIndexes.internIndex(_load(_modulePath(parts), parts));
+  });
+
+  let count = _modules.len();
+  let front = Array.new<Bool>(count);
+  let pending = _extensionIndexes.copy();
+
+  while (pending.len() > 0) {
+    let module = pending.pop();
+
+    if (!front[module]) {
+      front[module] = true;
+      _modules[module].imports.forEach(fn(found) {
+        match (found) {
+          Import(_, imported, _, _, _, _), Namespace(_, imported, _, _) => pending.push(imported),
+        };
+      });
+    }
+  }
+
+  let order = Array.new<I32>(0);
+  let rest = Array.new<I32>(0);
+
+  for (i, inFront in front) {
+    (inFront ? order : rest).push(i);
+  }
+  order.appendFrom(rest, 0);
+  let moved = Array.new<I32>(count);
+
+  for (i, old in order) {
+    moved[old] = i;
+  }
+
+  let modules = _modules;
+  let paths = _paths;
+  let importedAt = _importedAt;
+  _modules = order.map(fn(old) {
+    let module = modules[old];
+    let imports = module.imports.map(fn(found) { _movedImport(found, moved) });
+    let renumbered: Module = { ...module, imports };
+    renumbered
+  });
+  _paths = order.map(fn(old) { paths[old] });
+  _importedAt = order.map(fn(old) { importedAt[old] });
+  _extensionIndexes = _extensionIndexes.map(fn(module) { moved[module] });
+  _modules
+};
+
+let _begin = fn(std: Bytes, roots: Array<Bytes>) {
   _modules = Array.new<Module>(0);
   _paths = Array.new<Bytes>(0);
   _importedAt = Array.new<?SourceSpan>(0);
@@ -393,23 +476,13 @@ let _begin = fn(std: Bytes, roots: Array<Bytes>, extensions: Array<Bytes>) {
   _roots = roots.map(_trimmed);
 
   _extensionIndexes = Array.new<I32>(0);
-  let i = 0;
-
-  while (i < extensions.len()) {
-    let parts = ["std", "core", extensions[i]];
-    _extensionIndexes.push(_load(_modulePath(parts), parts));
-    i++;
-  }
+  _methodNames = Array.new<Bytes>(0);
+  _listsNamed = false;
   null
 };
 
-export let loadModules = fn(
-  entryPath: Bytes,
-  std: Bytes,
-  paths: Array<Bytes>,
-  extensions: Array<Bytes>
-): Array<Module> {
-  _begin(std, [_directory(entryPath)].appendFrom(paths, 0), extensions);
+export let loadModules = fn(entryPath: Bytes, std: Bytes, paths: Array<Bytes>): Array<Module> {
+  _begin(std, [_directory(entryPath)].appendFrom(paths, 0));
   _load(entryPath, Array.new<Bytes>(0));
   _modules
 };
@@ -421,22 +494,20 @@ let _testParts = fn(path: Bytes): Array<Bytes> {
 
   let file = _resolved(path);
   let start = -1;
-  let i = 0;
 
-  while (i < _roots.len()) {
-    let root = _resolved(_roots[i]);
+  for (given in _roots) {
+    let root = _resolved(given);
     let prefix = root.endsWith("/") ? root : `${root}/`;
 
     if ((prefix.len() > start) && (file.len() > prefix.len()) && file.startsWith(prefix)) {
       start = prefix.len();
     }
-    i++;
   }
   if (start < 0) { throw coded(E0209, `test file ${path} is under no --path root`); }
 
   let parts = Array.new<Bytes>(0);
   let end = file.len() - _TEST_FILE.len() + _TEST.len();
-  i = start;
+  let i = start;
 
   while (i <= end) {
     if ((i == end) || (Bytes.get_u8(file, i) == "/".code)) {
@@ -453,15 +524,14 @@ let _suite = fn(index: I32, parts: Array<Bytes>, suites: Array<Bytes>, imports: 
   imports.push(Import.Namespace(space, index, true, -1));
 
   let { path, statements, syntax } = _modules[index];
-  let file = joined(parts, "/");
+  let file = parts.join("/");
   let name = Bytes.slice(file, 0, file.len() - _TEST.len());
   let cases = Array.new<Bytes>(0);
   let before = "none";
   let after = "none";
-  let i = 0;
 
-  while (i < statements.len()) {
-    let declared = match (statements[i]) {
+  for (i, statement in statements) {
+    let declared = match (statement) {
       LetStmt(_, _, pattern, _, _, _, _) when (isBindPattern(pattern)) =>
         bindPatternName(pattern),
       _ => "",
@@ -477,39 +547,31 @@ let _suite = fn(index: I32, parts: Array<Bytes>, suites: Array<Bytes>, imports: 
       let place = bytesLiteral(`${path}:${line}`);
       cases.push(`(${qualified}, ${place}, ${space}.${declared})`);
     }
-    i++;
   }
 
   if (cases.len() > 0) {
-    suites.push(`(${bytesLiteral(name)}, ${before}, ${after}, [${joined(cases, ", ")}])`);
+    suites.push(`(${bytesLiteral(name)}, ${before}, ${after}, [${cases.join(", ")}])`);
   }
   null
 };
 
-export let loadTests = fn(
-  files: Array<Bytes>,
-  std: Bytes,
-  paths: Array<Bytes>,
-  extensions: Array<Bytes>
-): Array<Module> {
-  _begin(std, paths, extensions);
+export let loadTests = fn(files: Array<Bytes>, std: Bytes, paths: Array<Bytes>): Array<Module> {
+  _begin(std, paths);
   let names = files.map(_testParts);
   let testing = _import(["std", "testing"]);
 
   let suites = Array.new<Bytes>(0);
   let imports = Array.new<Import>(0);
-  let i = 0;
 
-  while (i < files.len()) {
-    if (_paths.indexOf(files[i]) < 0) {
-      _suite(_load(files[i], names[i]), names[i], suites, imports);
+  for (i, file in files) {
+    if (_paths.indexOf(file) < 0) {
+      _suite(_load(file, names[i]), names[i], suites, imports);
     }
-    i++;
   }
 
   let entry = "import { main } from std.testing;\n"
     + "let none = fn() { null };\n"
-    + `main([${joined(suites, ",\n  ")}])\n`;
+    + `main([${suites.join(",\n  ")}])\n`;
   let made = _module("", entry, Array.new<Bytes>(0), imports);
   let at = _modules[testing].syntax;
   let placed = relocated(made.syntax, at.path, at.start, at.end);
@@ -518,8 +580,8 @@ export let loadTests = fn(
   _modules
 };
 
-export let loadExpanders = fn(path: Bytes, std: Bytes, extensions: Array<Bytes>): Array<Module> {
-  _begin(std, [_directory(path)], extensions);
+export let loadExpanders = fn(path: Bytes, std: Bytes): Array<Module> {
+  _begin(std, [_directory(path)]);
   let program = parseProgram(lexFile(readText(path), path));
   let syntax = programSyntax(program);
   let (source, bodies) = expanderSource(program.statements, syntax.children);

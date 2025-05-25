@@ -1,0 +1,24 @@
+// expect: 6 0:104 1:105 [10, 20] 14 3
+// `for` walks arrays, Bytes (as I32 bytes) and lists, with or without an index.
+let total = 0;
+for (x in [1, 2, 3]) { total += x; }
+
+let seen = Array.new<Bytes>(0);
+for (i, b in "hi") { seen.push(`${i}:${b}`); }
+
+let tens = Array.new<I32>(0);
+for (x in list[1, 2]) { tens.push(x * 10); }
+
+let products = 0;
+for ((a, b) in [(1, 2), (3, 4)]) { products += a * b; }
+
+let counted = 0;
+for (i, _ in list[:a, :b, :c]) { counted = i + 1; }
+
+Bytes.join([
+  Std.string(total),
+  Bytes.join(seen, " "),
+  Std.string(tens),
+  Std.string(products),
+  Std.string(counted),
+], " ")

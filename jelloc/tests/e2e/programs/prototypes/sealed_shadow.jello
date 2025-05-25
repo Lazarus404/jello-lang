@@ -1,0 +1,6 @@
+// trap: SEALED 5:9
+// An Object that delegates to a linked prototype cannot hide one of its methods.
+typedef Shape = { let w: I32; };
+prototype Shape { init(w: I32) { this.w = w; }; area(): I32 { this.w * this.w }; };
+let o = { __proto__: Shape, area: 1 };
+1

@@ -94,12 +94,10 @@ let _parse = fn(text: I32, kind: Bytes, extra: Array<I32>, result: I32, message:
 
   let args = [H.local(binding, H.TYPE_BYTES)];
   let params = [H.TYPE_BYTES];
-  let i = 0;
 
-  while (i < extra.len()) {
-    args.push(extra[i]);
-    params.push(H.typeOf(extra[i]));
-    i++;
+  for (arg in extra) {
+    args.push(arg);
+    params.push(H.typeOf(arg));
   }
   let valid = H.callStd(`${kind}_valid`, params, H.TYPE_BOOL, args);
   statements.push(H.opNode(Op.Expression, 0, [orThrow(valid, bytesOf(message))]));

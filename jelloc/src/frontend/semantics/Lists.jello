@@ -5,7 +5,7 @@ import frontend.hir.Hir as H;
 import { Kind, Op } from frontend.hir.Hir;
 import { assignmentMark, enterLoop, leaveLoop, narrowings } from frontend.semantics.Narrowing;
 import { bindGenerator } from frontend.semantics.Match;
-import { expressionOf } from frontend.semantics.Derived;
+import { expressionOf, steppedWhile } from frontend.semantics.Derived;
 import {
   beginLoopScope, checkOperand, endLoopScope, enterSyntax, hideValue, newBinding, rejectAt,
   syntaxChild, widened,
@@ -20,17 +20,15 @@ let _element = fn(expected: I32, inferred: Bool): I32 {
 let _items = fn(items: Array<AstExpr>, first: I32, element: I32, values: Array<I32>): I32 {
   let declared = H.isOpen(element) ? -1 : element;
   let ty = element;
-  let i = 0;
 
-  while (i < items.len()) {
-    let value = widened(checkOperand(items[i], first + i, ty), declared);
+  for (i, item in items) {
+    let value = widened(checkOperand(item, first + i, ty), declared);
     if (ty < 0) { ty = H.typeOf(value); }
 
     if (!H.unify(H.typeOf(value), ty)) {
       rejectAt(first + i, coded(E0400, `list element must be ${H.typeName(ty)}`));
     }
     values.push(value);
-    i++;
   }
   ty
 };
@@ -76,8 +74,7 @@ let _reverseOnto = fn(source: I32, onto: I32, ty: I32, statements: Array<I32>) {
   let head = H.opNode(Op.ListHead, H.innerOf(ty), [H.local(source, ty)]);
   let push = _assign(onto, ty, H.opNode(Op.ListCons, ty, [head, H.local(onto, ty)]));
   let tail = H.opNode(Op.ListTail, ty, [H.local(source, ty)]);
-  let body = [push, _assign(source, ty, tail)];
-  statements.push(H.opNode(Op.While, 0, [_more(source, ty), H.opNode(Op.Block, 0, body)]));
+  statements.push(steppedWhile(_more(source, ty), [push], [_assign(source, ty, tail)]));
   null
 };
 
@@ -110,11 +107,9 @@ let _spread = fn(
 
   let statements = Array.new<I32>(0);
   let reads = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < values.len()) {
-    reads.push(H.local(hideValue(statements, "item", values[i]), H.typeOf(values[i])));
-    i++;
+  for (value in values) {
+    reads.push(H.local(hideValue(statements, "item", value), H.typeOf(value)));
   }
   let copied = _variable(statements, "rest", ty, list);
   let after = Array.new<I32>(0);
@@ -166,7 +161,6 @@ let _generator = fn(
   let item = H.innerOf(ty);
   let cursor = _variable(statements, "source", ty, list);
   let head = hideValue(loop, "item", H.opNode(Op.ListHead, item, [H.local(cursor, ty)]));
-  loop.push(_assign(cursor, ty, H.opNode(Op.ListTail, ty, [H.local(cursor, ty)])));
   loop.push(bindGenerator(pattern, g, H.local(head, item)));
 
   if (guard != null) {
@@ -181,7 +175,8 @@ let _generator = fn(
     _collect(body, next, result, element, loop);
   }
   let more = _more(cursor, ty);
-  statements.push(H.opNode(Op.While, 0, [more, H.opNode(Op.Block, 0, loop)]));
+  let step = _assign(cursor, ty, H.opNode(Op.ListTail, ty, [H.local(cursor, ty)]));
+  statements.push(steppedWhile(more, loop, [step]));
   statements
 };
 

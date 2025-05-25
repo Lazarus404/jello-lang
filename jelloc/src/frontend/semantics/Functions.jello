@@ -61,15 +61,13 @@ let _bind = fn(function: I32, args: Array<AstExpr>): I32 {
     i++;
   }
   let passed = Array.new<I32>(0);
-  i = 0;
 
-  while (i < captured.len()) {
+  for (i, value in captured) {
     let copy = newBinding();
-    let held = H.typeOf(captured[i]);
+    let held = H.typeOf(value);
     let name = (i == 0) ? "function" : "bound";
     children.push(H.node(Op.Capture, held, copy, H.bytesId(name), []));
     passed.push(H.local(copy, held));
-    i++;
   }
 
   let result = H.innerOf(ty);

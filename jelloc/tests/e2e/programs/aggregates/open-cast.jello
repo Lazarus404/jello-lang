@@ -1,0 +1,12 @@
+// expect: x,y 2 | 5000000001 none true
+// `as` gives an empty literal, an integer literal's width and a bare null their type, as an
+// annotation would.
+let words = [] as Array<Bytes>;
+words.push("x");
+words.push("y");
+let wide = [1, 2] as Array<I64>;
+let missing = null as ?Bytes;
+let nothing = null as ?Array<I32>;
+let empty = ([] as Array<Bytes>).join("-");
+let sum = wide[0] + 5000000000;
+`${words.join(",")} ${words.len()} |${empty} ${sum} ${missing ?? "none"} ${nothing == null}`

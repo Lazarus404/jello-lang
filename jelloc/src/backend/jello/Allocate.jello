@@ -8,7 +8,7 @@ import { verifyAllocatedProgram } from ir.Verify;
 import { internalError } from support.Internal;
 import { E0901, coded } from support.Codes;
 
-let _REGISTER_LIMIT = 256;
+const _REGISTER_LIMIT = 256;
 
 let _keyTypes = Array.new<ValueType>(0);
 let _keys = Array.new<I32>(0);
@@ -64,12 +64,6 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
     i++;
   }
   let payloadsDone = Array.new<Bool>(blocks.len());
-  i = 0;
-
-  while (i < blocks.len()) {
-    payloadsDone[i] = false;
-    i++;
-  }
 
   let caughtMarks = Array.new<I32>(count);
   _places = Array.new<I32>(count);
@@ -81,33 +75,26 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
     i++;
   }
 
-  i = 0;
-
-  while (i < blocks.len()) {
-    let (target, payload) = blockCatch(blocks[i], indexes);
+  for (i, block in blocks) {
+    let (target, payload) = blockCatch(block, indexes);
     let caught = target >= 0 ? liveIn[target] : Array.new<I32>(0);
     let first = (target >= 0) && !payloadsDone[target];
     if (first) { payloadsDone[target] = true; }
-    let m = 0;
 
-    while (m < caught.len()) {
-      if (caught[m] != payload) {
-        caughtMarks[caught[m]] = i;
-        if (first) { _interfere(neighbors, payload, caught[m]); }
+    for (register in caught) {
+      if (register != payload) {
+        caughtMarks[register] = i;
+        if (first) { _interfere(neighbors, payload, register); }
       }
-      m++;
     }
 
-    m = 0;
-
-    while (m < liveOut[i].len()) {
-      _enliven(liveOut[i][m]);
-      m++;
+    for (register in liveOut[i]) {
+      _enliven(register);
     }
-    let last = terminatorRead(blocks[i].terminator);
+    let last = terminatorRead(block.terminator);
     if (last >= 0) { _enliven(last); }
 
-    let instructions = blocks[i].instructions;
+    let instructions = block.instructions;
     let j = instructions.len() - 1;
 
     while (j >= 0) {
@@ -116,42 +103,28 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
       let source = match (insn.op) { Move => insn.args[0], _ => -1 };
 
       if (dst >= 0) {
-        m = 0;
-
-        while (m < _live.len()) {
-          let other = _live[m];
+        for (other in _live) {
           if ((other != dst) && (other != source)) { _interfere(neighbors, dst, other); }
-          m++;
         }
         if (caughtMarks[dst] != i) { _kill(dst); }
       }
-      let args = insn.args;
-      let a = 0;
 
-      while (a < args.len()) {
-        _enliven(args[a]);
-        a++;
+      for (arg in insn.args) {
+        _enliven(arg);
       }
       j--;
     }
 
     while (_live.len() > 0) { _kill(_live[_live.len() - 1]); }
-    i++;
   }
   neighbors
 };
 
 let _moves = fn(blocks: Array<BasicBlock>): Array<Tuple<I32, I32>> {
   let moves = Array.new<Tuple<I32, I32>>(0);
-  let i = 0;
 
-  while (i < blocks.len()) {
-    let instructions = blocks[i].instructions;
-    let j = 0;
-
-    while (j < instructions.len()) {
-      let insn = instructions[j];
-
+  for (block in blocks) {
+    for (insn in block.instructions) {
       match (insn.op) {
         Move => {
           moves.push((insn.dst, insn.args[0]));
@@ -159,9 +132,7 @@ let _moves = fn(blocks: Array<BasicBlock>): Array<Tuple<I32, I32>> {
         },
         _ => null,
       };
-      j++;
     }
-    i++;
   }
   moves
 };
@@ -189,25 +160,14 @@ let _conflict = fn(a: I32, b: I32, color: I32, neighbors: Array<Array<I32>>): Bo
   let groups = [a, b];
   if (color < 0) { groups = _degrees[a] <= _degrees[b] ? [a] : [b]; }
 
-  let g = 0;
-
-  while (g < groups.len()) {
-    let members = _members[groups[g]];
-    let m = 0;
-
-    while (m < members.len()) {
-      let near = neighbors[members[m]];
-      let n = 0;
-
-      while (n < near.len()) {
-        let other = _group(near[n]);
+  for (group in groups) {
+    for (member in _members[group]) {
+      for (neighbor in neighbors[member]) {
+        let other = _group(neighbor);
         if ((other == a) || (other == b)) { return true; }
         if ((color >= 0) && (_groupColors[other] == color)) { return true; }
-        n++;
       }
-      m++;
     }
-    g++;
   }
   false
 };
@@ -228,10 +188,7 @@ let _coalesce = fn(moves: Array<Tuple<I32, I32>>, fixed: Array<I32>, neighbors: 
     i++;
   }
 
-  i = 0;
-
-  while (i < moves.len()) {
-    let (dst, src) = moves[i];
+  for ((dst, src) in moves) {
     let a = _group(dst);
     let b = _group(src);
     let colorA = _groupColors[a];
@@ -252,16 +209,10 @@ let _coalesce = fn(moves: Array<Tuple<I32, I32>>, fixed: Array<I32>, neighbors: 
         into = _members[b];
         rest = _members[a];
       }
-      let m = 0;
-
-      while (m < rest.len()) {
-        into.push(rest[m]);
-        m++;
-      }
+      into.appendFrom(rest, 0);
       _members[a] = into;
       _members[b] = Array.new<I32>(0);
     }
-    i++;
   }
   null
 };
@@ -299,10 +250,8 @@ let _color = fn(
     if (colors[i] >= 0) { colorKeys[colors[i]] = _keys[i]; }
     i++;
   }
-  i = 0;
 
-  while (i < moves.len()) {
-    let (dst, src) = moves[i];
+  for ((dst, src) in moves) {
     let a = _group(dst);
     let b = _group(src);
 
@@ -310,7 +259,6 @@ let _color = fn(
       partners[a].push(b);
       partners[b].push(a);
     }
-    i++;
   }
 
   let k = 0;
@@ -319,19 +267,11 @@ let _color = fn(
     i = k < first.len() ? _group(first[k]) : k - first.len();
 
     if ((colors[i] < 0) && (_groups[i] == i)) {
-      let members = _members[i];
-      let m = 0;
-
-      while (m < members.len()) {
-        let near = neighbors[members[m]];
-        let n = 0;
-
-        while (n < near.len()) {
-          let color = colors[_group(near[n])];
+      for (member in _members[i]) {
+        for (neighbor in neighbors[member]) {
+          let color = colors[_group(neighbor)];
           if (color >= 0) { marks[color] = i; }
-          n++;
         }
-        m++;
       }
 
       let color = -1;
@@ -408,15 +348,11 @@ let _fresh = fn(ty: ValueType, key: I32, slot: I32): I32 {
 
 let _buildScratch = fn(blocks: Array<BasicBlock>) {
   _scratch = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < blocks.len()) {
-    let instructions = blocks[i].instructions;
-    let j = 0;
-
-    while (j < instructions.len()) {
-      let start = _windowStart(instructions[j].op);
-      let args = instructions[j].args;
+  for (block in blocks) {
+    for (insn in block.instructions) {
+      let start = _windowStart(insn.op);
+      let args = insn.args;
 
       if ((start >= 0) && (_scratchOffset(_scratch, args, start) < 0)) {
         let a = start;
@@ -426,9 +362,7 @@ let _buildScratch = fn(blocks: Array<BasicBlock>) {
           a++;
         }
       }
-      j++;
     }
-    i++;
   }
   null
 };
@@ -444,17 +378,15 @@ let _windowed = fn(insn: Instruction, out: Array<Instruction>) {
 
   let offset = _scratchOffset(_scratch, args, start);
   let moved = Array.new<I32>(0);
-  let a = 0;
 
-  while (a < args.len()) {
+  for (a, arg in args) {
     if (a < start) {
-      moved.push(args[a]);
+      moved.push(arg);
     } else {
-      let slot = _fresh(_registers[args[a]], _keys[args[a]], offset + a - start);
-      out.push(instructionAt(Op.Move, slot, [args[a]], 0, insn.node));
+      let slot = _fresh(_registers[arg], _keys[arg], offset + a - start);
+      out.push(instructionAt(Op.Move, slot, [arg], 0, insn.node));
       moved.push(slot);
     }
-    a++;
   }
   out.push(instructionAt(insn.op, insn.dst, moved, insn.imm, insn.node));
   null
@@ -462,19 +394,14 @@ let _windowed = fn(insn: Instruction, out: Array<Instruction>) {
 
 let _withWindows = fn(blocks: Array<BasicBlock>): Array<BasicBlock> {
   let windowed = Array.new<BasicBlock>(0);
-  let i = 0;
 
-  while (i < blocks.len()) {
-    let instructions = blocks[i].instructions;
+  for (block in blocks) {
     let out = Array.new<Instruction>(0);
-    let j = 0;
 
-    while (j < instructions.len()) {
-      _windowed(instructions[j], out);
-      j++;
+    for (insn in block.instructions) {
+      _windowed(insn, out);
     }
-    windowed.push({ ...blocks[i], instructions: out });
-    i++;
+    windowed.push({ ...block, instructions: out });
   }
   windowed
 };
@@ -541,11 +468,8 @@ let _written = fn(register: I32, physical: I32) {
 };
 
 let _resetTemps = fn() {
-  let i = 0;
-
-  while (i < _nextTemp.len()) {
+  for (i, _ in _nextTemp) {
     _nextTemp[i] = 0;
-    i++;
   }
   null
 };
@@ -570,13 +494,7 @@ let _rewrite = fn(insn: Instruction) {
   }
   if (moved && (_colors[dst] == _colors[args[0]])) { return null; }
 
-  let physical = Array.new<I32>(0);
-  let i = 0;
-
-  while (i < args.len()) {
-    physical.push(_read(args[i]));
-    i++;
-  }
+  let physical = args.map(_read);
 
   if (dst < 0) {
     _emit(op, -1, physical, insn.imm);
@@ -589,12 +507,9 @@ let _rewrite = fn(insn: Instruction) {
 
 let _rewriteBlock = fn(block: BasicBlock): BasicBlock {
   _out = Array.new<Instruction>(0);
-  let instructions = block.instructions;
-  let i = 0;
 
-  while (i < instructions.len()) {
-    _rewrite(instructions[i]);
-    i++;
+  for (insn in block.instructions) {
+    _rewrite(insn);
   }
 
   _resetTemps();
@@ -634,12 +549,10 @@ let _tooMany = fn(id: I32) {
 
 let _catchPayloads = fn(blocks: Array<BasicBlock>): Array<I32> {
   let payloads = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < blocks.len()) {
-    let handler = blocks[i].handler;
+  for (block in blocks) {
+    let handler = block.handler;
     if (handler != null) { payloads.push(handler.payload); }
-    i++;
   }
   payloads
 };
@@ -647,51 +560,42 @@ let _catchPayloads = fn(blocks: Array<BasicBlock>): Array<I32> {
 let _numberSpillSlots = fn() {
   _slots = Array.new<I32>(_colors.len());
   let slotCount = 0;
-  let i = 0;
 
-  while (i < _colors.len()) {
+  for (i, color in _colors) {
     _slots[i] = -1;
 
-    if ((_colors[i] < 0) && (_group(i) == i)) {
+    if ((color < 0) && (_group(i) == i)) {
       _slots[i] = slotCount;
       slotCount++;
     }
-    i++;
   }
-  i = 0;
 
-  while (i < _colors.len()) {
+  for (i, _ in _slots) {
     _slots[i] = _slots[_group(i)];
-    i++;
   }
   null
 };
 
 let _physicalRegisters = fn(spilled: Array<Bool>): Array<ValueType> {
   let physical = Array.new<ValueType>(0);
-  let i = 0;
 
-  while (i < _colors.len()) {
-    while (physical.len() <= _colors[i]) { physical.push(_registers[i]); }
-    if (_colors[i] >= 0) { physical[_colors[i]] = _registers[i]; }
-    i++;
+  for (i, color in _colors) {
+    while (physical.len() <= color) { physical.push(_registers[i]); }
+    if (color >= 0) { physical[color] = _registers[i]; }
   }
 
   _tempStart = physical.len();
   _tempOffsets = Array.new<I32>(_keyTypes.len());
   _nextTemp = Array.new<I32>(_keyTypes.len());
-  i = 0;
 
-  while (i < _keyTypes.len()) {
+  for (i, ty in _keyTypes) {
     _tempOffsets[i] = -1;
-    _nextTemp[i] = 0;
 
     if (spilled[i]) {
       _tempOffsets[i] = physical.len() - _tempStart;
-      physical.push(_keyTypes[i]);
-      physical.push(_keyTypes[i]);
+      physical.push(ty);
+      physical.push(ty);
     }
-    i++;
   }
   physical
 };
@@ -699,18 +603,15 @@ let _physicalRegisters = fn(spilled: Array<Bool>): Array<ValueType> {
 let _allocate = fn(function: Function): Function {
   let id = function.id;
   let params = function.params;
-  let registers = function.registers;
   _keyTypes = Array.new<ValueType>(0);
   _keys = Array.new<I32>(0);
   _registers = Array.new<ValueType>(0);
   _slotOf = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < registers.len()) {
-    _registers.push(registers[i]);
-    _keys.push(internValueType(_keyTypes, registers[i]));
+  for (register in function.registers) {
+    _registers.push(register);
+    _keys.push(internValueType(_keyTypes, register));
     _slotOf.push(-1);
-    i++;
   }
 
   _buildScratch(function.blocks);
@@ -722,27 +623,19 @@ let _allocate = fn(function: Function): Function {
 
   let base = _windowBase(params, neighbors);
   let fixed = Array.new<I32>(count);
-  i = 0;
+  let i = 0;
 
   while (i < count) {
     fixed[i] = _slotOf[i] >= 0 ? base + _slotOf[i] : -1;
     i++;
   }
-  i = 0;
 
-  while (i < params.len()) {
-    fixed[params[i]] = i;
-    i++;
+  for (i, param in params) {
+    fixed[param] = i;
   }
   _coalesce(moves, fixed, neighbors);
 
   let spilled = Array.new<Bool>(_keyTypes.len());
-  i = 0;
-
-  while (i < spilled.len()) {
-    spilled[i] = false;
-    i++;
-  }
   let temps = 0;
   let windowEnd = base + _scratch.len();
   let reserved = windowEnd > params.len() ? windowEnd : params.len();
@@ -752,15 +645,13 @@ let _allocate = fn(function: Function): Function {
 
   while (changed) {
     changed = false;
-    i = 0;
 
-    while (i < _colors.len()) {
-      if ((_colors[i] < 0) && !spilled[_keys[i]]) {
+    for (i, color in _colors) {
+      if ((color < 0) && !spilled[_keys[i]]) {
         spilled[_keys[i]] = true;
         temps += 2;
         changed = true;
       }
-      i++;
     }
 
     if (changed) {
@@ -768,32 +659,22 @@ let _allocate = fn(function: Function): Function {
       _colors = _color(payloads, neighbors, moves, _REGISTER_LIMIT - temps);
     }
   }
-  i = 0;
 
-  while (i < payloads.len()) {
-    if (_colors[payloads[i]] < 0) {
+  for (payload in payloads) {
+    if (_colors[payload] < 0) {
       throw coded(E0901, "a catch value needs a register, and all 256 are in use");
     }
-    i++;
   }
 
   _numberSpillSlots();
   let physical = _physicalRegisters(spilled);
   if (physical.len() > _REGISTER_LIMIT) { _tooMany(id); }
 
-  let allocated = Array.new<BasicBlock>(0);
-  i = 0;
-
-  while (i < windowed.len()) {
-    allocated.push(_rewriteBlock(windowed[i]));
-    i++;
-  }
+  let allocated = windowed.map(_rewriteBlock);
   let physicalParams = Array.new<I32>(0);
-  i = 0;
 
-  while (i < params.len()) {
+  for (i, _ in params) {
     physicalParams.push(i);
-    i++;
   }
 
   {

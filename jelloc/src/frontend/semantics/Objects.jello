@@ -3,7 +3,7 @@ package frontend.semantics;
 import type { AssignOp, Expr as AstExpr, ObjectEntry, Type as AstType } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { Kind, Op } from frontend.hir.Hir;
-import { expressionOf, indexLoop, printed } from frontend.semantics.Derived;
+import { expressionOf, indexLoop, printed, steppedWhile } from frontend.semantics.Derived;
 import { UNCHECKED_KINDS, checkedKind, storable } from frontend.semantics.Values;
 import {
   checkArity, checkIndirectCall, checkOperand, checkPresent, checkType, enterSyntax, hasSpread,
@@ -103,8 +103,7 @@ let _copyFields = fn(statements: Array<I32>, target: I32, source: I32) {
     H.opNode(Op.ArrayGet, H.TYPE_ATOM, [H.local(keys, keysType), at])
   };
   let copy = _write(_object(target), key(), readObject(_object(source), key(), H.TYPE_DYNAMIC));
-  let body = H.opNode(Op.Block, 0, [expressionOf(copy), expressionOf(loop.next)]);
-  statements.push(H.opNode(Op.While, 0, [loop.more, body]));
+  statements.push(steppedWhile(loop.more, [expressionOf(copy)], [loop.next]));
   null
 };
 

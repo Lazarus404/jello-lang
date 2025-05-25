@@ -39,29 +39,23 @@ let _offered = Array.new<I32>(0);
 
 let _propagate = fn(nodes: Array<I32>) {
   let pending = Array.new<I32>(0);
-  let n = 0;
 
-  while (n < nodes.len()) {
-    if (!_queued[nodes[n]]) {
-      _queued[nodes[n]] = true;
-      pending.push(nodes[n]);
+  for (node in nodes) {
+    if (!_queued[node]) {
+      _queued[node] = true;
+      pending.push(node);
     }
-    n++;
   }
 
   while (pending.len() > 0) {
     let next = pending.pop();
     _queued[next] = false;
-    let c = 0;
 
-    while (c < _callers[next].len()) {
-      let caller = _callers[next][c];
-
+    for (caller in _callers[next]) {
       if (bitsUnion(_reach[caller], _reach[next]) && !_queued[caller]) {
         _queued[caller] = true;
         pending.push(caller);
       }
-      c++;
     }
   }
   null
@@ -80,13 +74,9 @@ let _settle = fn(node: I32): I32 {
   _visits++;
   _stack.push(node);
 
-  let c = 0;
-
-  while (c < _callees[node].len()) {
-    let callee = _callees[node][c];
+  for (callee in _callees[node]) {
     if (_visit[callee] < 0) { _settle(callee); }
     if (_low[callee] < _low[node]) { _low[node] = _low[callee]; }
-    c++;
   }
   if (_low[node] != _visit[node]) { return 0; }
 
@@ -95,12 +85,9 @@ let _settle = fn(node: I32): I32 {
   while (i < _stack.len()) {
     let member = _stack[i];
     if (member != node) { bitsUnion(_reach[node], _reach[member]); }
-    let callees = _callees[member];
-    let k = 0;
 
-    while (k < callees.len()) {
-      bitsUnion(_reach[node], _reach[callees[k]]);
-      k++;
+    for (callee in _callees[member]) {
+      bitsUnion(_reach[node], _reach[callee]);
     }
     i++;
   }
@@ -138,17 +125,13 @@ let _settleAll = fn() {
 
 let _offer = fn(functions: Array<I32>, sink: I32): Bool {
   let grew = false;
-  let f = 0;
 
-  while (f < functions.len()) {
-    let function = functions[f];
-
+  for (function in functions) {
     if (!bitsHas(_offered, function)) {
       bitsAdd(_offered, function);
       _callers[function].push(sink);
       if (bitsUnion(_reach[sink], _reach[function])) { grew = true; }
     }
-    f++;
   }
   grew
 };
@@ -186,11 +169,9 @@ export let firstUninitializedRead = fn(): Tuple<I32, I32> {
     let calls = bitsNew(nodes);
     if (_scan(childOf(root, f - 1), _reach[f], calls, refs)) { bitsAdd(calls, sink); }
     _callees[f] = bitsMembers(calls);
-    let c = 0;
 
-    while (c < _callees[f].len()) {
-      _callers[_callees[f][c]].push(f);
-      c++;
+    for (callee in _callees[f]) {
+      _callers[callee].push(f);
     }
     f++;
   }
@@ -211,18 +192,14 @@ export let firstUninitializedRead = fn(): Tuple<I32, I32> {
     _offerAll(bitsMembers(taken), sink);
 
     let called = bitsMembers(calls);
-    let c = 0;
 
-    while (c < called.len()) {
-      bitsUnion(reads, _reach[called[c]]);
-      c++;
+    for (callee in called) {
+      bitsUnion(reads, _reach[callee]);
     }
     let members = bitsMembers(reads);
-    let m = 0;
 
-    while (m < members.len()) {
-      if (!bitsHas(initialized, members[m])) { return (binding, members[m]); }
-      m++;
+    for (member in members) {
+      if (!bitsHas(initialized, member)) { return (binding, member); }
     }
 
     if (opOf(binding) == Op.Declare) {

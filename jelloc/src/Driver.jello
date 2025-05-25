@@ -8,7 +8,6 @@ import type { SourceSpan } from frontend.syntax.Source;
 import { printTokens } from frontend.syntax.Tokens;
 import { checkProgram } from frontend.semantics.Modules;
 import { currentSpan } from frontend.semantics.TypeCheck;
-import type { Module } from frontend.Loader;
 import {
   isTestFile, loadExpanders, loadFailureSpan, loadModules, loadTests
 } from frontend.Loader;
@@ -32,7 +31,6 @@ import { emitAllocated } from backend.jello.Emit;
 import { exists, listDir, makeDirs, readText, writeText } from std.io.File;
 import { getEnv } from std.io.Env;
 import { toArray } from std.core.List;
-import { concatAll, joined } from support.Text;
 import { explain } from support.Codes;
 
 import type { Program } from ir.Model;
@@ -41,7 +39,7 @@ import { spanOf, spanPathOf } from frontend.hir.Hir;
 
 enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; Expanders; Help; }
 
-let _USAGE = "usage: jelloc [input.jello] [--out path | --lex | --parse | --hir [--spans] | --ir | "
+const _USAGE = "usage: jelloc [input.jello] [--out path | --lex | --parse | --hir [--spans] | --ir | "
   + "--jlo [--out path]] [--std dir] [--path dir]...\n"
   + "       jelloc --test <file.test.jello>... --path dir... (--out path | --hir [--spans] | "
   + "--ir | --jlo [--out path]) [--std dir]\n"
@@ -181,13 +179,16 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Array<Bytes>, Mode, Bytes> {
   if ((mode != null) && (mode != Mode.Legalized) && (output != "")) {
     throw "--out cannot be combined with --lex, --parse, --hir or --ir";
   }
-  (inputs, mode == null ? Mode.Emit : mode, output)
+  (inputs, mode ?? Mode.Emit, output)
 };
 
 let _checked = fn(inputs: Array<Bytes>): Hir {
-  checkProgram(fn(types: Array<Bytes>): Array<Module> {
-    if (_expanding) { return loadExpanders(inputs[0], _std, types); }
-    _testing ? loadTests(inputs, _std, _roots, types) : loadModules(inputs[0], _std, _roots, types)
+  checkProgram(if (_expanding) {
+    loadExpanders(inputs[0], _std)
+  } else if (_testing) {
+    loadTests(inputs, _std, _roots)
+  } else {
+    loadModules(inputs[0], _std, _roots)
   })
 };
 
@@ -242,13 +243,12 @@ let _allocationSpan = fn(): ?SourceSpan {
 };
 
 let _failurePoint = fn(): ?SourceSpan {
-  let span = currentSpan();
-  if (span == null) { span = loadFailureSpan(); }
-  if (span == null) { span = macroFailureSpan(); }
-  if (span == null) { span = parseFailureSpan(); }
-  if (span == null) { span = verifyFailureSpan(); }
-  if (span == null) { span = _allocationSpan(); }
-  span
+  currentSpan()
+    ?? loadFailureSpan()
+    ?? macroFailureSpan()
+    ?? parseFailureSpan()
+    ?? verifyFailureSpan()
+    ?? _allocationSpan()
 };
 
 let _location = fn(node: I32): Tuple<Bytes, I32, I32> {
@@ -266,12 +266,9 @@ let _write = fn(output: Bytes, program: Program) {
 export let failure = fn(label: Bytes, error: Dynamic): Tuple<I32, Bytes> {
   let message = Std.string(error);
   let errors = takeSyntaxErrors();
-  let e = 0;
 
-  while (e < errors.len()) {
-    let (span, failed, noteSpan, note) = errors[e];
+  for ((span, failed, noteSpan, note) in errors) {
     if (!recordFailure(span, noteFailure(noteSpan, note, failed) as Dynamic)) { break; }
-    e++;
   }
 
   let (failures, capped) = takeFailures();
@@ -287,15 +284,12 @@ export let failure = fn(label: Bytes, error: Dynamic): Tuple<I32, Bytes> {
   }
 
   let reports = Array.new<Bytes>(0);
-  let i = 0;
 
-  while (i < failures.len()) {
-    let (span, failed, noteSpan, note) = failures[i];
+  for ((span, failed, noteSpan, note) in failures) {
     reports.push(_at(span, failed) + _note(span, noteSpan, note));
-    i++;
   }
   if (capped) { reports.push(`stopped after ${MAX_FAILURES} errors`); }
-  (1, (label == "" ? "" : `${label}\t`) + joined(reports, "\n"))
+  (1, (label == "" ? "" : `${label}\t`) + reports.join("\n"))
 };
 
 let _fail = fn(label: Bytes, error: Dynamic) {
@@ -306,14 +300,11 @@ let _fail = fn(label: Bytes, error: Dynamic) {
 let _warn = fn() {
   let warnings = takeWarnings();
   let lines = Array.new<Bytes>(0);
-  let i = 0;
 
-  while (i < warnings.len()) {
-    let (span, message) = warnings[i];
+  for ((span, message) in warnings) {
     lines.push(_at(span, `warning: ${message}`) + "\n");
-    i++;
   }
-  if (lines.len() > 0) { writeText("/dev/stderr", concatAll(lines)); }
+  if (lines.len() > 0) { writeText("/dev/stderr", lines.join("")); }
   null
 };
 
@@ -348,7 +339,7 @@ let _execEntries: (Bytes) -> Bytes = process_exec;
 let _executable: () -> Bytes = process_executable;
 
 let _exec = fn(argv: Array<Bytes>) {
-  let why = _execEntries(`${joined(argv, "\0")}\0`);
+  let why = _execEntries(`${argv.join("\0")}\0`);
   _exit(1, `jelloc: ${why}\n`)
 };
 
@@ -439,7 +430,7 @@ let _compileAndRun = fn(
 
   if ((project != null) && (project.libraries.len() > 0)) {
     vm.push("--jdll-path");
-    vm.push(joined(project.libraries, ":"));
+    vm.push(project.libraries.join(":"));
   }
   vm.push(output);
   _exec(vm.appendFrom(args, 0))
@@ -485,10 +476,8 @@ let _runCommand = fn(argv: List<Bytes>) {
 
 let _testFiles = fn(dir: Bytes, files: Array<Bytes>): Null {
   let entries = listDir(dir);
-  let i = 0;
 
-  while (i < entries.len()) {
-    let entry = entries[i];
+  for (entry in entries) {
     let path = inDirectory(dir, entry);
 
     if (entry.endsWith("/")) {
@@ -496,7 +485,6 @@ let _testFiles = fn(dir: Bytes, files: Array<Bytes>): Null {
     } else if (isTestFile(entry)) {
       files.push(path);
     }
-    i++;
   }
   null
 };
@@ -533,12 +521,10 @@ let _testCommand = fn(argv: List<Bytes>) {
   }
 
   let files = Array.new<Bytes>(0);
-  let i = 0;
 
-  while (i < dirs.len()) {
-    if (!exists(dirs[i])) { _exit(1, `jelloc: cannot read ${dirs[i]}\n`); }
-    _testFiles(dirs[i], files);
-    i++;
+  for (dir in dirs) {
+    if (!exists(dir)) { _exit(1, `jelloc: cannot read ${dir}\n`); }
+    _testFiles(dir, files);
   }
   if (files.len() == 0) { _exit(1, `jelloc: no *.test.jello file under ${dirs[0]}\n`); }
 
@@ -597,11 +583,8 @@ export let run = fn(argv: List<Bytes>): Bytes {
   let output = _assume(inputs, mode, given);
 
   if (mode != Mode.Help) {
-    let i = 0;
-
-    while (i < inputs.len()) {
-      if (!exists(inputs[i])) { _exit(1, `jelloc: cannot read ${inputs[i]}\n`); }
-      i++;
+    for (input in inputs) {
+      if (!exists(input)) { _exit(1, `jelloc: cannot read ${input}\n`); }
     }
   }
 

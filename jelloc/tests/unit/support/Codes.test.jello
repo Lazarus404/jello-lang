@@ -3,7 +3,6 @@ package support;
 import type { Test } from std.testing;
 import std.testing as T;
 import { coded, errorCodes, explain } from support.Codes;
-import { joined } from support.Text;
 import degust.Golden as G;
 
 // The codes, in order. A code is never renumbered or removed, so this list only grows.
@@ -19,7 +18,7 @@ const _CODES = "E0001 E0002 E0003 E0004 E0005 E0006 E0007 E0008 "
   + "E0900 E0901 "
   + "E1000 E1001 E1002 E1003";
 
-let testKeepsEveryCode = fn(t: Test) { T.equal(t, joined(errorCodes(), " "), _CODES); };
+let testKeepsEveryCode = fn(t: Test) { T.equal(t, errorCodes().join(" "), _CODES); };
 
 let testEndsAMessageWithItsCode = fn(t: Test) {
   T.equal(t, coded("E0302", "duplicate local: x"), "duplicate local: x [E0302]");
@@ -60,12 +59,9 @@ let testTheReferenceListsEachCode = fn(t: Test) {
     + "Each error the compiler reports ends with its code, as in `unknown name: x [E0300]`.\n"
     + "A code is never renumbered or reused. `jelloc --explain E0300` prints what this page says\n"
     + "of it. This page is generated from the compiler's own explanations.\n"];
-  let codes = errorCodes();
-  let i = 0;
 
-  while (i < codes.len()) {
-    parts.push("\n## " + explain(codes[i]));
-    i++;
+  for (code in errorCodes()) {
+    parts.push("\n## " + explain(code));
   }
-  G.equal(t, "../docs/08-errors/01-compile-errors.md", joined(parts, ""));
+  G.equal(t, "../docs/08-errors/01-compile-errors.md", parts.join(""));
 };

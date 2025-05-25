@@ -62,21 +62,15 @@ let _expect = fn(register: I32, expected: ValueType) {
 };
 
 let _expectEach = fn(registers: Array<I32>, start: I32, types: Array<ValueType>) {
-  let i = 0;
-
-  while (i < types.len()) {
-    _expect(registers[start + i], types[i]);
-    i++;
+  for (i, ty in types) {
+    _expect(registers[start + i], ty);
   }
   null
 };
 
 let _expectAll = fn(registers: Array<I32>, expected: ValueType) {
-  let i = 0;
-
-  while (i < registers.len()) {
-    _expect(registers[i], expected);
-    i++;
+  for (register in registers) {
+    _expect(register, expected);
   }
   null
 };
@@ -174,11 +168,9 @@ let _structFields = fn(ty: ValueType, what: Bytes): ?Array<ValueType> {
 
 let _hasField = fn(enumId: I32, index: I32, ty: ValueType): Bool {
   let variants = _variants(enumId);
-  let i = 0;
 
-  while (i < variants.len()) {
-    if ((index < variants[i].len()) && valueTypeEqual(variants[i][index], ty)) { return true; }
-    i++;
+  for (fields in variants) {
+    if ((index < fields.len()) && valueTypeEqual(fields[index], ty)) { return true; }
   }
   false
 };
@@ -243,11 +235,9 @@ let _instruction = fn(instruction: Instruction) {
   let dst = instruction.dst;
   let args = instruction.args;
   let imm = instruction.imm;
-  let i = 0;
 
-  while (i < args.len()) {
-    _type(args[i]);
-    i++;
+  for (arg in args) {
+    _type(arg);
   }
 
   match (instruction.op) {
@@ -521,6 +511,7 @@ let _instruction = fn(instruction: Instruction) {
       _expect(dst, _bytes);
       _expectAll(args, _bytes)
     },
+    BytesJoin => _defines(dst, _bytes, args, [ValueType.ArrayOf(_bytes), _bytes]),
     BytesEq => _defines(dst, _bool, args, _bytesBytes),
 
     TupleNew => {
@@ -666,12 +657,10 @@ let _sameHandler = fn(a: ?ThrowHandler, b: ?ThrowHandler): Bool {
 let _regions = fn(blocks: Array<BasicBlock>, indexes: Array<I32>, entry: I32) {
   if (blocks[indexes[entry]].handler != null) { _fail("entry block inside a try region"); }
 
-  let i = 0;
+  for (block in blocks) {
+    let handler = block.handler;
 
-  while (i < blocks.len()) {
-    let handler = blocks[i].handler;
-
-    match (blocks[i].terminator) {
+    match (block.terminator) {
       Branch(_, thenTarget, elseTarget) => {
         let same = _sameHandler(handler, blocks[indexes[thenTarget]].handler)
           && _sameHandler(handler, blocks[indexes[elseTarget]].handler);
@@ -688,22 +677,19 @@ let _regions = fn(blocks: Array<BasicBlock>, indexes: Array<I32>, entry: I32) {
       if (depth > 16) { _fail("try regions nested more than 16 deep"); }
       handler = blocks[indexes[handler.target]].handler;
     }
-    i++;
   }
   null
 };
 
 let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   let indexes = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < blocks.len()) {
-    let id = blocks[i].id;
+  for (i, block in blocks) {
+    let id = block.id;
     if (id < 0) { _fail("negative block id"); }
     while (indexes.len() <= id) { indexes.push(-1); }
     if (indexes[id] >= 0) { _fail("duplicate block id"); }
     indexes[id] = i;
-    i++;
   }
   indexes
 };
@@ -748,13 +734,9 @@ let _definitions = fn(
   let (liveIn, _) = liveness(blocks, registers, slots, false);
   let live = liveIn[_target(indexes, entry)];
   let first = -1;
-  let i = 0;
 
-  while (i < live.len()) {
-    let p = 0;
-    while ((p < params.len()) && (params[p] != live[i])) { p++; }
-    if ((p == params.len()) && ((first < 0) || (live[i] < first))) { first = live[i]; }
-    i++;
+  for (register in live) {
+    if ((params.indexOf(register) < 0) && ((first < 0) || (register < first))) { first = register; }
   }
   if (first >= registers) { _fail(`spill slot read before written: ${first - registers}`); }
   if (first >= 0) { _fail(`register used before definition: ${first}`); }
@@ -773,24 +755,19 @@ let _function = fn(function: Function) {
   let indexes = _blockIndexes(blocks);
   _target(indexes, function.entry);
 
-  let i = 0;
-
-  while (i < params.len()) {
+  for (i, param in params) {
     if (i >= argumentCount(function)) {
-      _expect(params[i], _dynamic);
+      _expect(param, _dynamic);
     } else {
-      _type(params[i]);
+      _type(param);
     }
-    if (params.indexOf(params[i]) < i) { _fail("duplicate parameter register"); }
-    i++;
+    if (params.indexOf(param) < i) { _fail("duplicate parameter register"); }
   }
 
   let slotTypes = Array.new<ValueType>(0);
   let seen = Array.new<Bool>(0);
-  i = 0;
 
-  while (i < blocks.len()) {
-    let block = blocks[i];
+  for (block in blocks) {
     let handler = block.handler;
 
     if (handler != null) {
@@ -799,11 +776,7 @@ let _function = fn(function: Function) {
       if (handler.target == block.id) { _fail("block handles its own throw"); }
     }
 
-    let instructions = block.instructions;
-    let j = 0;
-
-    while (j < instructions.len()) {
-      let insn = instructions[j];
+    for (insn in block.instructions) {
       _instruction(insn);
       let slot = _slot(insn);
 
@@ -821,10 +794,8 @@ let _function = fn(function: Function) {
         }
         if (!valueTypeEqual(slotTypes[slot], ty)) { _fail("spill slot type mismatch"); }
       }
-      j++;
     }
     _terminator(function.result, indexes, block.terminator);
-    i++;
   }
 
   _regions(blocks, indexes, function.entry);
@@ -855,28 +826,21 @@ let _program = fn(program: Program, legalized: Bool, first: I32): Bool {
   _functionIndexes = Array.new<I32>(0);
   _signatures = Array.new<ValueType>(0);
   _captureCounts = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < functions.len()) {
-    let function = functions[i];
+  for (i, function in functions) {
     let id = function.id;
     if (id < 0) { _fail("negative function id"); }
     while (_functionIndexes.len() <= id) { _functionIndexes.push(-1); }
     if (_functionIndexes[id] >= 0) { _fail("duplicate function id"); }
     _functionIndexes[id] = i;
 
-    let params = function.params;
-    let j = 0;
-
-    while (j < params.len()) {
-      if ((params[j] < 0) || (params[j] >= function.registers.len())) {
+    for (param in function.params) {
+      if ((param < 0) || (param >= function.registers.len())) {
         _fail("parameter register out of range");
       }
-      j++;
     }
     _signatures.push(_signatureOf(function));
     _captureCounts.push(function.captures);
-    i++;
   }
 
   _poolSize = program.bytes.len();
@@ -887,7 +851,7 @@ let _program = fn(program: Program, legalized: Bool, first: I32): Bool {
   _globals = program.globals;
   _natives = program.natives;
   _inProgram = true;
-  i = first;
+  let i = first;
 
   while (i < functions.len()) {
     _function(functions[i]);
@@ -905,23 +869,13 @@ export let verifyProgramFrom = fn(program: Program, legalized: Bool, first: I32)
 };
 
 export let verifyAllocatedProgram = fn(program: Program): Bool {
-  let functions = program.functions;
-  let i = 0;
-
-  while (i < functions.len()) {
-    let function = functions[i];
+  for (function in program.functions) {
     let count = function.registers.len();
     if (count > 256) { _fail(`function @${function.id} uses ${count} registers; JLO allows 256`); }
-    i++;
   }
 
-  let natives = program.natives;
-  i = 0;
-
-  while (i < natives.len()) {
-    let native = natives[i];
+  for (native in program.natives) {
     if (native.params.len() > 8) { _fail(`native ${native.name} takes more than 8 arguments`); }
-    i++;
   }
 
   verifyLegalizedProgram(program)

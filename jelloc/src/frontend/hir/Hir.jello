@@ -14,7 +14,7 @@ export enum Op {
   ArrayResize;
   ListNil; ListCons; ListHead; ListTail; ListIsNil;
   BytesNew; BytesSet; BitsPack; BitsField; BitsRead; BytesLen; BytesGet; BytesSlice; BytesConcat;
-  BytesConcatMany; BytesEq;
+  BytesConcatMany; BytesJoin; BytesEq;
   Tuple; TupleField; SetField; EnumNew; EnumTag; EnumField;
   ObjectNew; ObjectGet; ObjectSet; ObjectHas; ObjectRemove; ObjectClear; ObjectCopy; ObjectKeys;
   Call; CallIndirect; CallNative; Block; If; Try;
@@ -45,32 +45,32 @@ export typedef Hir = {
   let fields: Array<I32>;
 };
 
-let _NODE_WIDTH = 5;
-let _TYPE_WIDTH = 3;
-let _GLOBAL_WIDTH = 3;
-let _NATIVE_WIDTH = 3;
-let _VARIANT_WIDTH = 3;
-let _FIELD_WIDTH = 2;
-let _SPAN_WIDTH = 3;
+const _NODE_WIDTH = 5;
+const _TYPE_WIDTH = 3;
+const _GLOBAL_WIDTH = 3;
+const _NATIVE_WIDTH = 3;
+const _VARIANT_WIDTH = 3;
+const _FIELD_WIDTH = 2;
+const _SPAN_WIDTH = 3;
 
-export let TYPE_BOOL: I32 = 0;
-export let TYPE_I32: I32 = 1;
-export let TYPE_I64: I32 = 2;
-export let TYPE_BYTES: I32 = 3;
-export let TYPE_NULL: I32 = 4;
-export let TYPE_DYNAMIC: I32 = 5;
-export let TYPE_BYTE_BUFFER: I32 = 6;
-export let TYPE_ATOM: I32 = 7;
-export let TYPE_I8: I32 = 8;
-export let TYPE_I16: I32 = 9;
-export let TYPE_U8: I32 = 10;
-export let TYPE_U16: I32 = 11;
-export let TYPE_U32: I32 = 12;
-export let TYPE_U64: I32 = 13;
-export let TYPE_F16: I32 = 14;
-export let TYPE_F32: I32 = 15;
-export let TYPE_F64: I32 = 16;
-export let TYPE_OBJECT: I32 = 17;
+export const TYPE_BOOL: I32 = 0;
+export const TYPE_I32: I32 = 1;
+export const TYPE_I64: I32 = 2;
+export const TYPE_BYTES: I32 = 3;
+export const TYPE_NULL: I32 = 4;
+export const TYPE_DYNAMIC: I32 = 5;
+export const TYPE_BYTE_BUFFER: I32 = 6;
+export const TYPE_ATOM: I32 = 7;
+export const TYPE_I8: I32 = 8;
+export const TYPE_I16: I32 = 9;
+export const TYPE_U8: I32 = 10;
+export const TYPE_U16: I32 = 11;
+export const TYPE_U32: I32 = 12;
+export const TYPE_U64: I32 = 13;
+export const TYPE_F16: I32 = 14;
+export const TYPE_F32: I32 = 15;
+export const TYPE_F64: I32 = 16;
+export const TYPE_OBJECT: I32 = 17;
 export let isFloatType = fn(ty: I32): Bool { (ty >= TYPE_F16) && (ty <= TYPE_F64) };
 
 export let isIntegerType = fn(ty: I32): Bool {
@@ -83,8 +83,8 @@ export let integerBits = fn(ty: I32): I32 {
     : (ty == TYPE_I64) || (ty == TYPE_U64) ? 64
     : 32
 };
-export let BITS_BIG = 64;
-export let BITS_FLOAT = 128;
+export const BITS_BIG = 64;
+export const BITS_FLOAT = 128;
 export let segmentWidth = fn(code: I32): I32 { code & 63 };
 
 export let segmentType = fn(code: I32): I32 {
@@ -102,23 +102,23 @@ export let mostValue = fn(ty: I32): I64 {
   ((1 as I64) << (width as I64)) - 1
 };
 
-export let KIND_BOOL: I32 = 1;
-export let KIND_I32: I32 = 2;
-export let KIND_ATOM: I32 = 3;
-export let KIND_BYTES: I32 = 4;
-export let KIND_OBJECT: I32 = 6;
-export let KIND_I64: I32 = 7;
-export let KIND_ENUM: I32 = 14;
-export let KIND_FUNCTION: I32 = 12;
-export let KIND_F64: I32 = 8;
-export let KIND_F32: I32 = 9;
-export let KIND_F16: I32 = 10;
+export const KIND_BOOL: I32 = 1;
+export const KIND_I32: I32 = 2;
+export const KIND_ATOM: I32 = 3;
+export const KIND_BYTES: I32 = 4;
+export const KIND_OBJECT: I32 = 6;
+export const KIND_I64: I32 = 7;
+export const KIND_ENUM: I32 = 14;
+export const KIND_FUNCTION: I32 = 12;
+export const KIND_F64: I32 = 8;
+export const KIND_F32: I32 = 9;
+export const KIND_F16: I32 = 10;
 export let isFloatKind = fn(code: I32): Bool { (code >= KIND_F64) && (code <= KIND_F16) };
 
-export let BOUND_EQ: I32 = 1;
-export let BOUND_SHOW: I32 = 2;
-export let BOUND_INTEGER: I32 = 7;
-let _NULLED = 8;
+export const BOUND_EQ: I32 = 1;
+export const BOUND_SHOW: I32 = 2;
+export const BOUND_INTEGER: I32 = 7;
+const _NULLED = 8;
 
 let _ops = Array.new<Op>(0);
 let _nodes = Array.new<I32>(0);
@@ -176,6 +176,16 @@ export let auxOf = fn(id: I32): I32 { _nodes[id * _NODE_WIDTH + 2] };
 export let childCount = fn(id: I32): I32 { _nodes[id * _NODE_WIDTH + 4] };
 export let childOf = fn(id: I32, index: I32): I32 { _edges[_nodes[id * _NODE_WIDTH + 3] + index] };
 
+export let children = fn(id: I32): Array<I32> {
+  let first = _nodes[id * _NODE_WIDTH + 3];
+  let out = Array.new<I32>(childCount(id));
+
+  for (i, _ in out) {
+    out[i] = _edges[first + i];
+  }
+  out
+};
+
 export let wideValueOf = fn(id: I32): I64 {
   ((auxOf(id) as I64) << 32) | ((valueOf(id) as I64) & 4294967295)
 };
@@ -186,7 +196,7 @@ let _breaksOut = fn(id: I32): Bool { _hasBreak(childOf(id, 0)) || _hasBreak(chil
 let _hasBreak = fn(id: I32): Bool {
   match (opOf(id)) {
     Break => true,
-    While => _hasBreak(childOf(id, 0)),
+    While => _hasBreak(childOf(id, 0)) || ((childCount(id) == 3) && _hasBreak(childOf(id, 2))),
     _ => {
       let i = 0;
       while ((i < childCount(id)) && !_hasBreak(childOf(id, i))) { i++; }
@@ -346,12 +356,7 @@ export let node = fn(op: Op, ty: I32, value: I32, aux: I32, children: Array<I32>
   _nodes.push(_edges.len());
   _nodes.push(children.len());
 
-  let i = 0;
-
-  while (i < children.len()) {
-    _edges.push(children[i]);
-    i++;
-  }
+  _edges.appendFrom(children, 0);
 
   id
 };
@@ -362,6 +367,15 @@ export let opNode = fn(op: Op, ty: I32, children: Array<I32>): I32 {
 
 export let setCallee = fn(id: I32, function: I32): Bool {
   _nodes[id * _NODE_WIDTH + 1] = function + 1;
+  true
+};
+
+export let callDirectly = fn(id: I32, function: I32): Bool {
+  let row = id * _NODE_WIDTH;
+  _ops[id] = Op.Call;
+  _nodes[row + 1] = function + 1;
+  _nodes[row + 3] = _nodes[row + 3] + 1;
+  _nodes[row + 4] = _nodes[row + 4] - 1;
   true
 };
 
@@ -403,22 +417,18 @@ let _slot = fn(hash: I32, capacity: I32): I32 { (hash & 2147483647) % capacity }
 
 let _emptySlots = fn(capacity: I32): Array<I32> {
   let slots = Array.new<I32>(capacity);
-  let i = 0;
 
-  while (i < capacity) {
+  for (i, _ in slots) {
     slots[i] = -1;
-    i++;
   }
   slots
 };
 
 let _bytesHash = fn(value: Bytes): I32 {
   let hash = -2128831035;
-  let i = 0;
 
-  while (i < value.len()) {
-    hash = _mix(hash, Bytes.get_u8(value, i));
-    i++;
+  for (byte in value) {
+    hash = _mix(hash, byte);
   }
   hash
 };
@@ -426,13 +436,11 @@ let _bytesHash = fn(value: Bytes): I32 {
 let _growBytes = fn() {
   let capacity = _bytesSlots.len() * 2;
   _bytesSlots = _emptySlots(capacity);
-  let i = 0;
 
-  while (i < _bytes.len()) {
-    let slot = _slot(_bytesHash(_bytes[i]), capacity);
+  for (i, interned in _bytes) {
+    let slot = _slot(_bytesHash(interned), capacity);
     while (_bytesSlots[slot] >= 0) { slot = (slot + 1) % capacity; }
     _bytesSlots[slot] = i;
-    i++;
   }
   null
 };
@@ -499,11 +507,9 @@ export let setSpan = fn(path: Bytes, start: I32, end: I32): Bool {
 
 let _typeHash = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
   let hash = _mix(_mix(-2128831035, _kindCode(kind)), value);
-  let i = 0;
 
-  while (i < args.len()) {
-    hash = _mix(hash, args[i]);
-    i++;
+  for (arg in args) {
+    hash = _mix(hash, arg);
   }
 
   _mix(hash, args.len())
@@ -526,11 +532,8 @@ let _sameType = fn(ty: I32, kind: Kind, value: I32, args: Array<I32>): Bool {
     return false;
   }
 
-  let i = 0;
-
-  while (i < args.len()) {
-    if (typeArg(ty, i) != args[i]) { return false; }
-    i++;
+  for (i, arg in args) {
+    if (typeArg(ty, i) != arg) { return false; }
   }
 
   true
@@ -570,13 +573,11 @@ let _addType = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
   let inner = _holdsInner(kind) && (value >= 0);
   let open = match (kind) { Var => true, _ => inner && _open[value] };
   let parametric = match (kind) { Param => true, _ => inner && _parametric[value] };
-  let i = 0;
 
-  while (i < args.len()) {
-    _typeEdges.push(args[i]);
-    open = open || _open[args[i]];
-    parametric = parametric || _parametric[args[i]];
-    i++;
+  for (arg in args) {
+    _typeEdges.push(arg);
+    open = open || _open[arg];
+    parametric = parametric || _parametric[arg];
   }
 
   _open.push(open);
@@ -655,8 +656,8 @@ export let slotType = fn(ty: I32): I32 {
   match (_kinds[ty]) { Optional => nullType(innerOf(ty)), Rest => arrayType(innerOf(ty)), _ => ty }
 };
 
-let _NEVER_NULL = 1;
-let _INTEGER = 3;
+const _NEVER_NULL = 1;
+const _INTEGER = 3;
 
 let _newVar = fn(flags: I32): I32 {
   let var = _addType(Kind.Var, -1, []);
@@ -683,11 +684,9 @@ let _follow = fn(ty: I32): I32 {
 
 let _resolveArgs = fn(ty: I32): Array<I32> {
   let args = _typeArgs(ty);
-  let i = 0;
 
-  while (i < args.len()) {
-    args[i] = resolve(args[i]);
-    i++;
+  for (i, arg in args) {
+    args[i] = resolve(arg);
   }
 
   args
@@ -712,11 +711,9 @@ export let resolve = fn(ty: I32): I32 {
 
 let _substituteArgs = fn(ty: I32, params: Array<I32>, types: Array<I32>): Array<I32> {
   let args = _typeArgs(ty);
-  let i = 0;
 
-  while (i < args.len()) {
-    args[i] = _substitute(args[i], params, types);
-    i++;
+  for (i, arg in args) {
+    args[i] = _substitute(arg, params, types);
   }
 
   args
@@ -997,7 +994,7 @@ export let declarePrototype = fn(name: Bytes): I32 { _addType(Kind.Object, bytes
 
 let _pending = Array.new<I32>(0);
 let _nesting = 0;
-export let MAX_INSTANCE_DEPTH: I32 = 64;
+export const MAX_INSTANCE_DEPTH: I32 = 64;
 
 export let nestsTooDeep = fn(name: Bytes): Bytes {
   coded(E0901, `instantiating ${name} nests more than ${MAX_INSTANCE_DEPTH} deep`)
@@ -1121,22 +1118,15 @@ export let defineVariants = fn(
   _types[ty * _TYPE_WIDTH + 1] = _variants.len() / _VARIANT_WIDTH;
   _types[ty * _TYPE_WIDTH + 2] = names.len();
 
-  let tag = 0;
-
-  while (tag < names.len()) {
-    _variants.push(bytesId(names[tag]));
+  for (tag, name in names) {
+    _variants.push(bytesId(name));
     _variants.push(_fields.len() / _FIELD_WIDTH);
     _variants.push(fieldNames[tag].len());
 
-    let f = 0;
-
-    while (f < fieldNames[tag].len()) {
-      _fields.push(bytesId(fieldNames[tag][f]));
+    for (f, field in fieldNames[tag]) {
+      _fields.push(bytesId(field));
       _fields.push(fieldTypes[tag][f]);
-      f++;
     }
-
-    tag++;
   }
 
   if (isTemplateEnum(ty)) {

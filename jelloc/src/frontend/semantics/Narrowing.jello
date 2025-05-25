@@ -4,11 +4,8 @@ let _known = Array.new<I32>(0);
 let _assigned = Array.new<I32>(0);
 
 let _index = fn(binding: I32): I32 {
-  let i = 0;
-
-  while (i < _known.len()) {
-    if (_known[i] / 2 == binding) { return i; }
-    i++;
+  for (i, narrowing in _known) {
+    if (narrowing / 2 == binding) { return i; }
   }
   -1
 };
@@ -52,11 +49,9 @@ export let setNarrowings = fn(known: Array<I32>): Bool {
 
 export let keepNarrowings = fn(before: Array<I32>): Bool {
   let kept = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < _known.len()) {
-    if (before.indexOf(_known[i]) >= 0) { kept.push(_known[i]); }
-    i++;
+  for (narrowing in _known) {
+    if (before.indexOf(narrowing) >= 0) { kept.push(narrowing); }
   }
   _known = kept;
   true
@@ -66,11 +61,9 @@ export let assignmentMark = fn(): I32 { _assigned.len() };
 
 export let enterLoop = fn(): Bool {
   let kept = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < _known.len()) {
-    if (_known[i] % 2 == 0) { kept.push(_known[i]); }
-    i++;
+  for (narrowing in _known) {
+    if (narrowing % 2 == 0) { kept.push(narrowing); }
   }
   _known = kept;
   true
@@ -78,18 +71,16 @@ export let enterLoop = fn(): Bool {
 
 export let leaveLoop = fn(before: Array<I32>, mark: I32): Bool {
   let kept = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < before.len()) {
+  for (narrowing in before) {
     let changed = false;
     let j = mark;
 
     while (j < _assigned.len()) {
-      if (_assigned[j] == before[i] / 2) { changed = true; }
+      if (_assigned[j] == narrowing / 2) { changed = true; }
       j++;
     }
-    if (!changed) { kept.push(before[i]); }
-    i++;
+    if (!changed) { kept.push(narrowing); }
   }
   _known = kept;
   true

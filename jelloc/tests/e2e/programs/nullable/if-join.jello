@@ -1,0 +1,31 @@
+// expect: null 1 4 null 2 | 1 0 | 60 | 2 b | 10 5 2
+/* The branches of an if or a conditional join as match arms do: a T and a ?T,
+ * either way round, give a ?T, and a null stays a null rather than an unwrap
+ * that traps. A nested conditional, or a T on both sides, stays a T, as does
+ * a list, which cannot be null, or a type parameter. */
+let pick = fn(c: Bool, n: ?I32) { let r = c ? 1 : n; r };
+let block = fn(c: Bool, n: ?I32) { let r = if (c) { 1 } else { n }; r };
+let nested = fn(c: Bool, d: Bool, n: ?I32) { let r = c ? 1 : (d ? 2 : n); r };
+let plain = fn(c: Bool, d: Bool): I32 { let r = c ? 1 : (d ? 0 : 3); r + 0 };
+
+// An inferred result still takes the then branch's type.
+let count = fn(n: I32) { n < 1 ? 1 : count(n - 1) };
+let fib = fn(n: I32) { n < 2 ? n : fib(n - 1) + fib(n - 2) };
+
+let lists = fn(c: Bool) { let r = c ? list[1] : list[2, 3]; r };
+let either<T> = fn(c: Bool, a: T, b: T): T { c ? a : b };
+
+// A fn literal takes its parameters from the then branch; a proven local is a T.
+let inc = fn(x: I32): I32 { x + 1 };
+let twice = fn(c: Bool) { let f = c ? inc : fn(x) { x * 2 }; f(5) };
+let shown = fn(x: ?I32, d: Bool): I32 { let r = x == null ? 0 : (d ? x : 1); r };
+let tried = fn(c: Bool): I32 { let r = c ? 1 : try { 2 } catch (e) { 0 }; r };
+
+let picked = [pick(false, null), pick(true, null), block(false, 4), nested(false, false, null)]
+  .map(fn(v) { Std.string(v) })
+  .join(" ");
+let late = Std.string(nested(false, true, null));
+let plains = `${plain(true, true)} ${plain(false, true)}`;
+let others = `${lists(false).len()} ${either(false, "a", "b")}`;
+let typed = `${twice(false)} ${shown(5, true)} ${tried(false)}`;
+`${picked} ${late} | ${plains} | ${count(3) + fib(10) + 4} | ${others} | ${typed}`

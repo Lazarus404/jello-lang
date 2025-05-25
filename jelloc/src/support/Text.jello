@@ -1,7 +1,6 @@
 package support;
 
 import { toHex } from std.core.Bytes;
-import { indexOf } from std.core.Array;
 
 export let hexValue = fn(c: I32): I32 {
   if ((c >= "0".code) && (c <= "9".code)) {
@@ -15,25 +14,10 @@ export let hexValue = fn(c: I32): I32 {
   }
 };
 
-let _concat = fn(parts: Array<Bytes>, lo: I32, hi: I32): Bytes {
-  if (hi - lo == 1) {
-    parts[lo]
-  } else if (hi <= lo) {
-    ""
-  } else {
-    let mid = lo + (hi - lo) / 2;
-    _concat(parts, lo, mid) + _concat(parts, mid, hi)
-  }
-};
-
-export let concatAll = fn(parts: Array<Bytes>): Bytes { _concat(parts, 0, parts.len()) };
-
 export let bytesLiteral = fn(value: Bytes): Bytes {
   let out = ["\""];
-  let i = 0;
 
-  while (i < value.len()) {
-    let c = Bytes.get_u8(value, i);
+  for (i, c in value) {
     out.push(match (c) {
       "\n".code => "\\n",
       "\r".code => "\\r",
@@ -44,22 +28,9 @@ export let bytesLiteral = fn(value: Bytes): Bytes {
         ? Bytes.slice(value, i, 1)
         : `\\x${toHex(Bytes.slice(value, i, 1))}`,
     });
-    i++;
   }
   out.push("\"");
-  concatAll(out)
-};
-
-export let joined = fn(parts: Array<Bytes>, separator: Bytes): Bytes {
-  let pieces = Array.new<Bytes>(0);
-  let i = 0;
-
-  while (i < parts.len()) {
-    if (i > 0) { pieces.push(separator); }
-    pieces.push(parts[i]);
-    i++;
-  }
-  concatAll(pieces)
+  out.join("")
 };
 
 let _editDistance = fn(a: Bytes, b: Bytes): I32 {
@@ -94,18 +65,16 @@ let _editDistance = fn(a: Bytes, b: Bytes): I32 {
 export let closestNames = fn(names: Array<Bytes>, name: Bytes): Array<Bytes> {
   let limit = name.len() / 3 > 2 ? name.len() / 3 : 2;
   let distances = Array.new<I32>(0);
-  let i = 0;
 
-  while (i < names.len()) {
-    distances.push(_editDistance(names[i], name));
-    i++;
+  for (candidate in names) {
+    distances.push(_editDistance(candidate, name));
   }
 
   let found = Array.new<Bytes>(0);
   let distance = 0;
 
   while ((distance <= limit) && (found.len() < 3)) {
-    i = 0;
+    let i = 0;
 
     while ((i < names.len()) && (found.len() < 3)) {
       if (distances[i] == distance) { found.push(names[i]); }
