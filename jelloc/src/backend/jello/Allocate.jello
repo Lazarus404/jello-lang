@@ -157,16 +157,15 @@ let _group = fn(register: I32): I32 {
 };
 
 let _conflict = fn(a: I32, b: I32, color: I32, neighbors: Array<Array<I32>>): Bool {
-  let groups = [a, b];
-  if (color < 0) { groups = _degrees[a] <= _degrees[b] ? [a] : [b]; }
+  let costA = _degrees[a] + _members[a].len();
+  let cheaper = costA <= _degrees[b] + _members[b].len() ? a : b;
+  let group = (_groupColors[a] == _groupColors[b]) ? cheaper : (_groupColors[a] == color ? b : a);
 
-  for (group in groups) {
-    for (member in _members[group]) {
-      for (neighbor in neighbors[member]) {
-        let other = _group(neighbor);
-        if ((other == a) || (other == b)) { return true; }
-        if ((color >= 0) && (_groupColors[other] == color)) { return true; }
-      }
+  for (member in _members[group]) {
+    for (neighbor in neighbors[member]) {
+      let other = _group(neighbor);
+      if ((other == a) || (other == b)) { return true; }
+      if ((color >= 0) && (_groupColors[other] == color)) { return true; }
     }
   }
   false

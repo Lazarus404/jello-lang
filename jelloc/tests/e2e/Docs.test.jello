@@ -4,7 +4,9 @@
  * compiler's own; the comment lines it starts with are its directives, so an
  * example states what it prints or the error it gives. A block fenced as
  * ```jello file=PATH is a module of the example that follows it, which then
- * becomes a directory fixture: its block is main.jello, beside PATH. */
+ * becomes a directory fixture: its block is main.jello, beside PATH. A block
+ * fenced as ```jello native=NAME uses a native library a page builds from its
+ * C, so ../scripts/test_native_docs.sh runs it instead. */
 
 import type { Test } from std.testing;
 import std.testing as T;
@@ -19,6 +21,7 @@ let _DOCS = "../docs";
 // The fences of an example and of a module, which names its file after it.
 let _EXAMPLE = "```jello";
 let _MODULE = "```jello file=";
+let _NATIVE = "```jello native=";
 
 // Writes TEXT to PATH, making its directory first.
 let _write = fn(path: Bytes, text: Bytes): Null {
@@ -43,9 +46,11 @@ let _extract = fn(path: Bytes, name: Bytes, out: Bytes): I32 {
     let start = i + 1;
     let module = startsWith(line, _MODULE);
 
-    if ((line != _EXAMPLE) && !module && startsWith(line, _EXAMPLE)) {
-      throw _at(path, start) + ": a fence of " + _EXAMPLE + " is neither an example"
-        + " nor a module (" + _MODULE + "PATH)";
+    if (startsWith(line, _NATIVE)) {
+      while ((i < lines.len()) && (lines[i] != "```")) { i++; }
+    } else if ((line != _EXAMPLE) && !module && startsWith(line, _EXAMPLE)) {
+      throw _at(path, start) + ": a fence of " + _EXAMPLE + " is neither an example, a module ("
+        + _MODULE + "PATH) nor a native example (" + _NATIVE + "NAME)";
     }
 
     if ((line == _EXAMPLE) || module) {

@@ -2,11 +2,11 @@
 // The rest of the std surface the compiler reaches: file reads and writes, and
 // UTF-8 validation and indexing. Paths are relative to jelloc/.
 import { exists, readText, writeText } from std.io.File;
-import { getEnv } from std.io.Env;
+import { tempDir } from std.sys.Platform;
 import { utf8Validate, utf8CharAt } from std.core.Bytes;
 
 let text = readText("tests/e2e/programs/natives/std-files/text.txt");
-let copy = getEnv("TMPDIR") + "/std-files.txt";
+let copy = tempDir() + "/std-files.txt";
 let written = writeText(copy, text) && (readText(copy) == text);
 let a = (exists("tests/e2e/programs/natives/std-files/text.txt") && !exists("tests/e2e/programs/natives/std-files/missing.txt")) ? 1 : 0;
 let b = (utf8Validate(text) && !utf8Validate(Bytes.slice(text, 0, 2))) ? 10 : 0;

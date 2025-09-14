@@ -8,7 +8,7 @@ import { Kind, Op } from frontend.hir.Hir;
 import {
   binaryValues, bufferHint, checkOperand, checkType, coerceAt, enterSyntax, hideValue, inTemplate,
   integerConversion, isNullaryVariant, presentAt, presentKnown, prototypeValue, syntaxChild,
-  upcasts,
+  unboxable, upcasts,
 } from frontend.semantics.TypeCheck;
 import { E0405, E0406, E0407, E0500, coded } from support.Codes;
 
@@ -155,31 +155,17 @@ export let checkedKind = fn(ty: I32): I32 {
     F32 => H.KIND_F32,
     F16 => H.KIND_F16,
     Object => ty == H.TYPE_OBJECT ? H.KIND_OBJECT : -1,
+    Abstract => H.KIND_HANDLE,
     _ => -1,
   }
 };
 
 export const UNCHECKED_KINDS: Bytes =
-  ": only Bool, I32, I64, F16, F32, F64, Atom, Bytes, enums and Object are checked";
-
-let _negative = fn(ty: I32, limit: Bytes): Bytes {
-  let boxing = `a ${H.typeName(ty)} cannot become Dynamic`;
-  coded(E0405, `${boxing}: one above the greatest ${limit} would read as negative`)
-};
+  ": only Bool, I32, I64, F16, F32, F64, Atom, Bytes, enums, Object and abstract types are checked";
 
 let _boxable = fn(operand: I32) {
-  let ty = H.typeOf(operand);
-
-  if (ty == H.TYPE_BYTE_BUFFER) {
-    throw coded(E0405, `a buffer from Bytes.new cannot become Dynamic${bufferHint(ty)}`);
-  }
-
-  if (H.isKind(ty, Kind.List)) {
-    throw coded(E0405, "a list cannot become Dynamic: its nil would read as null");
-  }
-  let held = (H.isKind(ty, Kind.Null) && (H.innerOf(ty) >= 0)) ? H.resolve(H.innerOf(ty)) : ty;
-  if (held == H.TYPE_U64) { throw _negative(ty, "I64"); }
-  if ((held == H.TYPE_U32) && (held != ty)) { throw _negative(ty, "I32"); }
+  let why = unboxable(H.typeOf(operand), "become Dynamic");
+  if (why != "") { throw coded(E0405, why); }
   null
 };
 
@@ -223,6 +209,22 @@ let _wideLiteral = fn(id: I32): Bool {
   }
 };
 
+let _nullFrom = fn(operand: I32): I32 {
+  let statements = Array.new<I32>(0);
+  let held = hideValue(statements, "held", operand);
+  let read = fn(): I32 { H.local(held, H.TYPE_DYNAMIC) };
+  let none = fn(): I32 { H.opNode(Op.Null, H.TYPE_NULL, []) };
+
+  let unboxed = fn(ty: I32): I32 {
+    H.opNode(Op.Expression, 0, [H.opNode(Op.FromDynamic, ty, [read()])])
+  };
+  let mismatch = H.node(
+    Op.Block, H.TYPE_NULL, 0, 1, [unboxed(H.TYPE_BOOL), unboxed(H.TYPE_ATOM), none()]
+  );
+  statements.push(H.opNode(Op.If, H.TYPE_NULL, [_bool(Op.IsNull, [read()]), none(), mismatch]));
+  H.node(Op.Block, H.TYPE_NULL, 0, 1, statements)
+};
+
 let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   let target = checkType(targetType);
   let operand = checkOperand(value, 0, -1);
@@ -240,6 +242,7 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   if (H.isPrototype(target) && (H.isObject(ty) || (ty == H.TYPE_DYNAMIC))) {
     return _asPrototype(operand, target);
   }
+  if ((ty == H.TYPE_DYNAMIC) && (target == H.TYPE_NULL)) { return _nullFrom(operand); }
 
   if (ty == H.TYPE_DYNAMIC) {
     if (!_deferred(target) && (checkedKind(target) < 0)) {

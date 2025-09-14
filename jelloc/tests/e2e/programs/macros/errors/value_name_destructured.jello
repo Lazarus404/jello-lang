@@ -1,0 +1,5 @@
+// error: 4:1: macro low has the name of a value of this module, which its calls would hide; rename one [E1000]
+// A destructuring let names values as a plain one does.
+let (low, high) = (1, 9);
+macro low(x) { quote.expr { unquote(x) }; }
+low(high)

@@ -46,6 +46,10 @@ export let readObject = fn(object: I32, key: I32, ty: I32): I32 {
 export let readTyped = fn(object: I32, key: I32, declared: I32): I32 {
   let ty = H.resolve(declared);
   if (H.isKind(ty, Kind.Var)) { H.unify(ty, H.newVar(true)); }
+
+  if (H.isKind(ty, Kind.Abstract)) {
+    return H.opNode(Op.FromDynamic, ty, [readObject(object, key, H.TYPE_DYNAMIC)]);
+  }
   if (H.readsExactly(ty) || !H.isKind(ty, Kind.Null)) { return readObject(object, key, ty); }
   let statements = Array.new<I32>(0);
   let held = hideValue(statements, "field", readObject(object, key, H.TYPE_DYNAMIC));

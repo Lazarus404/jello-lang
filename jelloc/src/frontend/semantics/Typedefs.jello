@@ -8,9 +8,9 @@ import { placeSegments, segmentCode } from frontend.semantics.Bits;
 import { E0302, E0605, E0804, coded } from support.Codes;
 import { checkFields, defineEnums } from frontend.semantics.Enums;
 import {
-  declareEnum, declareGenericEnum, declareGenericPrototype, declareGenericRecord, declareLayout,
-  declarePrototype, declareRecord, defineVariants, enumParams, isParametric, isPrototype,
-  layoutCodes, readsTyped, segmentType, typeName,
+  declareAbstract, declareEnum, declareGenericEnum, declareGenericPrototype, declareGenericRecord,
+  declareLayout, declarePrototype, declareRecord, defineVariants, enumParams, isParametric,
+  isPrototype, layoutCodes, readsTyped, segmentType, typeName,
 } from frontend.hir.Hir;
 import { declareScopedType, exportScopedType, scopedType } from frontend.semantics.ModuleScope;
 import type { Syntax } from frontend.syntax.Source;
@@ -243,6 +243,15 @@ export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool)
           throw coded(E0605, "a bytes layout takes no type parameters");
         }
         _declare(name, exported, _declareLayout(name, fields));
+        enterSyntax(parent);
+      },
+      Typedef(exported, name, typeParams, Abstract) => {
+        let parent = enterSyntax(syntaxChild(i));
+
+        if (typeParams.len() != 0) {
+          throw coded(E0605, "an abstract type takes no type parameters");
+        }
+        _declare(name, exported, declareAbstract(name));
         enterSyntax(parent);
       },
       _ => null,

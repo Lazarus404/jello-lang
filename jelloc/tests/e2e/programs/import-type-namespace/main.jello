@@ -1,0 +1,8 @@
+// expect: 9
+// A type import and a namespace import may share a name: a variant is the enum's, and any other
+// member the namespace's.
+import type { Shape } from dep.Shapes;
+import dep.Shapes as Shape;
+
+let f = fn(s: Shape): I32 { Shape.area(s) };
+f(Shape.Square(3))

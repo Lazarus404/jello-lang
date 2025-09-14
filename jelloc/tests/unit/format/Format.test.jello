@@ -1,0 +1,63 @@
+package format;
+
+import type { Test } from std.testing;
+import std.testing as T;
+import { exists, listDir, readText } from std.io.File;
+import { contains } from std.core.Bytes;
+import { defaultStyle, formatSource } from format.Format;
+import { loadFormatter, styleFor } from format.Config;
+
+/* The cases, from the compiler's directory, where the tests run; each a directory holding
+ * input.jello, expected.jello as it is laid out, and a .formatter when it is laid out in a style
+ * of its own. */
+let _CASES = "tests/unit/format/cases/";
+
+let testLaysOutEachCaseAsExpectedAndStably = fn(t: Test) {
+  for (entry in listDir(_CASES)) {
+    T.run(t, entry, fn(t: Test) {
+      let dir = _CASES + entry;
+      let input = dir + "input.jello";
+      let style = exists(dir + ".formatter")
+        ? styleFor(loadFormatter(dir, false), input)
+        : defaultStyle();
+      let laidOut = formatSource(readText(input), input, style);
+      T.equal(t, laidOut, readText(dir + "expected.jello"));
+      T.equal(t, formatSource(laidOut ?? "", input, style), laidOut);
+      null
+    });
+  }
+};
+
+let testLaysOutNothingAsNothing = fn(t: Test) {
+  T.equal(t, formatSource("", "<input>", defaultStyle()), "");
+  T.equal(t, formatSource("\n\n  \n", "<input>", defaultStyle()), "");
+};
+
+// The message `loadFormatter` throws for the .formatter in DIR.
+let _failure = fn(dir: Bytes): Bytes {
+  try {
+    loadFormatter(dir, false);
+    ""
+  } catch (e) {
+    Std.string(e)
+  }
+};
+
+let testLocatesABadSetting = fn(t: Test) {
+  let message = _failure("tests/unit/format/config/bad-indent");
+  T.isTrue(t, contains(message, ".formatter:2:13: \"indent\" must be a whole number"));
+  T.isTrue(t, contains(message, "[E0215]"));
+};
+
+let testLocatesInvalidJson = fn(t: Test) {
+  let message = _failure("tests/unit/format/config/bad-json");
+  T.isTrue(t, contains(message, "invalid JSON"));
+  T.isTrue(t, contains(message, "[E0215]"));
+};
+
+let testStripsCommentsFromTheCommandLineUnlessAnOverrideKeepsThem = fn(t: Test) {
+  let formatter = loadFormatter("tests/unit/format/cases/keep-comments", true);
+  T.equal(t, formatter.style.stripComments, true);
+  let style = styleFor(formatter, "tests/unit/format/cases/keep-comments/input.jello");
+  T.equal(t, style.rewriteComments, false);
+};

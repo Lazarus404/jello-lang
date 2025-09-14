@@ -4,7 +4,7 @@ import { bytesLiteral } from support.Text;
 import type {
   BasicBlock, Function, Instruction, Native, Program, Terminator, ThrowHandler, ValueType
 } from ir.Model;
-import { ValueType, argumentCount } from ir.Model;
+import { argumentCount } from ir.Model;
 
 let _types = fn(types: Array<ValueType>): Bytes {
   let out = "";
@@ -256,7 +256,8 @@ export let printIr = fn(program: Program): Bytes {
   let natives = program.natives;
 
   for (i, native in natives) {
-    let signature = _type(ValueType.Function(native.params, native.result));
+    let result = native.void ? "void" : _type(native.result);
+    let signature = `fn(${_types(native.params)}) -> ${result}`;
     out.push(`native n${i}: ${native.library}.${native.name} ${signature}\n`);
   }
   if (natives.len() > 0) { out.push("\n"); }

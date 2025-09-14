@@ -9,7 +9,7 @@ import { internalError } from support.Internal;
 import { Kind, Op } from frontend.hir.Hir;
 import { checkBits, checkLayoutLiterals, packLayout, unpackLayout } from frontend.semantics.Bits;
 import { expressionOf, i32Of, printed } from frontend.semantics.Derived;
-import { checkNumberCall } from frontend.semantics.Math;
+import { checkNumberCall, numberConstant } from frontend.semantics.Math;
 import { checkSystemAssertion } from frontend.semantics.Testing;
 import { storable, toDynamic } from frontend.semantics.Values;
 import { touch } from frontend.semantics.Failures;
@@ -31,9 +31,9 @@ import { closestNames } from support.Text;
 import {
   binaryValues, bufferHint, checkArity, checkFunctionCall, checkIndirectCall, checkInstance,
   checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, hasSpread, hideValue,
-  fieldMismatch, isBound, joinArrays, linkedMember, newBinding, objectValue, one, prototypeField,
-  prototypeMethod, receiverMethodType, rejectAt, sealedMethod, spreadArray, spreadOperand,
-  syntaxChild, tupleFields, widened, withoutCallee,
+  fieldMismatch, isBound, isBoundOrAhead, joinArrays, linkedMember, newBinding, objectValue, one,
+  prototypeField, prototypeMethod, receiverMethodType, rejectAt, sealedMethod, spreadArray,
+  spreadOperand, syntaxChild, tupleFields, widened, withoutCallee,
 } from frontend.semantics.TypeCheck;
 import {
   E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0600, E0601, E0800, E0801, E0805,
@@ -143,6 +143,8 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
       return _args();
     },
     Variable(space) when (_builtin(space)) => {
+      let constant = numberConstant(space, member);
+      if (constant >= 0) { return constant; }
       let called = `${space}.${member} is built in, so it can only be called`;
       throw coded(E0301, `${called}; to pass it as a value, wrap the call in a function`);
     },
@@ -1176,7 +1178,7 @@ let _call = fn(
     Member(Variable(space), name) when (!isBound(space) && H.isLayout(scopedType(space))) => {
       _layoutCall(scopedType(space), name, types, args)
     },
-    Member(Variable(space), name) when (!isBound(space)) => {
+    Member(Variable(space), name) when (!isBoundOrAhead(space)) => {
       touch(space);
       if (scopedType(space) >= 0) { throw coded(E0301, `${space} is a type, not a value`); }
       let unknown = `unknown name ${space} in ${space}.${name}`;

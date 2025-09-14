@@ -1,0 +1,10 @@
+// expect: x null x ok ["x", null] ("x", 1)
+// A present nullable prints as its value would alone, Bytes as itself; inside another value
+// Bytes are quoted, as there.
+let f = fn(): ?Bytes { "x" };
+let g = fn(): ?Bytes { null };
+let j: ?Bytes = f();
+let k: ?Bytes = g();
+let a: ?Atom = :ok;
+let both: Array<?Bytes> = [j, k];
+`${j} ${k} ${Std.string(j)} ${a} ${both} ${(j, 1)}`

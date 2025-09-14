@@ -1,8 +1,8 @@
 // expect: ok
 import { readText, writeText, exists, remove } from std.io.File;
-import { getEnv } from std.io.Env;
+import { tempDir } from std.sys.Platform;
 
-let path = getEnv("TMPDIR") + "/std_io_ctest.tmp";
+let path = tempDir() + "/std_io_ctest.tmp";
 let data = "hello std.File";
 System.assert(writeText(path, data));
 System.assert(exists(path));

@@ -6,7 +6,7 @@ import type {
 } from frontend.syntax.Ast;
 import {
   Expr as AstExpr, Type as AstType, bindPatternName, integerIn, integerValue, isBindPattern,
-  unsignedWideValue, wideIntegerValue,
+  patternNames, unsignedWideValue, wideIntegerValue,
 } from frontend.syntax.Ast;
 import type { Hir } from frontend.hir.Hir;
 import frontend.hir.Hir as H;
@@ -32,8 +32,8 @@ import { syntaxSpan } from frontend.syntax.Source;
 import type { Located } from frontend.syntax.Rewrite;
 import { Located, rewrite } from frontend.syntax.Rewrite;
 import {
-  E0007, E0102, E0103, E0108, E0109, E0213, E0300, E0301, E0302, E0303, E0304, E0305,
-  E0306, E0307, E0308, E0400, E0401, E0402, E0403, E0404, E0408, E0409, E0410, E0411,
+  E0007, E0102, E0103, E0107, E0108, E0109, E0110, E0213, E0300, E0301, E0302, E0303, E0304,
+  E0305, E0306, E0307, E0308, E0400, E0401, E0402, E0403, E0404, E0408, E0409, E0410, E0411,
   E0413, E0500, E0501, E0600, E0601, E0602, E0603, E0604, E0605, E0701, E0705, E0800,
   E0809, E0804, E0900, E0901, E1000, E1001, coded,
 } from support.Codes;
@@ -590,12 +590,19 @@ export let useUnsupported = fn(find: (I32, Bool) -> I32): Bool {
   true
 };
 
+let _isVariant = fn(base: AstExpr, member: Bytes): Bool {
+  _isEnumName(base) && match (base) {
+    Variable(name) when (_isNamespace(name)) => H.variantTag(scopedType(name), member) >= 0,
+    _ => true,
+  }
+};
+
 let _isEnumExpr = fn(expr: AstExpr): Bool {
   match (expr) {
     Match(_, _) => true,
     With(_, _, _) => true,
-    Member(base, _) => _isEnumName(base),
-    Call(callee, _, _) => match (callee) { Member(base, _) => _isEnumName(base), _ => false },
+    Member(base, member) => _isVariant(base, member),
+    Call(Member(base, member), _, _) => _isVariant(base, member),
     _ => false,
   }
 };
@@ -625,6 +632,24 @@ export let presentKnown = fn(id: I32): I32 {
 
 export let bufferHint = fn(ty: I32): Bytes {
   ty == H.TYPE_BYTE_BUFFER ? "; copy a buffer's bytes out with buffer.toString()" : ""
+};
+
+export let unboxable = fn(ty: I32, verb: Bytes): Bytes {
+  if (ty == H.TYPE_BYTE_BUFFER) {
+    return `a buffer from Bytes.new cannot ${verb}${bufferHint(ty)}`;
+  }
+  if (H.isKind(ty, Kind.List)) { return `a list cannot ${verb}: its nil would read as null`; }
+  let held = (H.isKind(ty, Kind.Null) && (H.innerOf(ty) >= 0)) ? H.resolve(H.innerOf(ty)) : ty;
+
+  let limit = if (held == H.TYPE_U64) {
+    "I64"
+  } else if ((held == H.TYPE_U32) && (held != ty)) {
+    "I32"
+  } else {
+    return "";
+  };
+  let negative = `one above the greatest ${limit} would read as negative`;
+  `a ${H.typeName(ty)} cannot ${verb}: ${negative}`
 };
 
 let _coerce = fn(id: I32, context: I32): I32 {
@@ -658,6 +683,11 @@ let _coerce = fn(id: I32, context: I32): I32 {
     }
   }
   if (H.isKind(ty, Kind.Null) && H.unify(H.innerOf(ty), expected)) { return _unwrap(id); }
+  let held = H.isKind(ty, Kind.Null) ? H.innerOf(ty) : -1;
+
+  if ((held >= 0) && upcasts(H.resolve(held), expected)) {
+    return _unary(Op.Convert, expected, _unwrap(id));
+  }
 
   if (ty == H.TYPE_BYTE_BUFFER) {
     throw coded(E0411, `a buffer from Bytes.new is not ${H.typeName(expected)}${bufferHint(ty)}`);
@@ -1122,7 +1152,8 @@ export let binaryValues = fn(op: BinaryOp, leftValue: I32, rightValue: I32): I32
   if (same && equality && structural) { return _structuralEquality(op, left, right); }
   let bools = (leftType == H.TYPE_BOOL) && (rightType == H.TYPE_BOOL);
   let atoms = (leftType == H.TYPE_ATOM) && (rightType == H.TYPE_ATOM);
-  let identity = same && match (H.kindOf(leftType)) { Function, Object => true, _ => false };
+  let identity = same
+    && match (H.kindOf(leftType)) { Function, Object, Abstract => true, _ => false };
 
   match (op) {
     And, Or => {
@@ -1692,6 +1723,7 @@ export let declaredArgs = fn(ty: I32): Array<I32> {
 let _isConstant = fn(id: I32): Bool {
   match (H.opOf(id)) {
     Bool, I32, I64, Float, Bytes, Atom, Null => true,
+    EnumNew => isNullaryVariant(id),
     Global => !H.globalIsMutable(H.valueOf(id)),
     Convert, Neg, Present => _isConstant(H.childOf(id, 0)),
     _ => false,
@@ -2148,10 +2180,10 @@ export let branchMismatch = fn(what: Bytes, first: I32, second: I32, child: I32)
 };
 
 export let requireBool = fn(what: Bytes, condition: I32, index: I32) {
-  let ty = H.typeOf(condition);
-
-  if (ty != H.TYPE_BOOL) {
-    _rejectAt(index, coded(E0400, `${what} condition must be Bool, not ${H.typeName(ty)}`));
+  if (H.typeOf(condition) != H.TYPE_BOOL) {
+    let shown = (H.opOf(condition) == Op.Unwrap) ? H.childOf(condition, 0) : condition;
+    let ty = H.typeName(H.typeOf(shown));
+    _rejectAt(index, coded(E0400, `${what} condition must be Bool, not ${ty}`));
   }
   null
 };
@@ -2431,31 +2463,23 @@ let _unsupportedExpr = fn(expr: AstExpr): Bytes {
 };
 
 export let unsupportedStatement = fn(statement: Stmt): Bytes {
-  let feature = match (statement) {
-    Prototype(_, _, _, _) => "prototypes declared inside a function are",
-    Typedef(_, _, _, _) => "typedefs declared inside a function are",
-    Macro(_, _, _, _) => {
-      return coded(E1000, "a macro is defined only at the top level of a module");
-      ""
-    },
-    ImportModule(_, _, _), ImportFrom(_, _, _) => "imports inside a function are",
-    Enum(_, _, _, _) => "enums declared inside a function are",
-    LetStmt(_, _, _, _, _, _, _) => "exports inside a function are",
-    Return(_) => {
-      return coded(E0307, "return outside a function");
-      ""
-    },
-    Break => {
-      return coded(E0307, "break outside loop");
-      ""
-    },
-    Continue => {
-      return coded(E0307, "continue outside loop");
-      ""
-    },
-    _ => "this statement is",
+  let topLevel = fn(what: Bytes): Bytes {
+    coded(E0110, `${what} declared only at the top level of a module, not in a function`)
   };
-  coded(E0900, `${feature} not supported yet`)
+
+  match (statement) {
+    Prototype(_, _, _, _) => topLevel("a prototype is"),
+    Typedef(_, _, _, _) => topLevel("a typedef is"),
+    ImportModule(_, _, _), ImportFrom(_, _, _) => topLevel("an import is"),
+    Enum(_, _, _, _) => topLevel("an enum is"),
+    Macro(_, _, _, _) => coded(E1000, "a macro is defined only at the top level of a module"),
+    LetStmt(_, _, _, _, _, _, _) =>
+      coded(E0107, "only a top-level declaration is exported, never one in a function"),
+    Return(_) => coded(E0307, "return outside a function"),
+    Break => coded(E0307, "break outside loop"),
+    Continue => coded(E0307, "continue outside loop"),
+    _ => coded(E0900, "this statement is not supported yet"),
+  }
 };
 
 let _checkPipe = fn(value: AstExpr, body: AstExpr, topic: Bool, expected: I32): I32 {
@@ -2607,35 +2631,6 @@ export let isDirectFunction = fn(index: I32): Bool { _directLets[index] };
 let _notConstant = fn(name: Bytes): Bytes {
   enterSyntax(syntaxChild(0));
   coded(E0603, `the default of ${name} must be a constant`)
-};
-
-export let patternNames = fn(pattern: Pattern): Array<Bytes> {
-  let names = Array.new<Bytes>(0);
-  let patterns = [pattern];
-
-  while (patterns.len() > 0) {
-    let next = patterns[patterns.len() - 1];
-    patterns.pop();
-
-    match (next) {
-      BindPattern(name) => names.push(name),
-      Object(fields) => {
-        for ((_, field) in fields) {
-          patterns.push(field);
-        }
-        null
-      },
-      Tuple(items), Array(items), Enum(_, items) => {
-        patterns.appendFrom(items, 0);
-        null
-      },
-      RegExp(_, _, binding), IsType(_, binding), Spread(binding) => {
-        if (binding != null) { names.push(binding); } null
-      },
-      _ => null,
-    };
-  }
-  names
 };
 
 let _bindingStatement = fn(name: Bytes): I32 {
@@ -3053,6 +3048,10 @@ let _aheadBinding = fn(name: Bytes, use: Bytes): Binding {
     },
     _ => Binding.Unbound,
   }
+};
+
+export let isBoundOrAhead = fn(name: Bytes): Bool {
+  isBound(name) || match (_aheadBinding(name, "read")) { Unbound => false, _ => true }
 };
 
 typedef Inferred = {
@@ -3768,15 +3767,11 @@ export let checkDoWhile = fn(body: Array<Stmt>, condition: AstExpr): I32 {
 
 export let checkThrow = fn(value: AstExpr): I32 {
   let thrown = _value(value, 0, -1);
+  let why = unboxable(H.typeOf(thrown), "be thrown");
 
-  if (H.typeOf(thrown) == H.TYPE_BYTE_BUFFER) {
+  if (why != "") {
     enterSyntax(syntaxChild(0));
-    throw coded(E0409, `a buffer from Bytes.new cannot be thrown${bufferHint(H.typeOf(thrown))}`);
-  }
-
-  if (H.isKind(H.typeOf(thrown), Kind.List)) {
-    enterSyntax(syntaxChild(0));
-    throw coded(E0409, "a list cannot be thrown: its nil would read as null");
+    throw coded(E0409, why);
   }
   _unary(Op.Throw, 0, thrown)
 };

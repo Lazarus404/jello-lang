@@ -1,0 +1,21 @@
+// expect: 999000 bottom | 999000 bottom
+// schedulers: 2
+// A process nests as deep as the main program; its frame stack starts in its slot and grows by
+// segments it maps for itself.
+import std.concurrent.Process as Process;
+import type { Inbox } from std.concurrent.Process;
+
+let depth = fn(n: I32): I32 { n == 0 ? 0 : 1 + depth(n - 1) };
+let dive = fn(n: I32): I32 {
+  if (n == 0) { throw "bottom"; }
+  1 + dive(n - 1)
+};
+let work = fn(): Bytes {
+  let caught = try { Std.string(dive(999000)) } catch (e) { e as Bytes };
+  `${depth(999000)} ${caught}`
+};
+let done = new Inbox<Bytes>();
+let main = Process.self<Bytes>(done);
+let a = Process.spawn<Bytes>(fn(inbox: Inbox<Bytes>) { main.send(work()); });
+let b = Process.spawn<Bytes>(fn(inbox: Inbox<Bytes>) { main.send(work()); });
+done.receive() + " | " + done.receive()

@@ -19,6 +19,7 @@ export const E0106 = "E0106";
 export const E0107 = "E0107";
 export const E0108 = "E0108";
 export const E0109 = "E0109";
+export const E0110 = "E0110";
 
 export const E0200 = "E0200";
 export const E0201 = "E0201";
@@ -35,6 +36,7 @@ export const E0211 = "E0211";
 export const E0212 = "E0212";
 export const E0213 = "E0213";
 export const E0214 = "E0214";
+export const E0215 = "E0215";
 
 export const E0300 = "E0300";
 export const E0301 = "E0301";
@@ -169,6 +171,10 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     "`let pattern = value` is a test only as the condition of an `if` or a `while`, alone or "
     + "joined with `&&`: `if (let [first, ..._] = xs) { ... }`. Elsewhere `let` is a "
     + "statement, which ends with `;`, so a block cannot end with one as its value."),
+  (E0110, "a declaration out of place",
+    "Imports, enums, typedefs and prototypes are declared at the top level of a module, "
+    + "where the whole module sees them, never inside a function. Move this one out of the "
+    + "function."),
 
   (E0200, "a module not found",
     "An import names a module that is in no source root. The module a.b.C is the file "
@@ -215,11 +221,17 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     + "`package_paths`. Run `jelloc deps.get` to fetch it."),
   (E0213, "an invalid native declaration",
     "A native is bound with a function type whose parameters and result are Bool, I32, "
-    + "I64, F32, F64, Bytes or Dynamic, before it is used: "
-    + "`let f: (Bytes) -> I32 = native_name;`. Every binding of one native gives it the same "
-    + "type."),
+    + "I64, F32, F64, Bytes, Dynamic or an abstract type, null or not, or whose result is "
+    + "Void, before it is used: `let f: (Bytes) -> I32 = native_name;`. Every binding of one "
+    + "native gives it the same type."),
   (E0214, "std.core exports an intrinsic",
     "A std.core module cannot export a name the compiler provides itself."),
+  (E0215, "an invalid .formatter",
+    "A .formatter file is a JSON object. `inputs`, `exclude` and `extensions` are arrays "
+    + "of strings, `indent` and `line_width` whole numbers, `strip_comments`, "
+    + "`keep_doc_comments`, `rewrite_comments` and `blank_before_one_line_blocks` true or "
+    + "false, and `overrides` an array of objects, each with `paths`, an array of strings, "
+    + "and any of those settings. Other keys are ignored."),
 
   (E0300, "an unknown name",
     "No binding of that name is in scope. Check the spelling, declare it before its use "
@@ -281,8 +293,8 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
   (E0406, "an invalid `as` or `is`",
     "`as` converts between number types and to and from Dynamic; `x is T` tests a Dynamic "
     + "value, and the pattern `is T` a Dynamic or nullable one. Only Bool, I32, I64, F16, F32, "
-    + "F64, Atom, Bytes, enums and Object are checked kinds, which a Dynamic can be extracted "
-    + "as or tested for."),
+    + "F64, Atom, Bytes, enums, Object and abstract types are checked kinds, which a Dynamic "
+    + "can be extracted as or tested for; for an abstract type, that it holds a native handle."),
   (E0407, "an invalid Dynamic comparison",
     "A Dynamic compares with null, or with a value of a kind `is` can test. Two "
     + "Dynamics do not compare; extract one first with `as T`."),
@@ -335,8 +347,8 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     + "calls, such as Function.bind, Function.call and an Object's functions, take none."),
   (E0605, "type parameters where none are taken",
     "Only functions, enums, typedefs and prototypes take type parameters; a generic "
-    + "function is `let id<T> = fn(x: T): T { x };`. A `let` of any other value, and a "
-    + "bytes layout, takes none."),
+    + "function is `let id<T> = fn(x: T): T { x };`. A `let` of any other value, a "
+    + "bytes layout and an abstract type take none."),
 
   (E0700, "a match that is not exhaustive",
     "A match must cover every value of its subject. The message gives a value no arm "
@@ -405,9 +417,10 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     + "one module. Split the function, or simplify the nesting."),
 
   (E1000, "an invalid macro",
-    "A macro is defined at the top level of a module, once per name, and its body runs "
-    + "when the program compiles, so it can use only its parameters, its own locals, the "
-    + "builtins and `Macro`: it cannot import, load a native library or define a macro. "
+    "A macro is defined at the top level of a module, once per name and with no value's "
+    + "name, and its body runs when the program compiles, so it can use only its "
+    + "parameters, its own locals, the builtins and `Macro`: it cannot import, load a native "
+    + "library or define a macro. "
     + "`import macro { name } from module;` names a macro the module defines with "
     + "`export macro`."),
   (E1001, "a quote or unquote out of place",

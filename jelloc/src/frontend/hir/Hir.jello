@@ -26,7 +26,7 @@ export enum Kind {
   Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; Dynamic; ByteBuffer; List;
   Var; Param; Applied; Atom;
   I8; I16; U8; U16; U32; U64; F16; F32; F64;
-  Optional; Rest; Record; Object;
+  Optional; Rest; Record; Object; Abstract;
 }
 
 export typedef Hir = {
@@ -110,6 +110,7 @@ export const KIND_OBJECT: I32 = 6;
 export const KIND_I64: I32 = 7;
 export const KIND_ENUM: I32 = 14;
 export const KIND_FUNCTION: I32 = 12;
+export const KIND_HANDLE: I32 = 15;
 export const KIND_F64: I32 = 8;
 export const KIND_F32: I32 = 9;
 export const KIND_F16: I32 = 10;
@@ -253,7 +254,7 @@ let _kindCode = fn(kind: Kind): I32 {
     Bool => 0, I32 => 1, I64 => 2, Bytes => 3, Array => 4, Tuple => 5, Null => 6, Function => 7,
     Enum => 8, Dynamic => 9, ByteBuffer => 10, List => 11, Var => 12, Param => 13, Applied => 14,
     Atom => 15, I8 => 16, I16 => 17, U8 => 18, U16 => 19, U32 => 20, U64 => 21, F16 => 22,
-    F32 => 23, F64 => 24, Optional => 25, Rest => 26, Record => 27, Object => 28,
+    F32 => 23, F64 => 24, Optional => 25, Rest => 26, Record => 27, Object => 28, Abstract => 29,
   }
 };
 
@@ -546,7 +547,8 @@ let _growTypes = fn() {
 
   while (ty < typeCount()) {
     match (_kinds[ty]) {
-      Enum, Record, Var, Param => null,
+      Enum, Record, Abstract, Var, Param => null,
+      Object when (ty != TYPE_OBJECT) => null,
       _ => {
         let slot = _slot(_typeHash(_kinds[ty], innerOf(ty), _typeArgs(ty)), capacity);
         while (_typeSlots[slot] >= 0) { slot = (slot + 1) % capacity; }
@@ -620,20 +622,26 @@ export let holdsNull = fn(ty: I32): Bool { isKind(ty, Kind.Null) || isKind(ty, K
 
 export let isReference = fn(ty: I32): Bool {
   match (kindOf(ty)) {
-    Bytes, ByteBuffer, Array, Tuple, Function, Enum, Applied, Record, Object => true,
+    Bytes, ByteBuffer, Array, Tuple, Function, Enum, Applied, Record, Object, Abstract => true,
     _ => false,
   }
+};
+
+export let isHandle = fn(ty: I32): Bool {
+  isKind(ty, Kind.Abstract) || (isKind(ty, Kind.Null) && isKind(innerOf(ty), Kind.Abstract))
 };
 
 export let readsExactly = fn(ty: I32): Bool {
   let inner = isKind(ty, Kind.Null) ? innerOf(ty) : ty;
   let scalar = match (kindOf(ty)) { Bool, Atom, I32, I64, F16, F32, F64 => true, _ => false };
-  scalar || ((inner >= 0) && isReference(inner) && !isKind(inner, Kind.ByteBuffer))
+  let unchecked = isKind(inner, Kind.ByteBuffer) || isKind(inner, Kind.Abstract);
+  scalar || ((inner >= 0) && isReference(inner) && !unchecked)
 };
 
 export let readsTyped = fn(ty: I32): Bool {
   (ty == TYPE_DYNAMIC)
     || readsExactly(ty)
+    || isHandle(ty)
     || (isKind(ty, Kind.Null) && (innerOf(ty) >= 0) && readsExactly(innerOf(ty)))
 };
 export let tupleType = fn(elements: Array<I32>): I32 { _intern(Kind.Tuple, -1, elements) };
@@ -991,6 +999,7 @@ export let callStd = fn(name: Bytes, params: Array<I32>, result: I32, args: Arra
 export let declareEnum = fn(name: Bytes): I32 { _addType(Kind.Enum, bytesId(name), []) };
 export let declareRecord = fn(name: Bytes): I32 { _addType(Kind.Record, bytesId(name), []) };
 export let declarePrototype = fn(name: Bytes): I32 { _addType(Kind.Object, bytesId(name), []) };
+export let declareAbstract = fn(name: Bytes): I32 { _addType(Kind.Abstract, bytesId(name), []) };
 
 let _pending = Array.new<I32>(0);
 let _nesting = 0;
@@ -1266,6 +1275,7 @@ let _typeName = fn(ty: I32): Bytes {
       application < 0 ? enumName(ty) : `${enumName(ty)}<${_typeArgNames(application, false)}>`
     },
     Dynamic => _source ? "Dynamic" : "dynamic",
+    Abstract => _bytes[_types[ty * _TYPE_WIDTH]],
     ByteBuffer => _source ? "ByteBuffer" : "bytebuffer",
     Object when (_application(ty) >= 0) => {
       `${_bytes[_types[ty * _TYPE_WIDTH]]}<${_typeArgNames(_application(ty), false)}>`

@@ -150,6 +150,11 @@ let next = fn(): Token {
   tok
 };
 
+let _quoteKindFollows = fn(): Bool {
+  (peek() == Token.Dot) && (pending == Token.Eof) && (pos + 2 < tokens.len())
+    && (tokens[pos + 2] == Token.LBrace)
+};
+
 let _quoted = fn(token: Token): Bytes {
   match (token) {
     Eof => "the end of the file",
@@ -523,8 +528,8 @@ let _bitsSegment = fn(): SegmentType {
     },
   };
 
-  if ((peek() == Token.Dot) && ((width == 8) || (kind == BitValueKind.Rest))) {
-    _error(E0104, "endian suffix is not supported on u8 or rest segments");
+  if ((peek() == Token.Dot) && ((width <= 8) || (kind == BitValueKind.Rest))) {
+    _error(E0104, "endian suffix needs a 16- or 32-bit segment, not 8 bits or fewer, or rest");
   }
   { width: width, endian: _endian(), signed: signed, kind: kind }
 };
@@ -1095,12 +1100,12 @@ let _primary = fn(start: I32): Expr {
     Super => Expr.Super,
     Colon => Expr.Atom(_atomName()),
     Ident(name) => match (name) {
-      "method" => {
-        expect(Token.Fn);
+      "method" when (peek() == Token.Fn) => {
+        next();
         _parseFunction(true)
       },
-      "quote" => _parseQuote(),
-      "unquote" => {
+      "quote" when ((peek() == Token.LBrace) || _quoteKindFollows()) => _parseQuote(),
+      "unquote" when (peek() == Token.LParen) => {
         expect(Token.LParen);
         let value = _parseExpr(0);
         expect(Token.RParen);
@@ -1936,6 +1941,8 @@ let _parseStmtInner = fn(): Stmt {
         expect(Token.Minus);
         if (!_eatIdent("layout")) { _error(E0100, "expected bytes-layout"); }
         TypedefBody.BytesLayout(_parseLayoutFields())
+      } else if (_eatIdent("abstract")) {
+        TypedefBody.Abstract
       } else if (peek() == Token.LBrace) {
         TypedefBody.Struct(_parseStructFields())
       } else {

@@ -1,0 +1,10 @@
+// expect: Hann Blackman Hann
+// An enum's variant without fields is a constant, so it may be a default, or a const.
+enum Window { Rectangular; Hann; Blackman; }
+const WIDE = Window.Blackman;
+let named = fn(w: Window): Bytes {
+  match (w) { Rectangular => "Rectangular", Hann => "Hann", Blackman => "Blackman" }
+};
+let pick = fn(size: I32, window: Window = Window.Hann): Bytes { named(window) };
+let wide = fn(window: Window = WIDE): Bytes { named(window) };
+`${pick(4)} ${wide()} ${pick(4, Window.Hann)}`

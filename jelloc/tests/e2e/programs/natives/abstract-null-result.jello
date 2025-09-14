@@ -1,0 +1,8 @@
+// trap: NULL_DEREF 8:1
+// A native bound to return an abstract type that returns null traps; one that
+// may return null is bound as ?Match.
+load { regexp_compile, regexp_match } from std;
+typedef Match = abstract;
+let compile: (Bytes, Bytes) -> Dynamic = regexp_compile;
+let find: (Bytes, Dynamic) -> Match = regexp_match;
+find("xyz", compile("[0-9]", ""))

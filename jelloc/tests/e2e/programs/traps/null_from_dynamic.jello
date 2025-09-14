@@ -1,0 +1,5 @@
+// trap: TYPE_MISMATCH 4:39
+// `as Null` traps for a Dynamic that holds anything but null, a Bool or an Atom too.
+let values = [null as Dynamic, true as Dynamic];
+let show = fn(d: Dynamic): Bytes { `${d as Null}` };
+`${show(values[0])} ${show(values[1])}`

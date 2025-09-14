@@ -1,14 +1,14 @@
 package frontend.semantics;
 
-import type { Program as AstProgram, Stmt, Type as AstType } from frontend.syntax.Ast;
-import { bindPatternName, isBindPattern } from frontend.syntax.Ast;
+import type { Program as AstProgram, Stmt } from frontend.syntax.Ast;
+import { bindPatternName, isBindPattern, patternNames } from frontend.syntax.Ast;
 import {
   checkAggregateExpr, declareBuiltins, extendedType, extensibleTypes, isIntrinsic,
   isIntrinsicMethod, useExtension, wantedExtensions
 } from frontend.semantics.Aggregates;
 import { checkEnumExpr } from frontend.semantics.Enums;
 import { checkCondition, checkLet } from frontend.semantics.Match;
-import { resetDerived, structuralEquality, unsupported } from frontend.semantics.Derived;
+import { printed, resetDerived, structuralEquality, unsupported } from frontend.semantics.Derived;
 import { checkAssertion, declareAssertions } from frontend.semantics.Testing;
 import { declareTypes, prototypeNames } from frontend.semantics.Typedefs;
 import { checkValueExpr } from frontend.semantics.Values;
@@ -17,8 +17,8 @@ import {
 } from frontend.semantics.Failures;
 import type { Hir } from frontend.hir.Hir;
 import {
-  Kind, Op, TYPE_NULL, declareNative, functionType, globalNameOf, globalTypeOf, innerOf, isKind,
-  kindOf, node, opNode, typeArg, typeArgCount, typeName, typeOf
+  Kind, Op, TYPE_NULL, declareNative, functionType, globalNameOf, globalTypeOf, innerOf, isHandle,
+  isKind, kindOf, node, opNode, typeArg, typeArgCount, typeName, typeOf
 } from frontend.hir.Hir;
 import { firstUninitializedRead } from frontend.semantics.InitOrder;
 import { internalRaised } from support.Internal;
@@ -37,24 +37,17 @@ import {
   checkDoWhile, checkEffect, checkFor, checkGlobalInitializer, checkLiteralRanges, checkOperand,
   checkTemplate, checkThrow, checkWhile, currentSpan, declareFunctions, declareGlobal, enterNode,
   enterSpan, enterSyntax, finishProgram, initGlobal, instantiateTemplates, isDirectFunction,
-  isLoaded, isTemplate, patternNames, poisonDeclared, recoverTopLevel, syntaxChild,
+  isLoaded, isTemplate, poisonDeclared, recoverTopLevel, syntaxChild,
   takeRegexpInits, unsupportedStatement, useAggregateChecks, useAssertionChecks,
   useConditionChecks, useEnumChecks, useLetChecks, useStructuralEquality, useUnsupported,
   useValueChecks, withInstances
 } from frontend.semantics.TypeCheck;
 import { checkPrototype, instantiatePrototypes } from frontend.semantics.Prototypes;
 import { verifyHir } from frontend.hir.Verify;
-import { E0206, E0210, E0213, E0214, E0304, E0605, E0900, E0901, coded } from support.Codes;
+import { E0206, E0210, E0213, E0214, E0304, E0605, E0901, coded } from support.Codes;
 
 let _initializers = Array.new<I32>(0);
 let _testing = -1;
-
-let _returnsVoid = fn(ty: AstType): Bool {
-  match (ty) {
-    Function(_, Named(name)) => name == "Void",
-    _ => false,
-  }
-};
 
 let _marshalled = fn(ty: I32, name: Bytes): I32 {
   let count = typeArgCount(ty);
@@ -70,11 +63,20 @@ let _marshalled = fn(ty: I32, name: Bytes): I32 {
 
     match (kindOf(part)) {
       Bool, I32, I64, F32, F64, Bytes, Dynamic => null,
+      Null when ((i == count) && (part == TYPE_NULL)) => null,
+      _ when (isHandle(part)) => null,
+      Optional => {
+        let inner = typeName(innerOf(part));
+        throw coded(
+          E0213,
+          `native ${name} cannot take an optional parameter; write a nullable one as Null<${inner}>`
+        );
+      },
       _ => {
         throw coded(
           E0213,
-          `native ${name} cannot pass ${typeName(part)}; `
-          + "natives take and return Bool, I32, I64, F32, F64, Bytes or Dynamic"
+          `native ${name} cannot pass ${typeName(part)}; natives take and return Bool, I32, `
+          + "I64, F32, F64, Bytes, Dynamic or an abstract type, and may return Void"
         );
       },
     };
@@ -231,13 +233,6 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
         LetStmt(_, exported, pattern, _, annotation, value, _)
           when (isBindPattern(pattern) && isLoaded(value)) => {
           let name = bindPatternName(pattern);
-
-          if ((annotation != null) && _returnsVoid(annotation)) {
-            throw coded(
-              E0900,
-              `native ${name} needs a result type: natives without a result are not supported yet`
-            );
-          }
           let ty = checkAnnotation(annotation);
 
           if ((ty < 0) || !isKind(ty, Kind.Function)) {
@@ -395,6 +390,16 @@ let _markRunning = fn(modules: Array<Module>, runs: Array<Bool>, opened: Array<B
   null
 };
 
+let _result = fn(tail: I32): I32 {
+  let ty = typeOf(tail);
+
+  let shown = match (kindOf(ty)) {
+    Tuple, Record, Enum, Array, List, Atom, Object => unsupported(ty, true) < 0,
+    _ => false,
+  };
+  shown ? printed(tail, "the program's result", -1) : tail
+};
+
 export let typeCheckModules = fn(modules: Array<Module>): Hir {
   beginCheck();
   resetExports();
@@ -447,6 +452,10 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
     }
 
     if (failureCount() == 0) {
+      if (tail >= 0) {
+        enterSyntax(modules[entry].syntax);
+        tail = _result(tail);
+      }
       instantiateTemplates();
       while (instantiatePrototypes()) { instantiateTemplates(); }
       _initializers = withInstances(_initializers);

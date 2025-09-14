@@ -1,0 +1,24 @@
+# trap: ARITHMETIC function 2 at pc 1
+# called: function 1 at pc 0
+# called: function 0 at pc 1
+# modes: jit no-jit
+# The JIT declines function 1 (TAILCALL), so a JIT caller bridges into the
+# interpreter, which enters JIT code again; every frame names its call.
+.jlo module version=1 features=[] entry=0
+types: [I32]
+sigs: []
+atoms: []
+struct_sigs: []
+func[0] nregs=2 reg_types=[I32, I32]
+  0: CONST_I32 a=r0 b=r0 c=r0 imm=5
+  1: CALL a=r1 b=r0 c=r1 imm=1
+  2: RET a=r1 b=r0 c=r0 imm=0
+func[1] nregs=1 nargs=1 reg_types=[I32]
+  0: CALL a=r0 b=r0 c=r1 imm=2
+  1: TAILCALL a=r0 b=r0 c=r1 imm=3
+func[2] nregs=2 nargs=1 reg_types=[I32, I32]
+  0: CONST_I32 a=r1 b=r0 c=r0 imm=0
+  1: DIV_I32 a=r0 b=r0 c=r1 imm=0
+  2: RET a=r0 b=r0 c=r0 imm=0
+func[3] nregs=1 nargs=1 reg_types=[I32]
+  0: RET a=r0 b=r0 c=r0 imm=0

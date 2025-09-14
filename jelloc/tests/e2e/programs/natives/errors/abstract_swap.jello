@@ -1,0 +1,9 @@
+// error: 8:17: wrong argument type for matchAt: the parameter is Text, but this argument is Pattern
+load { regexp_compile, regexp_text, regexp_match_at } from std;
+typedef Pattern = abstract;
+typedef Text = abstract;
+let compile: (Bytes, Bytes) -> Pattern = regexp_compile;
+let matchAt: (Text, Pattern, I32) -> Dynamic = regexp_match_at;
+let digits = compile("[0-9]+", "");
+let m = matchAt(digits, digits, 0);
+1

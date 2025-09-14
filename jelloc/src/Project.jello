@@ -10,6 +10,7 @@ let _realPath: (Bytes) -> Bytes = file_real_path;
 export typedef Project = {
   let root: Bytes;
   let sources: Array<Bytes>;
+  let testSources: Array<Bytes>;
   let tests: Array<Bytes>;
   let libraries: Array<Bytes>;
 };
@@ -118,8 +119,8 @@ let _strings = fn(value: Json, key: Bytes, what: Bytes, otherwise: Array<Bytes>)
   }
 };
 
-let _dependencies = fn(manifest: Json, found: Array<Dependency>) {
-  let field = jsonField(manifest, "dependencies");
+let _dependencies = fn(manifest: Json, key: Bytes, found: Array<Dependency>) {
+  let field = jsonField(manifest, key);
   if (field == null) { return null; }
 
   match (field) {
@@ -132,7 +133,7 @@ let _dependencies = fn(manifest: Json, found: Array<Dependency>) {
       }
       null
     },
-    _ => _fail(jsonAt(field), E0211, "\"dependencies\" must be an object"),
+    _ => _fail(jsonAt(field), E0211, `"${key}" must be an object`),
   }
 };
 
@@ -152,6 +153,42 @@ let _locate = fn(places: Array<Bytes>, name: Bytes): Bytes {
     if (exists(candidate)) { return candidate; }
   }
   ""
+};
+
+let _resolve = fn(
+  dependencies: Array<Dependency>, start: I32, places: Array<Bytes>, sources: Array<Bytes>,
+  libraries: Array<Bytes>
+) {
+  let d = start;
+
+  while (d < dependencies.len()) {
+    let dependency = dependencies[d];
+    let dir = _locate(places, dependency.name);
+
+    if (dir == "") {
+      if (_path != dependency.namedIn) { _read(dependency.namedIn); }
+      _fail(
+        dependency.at,
+        E0212,
+        `package ${dependency.name} is in none of ${places.join(", ")}; run \`jelloc deps.get\``
+      );
+    }
+
+    let packageManifest = inDirectory(dir, "jello.json");
+    let src = "src";
+    let jdll = "jdll";
+
+    if (exists(packageManifest)) {
+      let read = _read(packageManifest);
+      src = _string(read, "src", "src");
+      jdll = _string(read, "jdll", "jdll");
+      _dependencies(read, "dependencies", dependencies);
+    }
+    sources.push(inDirectory(dir, src));
+    _addLibraries(dir, jdll, libraries);
+    d++;
+  }
+  null
 };
 
 export let loadProject = fn(root: Bytes): Project {
@@ -176,37 +213,13 @@ export let loadProject = fn(root: Bytes): Project {
   let places = [inDirectory(root, "packages")].appendFrom(_within(root, paths), 0);
 
   let dependencies = Array.new<Dependency>(0);
-  _dependencies(manifest, dependencies);
-  let d = 0;
-
-  while (d < dependencies.len()) {
-    let dependency = dependencies[d];
-    let dir = _locate(places, dependency.name);
-
-    if (dir == "") {
-      if (_path != dependency.namedIn) { _read(dependency.namedIn); }
-      _fail(
-        dependency.at,
-        E0212,
-        `package ${dependency.name} is in none of ${places.join(", ")}; run \`jelloc deps.get\``
-      );
-    }
-
-    let packageManifest = inDirectory(dir, "jello.json");
-    let src = "src";
-    let jdll = "jdll";
-
-    if (exists(packageManifest)) {
-      let read = _read(packageManifest);
-      src = _string(read, "src", "src");
-      jdll = _string(read, "jdll", "jdll");
-      _dependencies(read, dependencies);
-    }
-    sources.push(inDirectory(dir, src));
-    _addLibraries(dir, jdll, libraries);
-    d++;
-  }
-  { root, sources, tests, libraries }
+  _dependencies(manifest, "dependencies", dependencies);
+  _resolve(dependencies, 0, places, sources, libraries);
+  let shared = dependencies.len();
+  let testSources = Array.new<Bytes>(0);
+  _dependencies(manifest, "dev_dependencies", dependencies);
+  _resolve(dependencies, shared, places, testSources, libraries);
+  { root, sources, testSources, tests, libraries }
 };
 
 export let compileDefaults = fn(dir: Bytes): Tuple<Bytes, Bytes> {

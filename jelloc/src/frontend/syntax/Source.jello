@@ -165,7 +165,7 @@ export let lineStarts = fn(source: Bytes): Array<I32> {
   starts
 };
 
-export let lineColumn = fn(source: Bytes, starts: Array<I32>, offset: I32): Tuple<I32, I32> {
+export let lineOf = fn(starts: Array<I32>, offset: I32): I32 {
   let low = 0;
   let high = starts.len() - 1;
 
@@ -178,15 +178,28 @@ export let lineColumn = fn(source: Bytes, starts: Array<I32>, offset: I32): Tupl
       high = middle - 1;
     }
   }
+  low + 1
+};
 
+export let lineColumns = fn(source: Bytes, start: I32, end: I32): Array<I32> {
+  let i = start;
+  while ((i <= end) && (i < Bytes.len(source)) && (Bytes.get_u8(source, i) < 128)) { i++; }
+  if ((i > end) || (i >= Bytes.len(source))) { return Array.new<I32>(0); }
+
+  let columns = Array.new<I32>(end - start + 1);
   let column = 1;
-  let i = starts[low];
+  i = start;
 
-  while (i < offset) {
+  while (i <= end) {
+    let next = i < Bytes.len(source) ? i + _step(source, i) : i + 1;
+
+    while ((i < next) && (i <= end)) {
+      columns[i - start] = column;
+      i++;
+    }
     column++;
-    i += _step(source, i);
   }
-  (low + 1, column)
+  columns
 };
 
 let _padding = fn(source: Bytes, i: I32): Bytes {

@@ -7,11 +7,11 @@ import type { Process, Inbox } from std.concurrent.Process;
 let inbox = new Inbox<Bytes>();
 let me = Process.self<Bytes>(inbox);
 let start = Process.now();
-Process.spawn<I32>(fn(unused: Inbox<I32>) { Process.sleep(20); me.send("a"); });
+Process.spawn<I32>(fn(unused: Inbox<I32>) { Process.sleep(50); me.send("a"); });
 Process.spawn<I32>(fn(unused: Inbox<I32>) { Process.sleep(5); me.send("b"); });
 let first = inbox.receive();
 let second = inbox.receive();
 Process.sleep(10);
 Process.sleep(0);
 Process.sleep(-1);
-first + " " + second + " " + Std.string(Process.now() - start >= 30)
+first + " " + second + " " + Std.string(Process.now() - start >= 60)

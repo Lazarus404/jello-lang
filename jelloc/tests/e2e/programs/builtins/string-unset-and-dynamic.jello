@@ -1,0 +1,7 @@
+// expect: [null, null] [null] [null, E.B(2)] ["a", 1, :b]
+// Items Array.new left unset show as null, and Bytes and atoms a Dynamic holds show as literals.
+enum E { A; B(n: I32); }
+let es = Array.new<E>(2);
+es[1] = E.B(2);
+Std.string(Array.new<Bytes>(2)) + " " + Std.string(Array.new<Tuple<I32, I32>>(1)) + " "
+  + Std.string(es) + " " + Std.string(["a" as Dynamic, 1 as Dynamic, :b as Dynamic])

@@ -367,8 +367,14 @@ let _bracketed = fn(setup: I32, more: I32, element: I32, next: I32): Array<I32> 
 let _arrayText = fn(value: I32, ty: I32): Array<I32> {
   let loop = indexLoop(fn() { H.opNode(Op.ArrayLen, H.TYPE_I32, [H.local(value, ty)]) });
   let at = H.local(loop.index, H.TYPE_I32);
-  let element = H.opNode(Op.ArrayGet, H.innerOf(ty), [H.local(value, ty), at]);
-  _bracketed(loop.start, loop.more, element, loop.next)
+  let item = H.innerOf(ty);
+  let element = H.opNode(Op.ArrayGet, item, [H.local(value, ty), at]);
+
+  let shown = match (H.kindOf(item)) {
+    Bytes, Tuple, Record, Enum, Array => H.opNode(Op.Present, H.nullType(item), [element]),
+    _ => element,
+  };
+  _bracketed(loop.start, loop.more, shown, loop.next)
 };
 
 let _listText = fn(value: I32, ty: I32): Array<I32> {
@@ -380,10 +386,10 @@ let _listText = fn(value: I32, ty: I32): Array<I32> {
   _bracketed(H.declareBinding(Op.Let, rest, "rest", H.local(value, ty)), more, head, next)
 };
 
-let _nullableText = fn(value: I32, ty: I32): Array<I32> {
-  let present = _shown(H.opNode(Op.Unwrap, H.innerOf(ty), [H.local(value, ty)]), true);
+let _nullableText = fn(value: I32, ty: I32, quoted: Bool): I32 {
+  let present = _shown(H.opNode(Op.Unwrap, H.innerOf(ty), [H.local(value, ty)]), quoted);
   let missing = H.opNode(Op.IsNull, H.TYPE_BOOL, [H.local(value, ty)]);
-  [H.opNode(Op.If, H.TYPE_BYTES, [missing, bytesOf("null"), present])]
+  H.opNode(Op.If, H.TYPE_BYTES, [missing, bytesOf("null"), present])
 };
 
 let _stringBody = fn(params: Array<I32>, ty: I32): Array<I32> {
@@ -392,7 +398,7 @@ let _stringBody = fn(params: Array<I32>, ty: I32): Array<I32> {
     Enum => _enumText(params[0], ty),
     Array => _arrayText(params[0], ty),
     List => _listText(params[0], ty),
-    _ => _nullableText(params[0], ty),
+    _ => [_nullableText(params[0], ty, true)],
   }
 };
 
@@ -409,13 +415,23 @@ let _shown = fn(value: I32, quoted: Bool): I32 {
       H.callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [boxed])
     },
     U64 => H.callStd("u64_string", [H.TYPE_U64], H.TYPE_BYTES, [value]),
-    Dynamic => H.callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [value]),
+    Dynamic => H.callStd(quoted ? "object_string" : "to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES,
+      [value]),
     Object => {
       let boxed = H.opNode(Op.ToDynamic, H.TYPE_DYNAMIC, [value]);
       H.callStd("object_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [boxed])
     },
     Null when (H.innerOf(ty) < 0) => {
       H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("null")])
+    },
+    Null when (!quoted) => {
+      let held = newBinding();
+      let declared = H.declareBinding(Op.Let, held, "held", value);
+      H.node(Op.Block, H.TYPE_BYTES, 0, 1, [declared, _nullableText(held, ty, false)])
+    },
+    Abstract => {
+      let name = bytesOf(`<${H.typeName(ty)}>`);
+      H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), name])
     },
     _ when (inTemplate()) => {
       H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("")])

@@ -2,7 +2,8 @@ package frontend;
 
 import type { Expr, Pattern, Program, QuoteBody, Stmt, Type } from frontend.syntax.Ast;
 import {
-  BinaryOp, Expr, FloatSize, IntSize, Pattern, Stmt, Type, UnaryOp, integerValue, wideIntegerValue
+  BinaryOp, Expr, FloatSize, IntSize, Pattern, Stmt, Type, UnaryOp, integerValue, patternNames,
+  wideIntegerValue
 } from frontend.syntax.Ast;
 import type { Located } from frontend.syntax.Rewrite;
 import { Located, rewrite } from frontend.syntax.Rewrite;
@@ -49,6 +50,7 @@ let _names = 0;
 let _failure: ?SourceSpan = null;
 
 let _visible = Array.new<Tuple<Bytes, I32>>(0);
+let _values = Array.new<Bytes>(0);
 let _nodes = 0;
 let _depth = 0;
 
@@ -289,9 +291,8 @@ let _image = fn(path: Bytes): Bytes {
 let _define = fn(path: Bytes, index: I32, statement: Stmt, syntax: Syntax) {
   match (statement) {
     Macro(exported, name, params, body) => {
-      if (_visibleIndex(name) >= 0) {
-        throw _at(syntax, coded(E1000, `macro ${name} is already defined`));
-      }
+      let taken = _taken(name);
+      if (taken != "") { throw _at(syntax, taken); }
 
       let quotes = Array.new<Tuple<QuoteBody, Syntax>>(0);
       _body(Located.Statements(body, syntax.children), quotes);
@@ -301,6 +302,32 @@ let _define = fn(path: Bytes, index: I32, statement: Stmt, syntax: Syntax) {
     _ => null,
   };
   null
+};
+
+let _taken = fn(name: Bytes): Bytes {
+  if (_visibleIndex(name) >= 0) { return coded(E1000, `macro ${name} is already defined`); }
+  if (!_values.contains(name)) { return ""; }
+  coded(E1000,
+    `macro ${name} has the name of a value of this module, which its calls would hide; rename one`)
+};
+
+let _valueNames = fn(statements: Array<Stmt>): Array<Bytes> {
+  let names = Array.new<Bytes>(0);
+
+  for (statement in statements) {
+    match (statement) {
+      LetStmt(_, _, pattern, _, _, _, _) => {
+        names.appendFrom(patternNames(pattern), 0);
+        null
+      },
+      ImportFrom(Value, items, _), ImportFrom(Native, items, _) => {
+        for (item in items) { names.push(item.alias ?? item.name); }
+        null
+      },
+      _ => null,
+    };
+  }
+  names
 };
 
 let _scopeIndex = fn(scope: Array<Tuple<Bytes, I32>>, name: Bytes): I32 {
@@ -314,7 +341,8 @@ let _visibleIndex = fn(name: Bytes): I32 { _scopeIndex(_visible, name) };
 
 let _importMacro = fn(local: Bytes, path: Bytes, module: Bytes, name: Bytes, at: SourceSpan) {
   _failure = at;
-  if (_visibleIndex(local) >= 0) { throw coded(E1000, `macro ${local} is already defined`); }
+  let taken = _taken(local);
+  if (taken != "") { throw taken; }
 
   for (i, definition in _definitions) {
     if ((definition.path == path) && (definition.name == name)) {
@@ -794,6 +822,7 @@ export let expandModule = fn(
   imported: Array<Tuple<Bytes, Bytes, Bytes, Bytes, SourceSpan>>
 ): Tuple<Array<Stmt>, Syntax, ?Expr, Array<I32>> {
   _visible = Array.new<Tuple<Bytes, I32>>(0);
+  _values = _valueNames(statements);
   _nodes = 0;
   _depth = 0;
   let children = syntax.children;

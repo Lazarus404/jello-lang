@@ -8,6 +8,7 @@
 import type { Test } from std.testing;
 import std.testing as T;
 import { join, split, startsWith } from std.core.Bytes;
+import type { Command } from std.io.Command;
 import { NONE, badCommandLines, concat, finish, fresh, jelloc, modes, startVm, withStd } from support.Run;
 
 const _DIR = "tests/e2e/cli/runner";
@@ -77,9 +78,9 @@ let testRunner = fn(t: Test) {
   let module = fresh("Runner.test.jlo");
   let (status, _, err) = jelloc(withStd(["--test", "--path", _DIR, _R, "--out", module]), NONE);
   if (status != 0) { T.fatal(t, "Runner.test.jello does not compile: " + err); }
-  let run = fn(args: Array<Bytes>): Dynamic { startVm("", concat([module], args)) };
+  let run = fn(args: Array<Bytes>): Command { startVm("", concat([module], args)) };
   let all = modes();
-  let inModes = Array.new<Dynamic>(0);
+  let inModes = Array.new<Command>(0);
   let i = 0;
 
   while (i < all.len()) {

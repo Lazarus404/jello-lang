@@ -1,0 +1,16 @@
+// expect: false true 137 false true | true 4 out
+// kill ends a running child, whose status is then 137, and does nothing to one that has ended;
+// finished tells without waiting whether a child has ended, and once it has, wait returns at once.
+import { finished, kill, start, stdout, wait } from std.io.Command;
+import { sleep } from std.concurrent.Process;
+
+let sleeper = start(["sh", "-c", "sleep 100"], []);
+let running = finished(sleeper);
+let killed = kill(sleeper);
+let status = wait(sleeper);
+let text = `${running} ${killed} ${status} ${kill(sleeper)} ${finished(sleeper)}`;
+
+let quick = start(["sh", "-c", "printf out; exit 4"], []);
+let polls = 0;
+while (!finished(quick) && (polls < 500)) { sleep(10); polls++; }
+`${text} | ${finished(quick)} ${wait(quick)} ${stdout(quick)}`

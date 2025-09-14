@@ -1,0 +1,11 @@
+// trap: TYPE_MISMATCH 11:1
+// A linked typedef's field of an abstract type is checked as it is read, so a
+// value written through the Object, which no type checks, cannot pass as one.
+load { regexp_text } from std;
+typedef Text = abstract;
+let text: (Bytes) -> Text = regexp_text;
+typedef Holder = { let source: Text; };
+prototype Holder { init(source: Text) { this.source = source; }; };
+let holder = new Holder(text("abc"));
+(holder as Object).source = "abc" as Dynamic;
+holder.source == holder.source

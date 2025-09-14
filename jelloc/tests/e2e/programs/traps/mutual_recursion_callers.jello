@@ -1,0 +1,21 @@
+// trap: STACK_OVERFLOW 19:31
+// called: 20:31
+// called: 19:31
+// called: 20:31
+// called: 19:31
+// called: 20:31
+// called: 19:31
+// called: 20:31
+// called: 19:31
+// called: 20:31
+// called: 19:31
+// called: 20:31
+// called: 19:31
+// called: 20:31
+// called: 19:31
+// called: 20:31
+// called: 19:31
+// Calls alternating too deep for the stack keep the innermost 16, none of them repeated.
+let a = fn(n: I32): I32 { 1 + b(n + 1) };
+let b = fn(n: I32): I32 { 2 + a(n + 1) };
+a(0)

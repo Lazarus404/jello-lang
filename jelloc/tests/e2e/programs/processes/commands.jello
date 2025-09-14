@@ -13,8 +13,8 @@ let i = 0;
 while (i < PROCS) {
   let k = i;
   Process.spawn<I32>(fn(_: Inbox<I32>) {
-    let quick = start(["/bin/sh", "-c", "printf " + Std.string(k) + "; exit " + Std.string(k)], []);
-    let slow = start(["/bin/sh", "-c", "sleep 0.05; exit " + Std.string(k + 20)], []);
+    let quick = start(["sh", "-c", "printf " + Std.string(k) + "; exit " + Std.string(k)], []);
+    let slow = start(["sh", "-c", "sleep 0.05; exit " + Std.string(k + 20)], []);
     waitAny([quick, slow]);
     let ok = stdout(quick) == Std.string(k);
     me.send(ok ? wait(quick) + wait(slow) : -1000);

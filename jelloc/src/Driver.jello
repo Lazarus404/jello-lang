@@ -30,8 +30,11 @@ import { allocateProgram, allocationFailure } from backend.jello.Allocate;
 import { emitAllocated } from backend.jello.Emit;
 import { exists, listDir, makeDirs, readText, writeText } from std.io.File;
 import { getEnv } from std.io.Env;
+import { os, tempDir } from std.sys.Platform;
 import { toArray } from std.core.List;
 import { explain } from support.Codes;
+import { findFormatter, formatFiles, loadFormatter, styleFor } from format.Config;
+import { formatSource } from format.Format;
 
 import type { Program } from ir.Model;
 import type { Hir } from frontend.hir.Hir;
@@ -46,15 +49,20 @@ const _USAGE = "usage: jelloc [input.jello] [--out path | --lex | --parse | --hi
   + "       jelloc run [--std dir] [--path dir]... [file.jello [args...]]\n"
   + "       jelloc test [--std dir] [--path dir]... [dir...] [-- args...]\n"
   + "       jelloc deps.get [dir]\n"
+  + "       jelloc fmt [--check] [--strip-comments] [path...]\n"
   + "       jelloc --explain <code>\n\n"
   + "  run          compile the file, by default the entry module, into the\n"
-  + "               project's build/run/ (outside a project, under $TMPDIR)\n"
+  + "               project's build/run/ (outside a project, under the temp dir)\n"
   + "               and run it with jello, passing it args\n"
   + "  test         compile every *.test.jello file under the dirs (by default\n"
   + "               the project's test.dirs) into one test binary in build/\n"
   + "               and run it, passing it args\n"
   + "  deps.get     fetch the project's dependencies into packages/, with\n"
-  + "               jlo_tool get-deps\n\n"
+  + "               jlo_tool get-deps\n"
+  + "  fmt          lay out the files and the files under the directories (by\n"
+  + "               default the inputs of the nearest .formatter) as the\n"
+  + "               .formatter says; --check lists those it would change and\n"
+  + "               changes none, and --strip-comments removes comments\n\n"
   + "  input.jello  the entry module; by default, jello.json's \"entry\", else\n"
   + "               Main.jello in its src, in the project or the current\n"
   + "               directory, whose sources and packages are then searched\n"
@@ -343,10 +351,12 @@ let _exec = fn(argv: Array<Bytes>) {
   _exit(1, `jelloc: ${why}\n`)
 };
 
+let _exe = os() == "windows" ? ".exe" : "";
+
 let _tool = fn(variable: Bytes, name: Bytes): Bytes {
   let set = getEnv(variable);
   if (set != "") { return set; }
-  let beside = inDirectory(parentDirectory(_executable()), name);
+  let beside = inDirectory(parentDirectory(_executable()), name + _exe);
   exists(beside) ? beside : name
 };
 
@@ -364,16 +374,16 @@ let _load = fn(root: Bytes): ?Project {
 let _project = fn(start: Bytes): ?Project { _load(findProject(start)) };
 
 let _buildDir = fn(project: ?Project, under: Bytes): Bytes {
-  let tmp = getEnv("TMPDIR");
-  let dir = project != null
-    ? inDirectory(project.root, under)
-    : `${tmp == "" ? "/tmp" : tmp}/jelloc/${under}`;
+  let dir = project != null ? inDirectory(project.root, under) : `${tempDir()}/jelloc/${under}`;
   if (!makeDirs(dir)) { _exit(1, `jelloc: cannot make ${dir}\n`); }
   dir
 };
 
-let _addSources = fn(project: ?Project) {
-  if (project != null) { _roots.appendFrom(project.sources, 0); }
+let _addSources = fn(project: ?Project, tests: Bool) {
+  if (project != null) {
+    _roots.appendFrom(project.sources, 0);
+    if (tests) { _roots.appendFrom(project.testSources, 0); }
+  }
   null
 };
 
@@ -402,7 +412,7 @@ let _assume = fn(inputs: Array<Bytes>, mode: Mode, output: Bytes): Bytes {
 
   if (inputs.len() == 0) {
     inputs.push(_entry(dir));
-    _addSources(_load(root));
+    _addSources(_load(root), false);
   }
   if (named) { return output; }
 
@@ -422,15 +432,22 @@ let _compileAndRun = fn(
   inputs: Array<Bytes>,
   output: Bytes,
   args: Array<Bytes>,
-  project: ?Project
+  project: ?Project,
+  near: Array<Bytes>
 ) {
   _emit(inputs, output);
 
+  let libraries = Array.new<Bytes>(0);
+
+  for (dir in near) {
+    if (exists(dir)) { libraries.push(dir); }
+  }
+  if (project != null) { libraries.appendFrom(project.libraries, 0); }
   let vm = [_tool("JELLO_VM", "jello")];
 
-  if ((project != null) && (project.libraries.len() > 0)) {
+  if (libraries.len() > 0) {
     vm.push("--jdll-path");
-    vm.push(project.libraries.join(":"));
+    vm.push(libraries.join(os() == "windows" ? ";" : ":"));
   }
   vm.push(output);
   _exec(vm.appendFrom(args, 0))
@@ -462,7 +479,7 @@ let _runCommand = fn(argv: List<Bytes>) {
     if (!exists(input)) { _exit(1, `jelloc: cannot read ${input}\n`); }
     project = _project(parentDirectory(input));
   }
-  _addSources(project);
+  _addSources(project, false);
 
   let name = baseName(input);
 
@@ -471,7 +488,9 @@ let _runCommand = fn(argv: List<Bytes>) {
   }
   let stem = Bytes.slice(name, 0, name.len() - 6);
   let output = `${_buildDir(project, "build/run")}/${stem}.jlo`;
-  _compileAndRun([input], output, toArray(cur), project)
+  let dir = parentDirectory(input);
+  let near = (project == null) ? [inDirectory(dir, "jdll"), dir] : Array.new<Bytes>(0);
+  _compileAndRun([input], output, toArray(cur), project, near)
 };
 
 let _testFiles = fn(dir: Bytes, files: Array<Bytes>): Null {
@@ -529,9 +548,9 @@ let _testCommand = fn(argv: List<Bytes>) {
   if (files.len() == 0) { _exit(1, `jelloc: no *.test.jello file under ${dirs[0]}\n`); }
 
   _roots = dirs.appendFrom(_roots, 0);
-  _addSources(project);
+  _addSources(project, true);
   _testing = true;
-  _compileAndRun(files, `${_buildDir(project, "build")}/test.jlo`, args, project)
+  _compileAndRun(files, `${_buildDir(project, "build")}/test.jlo`, args, project, [])
 };
 
 let _depsCommand = fn(argv: List<Bytes>) {
@@ -544,11 +563,80 @@ let _depsCommand = fn(argv: List<Bytes>) {
   _exec([_tool("JELLO_JLO_TOOL", "jlo_tool"), "get-deps", root])
 };
 
+let _fmtCommand = fn(argv: List<Bytes>) {
+  let paths = Array.new<Bytes>(0);
+  let check = false;
+  let strip = false;
+
+  for (arg in toArray(argv)) {
+    if (arg == "--check") {
+      check = true;
+    } else if (arg == "--strip-comments") {
+      strip = true;
+    } else if (arg.startsWith("-")) {
+      throw `unknown option: ${arg}`;
+    } else {
+      paths.push(arg);
+    }
+  }
+
+  let root = findFormatter(".");
+
+  if ((root == "") && (paths.len() == 0)) {
+    throw "fmt needs a path outside a project with a .formatter (none here or above)";
+  }
+
+  let formatter = try {
+    loadFormatter(root, strip)
+  } catch (e) {
+    _exit(1, `${e}\n`);
+    loadFormatter("", strip)
+  };
+
+  let files = try {
+    formatFiles(formatter, paths)
+  } catch (e) {
+    _exit(1, `jelloc: ${e}\n`);
+    Array.new<Bytes>(0)
+  };
+
+  let status = 0;
+  let changed = Array.new<Bytes>(0);
+
+  for (file in files) {
+    let src = readText(file);
+
+    let laidOut = try {
+      formatSource(src, file, styleFor(formatter, file))
+    } catch (e) {
+      writeText("/dev/stderr", `${e}\n`);
+      if (status == 0) { status = 1; }
+      src
+    };
+
+    if (laidOut == null) {
+      writeText("/dev/stderr", `jelloc: internal error: laying out ${file} changes its tokens\n`);
+      status = 3;
+    } else if (laidOut != src) {
+      changed.push(file);
+      if (!check) { writeText(file, laidOut); }
+    }
+  }
+
+  if (check && (changed.len() > 0)) {
+    writeText("/dev/stdout", changed.join("\n") + "\n");
+    if (status == 0) { status = 1; }
+  }
+  if (status != 0) { System.exit(status); }
+  null
+};
+
 let _subcommand = fn(name: Bytes, args: List<Bytes>): Bool {
   let command: ?((List<Bytes>) -> Null) = match (name) {
     "run" => _runCommand,
     "test" => _testCommand,
     "deps.get" => _depsCommand,
+    "fmt" => _fmtCommand,
     _ => null,
   };
   if (command == null) { return false; }

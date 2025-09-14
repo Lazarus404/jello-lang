@@ -1,0 +1,251 @@
+package format;
+
+import { Json, jsonAt, jsonField, parseJson } from support.Json;
+import { sourceDiagnostic } from frontend.syntax.Source;
+import { E0215, coded } from support.Codes;
+import { exists, listDir, readText } from std.io.File;
+import { inDirectory, parentDirectory } from Project;
+import type { Style } from format.Format;
+import { defaultStyle } from format.Format;
+
+load { file_real_path } from std;
+
+let _realPath: (Bytes) -> Bytes = file_real_path;
+
+const _NAME = ".formatter";
+
+typedef Override = {
+  let paths: Array<Bytes>;
+  let settings: Json;
+};
+
+export typedef Formatter = {
+  let inputs: Array<Bytes>;
+  let exclude: Array<Bytes>;
+  let extensions: Array<Bytes>;
+  let style: Style;
+  let overrides: Array<Override>;
+};
+
+export let findFormatter = fn(start: Bytes): Bytes {
+  let dir = start;
+
+  while (!exists(inDirectory(dir, _NAME))) {
+    let real = _realPath(dir);
+    if ((real == "") || (real == "/")) { return ""; }
+    dir = parentDirectory(dir);
+  }
+  dir
+};
+
+let _path = "";
+let _text = "";
+
+let _fail = fn(at: I32, message: Bytes) {
+  throw sourceDiagnostic(_path, _text, at, coded(E0215, message));
+};
+
+let _bool = fn(settings: Json, key: Bytes, otherwise: Bool): Bool {
+  let found = jsonField(settings, key);
+  if (found == null) { return otherwise; }
+
+  match (found) {
+    Bool(_, value) => value,
+    _ => {
+      _fail(jsonAt(found), `"${key}" must be true or false`);
+      false
+    },
+  }
+};
+
+let _count = fn(settings: Json, key: Bytes, otherwise: I32): I32 {
+  let found = jsonField(settings, key);
+  if (found == null) { return otherwise; }
+  let message = `"${key}" must be a whole number from 1 to 9999`;
+
+  let digits = match (found) {
+    Number(_, text) => text,
+    _ => "",
+  };
+  if ((digits == "") || (digits.len() > 4)) { _fail(jsonAt(found), message); }
+  let value = 0;
+  let k = 0;
+
+  while (k < digits.len()) {
+    let c = Bytes.get_u8(digits, k);
+    if ((c < "0".code) || (c > "9".code)) { _fail(jsonAt(found), message); }
+    value = value * 10 + (c - "0".code);
+    k++;
+  }
+  if (value < 1) { _fail(jsonAt(found), message); }
+  value
+};
+
+let _strings = fn(value: Json, key: Bytes): Array<Bytes> {
+  let found = jsonField(value, key);
+  if (found == null) { return Array.new<Bytes>(0); }
+
+  let message = `"${key}" must be an array of strings`;
+
+  let string = fn(item: Json): Bytes {
+    match (item) {
+      Text(_, text) => text,
+      _ => {
+        _fail(jsonAt(item), message);
+        ""
+      },
+    }
+  };
+
+  match (found) {
+    List(_, items) => items.map(string),
+    _ => {
+      _fail(jsonAt(found), message);
+      []
+    },
+  }
+};
+
+let _style = fn(settings: Json, base: Style): Style {
+  {
+    indent: _count(settings, "indent", base.indent),
+    lineWidth: _count(settings, "line_width", base.lineWidth),
+    stripComments: _bool(settings, "strip_comments", base.stripComments),
+    keepDocComments: _bool(settings, "keep_doc_comments", base.keepDocComments),
+    rewriteComments: _bool(settings, "rewrite_comments", base.rewriteComments),
+    blankBeforeOneLineBlocks: _bool(settings, "blank_before_one_line_blocks",
+      base.blankBeforeOneLineBlocks),
+  }
+};
+
+let _realPaths = fn(root: Bytes, paths: Array<Bytes>): Array<Bytes> {
+  paths.map(fn(path: Bytes): Bytes { _realPath(inDirectory(root, path)) })
+    .filter(fn(path: Bytes): Bool { path != "" })
+};
+
+export let loadFormatter = fn(root: Bytes, strip: Bool): Formatter {
+  let base = defaultStyle();
+
+  if (root == "") {
+    base.stripComments = strip;
+    return {
+      inputs: Array.new<Bytes>(0),
+      exclude: Array.new<Bytes>(0),
+      extensions: [".jello"],
+      style: base,
+      overrides: Array.new<Override>(0),
+    };
+  }
+
+  _path = inDirectory(root, _NAME);
+  _text = readText(_path);
+  let (value, message, at) = parseJson(_text);
+  if (value == null) { _fail(at, `invalid JSON: ${message}`); }
+
+  match (value) {
+    Object(_, _, _) => null,
+    _ => _fail(jsonAt(value), "a .formatter holds an object"),
+  };
+
+  let style = _style(value, base);
+  if (strip) { style.stripComments = true; }
+  let overrides = Array.new<Override>(0);
+  let found = jsonField(value, "overrides");
+
+  if (found != null) {
+    let items = match (found) {
+      List(_, items) => items,
+      _ => {
+        _fail(jsonAt(found), "\"overrides\" must be an array");
+        Array.new<Json>(0)
+      },
+    };
+
+    for (item in items) {
+      match (item) {
+        Object(_, _, _) => null,
+        _ => _fail(jsonAt(item), "each of \"overrides\" must be an object"),
+      };
+      _style(item, style);
+      overrides.push({ paths: _realPaths(root, _strings(item, "paths")), settings: item });
+    }
+  }
+
+  let extensions = _strings(value, "extensions");
+  {
+    inputs: _strings(value, "inputs").map(fn(input: Bytes): Bytes { inDirectory(root, input) }),
+    exclude: _realPaths(root, _strings(value, "exclude")),
+    extensions: extensions.len() == 0 ? [".jello"] : extensions,
+    style: style,
+    overrides: overrides,
+  }
+};
+
+let _under = fn(real: Bytes, under: Bytes): Bool {
+  (real == under) || real.startsWith(under == "/" ? "/" : `${under}/`)
+};
+
+let _holds = fn(paths: Array<Bytes>, path: Bytes): Bool {
+  paths.filter(fn(each: Bytes): Bool { each == path }).len() > 0
+};
+
+let _underAny = fn(real: Bytes, paths: Array<Bytes>): Bool {
+  paths.filter(fn(path: Bytes): Bool { _under(real, path) }).len() > 0
+};
+
+export let styleFor = fn(formatter: Formatter, path: Bytes): Style {
+  let real = _realPath(path);
+  let style = formatter.style;
+
+  for (override in formatter.overrides) {
+    if (_underAny(real, override.paths)) { style = _style(override.settings, style); }
+  }
+  style
+};
+
+let _walk = fn(formatter: Formatter, dir: Bytes, files: Array<Bytes>, seen: Array<Bytes>): Null {
+  let realDir = _realPath(dir);
+  if (_holds(seen, realDir)) { return null; }
+  seen.push(realDir);
+
+  for (entry in listDir(dir)) {
+    let path = inDirectory(dir, entry);
+
+    if (entry.endsWith("/")) {
+      let sub = Bytes.slice(path, 0, path.len() - 1);
+      if (!_underAny(_realPath(sub), formatter.exclude)) { _walk(formatter, sub, files, seen); }
+    } else if (formatter.extensions.filter(fn(ending: Bytes): Bool { entry.endsWith(ending) })
+      .len() > 0) {
+      let real = _realPath(path);
+
+      if (!_underAny(real, formatter.exclude) && !_holds(seen, real)) {
+        seen.push(real);
+        files.push(path);
+      }
+    }
+  }
+  null
+};
+
+export let formatFiles = fn(formatter: Formatter, paths: Array<Bytes>): Array<Bytes> {
+  let files = Array.new<Bytes>(0);
+  let seen = Array.new<Bytes>(0);
+
+  for (path in paths.len() == 0 ? formatter.inputs : paths) {
+    if (!exists(path)) { throw `cannot read ${path}`; }
+
+    let isDir = try {
+      listDir(path);
+      true
+    } catch (e) {
+      false
+    };
+
+    if (isDir) {
+      _walk(formatter, path, files, seen);
+    } else {
+      files.push(path);
+    }
+  }
+  files
+};

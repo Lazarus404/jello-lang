@@ -5,10 +5,10 @@
 import std.concurrent.Process as Process;
 import type { Process, Inbox } from std.concurrent.Process;
 import { readText, writeText, remove, makeDirs } from std.io.File;
-import { getEnv } from std.io.Env;
+import { tempDir } from std.sys.Platform;
 import { run } from std.io.Command;
 
-let dir = getEnv("TMPDIR") + "/processes-files";
+let dir = tempDir() + "/processes-files";
 makeDirs(dir);
 let done = new Inbox<I32>();
 let me = Process.self<I32>(done);

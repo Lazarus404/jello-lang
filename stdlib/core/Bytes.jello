@@ -10,6 +10,10 @@ load {
   bytes_from_hex,
   bytes_base64,
   bytes_from_base64,
+  bytes_read_i64,
+  bytes_read_f64,
+  bytes_i64,
+  bytes_f64,
 } from std;
 
 export let utf8Validate: (Bytes) -> Bool = unicode_validate;
@@ -174,6 +178,13 @@ export let readF32Be = fn(bytes: Bytes, at: I32): F32 {
   v
 };
 
+let _readI64: (Bytes, I32, Bool) -> I64 = bytes_read_i64;
+let _readF64: (Bytes, I32, Bool) -> F64 = bytes_read_f64;
+export let readI64Le = fn(bytes: Bytes, at: I32): I64 { _readI64(bytes, at, false) };
+export let readI64Be = fn(bytes: Bytes, at: I32): I64 { _readI64(bytes, at, true) };
+export let readF64Le = fn(bytes: Bytes, at: I32): F64 { _readF64(bytes, at, false) };
+export let readF64Be = fn(bytes: Bytes, at: I32): F64 { _readF64(bytes, at, true) };
+
 let _put = fn(buffer: ByteBuffer, at: I32, value: Bytes): I32 {
   let i = 0;
 
@@ -212,3 +223,10 @@ export let writeI32Le = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writ
 export let writeI32Be = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeBe(buffer, at, 4, value) };
 export let writeF32Le = fn(buffer: ByteBuffer, at: I32, value: F32): I32 { _put(buffer, at, bits[f32.le(value)]) };
 export let writeF32Be = fn(buffer: ByteBuffer, at: I32, value: F32): I32 { _put(buffer, at, bits[f32.be(value)]) };
+
+let _i64: (I64, Bool) -> Bytes = bytes_i64;
+let _f64: (F64, Bool) -> Bytes = bytes_f64;
+export let writeI64Le = fn(buffer: ByteBuffer, at: I32, value: I64): I32 { _put(buffer, at, _i64(value, false)) };
+export let writeI64Be = fn(buffer: ByteBuffer, at: I32, value: I64): I32 { _put(buffer, at, _i64(value, true)) };
+export let writeF64Le = fn(buffer: ByteBuffer, at: I32, value: F64): I32 { _put(buffer, at, _f64(value, false)) };
+export let writeF64Be = fn(buffer: ByteBuffer, at: I32, value: F64): I32 { _put(buffer, at, _f64(value, true)) };

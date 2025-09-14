@@ -1,0 +1,124 @@
+package format;
+
+import { Token } from frontend.syntax.Lexer;
+import { indexOfFrom } from std.core.Bytes;
+
+export enum PieceKind {
+  Code;
+  LineComment;
+  BlockComment;
+}
+
+export typedef Piece = {
+  let kind: PieceKind;
+  let text: Bytes;
+  let token: Token;
+  let space: Bytes;
+};
+
+export typedef Line = {
+  let pieces: Array<Piece>;
+  let blanks: I32;
+};
+
+let _isBlank = fn(c: I32): Bool {
+  (c == " ".code) || (c == "\t".code) || (c == "\r".code) || (c == 11) || (c == 12)
+};
+
+export let codePiece = fn(text: Bytes, token: Token, space: Bytes): Piece {
+  { kind: PieceKind.Code, text: text, token: token, space: space }
+};
+
+export let commentPiece = fn(kind: PieceKind, text: Bytes, space: Bytes): Piece {
+  { kind: kind, text: text, token: Token.Eof, space: space }
+};
+
+let _trimmedEnd = fn(text: Bytes, start: I32, end: I32): I32 {
+  let at = end;
+  while ((at > start) && _isBlank(Bytes.get_u8(text, at - 1))) { at--; }
+  at
+};
+
+export let sourceLines = fn(
+  src: Bytes,
+  tokens: Array<Token>,
+  starts: Array<I32>,
+  ends: Array<I32>
+): Array<Line> {
+  let lines = Array.new<Line>(0);
+  let pieces = Array.new<Piece>(0);
+  let blanks = 0;
+  let newlines = 0;
+  let space = "";
+
+  let add = fn(piece: Piece) {
+    if ((newlines > 0) && (pieces.len() > 0)) {
+      lines.push({ pieces: pieces, blanks: blanks });
+      pieces = Array.new<Piece>(0);
+      blanks = newlines - 1;
+    }
+    pieces.push(piece);
+    newlines = 0;
+    space = "";
+  };
+
+  let pos = 0;
+  let i = 0;
+
+  while (i < tokens.len()) {
+    let gapEnd = starts[i];
+
+    while (pos < gapEnd) {
+      let c = Bytes.get_u8(src, pos);
+
+      if (c == "\n".code) {
+        newlines++;
+        space = "";
+        pos++;
+      } else if (_isBlank(c)) {
+        let begin = pos;
+        while ((pos < gapEnd) && _isBlank(Bytes.get_u8(src, pos))) { pos++; }
+        space = Bytes.slice(src, begin, pos - begin);
+      } else if ((c == "/".code) && (Bytes.get_u8(src, pos + 1) == "*".code)) {
+        let close = indexOfFrom(src, "*/", pos + 2);
+        let end = close < 0 ? gapEnd : close + 2;
+        add(commentPiece(PieceKind.BlockComment, Bytes.slice(src, pos, end - pos), space));
+        pos = end;
+      } else {
+        let end = pos;
+        while ((end < gapEnd) && (Bytes.get_u8(src, end) != "\n".code)) { end++; }
+        let text = Bytes.slice(src, pos, _trimmedEnd(src, pos, end) - pos);
+        add(commentPiece(PieceKind.LineComment, text, space));
+        pos = end;
+      }
+    }
+
+    let token = tokens[i];
+
+    match (token) {
+      Eof => { i = tokens.len(); },
+      _ => {
+        let last = i;
+
+        if (let TemplateHead(_) = token) {
+          let open = 1;
+
+          while (open > 0) {
+            last++;
+
+            match (tokens[last]) {
+              TemplateHead(_) => { open++; },
+              TemplateTail(_) => { open--; },
+              _ => null,
+            };
+          }
+        }
+        add(codePiece(Bytes.slice(src, starts[i], ends[last] - starts[i]), token, space));
+        pos = ends[last];
+        i = last + 1;
+      },
+    };
+  }
+  if (pieces.len() > 0) { lines.push({ pieces: pieces, blanks: blanks }); }
+  lines
+};

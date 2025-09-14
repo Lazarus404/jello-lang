@@ -1015,7 +1015,7 @@ let _module = fn(program: Program): Bytes {
     let params = native.params;
     _u32(atoms.internIndex(native.library));
     _u32(atoms.internIndex(native.name));
-    _byte(_typeKinds[_find(native.result)]);
+    _byte(native.void ? 1 : _typeKinds[_find(native.result)]);
     _byte(params.len());
     let a = 0;
 

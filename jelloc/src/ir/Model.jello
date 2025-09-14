@@ -92,6 +92,7 @@ export typedef Native = {
   let name: Bytes;
   let params: Array<ValueType>;
   let result: ValueType;
+  let void: Bool;
 };
 
 export typedef Program = {
@@ -124,7 +125,7 @@ export let instructionMayThrow = fn(instruction: Instruction): Bool {
 
 export let comparesByIdentity = fn(ty: ValueType): Bool {
   match (ty) {
-    Atom, Object, Function(_, _) => true,
+    Atom, Object, Function(_, _), Dynamic => true,
     _ => false,
   }
 };

@@ -1,0 +1,21 @@
+// expect: 3 <Text> <Pattern> true false true null
+// Abstract types tell a native library's handles apart: here std's compiled
+// regexps, the texts they scan, and their matches.
+load { regexp_compile, regexp_text, regexp_match_at, regexp_capture_bytes } from std;
+
+typedef Pattern = abstract;
+typedef Text = abstract;
+typedef Match = abstract;
+let compile: (Bytes, Bytes) -> Pattern = regexp_compile;
+let text: (Bytes) -> Text = regexp_text;
+let matchAt: (Text, Pattern, I32) -> ?Match = regexp_match_at;
+let group: (Match, I32) -> Bytes = regexp_capture_bytes;
+
+let digits = compile("[0-9]+", "");
+let source = text("abc 123");
+let found = matchAt(source, digits, 4);
+let length = if (found == null) { 0 } else { group(found, 0).len() };
+let same = digits == digits;
+let other = compile("[0-9]+", "") == digits;
+let held = (digits as Dynamic) is Pattern;
+`${length} ${source} ${digits} ${same} ${other} ${held} ${matchAt(source, digits, 0)}`

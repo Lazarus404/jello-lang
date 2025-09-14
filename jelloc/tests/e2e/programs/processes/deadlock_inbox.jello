@@ -1,0 +1,9 @@
+// trap: DEADLOCK concurrent/Process.jello:105:18
+// called: 7:41
+// called: 9:1
+// A deadlock inside the standard library names the calls that led to it.
+import type { Inbox } from std.concurrent.Process;
+
+let wait = fn(inbox: Inbox<I32>): I32 { inbox.receive() };
+let inbox = new Inbox<I32>();
+wait(inbox) + wait(inbox)

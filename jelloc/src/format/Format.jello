@@ -1,0 +1,716 @@
+package format;
+
+import { Token, lexFile } from frontend.syntax.Lexer;
+import type { Line, Piece } from format.Trivia;
+import { PieceKind, codePiece, commentPiece, sourceLines } from format.Trivia;
+import { indexOf, split } from std.core.Bytes;
+
+export typedef Style = {
+  let indent: I32;
+  let lineWidth: I32;
+  let stripComments: Bool;
+  let keepDocComments: Bool;
+  let rewriteComments: Bool;
+  let blankBeforeOneLineBlocks: Bool;
+};
+
+export let defaultStyle = fn(): Style {
+  {
+    indent: 2,
+    lineWidth: 100,
+    stripComments: false,
+    keepDocComments: true,
+    rewriteComments: true,
+    blankBeforeOneLineBlocks: false,
+  }
+};
+
+let _isCode = fn(piece: Piece): Bool {
+  match (piece.kind) {
+    Code => true,
+    _ => false,
+  }
+};
+
+let _opens = fn(piece: Piece): Bool {
+  _isCode(piece) && match (piece.token) {
+    LBrace, LParen, LBracket => true,
+    _ => false,
+  }
+};
+
+let _closes = fn(piece: Piece): Bool {
+  _isCode(piece) && match (piece.token) {
+    RBrace, RParen, RBracket => true,
+    _ => false,
+  }
+};
+
+let _is = fn(piece: Piece, token: Token): Bool { _isCode(piece) && (piece.token == token) };
+
+let _firstCode = fn(line: Line): I32 {
+  let k = 0;
+  while ((k < line.pieces.len()) && !_isCode(line.pieces[k])) { k++; }
+  k < line.pieces.len() ? k : -1
+};
+
+let _lastCode = fn(line: Line): I32 {
+  let k = line.pieces.len() - 1;
+  while ((k >= 0) && !_isCode(line.pieces[k])) { k--; }
+  k
+};
+
+let _endsOpen = fn(line: Line): Bool {
+  let last = line.pieces.len() - 1;
+  _opens(line.pieces[last])
+};
+
+let _range = fn(pieces: Array<Piece>, start: I32, to: I32): Array<Piece> {
+  let out = Array.new<Piece>(0);
+  let k = start;
+
+  while (k < to) {
+    out.push(pieces[k]);
+    k++;
+  }
+  out
+};
+
+let _isDoc = fn(piece: Piece): Bool {
+  match (piece.kind) {
+    BlockComment => piece.text.startsWith("/**") && (piece.text != "/**/"),
+    _ => false,
+  }
+};
+
+let _lineCommentsOfBlocks = fn(lines: Array<Line>, keepDoc: Bool): Array<Line> {
+  lines.map(fn(line: Line): Line {
+    if ((line.pieces.len() != 1) || (keepDoc && _isDoc(line.pieces[0]))) { return line; }
+    let piece = line.pieces[0];
+
+    let single = match (piece.kind) {
+      BlockComment => indexOf(piece.text, "\n") < 0,
+      _ => false,
+    };
+    if (!single) { return line; }
+    let marker = (piece.text.startsWith("/**") && (piece.text.len() > 4)) ? 3 : 2;
+    let text = _trimEnd(_trimStart(Bytes.slice(piece.text, marker,
+      piece.text.len() - marker - 2)));
+    if (text == "") { return line; }
+    { pieces: [commentPiece(PieceKind.LineComment, `// ${text}`, "")], blanks: line.blanks }
+  })
+};
+
+let _stripComments = fn(lines: Array<Line>, keepDoc: Bool): Array<Line> {
+  let out = Array.new<Line>(0);
+  let carried = 0;
+
+  for (line in lines) {
+    let kept = line.pieces.filter(fn(piece: Piece): Bool {
+      _isCode(piece) || (keepDoc && _isDoc(piece))
+    });
+
+    if (kept.len() == 0) {
+      carried = carried + line.blanks;
+    } else {
+      out.push({ pieces: kept, blanks: carried + line.blanks });
+      carried = 0;
+    }
+  }
+  out
+};
+
+let _moveTrailingComments = fn(lines: Array<Line>): Array<Line> {
+  let out = Array.new<Line>(0);
+
+  for (line in lines) {
+    let last = _lastCode(line);
+
+    if ((last < 0) || (last == line.pieces.len() - 1)) {
+      out.push(line);
+    } else {
+      let code = _range(line.pieces, 0, last + 1);
+      let notes = _range(line.pieces, last + 1, line.pieces.len());
+
+      if (_opens(line.pieces[last])) {
+        out.push({ pieces: code, blanks: line.blanks });
+        out.push({ pieces: notes, blanks: 0 });
+      } else {
+        out.push({ pieces: notes, blanks: line.blanks });
+        out.push({ pieces: code, blanks: 0 });
+      }
+    }
+  }
+  out
+};
+
+let _blockStatement = fn(token: Token): Bool {
+  match (token) {
+    If, Match, While, For, Try, With, LBrace => true,
+    _ => false,
+  }
+};
+
+let _statementStart = fn(token: Token): Bool {
+  match (token) {
+    Let, Const, If, Match, While, For, Try, With, Do, Return, Throw, Break, Continue, Ident(_),
+    This, Super, Export, Typedef, Prototype, EnumDecl, Import, Macro => true,
+    _ => false,
+  }
+};
+
+let _statementBreaks = fn(pieces: Array<Piece>, start: I32, to: I32): Array<I32> {
+  let found = Array.new<I32>(0);
+
+  let hasCode = fn(after: I32): Bool {
+    let k = after;
+    while ((k < to) && !_isCode(pieces[k])) { k++; }
+    (k < to) && !_closes(pieces[k])
+  };
+  let depth = 0;
+  let first = start;
+  let k = start;
+
+  while (k < to) {
+    let piece = pieces[k];
+
+    if (_opens(piece)) {
+      depth++;
+    } else if (_closes(piece) && (depth > 0)) {
+      depth--;
+
+      if ((depth == 0) && (piece.token == Token.RBrace) && _blockStatement(pieces[first].token)
+        && (k + 1 < to) && _isCode(pieces[k + 1]) && _statementStart(pieces[k + 1].token)) {
+        found.push(k + 1);
+        first = k + 1;
+      }
+    } else if ((depth == 0) && _is(piece, Token.Semicolon) && hasCode(k + 1)) {
+      found.push(k + 1);
+      first = k + 1;
+      while (!_isCode(pieces[first])) { first++; }
+    }
+    k++;
+  }
+  found
+};
+
+let _enumBody = fn(pieces: Array<Piece>, at: I32): Bool {
+  let k = at - 1;
+
+  while (k >= 0) {
+    let piece = pieces[k];
+
+    if (_isCode(piece)) {
+      match (piece.token) {
+        EnumDecl => { return true; },
+        Semicolon, LBrace, RBrace, Equal, Comma, LParen => { return false; },
+        _ => null,
+      };
+    }
+    k--;
+  }
+  false
+};
+
+let _splitLine = fn(line: Line, inEnum: Bool): Array<Line> {
+  let pieces = line.pieces;
+  let breaks = Array.new<Bool>(pieces.len() + 1);
+
+  if (!inEnum) {
+    for (at in _statementBreaks(pieces, 0, pieces.len())) { breaks[at] = true; }
+  }
+
+  let partner = Array.new<I32>(pieces.len());
+  let enclosing = Array.new<I32>(pieces.len());
+  let open = Array.new<I32>(0);
+  let braces = Array.new<I32>(0);
+  let k = 0;
+
+  while (k < pieces.len()) {
+    partner[k] = -1;
+    enclosing[k] = braces.len() == 0 ? -1 : braces[braces.len() - 1];
+    let piece = pieces[k];
+
+    if (_opens(piece)) {
+      open.push(k);
+      if (piece.token == Token.LBrace) { braces.push(k); }
+    } else if (_closes(piece)) {
+      if (open.len() > 0) {
+        let opener = open.pop();
+        partner[opener] = k;
+        if (_is(pieces[opener], Token.LBrace)) { braces.pop(); }
+      } else if ((k > 0) && _is(piece, Token.RBrace) && _is(pieces[k - 1], Token.Semicolon)) {
+        breaks[k] = true;
+      }
+    }
+    k++;
+  }
+
+  let expanded = Array.new<Bool>(pieces.len());
+  k = pieces.len() - 1;
+
+  while (k >= 0) {
+    if (_is(pieces[k], Token.LBrace) && !_enumBody(pieces, k)) {
+      let end = partner[k] < 0 ? pieces.len() : partner[k];
+      let inner = _statementBreaks(pieces, k + 1, end);
+
+      if ((inner.len() > 0) || expanded[k]) {
+        if (k + 1 < pieces.len()) { breaks[k + 1] = true; }
+        for (at in inner) { breaks[at] = true; }
+        if (partner[k] >= 0) { breaks[partner[k]] = true; }
+        if (enclosing[k] >= 0) { expanded[enclosing[k]] = true; }
+      }
+    }
+    k--;
+  }
+
+  let out = Array.new<Line>(0);
+  let begin = 0;
+  k = 1;
+
+  while (k <= pieces.len()) {
+    if ((k == pieces.len()) || breaks[k]) {
+      out.push({ pieces: _range(pieces, begin, k), blanks: begin == 0 ? line.blanks : 0 });
+      begin = k;
+    }
+    k++;
+  }
+  out
+};
+
+let _splitLines = fn(lines: Array<Line>): Array<Line> {
+  let out = Array.new<Line>(0);
+  let enums = Array.new<Bool>(0);
+
+  for (line in lines) {
+    out.appendFrom(_splitLine(line, (enums.len() > 0) && enums[enums.len() - 1]), 0);
+    let k = 0;
+
+    while (k < line.pieces.len()) {
+      let piece = line.pieces[k];
+
+      if (_opens(piece)) {
+        enums.push(_is(piece, Token.LBrace) && _enumBody(line.pieces, k));
+      } else if (_closes(piece) && (enums.len() > 0)) {
+        enums.pop();
+      }
+      k++;
+    }
+  }
+  out
+};
+
+let _joinBraces = fn(lines: Array<Line>): Array<Line> {
+  let out = Array.new<Line>(0);
+
+  for (line in lines) {
+    let joined = false;
+    let first = line.pieces[0];
+
+    if ((out.len() > 0) && _isCode(first)) {
+      let above = out[out.len() - 1];
+      let last = above.pieces[above.pieces.len() - 1];
+
+      let join = match (first.token) {
+        LBrace => match (last.token) {
+          Semicolon, LBrace, RBrace, Comma, LParen, LBracket => false,
+          _ => true,
+        },
+        Else, Catch => last.token == Token.RBrace,
+        _ => false,
+      };
+
+      if (_isCode(last) && join) {
+        above.pieces.push(codePiece(line.pieces[0].text, line.pieces[0].token, " "));
+        above.pieces.appendFrom(_range(line.pieces, 1, line.pieces.len()), 0);
+        joined = true;
+      }
+    }
+    if (!joined) { out.push(line); }
+  }
+  out
+};
+
+typedef Layout = {
+  let indents: Array<I32>;
+  let statements: Array<Bool>;
+  let opening: Array<Bool>;
+};
+
+let _continues = fn(last: ?Token): Bool {
+  if (last == null) { return false; }
+
+  match (last) {
+    Semicolon, Comma, LBrace, RBrace, LParen, LBracket => false,
+    _ => true,
+  }
+};
+
+let _layout = fn(lines: Array<Line>): Layout {
+  let indents = Array.new<I32>(lines.len());
+  let statements = Array.new<Bool>(lines.len());
+  let opening = Array.new<Bool>(lines.len());
+  let openIndents = Array.new<I32>(0);
+  let openBraces = Array.new<Bool>(0);
+  let last: ?Token = null;
+  let i = 0;
+
+  while (i < lines.len()) {
+    let line = lines[i];
+    let first = _firstCode(line);
+    let k = first < 0 ? line.pieces.len() : first;
+    let indent = -1;
+
+    while ((k < line.pieces.len()) && _closes(line.pieces[k])) {
+      if (openIndents.len() > 0) {
+        indent = openIndents.pop();
+        openBraces.pop();
+      }
+      k++;
+    }
+
+    let inBlock = (openBraces.len() == 0) || openBraces[openBraces.len() - 1];
+    let continued = (first >= 0) && (k == first) && _continues(last);
+    if (first < 0) { continued = _continues(last); }
+
+    if (indent < 0) {
+      indent = openIndents.len() == 0 ? 0 : openIndents[openIndents.len() - 1] + 1;
+      if (continued && inBlock) { indent++; }
+    }
+    indents[i] = indent;
+    statements[i] = (first >= 0) && (k == first) && inBlock && !continued;
+
+    let base = indent;
+    let braceBase = (continued && inBlock) ? indent - 1 : indent;
+    let opened = 0;
+
+    while (k < line.pieces.len()) {
+      let piece = line.pieces[k];
+
+      if (_opens(piece)) {
+        openIndents.push(piece.token == Token.LBrace ? braceBase : base);
+        openBraces.push(piece.token == Token.LBrace);
+        opened++;
+      } else if (_closes(piece) && (openIndents.len() > 0)) {
+        let closed = openIndents.pop();
+        openBraces.pop();
+
+        if (opened > 0) {
+          opened--;
+        } else {
+          base = closed;
+          braceBase = closed;
+        }
+      }
+      k++;
+    }
+    opening[i] = opened > 0;
+    if (first >= 0) { last = line.pieces[_lastCode(line)].token; }
+    i++;
+  }
+  { indents: indents, statements: statements, opening: opening }
+};
+
+let _blockStart = fn(line: Line): Bool {
+  let k = _firstCode(line);
+  if (_is(line.pieces[k], Token.Export)) { k++; }
+  if (k >= line.pieces.len()) { return false; }
+
+  match (line.pieces[k].token) {
+    If, Match, While, For, Do, Try, With, Prototype, EnumDecl, Typedef, Macro => true,
+    Let, Const => {
+      let found = false;
+
+      while (!found && (k + 1 < line.pieces.len())) {
+        if (_is(line.pieces[k], Token.Equal)) {
+          let next = line.pieces[k + 1];
+          found = _isCode(next) && match (next.token) {
+            Fn, If, Match, Try, With => true,
+            Ident(name) => (name == "method") && (k + 2 < line.pieces.len())
+              && _is(line.pieces[k + 2], Token.Fn),
+            _ => false,
+          };
+        }
+        k++;
+      }
+      found
+    },
+    _ => false,
+  }
+};
+
+let _spaceLines = fn(lines: Array<Line>, layout: Layout, style: Style) {
+  let i = 0;
+
+  while (i < lines.len()) {
+    let line = lines[i];
+    if (line.blanks > 1) { line.blanks = 1; }
+    if ((i == 0) || _endsOpen(lines[i - 1]) || _closes(line.pieces[0])) { line.blanks = 0; }
+    i++;
+  }
+
+  i = 0;
+
+  while (i < lines.len()) {
+    if (layout.statements[i] && (layout.opening[i] || style.blankBeforeOneLineBlocks)
+      && _blockStart(lines[i])) {
+      let top = i;
+      while ((top > 0) && (lines[top].blanks == 0) && (_firstCode(lines[top - 1]) < 0)) { top--; }
+      if ((top > 0) && !_endsOpen(lines[top - 1])) { lines[top].blanks = 1; }
+    }
+    i++;
+  }
+};
+
+let _width = fn(text: Bytes): I32 {
+  let count = 0;
+  let k = 0;
+
+  while (k < text.len()) {
+    if ((Bytes.get_u8(text, k) & 0xc0) != 0x80) { count++; }
+    k++;
+  }
+  count
+};
+
+let _spaces = fn(count: I32): Bytes {
+  let parts = Array.new<Bytes>(0);
+  let k = 0;
+
+  while (k < count) {
+    parts.push(" ");
+    k++;
+  }
+  parts.join("")
+};
+
+let _from = fn(text: Bytes, start: I32): Bytes { Bytes.slice(text, start, text.len() - start) };
+
+let _trimStart = fn(text: Bytes): Bytes {
+  let k = 0;
+
+  while ((k < text.len()) && ((Bytes.get_u8(text, k) == " ".code)
+    || (Bytes.get_u8(text, k) == "\t".code))) {
+    k++;
+  }
+  _from(text, k)
+};
+
+let _trimEnd = fn(text: Bytes): Bytes {
+  let k = text.len();
+
+  while ((k > 0) && ((Bytes.get_u8(text, k - 1) == " ".code)
+    || (Bytes.get_u8(text, k - 1) == "\t".code) || (Bytes.get_u8(text, k - 1) == "\r".code))) {
+    k--;
+  }
+  Bytes.slice(text, 0, k)
+};
+
+let _wrap = fn(text: Bytes, width: I32): Array<Bytes> {
+  let out = Array.new<Bytes>(0);
+  let rest = text;
+
+  while (_width(rest) > width) {
+    let cut = -1;
+    let k = 0;
+
+    while (k < rest.len()) {
+      if ((Bytes.get_u8(rest, k) == " ".code) && (k > 0)) {
+        if ((cut < 0) || (_width(Bytes.slice(rest, 0, k)) <= width)) { cut = k; }
+      }
+      k++;
+    }
+    if (cut < 0) { break; }
+    let head = _trimEnd(Bytes.slice(rest, 0, cut));
+    if (head == "") { break; }
+    out.push(head);
+    rest = _trimStart(_from(rest, cut));
+  }
+  out.push(rest);
+  out
+};
+
+let _blockLines = fn(
+  marker: Bytes,
+  content: Array<Bytes>,
+  openOwn: Bool,
+  closeOwn: Bool,
+  indent: I32,
+  width: I32
+): Array<Bytes> {
+  let pad = _spaces(indent);
+  let wrapped = Array.new<Bytes>(0);
+  let fenced = false;
+  let k = 0;
+
+  while (k < content.len()) {
+    let text = content[k];
+    let room = width - indent - (((k == 0) && !openOwn) ? marker.len() + 1 : 3);
+    if ((k == content.len() - 1) && !closeOwn) { room = room - 3; }
+    if (text.startsWith("```")) { fenced = !fenced; }
+
+    if (fenced || text.startsWith("```") || text.startsWith(" ")) {
+      wrapped.push(text);
+    } else {
+      wrapped.appendFrom(_wrap(text, room), 0);
+    }
+    k++;
+  }
+
+  let out = Array.new<Bytes>(0);
+  if (openOwn) { out.push(pad + marker); }
+  k = 0;
+
+  while (k < wrapped.len()) {
+    let text = wrapped[k];
+
+    if ((k == 0) && !openOwn) {
+      out.push(text == "" ? pad + marker : `${pad}${marker} ${text}`);
+    } else {
+      out.push(text == "" ? pad + " *" : `${pad} * ${text}`);
+    }
+    k++;
+  }
+
+  if (closeOwn || (out.len() == 0)) {
+    out.push(pad + " */");
+  } else {
+    out[out.len() - 1] = out[out.len() - 1] + " */";
+  }
+  out
+};
+
+let _blockComment = fn(text: Bytes, indent: I32, width: I32): Array<Bytes> {
+  let doc = text.startsWith("/**") && (text.len() > 4);
+  let marker = doc ? "/**" : "/*";
+  let inner = Bytes.slice(text, marker.len(), text.len() - marker.len() - 2);
+  let rows = split(inner, "\n");
+  if ((rows.len() == 1) && (_trimEnd(_trimStart(inner)) == "")) { return [_spaces(indent) + text]; }
+
+  let content = Array.new<Bytes>(0);
+  let openOwn = _trimEnd(rows[0]) == "";
+
+  if (!openOwn) {
+    let first = _trimEnd(rows[0]);
+    content.push(first.startsWith(" ") ? _from(first, 1) : first);
+  }
+  let k = 1;
+
+  while (k < rows.len()) {
+    let row = _trimEnd(_trimStart(rows[k]));
+
+    if (row.startsWith("*")) {
+      row = _from(row, 1);
+      if (row.startsWith(" ")) { row = _from(row, 1); }
+    }
+    content.push(row);
+    k++;
+  }
+  let closeOwn = (rows.len() > 1) && (content[content.len() - 1] == "");
+  if (closeOwn) { content.pop(); }
+  _blockLines(marker, content, openOwn, closeOwn, indent, width)
+};
+
+let _lineCommentText = fn(text: Bytes): Bytes {
+  let body = _from(text, text.startsWith("#") ? 1 : 2);
+  body.startsWith(" ") ? _from(body, 1) : body
+};
+
+let _lineComments = fn(texts: Array<Bytes>, indent: I32, width: I32): Array<Bytes> {
+  let pad = _spaces(indent);
+  let content = texts.map(_lineCommentText);
+  let closes = content.filter(fn(text: Bytes): Bool { indexOf(text, "*/") >= 0 }).len() > 0;
+
+  if (closes || ((texts.len() == 1) && (_width(texts[0]) + indent <= width))) {
+    let out = Array.new<Bytes>(0);
+
+    for (text in texts) {
+      if (_width(text) + indent <= width) {
+        out.push(pad + text);
+      } else {
+        let marker = Bytes.slice(text, 0, text.len() - _lineCommentText(text).len());
+
+        for (part in _wrap(_lineCommentText(text), width - indent - marker.len())) {
+          out.push(pad + marker + part);
+        }
+      }
+    }
+    return out;
+  }
+  _blockLines("/*", content, false, false, indent, width)
+};
+
+let _plainLine = fn(line: Line, indent: I32): Bytes {
+  let parts = [_spaces(indent), line.pieces[0].text];
+  let k = 1;
+
+  while (k < line.pieces.len()) {
+    parts.push(line.pieces[k].space);
+    parts.push(line.pieces[k].text);
+    k++;
+  }
+  parts.join("")
+};
+
+let _lone = fn(line: Line, kind: PieceKind): Bool {
+  (line.pieces.len() == 1) && (line.pieces[0].kind == kind)
+};
+
+let _render = fn(lines: Array<Line>, layout: Layout, style: Style): Bytes {
+  let out = Array.new<Bytes>(0);
+  let i = 0;
+
+  while (i < lines.len()) {
+    let line = lines[i];
+    let indent = layout.indents[i] * style.indent;
+    if (line.blanks > 0) { out.push(""); }
+
+    if (style.rewriteComments && _lone(line, PieceKind.LineComment)
+      && !((i == 0) && line.pieces[0].text.startsWith("#!"))) {
+      let texts = [line.pieces[0].text];
+
+      while ((i + 1 < lines.len()) && (lines[i + 1].blanks == 0)
+        && _lone(lines[i + 1], PieceKind.LineComment)
+        && (layout.indents[i + 1] == layout.indents[i])) {
+        i++;
+        texts.push(lines[i].pieces[0].text);
+      }
+      out.appendFrom(_lineComments(texts, indent, style.lineWidth), 0);
+    } else if (style.rewriteComments && _lone(line, PieceKind.BlockComment)) {
+      out.appendFrom(_blockComment(line.pieces[0].text, indent, style.lineWidth), 0);
+    } else {
+      out.push(_plainLine(line, indent));
+    }
+    i++;
+  }
+  out.len() == 0 ? "" : out.join("\n") + "\n"
+};
+
+let _sameTokens = fn(a: Array<Token>, b: Array<Token>): Bool {
+  if (a.len() != b.len()) { return false; }
+  let k = 0;
+  while ((k < a.len()) && (a[k] == b[k])) { k++; }
+  k == a.len()
+};
+
+export let formatSource = fn(src: Bytes, path: Bytes, style: Style): ?Bytes {
+  let (tokens, _, starts, ends) = lexFile(src, path);
+  let lines = sourceLines(src, tokens, starts, ends);
+
+  if (style.stripComments && style.rewriteComments) {
+    lines = _stripComments(lines, style.keepDocComments);
+  } else if (style.rewriteComments) {
+    lines = _moveTrailingComments(lines);
+  }
+  lines = _joinBraces(_splitLines(lines));
+
+  if (style.rewriteComments) {
+    lines = _lineCommentsOfBlocks(lines, style.stripComments && style.keepDocComments);
+  }
+
+  let layout = _layout(lines);
+  _spaceLines(lines, layout, style);
+  let text = _render(lines, layout, style);
+  let (again, _, _, _) = lexFile(text, path);
+  _sameTokens(tokens, again) ? text : null
+};

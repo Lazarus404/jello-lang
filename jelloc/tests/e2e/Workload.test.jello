@@ -11,6 +11,7 @@ import std.testing as T;
 import { contains, join } from std.core.Bytes;
 import { readText, writeText } from std.io.File;
 import degust.Golden as G;
+import type { Command } from std.io.Command;
 import { NONE, finish, fresh, modes, startCheck, startJelloc, startJloTool, startVm, withStd } from support.Run;
 import { shapeProblems } from support.Shape;
 
@@ -24,10 +25,10 @@ const _PROGRAMS = [
 
 // What runs of a cleanly compiled program: its decode check, a run in each
 // mode, and its listing, when it has a ceiling, and its gc run, for reparse.
-let _start = fn(name: Bytes, ceiling: I32, module: Bytes, dump: Bytes): Tuple<Dynamic, Array<Dynamic>, ?Dynamic, ?Dynamic> {
+let _start = fn(name: Bytes, ceiling: I32, module: Bytes, dump: Bytes): Tuple<Command, Array<Command>, ?Command, ?Command> {
   let path = fresh("workload-" + name + ".ir");
   writeText(path, dump);
-  let runs = Array.new<Dynamic>(0);
+  let runs = Array.new<Command>(0);
   let m = 0;
 
   while (m < modes().len()) {
@@ -40,7 +41,7 @@ let _start = fn(name: Bytes, ceiling: I32, module: Bytes, dump: Bytes): Tuple<Dy
 };
 
 // Checks the runs of program NAME, under CEILING moves, against GOLDEN.
-let _check = fn(t: Test, name: Bytes, ceiling: I32, golden: Bytes, started: Tuple<Dynamic, Array<Dynamic>, ?Dynamic, ?Dynamic>): Null {
+let _check = fn(t: Test, name: Bytes, ceiling: I32, golden: Bytes, started: Tuple<Command, Array<Command>, ?Command, ?Command>): Null {
   let (check, runs, listing, gc) = started;
   let (checked, said, why) = finish(check);
   if (checked != 0) { T.fail(t, "the decode check failed: " + said + why); }
@@ -78,7 +79,7 @@ let _check = fn(t: Test, name: Bytes, ceiling: I32, golden: Bytes, started: Tupl
 
 let testWorkload = fn(t: Test) {
   let modules = Array.new<Bytes>(0);
-  let compiles = Array.new<Dynamic>(0);
+  let compiles = Array.new<Command>(0);
   let i = 0;
 
   while (i < _PROGRAMS.len()) {
@@ -96,7 +97,7 @@ let testWorkload = fn(t: Test) {
     compiled.push(finish(compiles[i]));
     i++;
   }
-  let started = Array.new<?Tuple<Dynamic, Array<Dynamic>, ?Dynamic, ?Dynamic>>(0);
+  let started = Array.new<?Tuple<Command, Array<Command>, ?Command, ?Command>>(0);
   i = 0;
 
   while (i < _PROGRAMS.len()) {

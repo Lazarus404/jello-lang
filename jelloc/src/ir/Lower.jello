@@ -2,13 +2,14 @@ package ir;
 
 import type { Hir } from frontend.hir.Hir;
 import {
-  BITS_BIG, BITS_FLOAT, KIND_ENUM, KIND_I32, KIND_I64, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC,
-  TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_NULL, TYPE_U32, TYPE_U64, TYPE_U8,
-  auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount, fieldType, innerOf, integerBits,
-  isFloatKind, isFloatType, isRecord, isReference, isTemplateEnum, kindOf, lastChild, leastValue,
-  mostValue, opOf, rootNode, slotType, typeArg, typeArgCount, typeCount, findBytesId, globalCount,
-  isObject, nodeCount, globalTypeOf, nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf,
-  segmentWidth, typeOf, useHir, valueOf, variantCount
+  BITS_BIG, BITS_FLOAT, KIND_ENUM, KIND_HANDLE, KIND_I32, KIND_I64, Kind, TYPE_ATOM, TYPE_BOOL,
+  TYPE_BYTES, TYPE_DYNAMIC, TYPE_F16, TYPE_F32, TYPE_F64, TYPE_I32, TYPE_I64, TYPE_I8, TYPE_NULL,
+  TYPE_U32, TYPE_U64, TYPE_U8, auxOf, wideValueOf, bytesOf, childCount, childOf, fieldCount,
+  fieldType, innerOf, integerBits, isFloatKind, isFloatType, isHandle, isKind, isRecord,
+  isReference, isTemplateEnum, kindOf, lastChild, leastValue, mostValue, opOf, rootNode, slotType,
+  typeArg, typeArgCount, typeCount, findBytesId, globalCount, isObject, nodeCount, globalTypeOf,
+  nativeCount, nativeLibraryOf, nativeNameOf, nativeTypeOf, segmentWidth, typeOf, useHir, valueOf,
+  variantCount
 } from frontend.hir.Hir;
 import type {
   BasicBlock, EnumSchema, Function as IrFunction, Instruction, Native, Op, Program as IrProgram,
@@ -81,7 +82,7 @@ let _valueType = fn(ty: I32): ValueType {
     Function => ValueType.Function(_valueTypes(ty), _valueType(innerOf(ty))),
     Optional, Rest => _valueType(slotType(ty)),
     Enum, Record => ValueType.Nominal(_enumIndexes[ty]),
-    Dynamic => ValueType.Dynamic,
+    Dynamic, Abstract => ValueType.Dynamic,
     Object => ValueType.Object,
     ByteBuffer => ValueType.Bytes,
     Var, Param, Applied => {
@@ -508,11 +509,13 @@ let _operation = fn(id: I32): Op {
 let _nativeIndex = fn(native: I32): I32 {
   if (_nativeIndexes[native] < 0) {
     let ty = nativeTypeOf(native);
+    let result = innerOf(ty);
     _natives.push({
       library: nativeLibraryOf(native),
       name: nativeNameOf(native),
       params: _valueTypes(ty),
-      result: _valueType(innerOf(ty)),
+      result: _valueType(result),
+      void: result == TYPE_NULL,
     });
     _nativeIndexes[native] = _natives.len() - 1;
   }
@@ -664,6 +667,24 @@ let _trapIf = fn(failed: I32) {
   null
 };
 
+let _checkHandle = fn(value: I32, nullable: Bool) {
+  let kind = _unaryOp(Op.KindOf, TYPE_I32, value);
+  let held = _binaryOp(Op.Eq, TYPE_BOOL, kind, _i32(KIND_HANDLE));
+  let failed = _nextBlock;
+  let done = failed + (nullable ? 2 : 1);
+  _nextBlock = done + 1;
+  _end(Terminator.Branch(held, done, failed), failed);
+
+  if (nullable) {
+    let absent = _unaryOp(Op.IsNull, TYPE_BOOL, value);
+    _end(Terminator.Branch(absent, done, failed + 1), failed + 1);
+  }
+  _unaryOp(Op.Unbox, TYPE_BOOL, value);
+  _unaryOp(Op.Unbox, TYPE_ATOM, value);
+  _end(Terminator.Jump(done), done);
+  null
+};
+
 let _inRange = fn(value: I32, offset: I32, span: I32): I32 {
   _trapIf(_binaryOp(Op.LtU, TYPE_BOOL, span, offset));
   value
@@ -806,13 +827,29 @@ let _divide = fn(id: I32): I32 {
   result
 };
 
-let _arrayLiteral = fn(id: I32): I32 {
-  let items = _values(id, 0);
-  let array = _fresh(typeOf(id));
-  _emit(Op.ArrayNew, array, [_i32(items.len())], 0);
+const _LITERAL_CHUNK = 16;
 
-  for (i, item in items) {
-    _emit(Op.ArraySet, -1, [array, _i32(i), item], 0);
+let _arrayLiteral = fn(id: I32): I32 {
+  let n = childCount(id);
+  let array = -1;
+  let first = 0;
+
+  while ((first == 0) || (first < n)) {
+    let items = Array.new<I32>(0);
+
+    while ((first + items.len() < n) && (items.len() < _LITERAL_CHUNK)) {
+      items.push(_expr(childOf(id, first + items.len())));
+    }
+
+    if (first == 0) {
+      array = _fresh(typeOf(id));
+      _emit(Op.ArrayNew, array, [_i32(n)], 0);
+    }
+
+    for (i, item in items) {
+      _emit(Op.ArraySet, -1, [array, _i32(first + i), item], 0);
+    }
+    first += _LITERAL_CHUNK;
   }
   array
 };
@@ -1038,6 +1075,11 @@ let _exprAt = fn(id: I32): I32 {
       _emit(Op.ConstFunction, dst, captures, valueOf(id));
       dst
     },
+    FromDynamic when (isHandle(typeOf(id))) => {
+      let value = _expr(childOf(id, 0));
+      _checkHandle(value, false);
+      value
+    },
     FromDynamic => {
       let value = _expr(childOf(id, 0));
       let dst = _unaryOp(Op.Unbox, typeOf(id), value);
@@ -1114,6 +1156,11 @@ let _exprAt = fn(id: I32): I32 {
       let present = match (opOf(id)) { IsPresent => true, _ => false };
       let dst = _fresh(present ? TYPE_BOOL : typeOf(id));
       _emit(op, dst, operands, imm);
+      let native = match (opOf(id)) { CallNative => true, _ => false };
+
+      if (native && isHandle(typeOf(id))) {
+        _checkHandle(dst, isKind(typeOf(id), Kind.Null));
+      }
       if (!present) { return _wrapped(id, dst); }
       _unaryOp(Op.Not, TYPE_BOOL, dst)
     },

@@ -2,7 +2,12 @@ package std.io;
 
 import { indexOf } from std.core.Bytes;
 
-load { command_start, command_wait, command_stdout, command_stderr, command_done, command_next, cpu_count } from std;
+load {
+  command_start, command_wait, command_stdout, command_stderr, command_done, command_kill,
+  command_next, cpu_count
+} from std;
+
+export typedef Command = abstract;
 
 let _entries = fn(items: Array<Bytes>): Bytes {
   let out = "";
@@ -16,24 +21,27 @@ let _entries = fn(items: Array<Bytes>): Bytes {
   out
 };
 
-let _start: (Bytes, Bytes) -> Dynamic = command_start;
-export let start = fn(argv: Array<Bytes>, env: Array<Bytes>): Dynamic { _start(_entries(argv), _entries(env)) };
+let _start: (Bytes, Bytes) -> Command = command_start;
+export let start = fn(argv: Array<Bytes>, env: Array<Bytes>): Command { _start(_entries(argv), _entries(env)) };
 
-export let wait: (Dynamic) -> I32 = command_wait;
-export let stdout: (Dynamic) -> Bytes = command_stdout;
-export let stderr: (Dynamic) -> Bytes = command_stderr;
+export let wait: (Command) -> I32 = command_wait;
+export let stdout: (Command) -> Bytes = command_stdout;
+export let stderr: (Command) -> Bytes = command_stderr;
 
-let _done: (Dynamic) -> Bool = command_done;
+export let finished: (Command) -> Bool = command_done;
+
+export let kill: (Command) -> Bool = command_kill;
+
 let _next: () -> Bool = command_next;
 
-export let waitAny = fn(commands: Array<Dynamic>): I32 {
+export let waitAny = fn(commands: Array<Command>): I32 {
   if (commands.len() == 0) { return -1; }
 
   while (true) {
     let i = 0;
 
     while (i < commands.len()) {
-      if (_done(commands[i])) { return i; }
+      if (finished(commands[i])) { return i; }
       i++;
     }
     if (!_next()) { return 0; }
@@ -41,7 +49,7 @@ export let waitAny = fn(commands: Array<Dynamic>): I32 {
   -1
 };
 
-export let result = fn(command: Dynamic): Tuple<I32, Bytes, Bytes> { (wait(command), stdout(command), stderr(command)) };
+export let result = fn(command: Command): Tuple<I32, Bytes, Bytes> { (wait(command), stdout(command), stderr(command)) };
 
 export let run = fn(argv: Array<Bytes>, env: Array<Bytes>): Tuple<I32, Bytes, Bytes> { result(start(argv, env)) };
 

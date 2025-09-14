@@ -289,6 +289,7 @@ export enum TypedefBody {
   Alias(ty: Type);
   Struct(fields: Array<StructField>);
   BytesLayout(fields: Array<BytesLayoutField>);
+  Abstract;
 }
 
 export typedef PrototypeField = {
@@ -360,6 +361,35 @@ export let bindPatternName = fn(pattern: Pattern): Bytes {
       ""
     },
   }
+};
+
+export let patternNames = fn(pattern: Pattern): Array<Bytes> {
+  let names = Array.new<Bytes>(0);
+  let patterns = [pattern];
+
+  while (patterns.len() > 0) {
+    let next = patterns[patterns.len() - 1];
+    patterns.pop();
+
+    match (next) {
+      BindPattern(name) => names.push(name),
+      Object(fields) => {
+        for ((_, field) in fields) {
+          patterns.push(field);
+        }
+        null
+      },
+      Tuple(items), Array(items), Enum(_, items) => {
+        patterns.appendFrom(items, 0);
+        null
+      },
+      RegExp(_, _, binding), IsType(_, binding), Spread(binding) => {
+        if (binding != null) { names.push(binding); } null
+      },
+      _ => null,
+    };
+  }
+  names
 };
 
 export let exprTag = fn(expr: Expr): I32 { expr.tag() + 1 };

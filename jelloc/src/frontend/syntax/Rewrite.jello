@@ -411,7 +411,7 @@ let _statementChildren = fn(cursor: Cursor, value: Stmt): Stmt {
       let made = match (body) {
         Alias(ty) => TypedefBody.Alias(_type(ty)),
         Struct(fields) => TypedefBody.Struct(_fields(fields)),
-        BytesLayout(_) => body,
+        BytesLayout(_), Abstract => body,
       };
       Stmt.Typedef(exported, name, typeParams, made)
     },

@@ -1,0 +1,9 @@
+// expect: GET GET 3 2 4 1
+// `method`, `quote` and `unquote` start their forms only before `fn`, `{` or a kind such as
+// `.expr {`, and `(`, so they are otherwise names like any other.
+let describe = fn(method: Bytes): Bytes { `${method}` };
+let method = "GET";
+let o = { method: method, count: 3 };
+let quote = [1];
+let unquote = [4];
+`${describe(method)} ${o.method} ${o.count} ${quote[0] + 1} ${unquote[0]} ${quote.len()}`

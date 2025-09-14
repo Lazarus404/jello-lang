@@ -1,0 +1,10 @@
+// trap: STACK_OVERFLOW 7:7
+// called: 7:7, repeatedly
+// called: 9:25
+// called: 10:1
+// Recursion too deep for the stack is one line, then the calls that began it.
+let deep = fn(n: I32): I32 {
+  1 + deep(n + 1)
+};
+let start = fn(): I32 { deep(0) + 1 };
+start()

@@ -4,14 +4,14 @@ import type { Hir } from frontend.hir.Hir;
 import type { SourceSpan } from frontend.syntax.Source;
 import { internalError } from support.Internal;
 import {
-  KIND_ATOM, KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_FUNCTION, KIND_I32, KIND_I64, KIND_OBJECT,
-  Kind, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32, TYPE_I64,
-  TYPE_OBJECT, TYPE_U64, auxOf, bytesCount, bytesOf, childCount, childOf, childrenInBounds,
-  endsPath, fieldCount, fieldType, globalCount, globalIsMutable, globalTypeOf, holdsNull, innerOf,
-  integerBits, isFloatKind, isFloatType, isKind, isNumberType, isObject, isPrototype, kindOf,
-  memberCount, memberType, nativeCount, nativeTypeOf, nodeCount, opOf, readsExactly, rootNode,
-  segmentType, slotType, spanCount, spanEndOf, spanOf, spanPathOf, spanStartOf, typeArg,
-  typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
+  KIND_ATOM, KIND_BOOL, KIND_BYTES, KIND_ENUM, KIND_FUNCTION, KIND_HANDLE, KIND_I32, KIND_I64,
+  KIND_OBJECT, Kind, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_BYTE_BUFFER, TYPE_DYNAMIC, TYPE_I32,
+  TYPE_I64, TYPE_OBJECT, TYPE_U64, auxOf, bytesCount, bytesOf, childCount, childOf,
+  childrenInBounds, endsPath, fieldCount, fieldType, globalCount, globalIsMutable, globalTypeOf,
+  holdsNull, innerOf, integerBits, isFloatKind, isFloatType, isKind, isNumberType, isObject,
+  isPrototype, kindOf, memberCount, memberType, nativeCount, nativeTypeOf, nodeCount, opOf,
+  readsExactly, rootNode, segmentType, slotType, spanCount, spanEndOf, spanOf, spanPathOf,
+  spanStartOf, typeArg, typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.hir.Hir;
 
 let _used = Array.new<Bool>(0);
@@ -310,7 +310,7 @@ let _boxable = fn(ty: I32, what: Bytes): Bool {
 
 let _extractable = fn(ty: I32): Bool {
   match (kindOf(ty)) {
-    Bool, I32, I64, F16, F32, F64, Atom, Bytes, Enum, Object => true,
+    Bool, I32, I64, F16, F32, F64, Atom, Bytes, Enum, Object, Abstract => true,
     _ => false,
   }
 };
@@ -391,7 +391,7 @@ let _bytesIndex = fn(id: I32, message: Bytes) {
 let _knownKind = fn(code: I32, aux: I32): Bool {
   (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64)
     || (code == KIND_ATOM) || (code == KIND_OBJECT) || (code == KIND_FUNCTION)
-    || isFloatKind(code)
+    || (code == KIND_HANDLE) || isFloatKind(code)
     || ((code == KIND_ENUM) && isKind(aux, Kind.Enum))
 };
 
@@ -454,7 +454,8 @@ let _expr = fn(id: I32): I32 {
     Eq when (_firstType(id) == TYPE_BOOL) => {
       _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "bool equality requires bool operands")
     },
-    Eq when ((_firstType(id) == TYPE_ATOM) || isObject(_firstType(id))) => {
+    Eq when ((_firstType(id) == TYPE_ATOM) || isObject(_firstType(id))
+      || isKind(_firstType(id), Kind.Abstract)) => {
       let t = _firstType(id);
       _typed(id, [t, t], TYPE_BOOL, "identity equality requires operands of one type")
     },

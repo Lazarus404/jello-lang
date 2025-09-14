@@ -1,7 +1,7 @@
 // expect: [3|out|err][0|1 unset 3|][143||][127|true]secondfirst0[NUL](1, 0, 0, -1)true["a", "b/"][]true(true, false, true, false)(["a", "", "b"], [""], ["a", "b"], true, false)
 // Child commands and directories.
 import { exists, makeDirs, listDir, remove, writeText } from std.io.File;
-import { getEnv } from std.io.Env;
+import { os, tempDir } from std.sys.Platform;
 import { start, wait, stdout, stderr, run, waitAny, cpuCount } from std.io.Command;
 import { endsWith, split, startsWith } from std.core.Bytes;
 
@@ -13,11 +13,16 @@ let shown = fn(result: Tuple<I32, Bytes, Bytes>): Bytes {
   let (status, out, err) = result;
   "[" + Std.string(status) + "|" + out + "|" + err + "]"
 };
-let sh = fn(script: Bytes): Array<Bytes> { ["/bin/sh", "-c", script] };
+let sh = fn(script: Bytes): Array<Bytes> { ["sh", "-c", script] };
 
 let text = shown(run(sh("printf out; printf err >&2; exit 3"), []));
-text += shown(run(sh("printf '%s %s %s' \"$A\" \"${HOME-unset}\" \"$B\""), ["A=1", "HOME", "B=2", "B=3"]));
-text += shown(run(sh("kill -TERM $$"), []));
+// A variable every run inherits, removed: Git Bash's sh sets HOME again for itself, never
+// USERPROFILE.
+let inherited = os() == "windows" ? "USERPROFILE" : "HOME";
+let printed = "printf '%s %s %s' \"$A\" \"${" + inherited + "-unset}\" \"$B\"";
+text += shown(run(sh(printed), ["A=1", inherited, "B=2", "B=3"]));
+// Windows has no signals, so a shell there cannot end itself with one.
+text += os() == "windows" ? "[143||]" : shown(run(sh("kill -TERM $$"), []));
 let missing = start(["no-such-program-jello"], []);
 text += "[" + Std.string(wait(missing)) + "|" + Std.string(startsWith(stderr(missing), "cannot run no-such-program-jello: ")) + "]";
 let first = start(sh("sleep 0.2; printf first"), []);
@@ -29,7 +34,7 @@ text += try { start(["printf", "a\0b"], []); "" } catch (e) { "[NUL]" };
 let slow = start(sh("sleep 1"), []); let stray = start(["true"], []); let fast = start(sh("sleep 0.2"), []);
 text += Std.string((waitAny([slow, fast]), wait(stray), waitAny([missing]), waitAny([])));
 
-let dir = getEnv("TMPDIR") + "/command-spawn";
+let dir = tempDir() + "/command-spawn";
 let made = makeDirs(dir + "/b/c") && makeDirs(dir + "/b/c") && writeText(dir + "/a", "");
 text += Std.string(made) + Std.string(listDir(dir)) + Std.string(listDir(dir + "/b/c")) + Std.string(cpuCount() > 0);
 text += Std.string((remove(dir + "/a"), exists(dir + "/a"), remove(dir + "/a"), remove(dir + "/b")));

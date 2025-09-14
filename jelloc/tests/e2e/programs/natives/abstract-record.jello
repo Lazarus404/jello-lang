@@ -1,0 +1,18 @@
+// expect: {pattern: <Pattern>, source: <Text>} true
+// An abstract type's value is held in records, compared by identity in them,
+// and read back from a linked typedef's Object.
+load { regexp_compile, regexp_text } from std;
+
+typedef Pattern = abstract;
+typedef Text = abstract;
+let compile: (Bytes, Bytes) -> Pattern = regexp_compile;
+let text: (Bytes) -> Text = regexp_text;
+
+typedef Scan = { let pattern: Pattern; let source: Text; };
+typedef Scanner = { let pattern: Pattern; };
+prototype Scanner {
+  init(pattern: Pattern) { this.pattern = pattern; };
+};
+let scan: Scan = { pattern: compile("a", ""), source: text("abc") };
+let scanner = new Scanner(scan.pattern);
+`${scan} ${scanner.pattern == scan.pattern}`

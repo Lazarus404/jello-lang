@@ -1,0 +1,11 @@
+// expect: 999000 bottom 999000
+// A program may nest a million calls, with the JIT or without: the frame stack grows by segments,
+// JIT calls too deep for the native stack carry on in the interpreter, and a throw at the bottom
+// unwinds through them all to the top.
+let depth = fn(n: I32): I32 { n == 0 ? 0 : 1 + depth(n - 1) };
+let dive = fn(n: I32): I32 {
+  if (n == 0) { throw "bottom"; }
+  1 + dive(n - 1)
+};
+let caught = try { Std.string(dive(999000)) } catch (e) { e as Bytes };
+`${depth(999000)} ${caught} ${depth(999000)}`

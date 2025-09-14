@@ -1,0 +1,11 @@
+// expect: 2 2
+// A nullable value of a prototype's type passes as a parent once it is known to be present, or
+// is checked as it passes.
+typedef Base = { let n: I32; };
+prototype Base { init() { this.n = 1; }; };
+typedef Child = { let n: I32; };
+prototype Child { __proto__: Base; init() { this.n = 2; }; };
+let use = fn(b: Base): I32 { b.n };
+let c: ?Child = new Child();
+let narrowed = c != null ? use(c) : 0;
+`${narrowed} ${use(c)}`
