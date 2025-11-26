@@ -30,7 +30,7 @@ import { allocateProgram, allocationFailure } from backend.jello.Allocate;
 import { emitAllocated } from backend.jello.Emit;
 import { exists, listDir, makeDirs, readText, writeText } from std.io.File;
 import { getEnv } from std.io.Env;
-import { os, tempDir } from std.sys.Platform;
+import { os, tempDir, version } from std.sys.Platform;
 import { toArray } from std.core.List;
 import { explain } from support.Codes;
 import { findFormatter, formatFiles, loadFormatter, styleFor } from format.Config;
@@ -50,7 +50,8 @@ const _USAGE = "usage: jelloc [input.jello] [--out path | --lex | --parse | --hi
   + "       jelloc test [--std dir] [--path dir]... [dir...] [-- args...]\n"
   + "       jelloc deps.get [dir]\n"
   + "       jelloc fmt [--check] [--strip-comments] [path...]\n"
-  + "       jelloc --explain <code>\n\n"
+  + "       jelloc --explain <code>\n"
+  + "       jelloc --version\n\n"
   + "  run          compile the file, by default the entry module, into the\n"
   + "               project's build/run/ (outside a project, under the temp dir)\n"
   + "               and run it with jello, passing it args\n"
@@ -85,6 +86,8 @@ const _USAGE = "usage: jelloc [input.jello] [--out path | --lex | --parse | --hi
   + "  --jlo        print the allocated JLO instructions (with --out, also\n"
   + "               write the compiled module)\n"
   + "  --explain    print what an error code, such as E0302, means\n"
+  + "  -v, --version\n"
+  + "               print the compiler's version\n"
   + "  --help       print this help\n\n"
   + "A project is the nearest directory at or above the file (run), or the\n"
   + "first dir (test, deps.get), or else the current directory, that holds a\n"
@@ -660,6 +663,10 @@ export let run = fn(argv: List<Bytes>): Bytes {
   if (let [first | rest] = argv) {
     if (_subcommand(first, rest)) { return ""; }
     if (first == "--explain") { return _explain(toArray(rest)); }
+
+    if (((first == "--version") || (first == "-v")) && List.is_nil(rest)) {
+      return `jelloc ${version()}\n`;
+    }
   }
 
   let (inputs, mode, given) = try {

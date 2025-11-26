@@ -12,6 +12,7 @@ import type { Command } from std.io.Command;
 import { result } from std.io.Command;
 import { replace } from std.core.RegExp;
 import degust.Golden as G;
+import { Json, jsonField, parseJson } from support.Json;
 import { NONE, badCommandLines, concat, finish, fresh, has, jelloc, jellocIn, startJelloc, startVm, stdDir, withStd } from support.Run;
 import { jloTool, vmCommand, vmEnv } from degust.Programs;
 
@@ -54,6 +55,23 @@ let testHelp = fn(t: Test) {
   T.equal(t, (status, err), (0, ""));
   has(t, out, "usage: jelloc [input.jello]");
   has(t, out, "Exit status: 0 on success, 1 when the program does not compile");
+};
+
+/* jelloc --version and jello --version print the release's version, which the VM's build takes
+ * from jello.json; any other argument makes a bad command line. */
+let testPrintsTheVersion = fn(t: Test) {
+  let (manifest, _, _) = parseJson(readText("jello.json"));
+
+  let version = match (jsonField(manifest ?? Json.Null(0), "version")) {
+    Text(_, value) => value,
+    _ => "",
+  };
+  T.isTrue(t, version != "");
+  T.equal(t, jelloc(["--version"], NONE), (0, "jelloc " + version, ""));
+  T.equal(t, jelloc(["-v"], NONE), (0, "jelloc " + version, ""));
+  T.equal(t, finish(startVm("", ["--version"])), (0, "jello " + version, ""));
+  T.equal(t, finish(startVm("", ["-v"])), (0, "jello " + version, ""));
+  _usage(t, [(["--version", "extra"], "unknown option: --version")]);
 };
 
 let testBadCommandLines = fn(t: Test) {
