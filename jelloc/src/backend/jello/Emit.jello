@@ -1,9 +1,23 @@
 package backend.jello;
 
+/** @file
+ * Encodes an allocated IR program as a `.jlo` module, the last pass of the pipeline after
+ * legalisation (`backend.jello.Legalize`) and register allocation (`backend.jello.Allocate`).
+ * `Driver` writes the bytes it returns. The module is, in order: the header and section counts,
+ * the type table, function signatures, struct layouts, enum schemas, atoms, native imports, the
+ * I64 and Bytes constant pools, global types, the functions, and the line table. Fixed-width
+ * integers are little-endian.
+ *
+ * Each function's blocks are laid out so that jumps fall through where they can. Jumps to
+ * blocks that only jump on are threaded, and try regions are opened with `TRY` and closed
+ * with `ENDTRY` on the jumps that enter and leave them. Every instruction is the VM's
+ * canonical 8-byte form; opcode, `a`, `b` and `c` bytes, then a 32-bit immediate. */
+
 import type { BasicBlock, Function, Instruction, Program, Terminator, ValueType } from ir.Model;
 import { ValueType, argumentCount, comparesByIdentity, valueTypeEqual } from ir.Model;
 import { internalError } from support.Internal;
 
+// The VM's opcodes, numbered as in its `bytecode.h`.
 const JOP_RET = 1;
 const JOP_JMP = 2;
 const JOP_JMP_IF = 3;
@@ -159,9 +173,15 @@ const JOP_IS_ENUM = 192;
 const JOP_BYTES_FREEZE = 193;
 const JOP_BYTES_JOIN = 194;
 
+/** The output buffer; only its first `_size` bytes are written. It at least doubles when full. This
+ * and the rest of the module state are reset for each module and, where they are per function, for
+ * each function. */
 let _buffer = Bytes.new(0);
+// The number of bytes written to `_buffer`.
 let _size = 0;
 
+/** Appends the low byte of `value` to the output.
+ * @param value  the byte, of which bits above the eighth are ignored */
 let _byte = fn(value: I32) {
   if (_size == _buffer.len()) {
     let grown = Bytes.new(_buffer.len() * 2 + 64);
@@ -178,11 +198,14 @@ let _byte = fn(value: I32) {
   null
 };
 
+// Appends the low 16 bits of `value`, little-endian.
 let _u16 = fn(value: I32) {
   _byte(value);
   _byte(value >> 8)
 };
 
+/** Appends `value` as 32 bits, little-endian; a negative value is written as its two's
+ * complement. */
 let _u32 = fn(value: I32) {
   _byte(value);
   _byte(value >> 8);
@@ -190,6 +213,9 @@ let _u32 = fn(value: I32) {
   _byte(value >> 24)
 };
 
+/** Appends `value` as unsigned LEB128; seven bits a byte, lowest first, with the top bit set on
+ * every byte but the last.
+ * @param value  a non-negative value */
 let _uleb = fn(value: I32) {
   let v = value;
 
@@ -200,6 +226,8 @@ let _uleb = fn(value: I32) {
   _byte(v)
 };
 
+/** Appends `value` as signed LEB128, which ends once the remaining bits are the sign extension
+ * of bit 6 of the last byte written. */
 let _sleb = fn(value: I32) {
   let v = value;
   let more = true;
@@ -213,6 +241,7 @@ let _sleb = fn(value: I32) {
   null
 };
 
+// Appends the bytes of `value` with no length prefix.
 let _bytes = fn(value: Bytes) {
   for (byte in value) {
     _byte(byte);
@@ -220,14 +249,27 @@ let _bytes = fn(value: Bytes) {
   null
 };
 
+/** The module's type table; each value type interned once, by type index. A type's components
+ * are interned before it, so they have lower indexes, except an enum's field types; the enums
+ * are interned first. */
 let _types = Array.new<ValueType>(0);
+// The VM type kind (`jello_type_kind`) of each entry of `_types`.
 let _typeKinds = Array.new<I32>(0);
+/** The payload of each entry of `_types`; the element's type index for an array or list, the
+ * signature index for a function, the struct layout index for a tuple, the enum schema index for
+ * an enum, and 0 otherwise. */
 let _typeDetails = Array.new<I32>(0);
+// The module's function signatures, each a `ValueType.Function`, by signature index.
 let _signatures = Array.new<ValueType>(0);
+// The module's struct layouts, each a tuple's field types, by layout index.
 let _structs = Array.new<Array<ValueType>>(0);
 
+// The hash table over `_types`; 256 buckets of type indexes, chosen by `_hash` of the type.
 let _buckets = Array.new<Array<I32>>(0);
 
+/** Returns a structural hash of `ty`, consistent with `Model.valueTypeEqual`; an enum hashes by
+ * its index.
+ * @return the hash, which may be negative */
 let _hash = fn(ty: ValueType): I32 {
   let combine = fn(seed: I32, types: Array<ValueType>): I32 {
     let h = seed;
@@ -257,8 +299,12 @@ let _hash = fn(ty: ValueType): I32 {
   }
 };
 
+/** Returns the bucket of `_buckets` that `ty` belongs in. The bucket count must be a power of
+ * two.
+ * @return the bucket, shared with `_buckets` */
 let _bucket = fn(ty: ValueType): Array<I32> { _buckets[_hash(ty) & (_buckets.len() - 1)] };
 
+// Returns the type index of `ty`, or -1 if it is not interned, without interning it.
 let _find = fn(ty: ValueType): I32 {
   let bucket = _bucket(ty);
 
@@ -268,6 +314,10 @@ let _find = fn(ty: ValueType): I32 {
   -1
 };
 
+/** Appends `ty` to the type table and its hash bucket; the caller has checked it is absent.
+ * @param kind  its VM type kind
+ * @param detail  its payload (see `_typeDetails`)
+ * @return its type index */
 let _add = fn(ty: ValueType, kind: I32, detail: I32): I32 {
   _types.push(ty);
   _typeKinds.push(kind);
@@ -277,6 +327,11 @@ let _add = fn(ty: ValueType, kind: I32, detail: I32): I32 {
   index
 };
 
+/** Interns `ty` and every type it contains, and returns its type index. A function type also adds
+ * a signature and a tuple a struct layout. The kinds are the VM's; Bool 2, Atom 3, I32 6, I64 7,
+ * F16 8, F32 9, F64 10, Bytes 11, List 12, Array 13, Struct 14 for a tuple, Object 15, Function 16
+ * and Dynamic 18. Nominal types are not added here; `_module` interns each first, an enum as
+ * kind 19 and a record as a struct. */
 let _typeIndex = fn(ty: ValueType): I32 {
   let found = _find(ty);
   if (found >= 0) { return found; }
@@ -316,8 +371,11 @@ let _typeIndex = fn(ty: ValueType): I32 {
   }
 };
 
+/** The module function index of each IR function ID, or -1 for an ID with no function. Functions
+ * are emitted in program order, so the index is the function's position in the program. */
 let _functionIndexes = Array.new<I32>(0);
 
+// Returns the module function index of the function with IR function ID `id`.
 let _functionIndex = fn(id: I32): I32 {
   if ((id < 0) || (id >= _functionIndexes.len()) || (_functionIndexes[id] < 0)) {
     internalError("JLO emission found unknown function");
@@ -325,6 +383,11 @@ let _functionIndex = fn(id: I32): I32 {
   _functionIndexes[id]
 };
 
+/** Checks that `value` fits a one-byte instruction operand. Register and count operands are single
+ * bytes, so a value outside 0..255 is a compiler bug, never something to wrap.
+ * @param value  the operand
+ * @param name  the operand's name, `a`, `b` or `c`, for the error
+ * @return `value` */
 let _operand = fn(value: I32, name: Bytes): I32 {
   if ((value < 0) || (value > 255)) {
     internalError(`JLO emission: operand ${name} is ${value}, outside 0..255`);
@@ -332,6 +395,12 @@ let _operand = fn(value: I32, name: Bytes): I32 {
   value
 };
 
+/** Appends one instruction in the VM's canonical 8-byte form.
+ * @param opcode  the VM opcode (`JOP_*` in the VM's `bytecode.h`)
+ * @param a  the first operand byte
+ * @param b  the second operand byte
+ * @param c  the third operand byte
+ * @param imm  the 32-bit immediate */
 let _insn = fn(opcode: I32, a: I32, b: I32, c: I32, imm: I32) {
   _byte(opcode);
   _byte(_operand(a, "a"));
@@ -341,8 +410,10 @@ let _insn = fn(opcode: I32, a: I32, b: I32, c: I32, imm: I32) {
   null
 };
 
+// The physical register types of the function being emitted.
 let _registerTypes = Array.new<ValueType>(0);
 
+// Checks whether `register` holds an I64, which selects an integer opcode's 64-bit form.
 let _wide = fn(register: I32): Bool {
   match (_registerTypes[register]) {
     I64 => true,
@@ -350,6 +421,8 @@ let _wide = fn(register: I32): Bool {
   }
 };
 
+/** Returns the opcode of an arithmetic or comparison op for the type of its operand `register`;
+ * `i32` for an I32, a Bool or an Atom, and the others for their types, -1 where the VM has none. */
 let _numeric = fn(register: I32, i32: I32, i64: I32, f16: I32, f32: I32, f64: I32): I32 {
   let opcode = match (_registerTypes[register]) {
     I64 => i64,
@@ -362,6 +435,8 @@ let _numeric = fn(register: I32, i32: I32, i64: I32, f16: I32, f32: I32, f64: I3
   opcode
 };
 
+/** Returns the opcode that converts a value of type `source` to type `target`, one of them a
+ * float, or -1 if the VM has none. */
 let _conversion = fn(source: ValueType, target: ValueType): I32 {
   match ((source, target)) {
     (I32, F64) => JOP_F64_FROM_I32,
@@ -382,6 +457,12 @@ let _conversion = fn(source: ValueType, target: ValueType): I32 {
   }
 };
 
+/** Returns the first register of the window holding `args` from index `start`, which allocation
+ * placed in consecutive registers.
+ * @param args  an instruction's physical argument registers
+ * @param start  the index of the first windowed argument
+ * @return the window's first register, or 0 when it is empty, since any register names an
+ *         empty window */
 let _window = fn(args: Array<I32>, start: I32): I32 {
   let i = start + 1;
 
@@ -394,6 +475,9 @@ let _window = fn(args: Array<I32>, start: I32): I32 {
   args.len() > start ? args[start] : 0
 };
 
+/** Appends the VM instruction for a `BitsRead`, `BitsWrite`, `BytesRead` or `BytesWrite`; apart,
+ * so that `_instruction` stays small. The width is the VM's `c`, and a format counts from
+ * `BYTES_READ_U16_LE` or its write. */
 let _bitsOrBytes = fn(insn: Instruction) {
   let args = insn.args;
   let imm = insn.imm;
@@ -406,6 +490,8 @@ let _bitsOrBytes = fn(insn: Instruction) {
   }
 };
 
+/** Returns the `FROM_DYN_*` opcode that unboxes a Dynamic to type `ty`; every reference type
+ * shares `FROM_DYN_PTR`, which checks the type as it goes. */
 let _unboxOpcode = fn(ty: ValueType): I32 {
   match (ty) {
     Bool => JOP_FROM_DYN_BOOL,
@@ -419,6 +505,12 @@ let _unboxOpcode = fn(ty: ValueType): I32 {
   }
 };
 
+/** Appends the VM instruction for the legalised, allocated `insn`. Each op maps to one opcode; an
+ * arithmetic or comparison op takes the form of its first operand's type, `Convert` the form of
+ * its two types, and `ConstFloat` and `Unbox` the form of the destination's type. Windowed
+ * operands (call arguments, closure captures, enum fields, a slice's start and length) are named
+ * by their first register.
+ * @param insn  the instruction, with physical registers */
 let _instruction = fn(insn: Instruction) {
   let dst = insn.dst;
   let args = insn.args;
@@ -432,6 +524,7 @@ let _instruction = fn(insn: Instruction) {
     ConstI64 => _insn(JOP_CONST_I64, dst, 0, 0, imm),
     ConstBytes => _insn(JOP_CONST_BYTES, dst, 0, 0, imm),
     ConstNull => _insn(JOP_CONST_NULL, dst, 0, 0, 0),
+    // `CONST_FUN` without captures; `CLOSURE` copies the Dynamic captures from a window.
     ConstFunction => (args.len() == 0)
       ? _insn(JOP_CONST_FUN, dst, 0, 0, _functionIndex(imm))
       : _insn(JOP_CLOSURE, dst, _window(args, 0), args.len(), _functionIndex(imm)),
@@ -451,6 +544,7 @@ let _instruction = fn(insn: Instruction) {
     BitXor => _insn(_wide(a) ? JOP_BITXOR_I64 : JOP_BITXOR_I32, dst, a, b, 0),
     Neg => _insn(_numeric(a, JOP_NEG_I32, JOP_NEG_I64, -1, JOP_NEG_F32, JOP_NEG_F64), dst, a, 0, 0),
     Not => _insn(JOP_NOT_BOOL, dst, a, 0, 0),
+    // Atoms and functions compare by identity, with `PHYSEQ`.
     Eq => {
       let opcode = comparesByIdentity(_registerTypes[a])
         ? JOP_PHYSEQ
@@ -498,6 +592,7 @@ let _instruction = fn(insn: Instruction) {
     EnumNew => _insn(JOP_ENUM_NEW, dst, _window(args, 0), args.len(), imm),
     EnumTag => _insn(JOP_ENUM_TAG, dst, a, 0, 0),
     EnumGet => _insn(JOP_ENUM_GET, dst, a, b, 0),
+    // An object access takes its key as an atom in `imm`, or else from an Atom register.
     ObjectNew => _insn(JOP_OBJ_NEW, dst, 0, 0, 0),
     ObjectHas => imm < 0
       ? _insn(JOP_OBJ_HAS, dst, a, b, 0)
@@ -543,14 +638,31 @@ let _instruction = fn(insn: Instruction) {
   }
 };
 
+/** A locator for code with no source, such as IR built by hand in tests; it locates nothing, so
+ * the line table is empty.
+ * @param _node  a HIR node, ignored
+ * @return an empty path, line 0 and column 0 */
 export let noSource = fn(_node: I32): Tuple<Bytes, I32, I32> { ("", 0, 0) };
 
+/** The locator `emitAllocated` was given; a HIR node's source path, line and column, or an empty
+ * path when it has none. */
 let _locate = noSource;
+// The line table's source paths, by file index.
 let _files = Array.new<Bytes>(0);
+// Each emitted function's runs (see `_run`), by function index.
 let _runs = Array.new<Array<I32>>(0);
+/** The line-table runs of the function being emitted, four values each; the pc a run starts at,
+ * and its file index, line and column. A run covers instructions up to the next run's pc; an
+ * instruction without a node, or with one at the same location, continues the run before it. */
 let _run = Array.new<I32>(0);
+// The HIR node of the last instruction `_at` saw in the function being emitted, or -1.
 let _runNode = -1;
 
+/** Records that the instruction at `pc` came from HIR node `node`, starting a run when its
+ * location differs from the current run's. A later location for the same pc replaces the
+ * earlier one.
+ * @param pc  the instruction's index in its function
+ * @param node  the HIR node, or -1 for none */
 let _at = fn(pc: I32, node: I32) {
   if ((node < 0) || (node == _runNode)) { return null; }
   _runNode = node;
@@ -566,6 +678,7 @@ let _at = fn(pc: I32, node: I32) {
     return null;
   }
 
+  // A second location for the same pc wins: the run is relabelled rather than repeated.
   if ((n > 0) && (_run[n - 4] == pc)) {
     _run[n - 3] = file;
     _run[n - 2] = line;
@@ -580,9 +693,17 @@ let _at = fn(pc: I32, node: I32) {
   null
 };
 
+/** The catch block ID of each block of the function being emitted, by block ID, or -1 for a block
+ * outside any try region. A catch block runs one try region out, so the regions active in a
+ * block are its catch block's and then its own; the VM's handler stack, innermost last.
+ * `ir.Verify` has checked that regions nest at most 16 deep and that only jumps change them. */
 let _catchTargets = Array.new<I32>(0);
+// The catch payload register of each block of the function being emitted, by block ID, or -1.
 let _catchPayloads = Array.new<I32>(0);
 
+/** Returns the try regions active in `block`, outermost first, each named by a block in it.
+ * @param block  a block ID
+ * @return the regions, as the VM's handler stack holds them, innermost last */
 let _regions = fn(block: I32): Array<I32> {
   if (_catchTargets[block] < 0) { return Array.new<I32>(0); }
   let regions = _regions(_catchTargets[block]);
@@ -590,10 +711,18 @@ let _regions = fn(block: I32): Array<I32> {
   regions
 };
 
+/** Checks whether block IDs `a` and `b` are in the same innermost try region; the same catch
+ * block and payload, or no region at all. */
 let _sameRegion = fn(a: I32, b: I32): Bool {
   (_catchTargets[a] == _catchTargets[b]) && (_catchPayloads[a] == _catchPayloads[b])
 };
 
+/** Computes the try regions a jump from `source` to `to` leaves and enters. The regions the two
+ * blocks share, from the outermost in, stay open. Only a jump may change regions.
+ * @param source  the jumping block's ID
+ * @param to  the target block's ID
+ * @return how many regions the jump leaves (each an `ENDTRY`), and the blocks naming the regions
+ *         it then enters (each a `TRY`), outermost first */
 let _transition = fn(source: I32, to: I32): Tuple<I32, Array<I32>> {
   let left = _regions(source);
   let entered = _regions(to);
@@ -608,12 +737,21 @@ let _transition = fn(source: I32, to: I32): Tuple<I32, Array<I32>> {
   (left.len() - shared, Array.new<I32>(0).appendFrom(entered, shared))
 };
 
+// The blocks of the function being emitted, in IR order.
 let _blocks = Array.new<BasicBlock>(0);
+// The index in `_blocks` of each block ID, or -1 for an ID with no block.
 let _indexes = Array.new<I32>(0);
+// Whether each block ID is a catch block, which a `TRY` names as its handler.
 let _isCatch = Array.new<Bool>(0);
 
+// Returns the block of the function being emitted with ID `id`.
 let _block = fn(id: I32): BasicBlock { _blocks[_indexes[id]] };
 
+/** Follows a jump to block `id` through empty blocks that only jump on. A catch block is never
+ * passed through, since a `TRY` names it; a cycle of empty blocks stops after as many hops as
+ * there are blocks.
+ * @param id  the target block ID
+ * @return the block ID the jump ends up at */
 let _forward = fn(id: I32): I32 {
   let target = id;
   let steps = 0;
@@ -633,11 +771,20 @@ let _forward = fn(id: I32): I32 {
   target
 };
 
+/** Returns where a branch from `source` to `target` can go once empty jump-only blocks are passed
+ * through. A branch cannot change try regions, so it is forwarded only to a block in its own.
+ * @param source  the branching block's ID
+ * @param target  one of the branch's targets
+ * @return the forwarded target, or `target` when that is in another region */
 let _branchTarget = fn(source: I32, target: I32): I32 {
   let to = _forward(target);
   _sameRegion(source, to) ? to : target
 };
 
+/** Threads the terminator of block `source`; its targets are forwarded through empty jump-only
+ * blocks, a jump to an empty block that only returns becomes that return, and a branch whose two
+ * targets coincide becomes a jump. The return needs none of the jump's `TRY` or `ENDTRY`, since
+ * a frame's try scopes end with it. */
 let _threaded = fn(source: I32, terminator: Terminator): Terminator {
   match (terminator) {
     Jump(target) => {
@@ -658,6 +805,9 @@ let _threaded = fn(source: I32, terminator: Terminator): Terminator {
   }
 };
 
+/** Returns the blocks `terminator` may transfer to, in the order layout prefers to place them
+ * next; a branch's else block before its then block, since a branch falls through to its else.
+ * @return the target block IDs; none for a return or throw */
 let _successors = fn(terminator: Terminator): Array<I32> {
   match (terminator) {
     Jump(target) => [target],
@@ -666,6 +816,13 @@ let _successors = fn(terminator: Terminator): Array<I32> {
   }
 };
 
+/** Orders the function's blocks for emission, with their terminators threaded (`_threaded`).
+ * Only blocks reachable from the entry through threaded terminators and catch blocks are kept.
+ * From the entry, each block is followed by its jump's target, or its branch's else block (or
+ * else its then block), when that is not placed yet, so the jump falls through. A chain that
+ * ends resumes at the first reachable block, in IR order, not placed yet.
+ * @param entry  the entry block's ID
+ * @return the threaded blocks in layout order, the entry first */
 let _layout = fn(entry: I32): Array<BasicBlock> {
   let count = _blocks.len();
   let threaded = Array.new<BasicBlock>(count);
@@ -676,6 +833,7 @@ let _layout = fn(entry: I32): Array<BasicBlock> {
     threaded[i] = { ...block, terminator: _threaded(block.id, block.terminator) };
   }
 
+  // Which blocks are reachable, from the entry along threaded terminators and into catch blocks.
   let work = [entry];
   reachable[_indexes[entry]] = true;
   let reached = 1;
@@ -718,6 +876,14 @@ let _layout = fn(entry: I32): Array<BasicBlock> {
   order
 };
 
+/** Counts the instructions the terminator of block `source` is emitted as. A jump is an `ENDTRY`
+ * for each region it leaves and a `TRY` for each it enters, then a `JMP` unless its target is
+ * laid out next. A branch is a `JMP_IF` to its then block and a `JMP` to its else block unless
+ * that is next. A return or throw is one instruction.
+ * @param source  the block's ID
+ * @param terminator  its threaded terminator
+ * @param next  the ID of the block laid out after it, or -1 for none
+ * @return the instruction count */
 let _terminatorSize = fn(source: I32, terminator: Terminator, next: I32): I32 {
   match (terminator) {
     Jump(target) => {
@@ -729,12 +895,19 @@ let _terminatorSize = fn(source: I32, terminator: Terminator, next: I32): I32 {
   }
 };
 
+/** Appends `function`'s record and collects its line-table runs into `_runs`. The record is the
+ * header (no name atom, register count, first capture register, argument count, instruction
+ * count), each register's type index, then the instructions. Blocks are laid out by `_layout`
+ * and sized first, so that every jump's immediate can be its target's pc relative to the
+ * instruction after the jump.
+ * @param function  an allocated function */
 let _function = fn(function: Function) {
   let registers = function.registers;
   let blocks = function.blocks;
   _registerTypes = registers;
   _blocks = blocks;
 
+  // Index the blocks by ID, and note each try region's catch block and payload register.
   _indexes = Array.new<I32>(0);
   _isCatch = Array.new<Bool>(0);
   _catchTargets = Array.new<I32>(0);
@@ -762,6 +935,7 @@ let _function = fn(function: Function) {
     }
   }
 
+  // Lay the blocks out, then size them, so that every jump knows its target's pc.
   let order = _layout(function.entry);
   let nexts = Array.new<I32>(order.len());
 
@@ -779,6 +953,9 @@ let _function = fn(function: Function) {
 
   _run = Array.new<I32>(0);
   _runNode = -1;
+  /* Header; no name atom (`UINT32_MAX`), register count, the first capture register (they
+   * follow the arguments; the register count when there are none), argument count, and
+   * instruction count. */
   let args = argumentCount(function);
   _u32(-1);
   _u32(registers.len());
@@ -802,6 +979,8 @@ let _function = fn(function: Function) {
     }
 
     match (block.terminator) {
+      /* `ENDTRY` closes each region the jump leaves; `TRY` opens each it enters, naming the
+       * payload register and the catch block's pc. */
       Jump(target) => {
         let (left, opened) = _transition(id, target);
         let j = 0;
@@ -851,6 +1030,10 @@ let _function = fn(function: Function) {
   null
 };
 
+/** Appends a 12-byte type-table entry; the kind byte, three bytes of padding, the payload, and
+ * an unused word.
+ * @param kind  the VM type kind
+ * @param detail  the payload (see `_typeDetails`) */
 let _typeEntry = fn(kind: I32, detail: I32) {
   _byte(kind);
   _byte(0);
@@ -859,6 +1042,16 @@ let _typeEntry = fn(kind: I32, detail: I32) {
   _u32(0)
 };
 
+/** Encodes `program`, whose registers are physical, as a `.jlo` module. Every type is interned
+ * before anything is written, enums and records first so that nominal type `i` has type index `i`.
+ * The header is the magic `0x4A4C5942`, version 1, the feature flags (`CONST64` 1, `CONSTBYTES` 2,
+ * `LINE_TABLE` 8, which is always set, `IMPORTS` 8192, `ENUM_SCHEMA` 16384 and `GLOBALS` 32768),
+ * then the section counts, with the entry (the index of function ID 0) before the import count. The
+ * enum, constant-pool and global counts are present only with their features. Struct layouts are
+ * unnamed and mutable, since the VM rejects `STRUCT_SET` on an immutable struct. An error while
+ * emitting a function is rethrown prefixed with the function's index.
+ * @param program  an allocated program
+ * @return the module's bytes */
 let _module = fn(program: Program): Bytes {
   let functions = program.functions;
   let pool = program.bytes;
@@ -868,6 +1061,8 @@ let _module = fn(program: Program): Bytes {
   let globals = program.globals;
   let natives = program.natives;
 
+  /* The module's atoms are the program's, at their own indexes so that `CONST_ATOM` names
+   * them, then each native's library and export names. */
   let atoms = program.atoms.copy();
   _types = Array.new<ValueType>(0);
   _typeKinds = Array.new<I32>(0);
@@ -877,6 +1072,7 @@ let _module = fn(program: Program): Bytes {
   _buckets = Array.new<Array<I32>>(0);
   while (_buckets.len() < 256) { _buckets.push(Array.new<I32>(0)); }
 
+  // An enum is a kind 19 type naming its schema, by its place among the enums; a record a struct.
   let enumCount = 0;
 
   for (i, schema in enums) {
@@ -935,6 +1131,7 @@ let _module = fn(program: Program): Bytes {
     }
   }
 
+  // The header and section counts.
   let constants64 = (wides.len() + floats.len()) > 0;
   let features = (constants64 ? 1 : 0)
     | (pool.len() > 0 ? 2 : 0)
@@ -954,6 +1151,7 @@ let _module = fn(program: Program): Bytes {
   _u32(natives.len());
   if (enumCount > 0) { _u32(enumCount); }
 
+  // `CONST64` counts the I64 constants, then the F64 ones.
   if (constants64) {
     _u32(wides.len());
     _u32(floats.len());
@@ -961,6 +1159,7 @@ let _module = fn(program: Program): Bytes {
   if (pool.len() > 0) { _u32(pool.len()); }
   if (globals.len() > 0) { _u32(globals.len()); }
 
+  // The type table, signatures, struct layouts and enum schemas.
   for (i, kind in _typeKinds) {
     _typeEntry(kind, _typeDetails[i]);
   }
@@ -1011,10 +1210,13 @@ let _module = fn(program: Program): Bytes {
     _bytes(atom);
   }
 
+  /* An import; library and export atoms, the result's type kind, the arity, then eight
+   * argument kind bytes, padded with 0. The loader checks them against the `.jdll` export. */
   for (native in natives) {
     let params = native.params;
     _u32(atoms.internIndex(native.library));
     _u32(atoms.internIndex(native.name));
+    // 1 is Void
     _byte(native.void ? 1 : _typeKinds[_find(native.result)]);
     _byte(params.len());
     let a = 0;
@@ -1025,6 +1227,7 @@ let _module = fn(program: Program): Bytes {
     }
   }
 
+  // The constant pools and the global types.
   for (wide in wides) {
     _u32(wide as I32);
     _u32((wide >> 32) as I32);
@@ -1051,6 +1254,7 @@ let _module = fn(program: Program): Bytes {
     try { _function(function); } catch (e) { throw `function ${i}: ${e}`; }
   }
 
+  // The line table; the file count and each path with its length, then each function's runs.
   _u32(_files.len());
 
   for (file in _files) {
@@ -1059,6 +1263,8 @@ let _module = fn(program: Program): Bytes {
   }
 
   for (run in _runs) {
+    /* The run count, then each run as ULEB128 pc delta, ULEB128 file, SLEB128 line delta and
+     * ULEB128 column; the deltas are from the previous run, or from 0 for the first. */
     let r = 0;
     let pc = 0;
     let line = 0;
@@ -1078,6 +1284,13 @@ let _module = fn(program: Program): Bytes {
   Bytes.slice(_buffer, 0, _size)
 };
 
+/** Encodes `program`, as `Allocate.allocateProgram` returned it, as a `.jlo` module whose line
+ * table locates each instruction through `locate`. `Driver` writes the result to the output file.
+ * The VM validates the bytes when it loads them, unless `JELLO_BC_SKIP_VALIDATE` is set.
+ * @param program  an allocated program
+ * @param locate  gives a HIR node's source path, line and column, or an empty path when the node
+ *        has no source; `noSource` locates nothing
+ * @return the module's bytes */
 export let emitAllocated = fn(program: Program, locate: (I32) -> Tuple<Bytes, I32, I32>): Bytes {
   _locate = locate;
   _module(program)

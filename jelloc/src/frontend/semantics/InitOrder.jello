@@ -1,10 +1,28 @@
 package frontend.semantics;
 
+/** @file
+ * Finds a global that the program may read before it is initialised. Module initialisation runs
+ * the program body's statements in order, so a global read is safe once the global's
+ * `InitGlobal` statement has run, and a call is safe once every global the callee may read,
+ * through any chain of calls, has been initialised. An indirect call may reach any function whose
+ * reference (`FunctionRef`) a function body takes, or a statement that has begun to run takes, as
+ * a function value exists only once its reference is evaluated. Reads the finished HIR;
+ * `frontend.semantics.Modules` calls it after checking every module, before the HIR is verified
+ * and lowered. Function sets and global sets are bit sets (see `frontend.BitSets`) indexed by
+ * function ID, where 0 is the program body, and by global ID. */
+
 import {
   Op, childCount, childOf, globalCount, lastChild, opOf, rootNode, valueOf
 } from frontend.hir.Hir;
 import { bitsAdd, bitsHas, bitsMembers, bitsNew, bitsUnion } from frontend.BitSets;
 
+/** Records the globals a subtree reads (`Global`), the functions it calls (`Call`) and the
+ * functions it takes a reference to (`FunctionRef`).
+ * @param id  the subtree's root node
+ * @param reads  the global set to add reads to
+ * @param calls  the function set to add direct callees to
+ * @param refs  the function set to add referenced functions to
+ * @return true if the subtree makes an indirect call (`CallIndirect`) */
 let _scan = fn(id: I32, reads: Array<I32>, calls: Array<I32>, refs: Array<I32>): Bool {
   let indirect = match (opOf(id)) {
     Global => {
@@ -32,11 +50,19 @@ let _scan = fn(id: I32, reads: Array<I32>, calls: Array<I32>, refs: Array<I32>):
   indirect
 };
 
+/** The globals each node of the call graph may read through any chain of calls; a function by
+ * its ID, and the sink, one past the highest, which every function that calls indirectly calls
+ * and which calls every function an indirect call may reach so far. */
 let _reach = Array.new<Array<I32>>(0);
+// The nodes that call each node of the call graph directly.
 let _callers = Array.new<Array<I32>>(0);
+// Whether each node is waiting in `_propagate`'s worklist.
 let _queued = Array.new<Bool>(0);
+// The functions the sink calls.
 let _offered = Array.new<I32>(0);
 
+/** Adds the globals each node of `nodes` reaches to the reach of every node that calls it,
+ * through any chain of calls. */
 let _propagate = fn(nodes: Array<I32>) {
   let pending = Array.new<I32>(0);
 
@@ -61,12 +87,19 @@ let _propagate = fn(nodes: Array<I32>) {
   null
 };
 
+// The nodes each node of the call graph calls directly, for `_settle`.
 let _callees = Array.new<Array<I32>>(0);
+/** Tarjan's strongly connected components over `_callees`: each node's visit number, or -1
+ * before its visit, its low link, which is the node count once its component is complete, and the
+ * nodes whose component is open. */
 let _visit = Array.new<I32>(0);
 let _low = Array.new<I32>(0);
 let _stack = Array.new<I32>(0);
 let _visits = 0;
 
+/** Visits `node` in Tarjan's algorithm. A component completes after every component it calls,
+ * whose reach is then final, so its members reach their own globals and those of every node
+ * they call. This is the fixed point `_propagate` reaches, with each call edge followed once. */
 let _settle = fn(node: I32): I32 {
   let start = _stack.len();
   _visit[node] = _visits;
@@ -100,6 +133,8 @@ let _settle = fn(node: I32): I32 {
   0
 };
 
+/** Adds the globals every node reaches to the reach of every node that calls it, through any
+ * chain of calls, as `_propagate` does, over the edges in `_callees`. */
 let _settleAll = fn() {
   _visit = Array.new<I32>(0);
   _low = Array.new<I32>(0);
@@ -123,6 +158,9 @@ let _settleAll = fn() {
   null
 };
 
+/** Makes the functions `functions` reachable by indirect calls, by the sink's calling each one
+ * it does not call yet.
+ * @return true if the sink then reaches more globals */
 let _offer = fn(functions: Array<I32>, sink: I32): Bool {
   let grew = false;
 
@@ -136,11 +174,17 @@ let _offer = fn(functions: Array<I32>, sink: I32): Bool {
   grew
 };
 
+// Offers `functions` to the sink (see `_offer`) and propagates what the sink then reaches.
 let _offerAll = fn(functions: Array<I32>, sink: I32) {
   if (_offer(functions, sink)) { _propagate([sink]); }
   null
 };
 
+/** Finds the first program-body statement, the tail included, that may read a global before its
+ * initialising statement has run, directly or through the functions it may call. Statements are
+ * visited in order: each one's references are made reachable before its reads are checked, and
+ * each `InitGlobal` of a `Declare` marks its global initialised after them.
+ * @return the statement's node and the global's ID, or (-1, -1) when there is none */
 export let firstUninitializedRead = fn(): Tuple<I32, I32> {
   let root = rootNode();
   let functions = childCount(root) - 1;
@@ -152,6 +196,7 @@ export let firstUninitializedRead = fn(): Tuple<I32, I32> {
   _queued = Array.new<Bool>(0);
   _callees = Array.new<Array<I32>>(0);
   _offered = bitsNew(nodes);
+  // Index 0 stands for the program body, scanned statement by statement below.
   let f = 0;
 
   while (f < nodes) {
@@ -175,6 +220,7 @@ export let firstUninitializedRead = fn(): Tuple<I32, I32> {
     }
     f++;
   }
+  // A function body's references are reachable whenever it runs.
   _offer(bitsMembers(refs), sink);
   _callees[sink] = bitsMembers(_offered);
   _settleAll();

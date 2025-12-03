@@ -1,5 +1,11 @@
 package backend.jello;
 
+/** @file
+ * Register allocation; maps each legalised function's virtual registers onto the VM's 256 typed
+ * physical registers, after `backend.jello.Legalize` and before `backend.jello.Emit`. A physical
+ * register keeps one type for the function. Call windows take part in the colouring, moves are
+ * coalesced, and registers that do not fit are spilled to per-frame slots. */
+
 import type { BasicBlock, Function, Instruction, Program, ThrowHandler, ValueType } from ir.Model;
 import { Op, Terminator, instructionAt, internValueType } from ir.Model;
 import { blockCatch, blockIndexes, terminatorRead } from ir.Cfg;
@@ -8,11 +14,20 @@ import { verifyAllocatedProgram } from ir.Verify;
 import { internalError } from support.Internal;
 import { E0901, coded } from support.Codes;
 
+// The number of physical registers a VM function may have, each named by a byte operand.
 const _REGISTER_LIMIT = 256;
 
+/** The distinct register types of the function being allocated, by key. Keys are small integers,
+ * so allocation compares types as integers. */
 let _keyTypes = Array.new<ValueType>(0);
+/** The type key of each virtual register of the function being allocated, window registers
+ * included. */
 let _keys = Array.new<I32>(0);
 
+/** Returns the index of the first argument of an `op` instruction that is read from the window,
+ * or -1 when `op` reads no window. A call passes its arguments, a native call its arguments, an
+ * enum construction its fields, a closure its captures, an indirect call its arguments after the
+ * callee, and a bytes slice its start and length after the bytes. */
 let _windowStart = fn(op: Op): I32 {
   match (op) {
     Call, CallNative, EnumNew, ConstFunction, BytesConcatMany => 0,
@@ -21,9 +36,12 @@ let _windowStart = fn(op: Op): I32 {
   }
 };
 
+// The registers live at the instruction `_interference` is scanning, in no particular order.
 let _live = Array.new<I32>(0);
+// The index of each register in `_live`, or -1 when it is not live.
 let _places = Array.new<I32>(0);
 
+// Adds virtual `register` to the live set if it is not in it, in constant time.
 let _enliven = fn(register: I32) {
   if (_places[register] < 0) {
     _places[register] = _live.len();
@@ -32,6 +50,8 @@ let _enliven = fn(register: I32) {
   null
 };
 
+/** Removes virtual `register` from the live set if it is in it, in constant time; the last member
+ * takes its place. */
 let _kill = fn(register: I32) {
   let place = _places[register];
 
@@ -47,12 +67,23 @@ let _kill = fn(register: I32) {
   null
 };
 
+// Records that registers `a` and `b` interfere, in both directions.
 let _interfere = fn(neighbors: Array<Array<I32>>, a: I32, b: I32) {
   neighbors[a].push(b);
   neighbors[b].push(a);
   null
 };
 
+/** Builds the interference graph of `blocks`, scanning each block backwards from what is live
+ * out of it. A definition interferes with every register live after it except a move's source,
+ * since both hold one value. A block that may throw into a catch block also flows into it, and
+ * what the catch block reads stays live through the whole block, since a throw may come from any
+ * call (see `ir.Liveness`). The VM writes the thrown value into the catch's payload register as it
+ * enters the handler, so the payload interferes with every other register live into the catch
+ * block.
+ * @param blocks  the function's blocks, windows already inserted
+ * @param count  the number of virtual registers
+ * @return each register's interfering registers, possibly with repeats; the graph is symmetric */
 let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>> {
   let indexes = blockIndexes(blocks);
   let (liveIn, liveOut) = liveness(blocks, count, 0, true);
@@ -65,6 +96,8 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
   }
   let payloadsDone = Array.new<Bool>(blocks.len());
 
+  /* What a throw carries is live through the whole block; a register the catch block reads is
+   * marked with the block's index, and stays live above where the block writes it. */
   let caughtMarks = Array.new<I32>(count);
   _places = Array.new<I32>(count);
   i = 0;
@@ -78,6 +111,7 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
   for (i, block in blocks) {
     let (target, payload) = blockCatch(block, indexes);
     let caught = target >= 0 ? liveIn[target] : Array.new<I32>(0);
+    // The payload interferes with what the catch block reads; the edges are added once per catch.
     let first = (target >= 0) && !payloadsDone[target];
     if (first) { payloadsDone[target] = true; }
 
@@ -120,6 +154,9 @@ let _interference = fn(blocks: Array<BasicBlock>, count: I32): Array<Array<I32>>
   neighbors
 };
 
+/** Collects the moves of `blocks`, which coalescing and colouring try to delete.
+ * @param blocks  the function's blocks
+ * @return each move's destination and source, in block and instruction order */
 let _moves = fn(blocks: Array<BasicBlock>): Array<Tuple<I32, I32>> {
   let moves = Array.new<Tuple<I32, I32>>(0);
 
@@ -137,11 +174,17 @@ let _moves = fn(blocks: Array<BasicBlock>): Array<Tuple<I32, I32>> {
   moves
 };
 
+/** The union-find parent of each virtual register. Coalescing joins registers into groups that
+ * share one physical register; a group is named by its representative, its own parent. */
 let _groups = Array.new<I32>(0);
+// The members of each group, by representative; empty for a register that is not one.
 let _members = Array.new<Array<I32>>(0);
+// The fixed physical register of each group, by representative, or -1 when it has none.
 let _groupColors = Array.new<I32>(0);
+// The total interference count of each group's members, by representative.
 let _degrees = Array.new<I32>(0);
 
+// Returns the representative of `register`'s group, compressing the path to it.
 let _group = fn(register: I32): I32 {
   let r = register;
   while (_groups[r] != r) { r = _groups[r]; }
@@ -156,6 +199,16 @@ let _group = fn(register: I32): I32 {
   r
 };
 
+/** Checks whether groups `a` and `b` cannot be joined; a member of one interferes with the
+ * other, or, when `color` is fixed, a member of either interferes with a register of another
+ * group fixed to it. Interference is symmetric and never within a group, and a group with a
+ * colour interferes with no other group of that colour, which every join keeps true; so one
+ * side's neighbours tell: the side without the colour when only one has it, else the cheaper to
+ * scan, by members and degree.
+ * @param a  a group representative
+ * @param b  another group representative
+ * @param color  the joined group's fixed register, or -1
+ * @param neighbors  the interference graph */
 let _conflict = fn(a: I32, b: I32, color: I32, neighbors: Array<Array<I32>>): Bool {
   let costA = _degrees[a] + _members[a].len();
   let cheaper = costA <= _degrees[b] + _members[b].len() ? a : b;
@@ -171,6 +224,12 @@ let _conflict = fn(a: I32, b: I32, color: I32, neighbors: Array<Array<I32>>): Bo
   false
 };
 
+/** Initialises the groups, one per register, and joins the two sides of each move whose groups
+ * do not conflict, so the move disappears. Groups of different types, or with two different
+ * fixed registers, stay apart. Moves are taken in order, so one join can rule out a later one.
+ * @param moves  the function's moves (see `_moves`)
+ * @param fixed  each register's fixed physical register, or -1
+ * @param neighbors  the interference graph */
 let _coalesce = fn(moves: Array<Tuple<I32, I32>>, fixed: Array<I32>, neighbors: Array<Array<I32>>) {
   let count = fixed.len();
   _groups = Array.new<I32>(count);
@@ -201,6 +260,7 @@ let _coalesce = fn(moves: Array<Tuple<I32, I32>>, fixed: Array<I32>, neighbors: 
       _groupColors[a] = color;
       _degrees[a] = _degrees[a] + _degrees[b];
 
+      // The shorter member list is appended to the longer, since nothing depends on member order.
       let into = _members[a];
       let rest = _members[b];
 
@@ -216,6 +276,12 @@ let _coalesce = fn(moves: Array<Tuple<I32, I32>>, fixed: Array<I32>, neighbors: 
   null
 };
 
+/** Checks whether group `register` can take physical register `color`; it is below the limit
+ * (the length of `marks`), no neighbour holds it, and it is unused or holds `register`'s type.
+ * @param color  a physical register, or -1
+ * @param register  a group representative
+ * @param marks  for each physical register, the last group whose neighbour holds it
+ * @param colorKeys  the type key each physical register holds, or -1 while it is unused */
 let _free = fn(color: I32, register: I32, marks: Array<I32>, colorKeys: Array<I32>): Bool {
   (color >= 0)
     && (color < marks.len())
@@ -223,6 +289,16 @@ let _free = fn(color: I32, register: I32, marks: Array<I32>, colorKeys: Array<I3
     && ((colorKeys[color] < 0) || (colorKeys[color] == _keys[register]))
 };
 
+/** Colours every group it can with physical registers `0..limit-1`, greedily in register order.
+ * Groups with a fixed register keep it, and the groups of `first` are coloured before the rest.
+ * A group takes the register of one it is still moved to or from when it can, which deletes the
+ * move, and otherwise the lowest register it can take (see `_free`). So a value computed for a
+ * call is computed in its window slot.
+ * @param first  registers whose groups are coloured first; the catch payloads
+ * @param neighbors  the interference graph
+ * @param moves  the function's moves (see `_moves`)
+ * @param limit  the number of physical registers available
+ * @return each virtual register's physical register, or -1 for a spilled one */
 let _color = fn(
   first: Array<I32>,
   neighbors: Array<Array<I32>>,
@@ -301,6 +377,7 @@ let _color = fn(
     i++;
   }
 
+  // Checks that no two interfering registers share a physical register.
   i = 0;
 
   while (i < count) {
@@ -321,6 +398,12 @@ let _color = fn(
   colors
 };
 
+/** Finds where the windowed arguments of an instruction fit in the shared window; the first run
+ * of `scratch` whose type keys match those of `args` from `start`.
+ * @param scratch  the window's slot type keys
+ * @param args  the instruction's virtual argument registers
+ * @param start  the index of the first windowed argument
+ * @return the run's offset, or -1 if no run matches */
 let _scratchOffset = fn(scratch: Array<I32>, args: Array<I32>, start: I32): I32 {
   let size = args.len() - start;
   let offset = 0;
@@ -334,10 +417,20 @@ let _scratchOffset = fn(scratch: Array<I32>, args: Array<I32>, start: I32): I32 
   -1
 };
 
+/** The virtual register types of the function being allocated, with one more register for each
+ * windowed argument. */
 let _registers = Array.new<ValueType>(0);
+// The window slot of each virtual register, or -1 for one outside the window.
 let _slotOf = Array.new<I32>(0);
+/** The type key of each slot of the window every call shares; a sequence in which each
+ * instruction's windowed arguments occur as a run. A call, native call or indirect call reads its
+ * arguments from consecutive registers, its window; so do a closure's captures, an enum
+ * construction's fields, a bytes join's parts and a bytes slice's start and length (see
+ * `_windowStart`). */
 let _scratch = Array.new<I32>(0);
 
+/** Adds and returns a virtual register of type `ty`, type key `key` and window slot `slot`
+ * (or -1). */
 let _fresh = fn(ty: ValueType, key: I32, slot: I32): I32 {
   _registers.push(ty);
   _keys.push(key);
@@ -345,6 +438,8 @@ let _fresh = fn(ty: ValueType, key: I32, slot: I32): I32 {
   _registers.len() - 1
 };
 
+/** Builds `_scratch`, the one window that holds the windowed arguments of every instruction in
+ * `blocks`, each as a run of its slots. */
 let _buildScratch = fn(blocks: Array<BasicBlock>) {
   _scratch = Array.new<I32>(0);
 
@@ -366,10 +461,13 @@ let _buildScratch = fn(blocks: Array<BasicBlock>) {
   null
 };
 
+/** Appends `insn` to `out`, first moving each of its windowed arguments into a register of its
+ * own, fixed to its slot, and reading those registers instead. The moves keep `insn`'s HIR node. */
 let _windowed = fn(insn: Instruction, out: Array<Instruction>) {
   let start = _windowStart(insn.op);
   let args = insn.args;
 
+  // An op without a window, or with an empty one, is kept as it is.
   if ((start < 0) || (start >= args.len())) {
     out.push(insn);
     return null;
@@ -391,6 +489,10 @@ let _windowed = fn(insn: Instruction, out: Array<Instruction>) {
   null
 };
 
+/** Rewrites each instruction that reads a window (see `_windowed`). The window registers then
+ * take part in the colouring like any other.
+ * @param blocks  the function's blocks
+ * @return the rewritten blocks */
 let _withWindows = fn(blocks: Array<BasicBlock>): Array<BasicBlock> {
   let windowed = Array.new<BasicBlock>(0);
 
@@ -405,6 +507,13 @@ let _withWindows = fn(blocks: Array<BasicBlock>): Array<BasicBlock> {
   windowed
 };
 
+/** Finds the lowest physical register the window can start at. Where it overlaps the parameters,
+ * which take registers from 0, each slot must have its parameter's type, and the parameter must
+ * not interfere with any register fixed to the slot, so it is dead wherever a call writes it and
+ * a call can pass a value where the parameter was.
+ * @param params  the function's parameter registers
+ * @param neighbors  the interference graph
+ * @return the base, at most the parameter count */
 let _windowBase = fn(params: Array<I32>, neighbors: Array<Array<I32>>): I32 {
   let base = 0;
 
@@ -429,20 +538,38 @@ let _windowBase = fn(params: Array<I32>, neighbors: Array<Array<I32>>): I32 {
   params.len()
 };
 
+/** The physical register of each virtual register of the function being rewritten, or -1 for a
+ * spilled one. */
 let _colors = Array.new<I32>(0);
+/** The spill slot of each virtual register, shared by its group, or -1 for one not spilled.
+ * Spilled groups take dense slots from 0 in register order, so the VM's per-frame spill array,
+ * which grows to cover the highest slot written and which the collector scans, is only as long
+ * as the spills. */
 let _slots = Array.new<I32>(0);
+// The first physical register of the spill temporaries, which follow the coloured registers.
 let _tempStart = 0;
+// The offset from `_tempStart` of each spilled type's two temporaries, by type key, or -1.
 let _tempOffsets = Array.new<I32>(0);
+// How many of each type's temporaries the current instruction has used, by type key.
 let _nextTemp = Array.new<I32>(0);
+// The rewritten instructions of the block being rewritten.
 let _out = Array.new<Instruction>(0);
 
+/** The HIR node of the instruction or throw being rewritten. The moves and spill instructions
+ * emitted for it keep it, so a trap in one is located at the code it serves. */
 let _node = -1;
 
+/** Appends an `op` instruction with `dst` (or -1), `args` and `imm`, located at `_node`, to
+ * `_out`. */
 let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
   _out.push(instructionAt(op, dst, args, imm, _node));
   null
 };
 
+/** Returns the physical register an instruction reads virtual `register` from. A spilled one is
+ * first loaded from its slot into the next free temporary of its type with `SPILL_POP`. Two
+ * temporaries per type are enough for any instruction; window operands are fixed and never
+ * spill. */
 let _read = fn(register: I32): I32 {
   if (_colors[register] >= 0) { return _colors[register]; }
 
@@ -457,15 +584,20 @@ let _read = fn(register: I32): I32 {
   temp
 };
 
+/** Returns the physical register an instruction writes virtual `register` to. A spilled one is
+ * written to the first temporary of its type and then stored (see `_written`). */
 let _write = fn(register: I32): I32 {
   _colors[register] >= 0 ? _colors[register] : _tempStart + _tempOffsets[_keys[register]]
 };
 
+/** Stores `physical`, just written, to `register`'s spill slot with `SPILL_PUSH` when `register` is
+ * spilled. */
 let _written = fn(register: I32, physical: I32) {
   if (_colors[register] < 0) { _emit(Op.SpillPush, -1, [physical], _slots[register]); }
   null
 };
 
+// Frees every spill temporary, before each instruction and terminator.
 let _resetTemps = fn() {
   for (i, _ in _nextTemp) {
     _nextTemp[i] = 0;
@@ -473,6 +605,8 @@ let _resetTemps = fn() {
   null
 };
 
+/** Appends `insn` to `_out` on physical registers, with the spill loads and stores it needs.
+ * @param insn  an instruction on virtual registers */
 let _rewrite = fn(insn: Instruction) {
   _resetTemps();
   _node = insn.node;
@@ -480,6 +614,9 @@ let _rewrite = fn(insn: Instruction) {
   let dst = insn.dst;
   let args = insn.args;
 
+  /* A move from a spill slot to a register is one `SPILL_POP`, and a move into another spill
+   * slot one `SPILL_PUSH` (after a `SPILL_POP` when its source is spilled too). A move within
+   * one register or one spill slot is dropped. */
   let moved = match (op) { Move => true, _ => false };
 
   if (moved && (_colors[dst] >= 0) && (_colors[args[0]] < 0)) {
@@ -504,6 +641,10 @@ let _rewrite = fn(insn: Instruction) {
   _written(dst, target)
 };
 
+/** Rewrites `block` onto physical registers; its instructions (see `_rewrite`), the register its
+ * terminator reads, and its catch payload, which is always coloured.
+ * @param block  a block on virtual registers
+ * @return the block on physical registers */
 let _rewriteBlock = fn(block: BasicBlock): BasicBlock {
   _out = Array.new<Instruction>(0);
 
@@ -538,6 +679,9 @@ let _rewriteBlock = fn(block: BasicBlock): BasicBlock {
   }
 };
 
+/** Rejects function `id` for needing more physical registers than the VM allows.
+ * @param id  the IR function ID
+ * @throws an error asking for the function to be split */
 let _tooMany = fn(id: I32) {
   throw coded(
     E0901,
@@ -546,6 +690,7 @@ let _tooMany = fn(id: I32) {
   null
 };
 
+// Returns the payload register of each catch in `blocks`, in block order.
 let _catchPayloads = fn(blocks: Array<BasicBlock>): Array<I32> {
   let payloads = Array.new<I32>(0);
 
@@ -556,6 +701,8 @@ let _catchPayloads = fn(blocks: Array<BasicBlock>): Array<I32> {
   payloads
 };
 
+/** Numbers the spill slots densely by group representative, so that a group shares one slot,
+ * into `_slots`. */
 let _numberSpillSlots = fn() {
   _slots = Array.new<I32>(_colors.len());
   let slotCount = 0;
@@ -575,6 +722,8 @@ let _numberSpillSlots = fn() {
   null
 };
 
+/** Returns the physical register types; the coloured registers, then two temporaries for each
+ * type in `spilled`, whose offsets from `_tempStart` go to `_tempOffsets`. */
 let _physicalRegisters = fn(spilled: Array<Bool>): Array<ValueType> {
   let physical = Array.new<ValueType>(0);
 
@@ -599,6 +748,16 @@ let _physicalRegisters = fn(spilled: Array<Bool>): Array<ValueType> {
   physical
 };
 
+/** Allocates `function`'s registers; builds the shared window, inserts the window moves,
+ * builds the interference graph, fixes the parameters to registers from 0 and the window from
+ * `_windowBase`, coalesces, and colours. Each type that spills takes two temporaries, so it
+ * recolours with two registers fewer until no further type spills. Then it numbers the spill
+ * slots and rewrites every block.
+ * @param function  a legalised function
+ * @return the function on physical registers; the coloured registers, then the temporaries,
+ *         with its parameters in registers `0..n-1`
+ * @throws an error if the parameters, window and temporaries need more than 256 registers, or a
+ *         catch payload is left without one */
 let _allocate = fn(function: Function): Function {
   let id = function.id;
   let params = function.params;
@@ -620,6 +779,7 @@ let _allocate = fn(function: Function): Function {
   let moves = _moves(windowed);
   let payloads = _catchPayloads(windowed);
 
+  // Parameters and window registers have fixed physical registers and never spill.
   let base = _windowBase(params, neighbors);
   let fixed = Array.new<I32>(count);
   let i = 0;
@@ -634,6 +794,7 @@ let _allocate = fn(function: Function): Function {
   }
   _coalesce(moves, fixed, neighbors);
 
+  // Each spilled type takes two temporaries; recolour until no further type spills.
   let spilled = Array.new<Bool>(_keyTypes.len());
   let temps = 0;
   let windowEnd = base + _scratch.len();
@@ -684,10 +845,14 @@ let _allocate = fn(function: Function): Function {
   }
 };
 
+// The ID of the function the last `allocateProgram` failed on, or -1.
 let _failed = -1;
 
+/** Returns the IR function ID of the function the last `allocateProgram` failed on, or -1 if it
+ * did not fail, so that `Driver` can locate the error at that function's HIR node. */
 export let allocationFailure = fn(): I32 { _failed };
 
+// Allocates `function` (see `_allocate`), recording its ID for `allocationFailure` if it fails.
 let _allocateOrRecord = fn(function: Function): Function {
   try { _allocate(function) } catch (e) {
     _failed = function.id;
@@ -695,6 +860,13 @@ let _allocateOrRecord = fn(function: Function): Function {
   }
 };
 
+/** Allocates registers for every function of a legalised program (see `_allocate`) and checks the
+ * result with `Verify.verifyAllocatedProgram`. The pool, enums, globals and natives pass through.
+ * The last function, the program body, is allocated first, as it is the likeliest to fail.
+ * @param program  a program from `Legalize.legalizeJlo`
+ * @return the program on physical registers, ready for `Emit.emitAllocated`
+ * @throws a failing function's allocation error (too many registers, or a catch value left
+ *         without one), after recording its ID for `allocationFailure` */
 export let allocateProgram = fn(program: Program): Program {
   _failed = -1;
   let functions = program.functions;

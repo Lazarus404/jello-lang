@@ -1,5 +1,14 @@
 package ir;
 
+/** @file
+ * The IR verifier; checks that a program is well formed and well typed, and raises an internal
+ * error for the first problem it finds, since invalid IR is a compiler bug. Lowering
+ * (`ir.Lower`) verifies its output, legalisation (`backend.jello.Legalize`) verifies the
+ * legalised forms, and allocation (`backend.jello.Allocate`) also checks the `.jlo` limits on
+ * registers and native arity. Checks cover operand counts and types per operation, block
+ * targets and try regions, and that every register and spill slot is written before it is
+ * read. The program being verified is held in module state while a check runs. */
+
 import type {
   BasicBlock, EnumSchema, Function, Instruction, Native, Program, Terminator, ThrowHandler,
   ValueType
@@ -8,26 +17,48 @@ import { ValueType, argumentCount, canBeNull, comparesByIdentity, valueTypeEqual
 import { liveness } from ir.Liveness;
 import { internalError } from support.Internal;
 
+/** Raises an internal error for invalid IR.
+ * @param message  what is wrong
+ * @return false, never reached
+ * @throws an internal error with `message` */
 let _fail = fn(message: Bytes): Bool {
   internalError(`invalid IR: ${message}`);
   false
 };
 
+/** Whether a program surrounds the function being verified. Without one (`verifyFunction`),
+ * whatever needs the program is not checked; calls, function constants' callees, enum
+ * layouts and enum tests, globals, and the I64 and bytes pool indexes. */
 let _inProgram = false;
+/** Whether the program is legalised (see `Model.Op` and `backend.jello.Legalize`); an `EnumGet`
+ * reads its field index from a register too, `TupleNew` is gone, and a throw raises a Dynamic. */
 let _legalized = false;
+// Each function's index in the program by function ID, or -1.
 let _functionIndexes = Array.new<I32>(0);
+// The function type of each function, by index in the program, as a `Function` value type.
 let _signatures = Array.new<ValueType>(0);
+// The number of captures of each function, by index in the program.
 let _captureCounts = Array.new<I32>(0);
+// The size of the program's bytes pool.
 let _poolSize = 0;
+// The size of the program's I64 pool.
 let _wideCount = 0;
+// The size of the program's F64 pool.
 let _floatCount = 0;
+// The number of the program's atoms.
 let _atomCount = 0;
+// The program's enum layouts.
 let _enums = Array.new<EnumSchema>(0);
+// The program's global types.
 let _globals = Array.new<ValueType>(0);
+// The program's natives.
 let _natives = Array.new<Native>(0);
 
+// The register types of the function being verified.
 let _registers = Array.new<ValueType>(0);
 
+/** The types the operand checks name most, spelled once; most instructions, it turns out, are
+ * about bytes and I32s. */
 let _bool = ValueType.Bool;
 let _i32 = ValueType.I32;
 let _i64 = ValueType.I64;
@@ -36,6 +67,7 @@ let _atom = ValueType.Atom;
 let _object = ValueType.Object;
 let _dynamic = ValueType.Dynamic;
 
+// The operand type lists the checks name most, built once.
 let _noTypes = Array.new<ValueType>(0);
 let _ofBool = [_bool];
 let _ofI32 = [_i32];
@@ -49,6 +81,8 @@ let _bytesBytes = [_bytes, _bytes];
 let _bytesBytesI32 = [_bytes, _bytes, _i32];
 let _objectAtom = [_object, _atom];
 
+/** Returns the type of `register`.
+ * @throws an internal error if `register` is not one of the function's */
 let _type = fn(register: I32): ValueType {
   if ((register < 0) || (register >= _registers.len())) {
     _fail(`register out of range: ${register}`);
@@ -56,11 +90,14 @@ let _type = fn(register: I32): ValueType {
   _registers[register]
 };
 
+/** Checks that `register` has type `expected`.
+ * @throws an internal error if it does not */
 let _expect = fn(register: I32, expected: ValueType) {
   if (!valueTypeEqual(_type(register), expected)) { _fail(`wrong type for register ${register}`); }
   null
 };
 
+// Checks that the registers of `registers` from `start` on have the types `types`, in turn.
 let _expectEach = fn(registers: Array<I32>, start: I32, types: Array<ValueType>) {
   for (i, ty in types) {
     _expect(registers[start + i], ty);
@@ -68,6 +105,7 @@ let _expectEach = fn(registers: Array<I32>, start: I32, types: Array<ValueType>)
   null
 };
 
+// Checks that every register of `registers` has type `expected`.
 let _expectAll = fn(registers: Array<I32>, expected: ValueType) {
   for (register in registers) {
     _expect(register, expected);
@@ -75,8 +113,11 @@ let _expectAll = fn(registers: Array<I32>, expected: ValueType) {
   null
 };
 
+// Checks whether `ty` is an integer type, I32 or I64.
 let _isNumeric = fn(ty: ValueType): Bool { match (ty) { I32, I64 => true, _ => false } };
 
+/** Checks whether `ty` is an integer type or F32 or F64, the types the VM divides, negates and
+ * compares; with `half`, F16 too, which it only adds, subtracts and multiplies. */
 let _isArithmetic = fn(ty: ValueType, half: Bool): Bool {
   match (ty) {
     I32, I64, F32, F64 => true,
@@ -85,6 +126,8 @@ let _isArithmetic = fn(ty: ValueType, half: Bool): Bool {
   }
 };
 
+/** Checks whether the VM converts a value of type `source` to type `target`, one of them a
+ * float. */
 let _converts = fn(source: ValueType, target: ValueType): Bool {
   match ((source, target)) {
     (I32, F16), (I32, F32), (I32, F64), (I64, F32), (I64, F64) => true,
@@ -94,6 +137,8 @@ let _converts = fn(source: ValueType, target: ValueType): Bool {
   }
 };
 
+/** Returns the index in the program of the function with ID `function`.
+ * @throws an internal error if no function has that ID */
 let _index = fn(function: I32): I32 {
   if ((function < 0)
     || (function >= _functionIndexes.len())
@@ -103,6 +148,14 @@ let _index = fn(function: I32): I32 {
   _functionIndexes[function]
 };
 
+/** Checks a call's operands against a signature; the arguments from `start` on against
+ * `params`, and the destination against `result`.
+ * @param params  the callee's parameter types
+ * @param result  the callee's result type
+ * @param dst  the call's destination register
+ * @param args  the call's operands
+ * @param start  the index of the first argument in `args`
+ * @throws an internal error on a count or type mismatch */
 let _call = fn(
   params: Array<ValueType>,
   result: ValueType,
@@ -115,6 +168,8 @@ let _call = fn(
   _expect(dst, result)
 };
 
+/** Returns the variants' field types of enum `enumId`, by tag.
+ * @throws an internal error if `enumId` is out of range or a record's */
 let _variants = fn(enumId: I32): Array<Array<ValueType>> {
   if ((enumId < 0) || (enumId >= _enums.len())) { _fail(`unknown enum type@${enumId}`); }
 
@@ -127,27 +182,41 @@ let _variants = fn(enumId: I32): Array<Array<ValueType>> {
   }
 };
 
+/** Returns the field types of variant `tag` of enum `enumId`.
+ * @param enumId  the enum's index
+ * @param tag  the variant's tag
+ * @return the field types
+ * @throws an internal error if the enum or the tag is out of range */
 let _fields = fn(enumId: I32, tag: I32): Array<ValueType> {
   let variants = _variants(enumId);
   if ((tag < 0) || (tag >= variants.len())) { _fail("enum tag out of range"); }
   variants[tag]
 };
 
+/** Fails unless `imm` is a `BitsRead` or `BitsWrite` field; a width of 1 to 8 bits at a
+ * non-negative bit offset. */
 let _bitField = fn(imm: I32) {
   if ((imm < 0) || (imm % 16 == 0) || (imm % 16 > 8)) { _fail("bit field out of range"); }
   null
 };
 
+// Returns the value type of a `BytesRead` or `BytesWrite` format, after checking it.
 let _formatType = fn(format: I32): ValueType {
   if ((format < 0) || (format > 7)) { _fail("bytes format out of range"); }
   format >= 6 ? ValueType.F32 : _i32
 };
 
+/** Fails, in a whole program, unless `imm` indexes a pool of `size` entries.
+ * @param what  the kind of constant, for the error */
 let _pooled = fn(imm: I32, size: I32, what: Bytes) {
   if (_inProgram && ((imm < 0) || (imm >= size))) { _fail(`${what} out of range`); }
   null
 };
 
+/** Returns the field types of a struct of type `ty`; a tuple's elements, or a record's fields, or
+ * null for a record outside a whole program, whose layout is unknown.
+ * @param what  the operation, for the error
+ * @throws an internal error if `ty` is neither */
 let _structFields = fn(ty: ValueType, what: Bytes): ?Array<ValueType> {
   match (ty) {
     TupleOf(elements) => elements,
@@ -166,6 +235,12 @@ let _structFields = fn(ty: ValueType, what: Bytes): ?Array<ValueType> {
   }
 };
 
+/** Checks whether some variant of enum `enumId` has field `index` of type `ty`. An `EnumGet`
+ * carries no tag, so this is all the verifier can check of it.
+ * @param enumId  the enum's index
+ * @param index  the field index
+ * @param ty  the field's expected type
+ * @throws an internal error if the enum is out of range */
 let _hasField = fn(enumId: I32, index: I32, ty: ValueType): Bool {
   let variants = _variants(enumId);
 
@@ -175,32 +250,42 @@ let _hasField = fn(enumId: I32, index: I32, ty: ValueType): Bool {
   false
 };
 
+/** Returns the type of global `index`.
+ * @throws an internal error if it is out of range */
 let _global = fn(index: I32): ValueType {
   if ((index < 0) || (index >= _globals.len())) { _fail("global out of range"); }
   _globals[index]
 };
 
+/** Checks that an instruction's operands `args` number `count`.
+ * @throws an internal error if the count differs */
 let _arity = fn(args: Array<I32>, count: I32) {
   if (args.len() != count) { _fail("wrong operand count"); }
   null
 };
 
+// Checks that an instruction's operands `args` have the types `types`, count first.
 let _operands = fn(args: Array<I32>, types: Array<ValueType>) {
   _arity(args, types.len());
   _expectEach(args, 0, types)
 };
 
+/** Checks an instruction that defines `dst` of type `result` from operands of the types
+ * `types`; the count, then the destination, then the operands. */
 let _defines = fn(dst: I32, result: ValueType, args: Array<I32>, types: Array<ValueType>) {
   _arity(args, types.len());
   _expect(dst, result);
   _expectEach(args, 0, types)
 };
 
+// Fails unless `imm` is a spill slot, which an instruction numbers in 16 bits.
 let _spillSlot = fn(imm: I32) {
   if ((imm < 0) || (imm >= 65536)) { _fail("spill slot out of range"); }
   null
 };
 
+/** Checks the operands and immediate of a `BitsRead`, `BitsWrite`, `BytesRead` or `BytesWrite`;
+ * apart, so that `_instruction` stays small. */
 let _bitsOrBytes = fn(instruction: Instruction) {
   let dst = instruction.dst;
   let args = instruction.args;
@@ -231,6 +316,11 @@ let _bitsOrBytes = fn(instruction: Instruction) {
   }
 };
 
+/** Checks one instruction; its operands are registers of the function, a store defines no
+ * register while every other operation defines one, and its operand count, operand types,
+ * destination type and immediate fit its operation. With `_inProgram`, references into the
+ * program are checked too.
+ * @throws an internal error if it is invalid */
 let _instruction = fn(instruction: Instruction) {
   let dst = instruction.dst;
   let args = instruction.args;
@@ -343,6 +433,7 @@ let _instruction = fn(instruction: Instruction) {
       _expect(dst, _bool);
       let ty = _type(args[0]);
 
+      // Atoms and functions compare for equality alone, and unsigned only integers.
       let compared = match (instruction.op) {
         Eq when (comparesByIdentity(ty)) => true,
         LtU => _isNumeric(ty),
@@ -507,6 +598,7 @@ let _instruction = fn(instruction: Instruction) {
     BytesSlice => _defines(dst, _bytes, args, _bytesI32I32),
     BytesConcat => _defines(dst, _bytes, args, _bytesBytes),
     BytesConcatMany => {
+      // Its part count is an instruction byte.
       if (args.len() > 255) { _fail("bytes.concat_many of more than 255 parts"); }
       _expect(dst, _bytes);
       _expectAll(args, _bytes)
@@ -577,6 +669,7 @@ let _instruction = fn(instruction: Instruction) {
     },
 
     ObjectNew => _defines(dst, _object, args, _noTypes),
+    // A key in `imm` is an atom of the program; otherwise the access reads it from an Atom.
     ObjectGet, ObjectSet, ObjectHas => {
       let keyed = imm < 0;
       let set = match (instruction.op) { ObjectSet => true, _ => false };
@@ -649,11 +742,22 @@ let _instruction = fn(instruction: Instruction) {
   null
 };
 
+/** Checks whether two blocks with handlers `a` and `b` are in the same try region; both have
+ * none, or both catch into the same block with the same payload register. */
 let _sameHandler = fn(a: ?ThrowHandler, b: ?ThrowHandler): Bool {
   if ((a == null) || (b == null)) { return (a == null) && (b == null); }
   (a.target == b.target) && (a.payload == b.payload)
 };
 
+/** Checks the try regions, which emission turns into the VM's TRY and ENDTRY scopes. The entry
+ * block is in none, and both targets of a branch are in the branching block's region; only a
+ * jump enters or leaves one. A catch block runs one region out of the blocks it catches for,
+ * so following handlers from a block through their catch blocks counts its nesting, which
+ * may be at most 16, the depth of the VM's try stack.
+ * @param blocks  the function's blocks
+ * @param indexes  block indexes by ID
+ * @param entry  the entry block's ID
+ * @throws an internal error if a region is invalid */
 let _regions = fn(blocks: Array<BasicBlock>, indexes: Array<I32>, entry: I32) {
   if (blocks[indexes[entry]].handler != null) { _fail("entry block inside a try region"); }
 
@@ -670,6 +774,7 @@ let _regions = fn(blocks: Array<BasicBlock>, indexes: Array<I32>, entry: I32) {
       _ => null,
     };
 
+    // Each catch block is one region further out, so the walk out counts the nesting.
     let depth = 0;
 
     while (handler != null) {
@@ -681,6 +786,10 @@ let _regions = fn(blocks: Array<BasicBlock>, indexes: Array<I32>, entry: I32) {
   null
 };
 
+/** Maps block IDs to positions in `blocks`, as `Cfg.blockIndexes` does, checking that IDs are
+ * non-negative and unique.
+ * @return each block's index by its ID, with -1 for an ID with no block
+ * @throws an internal error on a negative or duplicate ID */
 let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   let indexes = Array.new<I32>(0);
 
@@ -694,11 +803,19 @@ let _blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   indexes
 };
 
+/** Returns the index of block `id` from `indexes`, the block indexes by ID.
+ * @throws an internal error if no block has that ID */
 let _target = fn(indexes: Array<I32>, id: I32): I32 {
   if ((id < 0) || (id >= indexes.len()) || (indexes[id] < 0)) { _fail(`unknown block: ${id}`); }
   indexes[id]
 };
 
+/** Checks a terminator; its targets exist, a branch's condition is Bool, a return's value has
+ * the function's result type, and a thrown value is a register of the function, Dynamic once
+ * legalised.
+ * @param result  the function's result type
+ * @param indexes  block indexes by ID
+ * @throws an internal error if it is invalid */
 let _terminator = fn(result: ValueType, indexes: Array<I32>, terminator: Terminator) {
   match (terminator) {
     Jump(target) => {
@@ -712,6 +829,7 @@ let _terminator = fn(result: ValueType, indexes: Array<I32>, terminator: Termina
       null
     },
     ReturnValue(value) => _expect(value, result),
+    // A legalised throw raises a boxed value, which a handler receives.
     Throw(value, _) => {
       if (_legalized) { _expect(value, _dynamic); } else { _type(value); }
       null
@@ -719,10 +837,21 @@ let _terminator = fn(result: ValueType, indexes: Array<I32>, terminator: Termina
   }
 };
 
+// Returns the spill slot `instruction` pushes or pops, or -1 if it is not a spill.
 let _slot = fn(instruction: Instruction): I32 {
   match (instruction.op) { SpillPush, SpillPop => instruction.imm, _ => -1 }
 };
 
+/** Checks that every register and spill slot read is written earlier on every path to the
+ * read; only the parameters may be live into the entry block. A throw carries what its block
+ * wrote before the first instruction that may throw, and the catch payload (see
+ * `Liveness.liveness`).
+ * @param params  the function's parameter registers
+ * @param blocks  the function's blocks
+ * @param indexes  block indexes by ID
+ * @param entry  the entry block's ID
+ * @param slots  the number of spill slots the function uses
+ * @throws an internal error naming the lowest register or slot read before it is written */
 let _definitions = fn(
   params: Array<I32>,
   blocks: Array<BasicBlock>,
@@ -743,6 +872,10 @@ let _definitions = fn(
   null
 };
 
+/** Checks one function; its blocks, parameters (captures must be Dynamic), handlers, each
+ * instruction and terminator, that each spill slot holds one type, its try regions, and that
+ * every read follows a write.
+ * @throws an internal error if it is invalid */
 let _function = fn(function: Function) {
   let params = function.params;
   let blocks = function.blocks;
@@ -756,6 +889,7 @@ let _function = fn(function: Function) {
   _target(indexes, function.entry);
 
   for (i, param in params) {
+    // Captures arrive boxed.
     if (i >= argumentCount(function)) {
       _expect(param, _dynamic);
     } else {
@@ -764,6 +898,7 @@ let _function = fn(function: Function) {
     if (params.indexOf(param) < i) { _fail("duplicate parameter register"); }
   }
 
+  // Each spill slot holds one type. Slots are sparse, so `seen` marks the used ones.
   let slotTypes = Array.new<ValueType>(0);
   let seen = Array.new<Bool>(0);
 
@@ -803,12 +938,17 @@ let _function = fn(function: Function) {
   true
 };
 
+/** Verifies `function` on its own, unlegalised. What needs the program is not checked (see
+ * `_inProgram`).
+ * @throws an internal error if it is invalid */
 export let verifyFunction = fn(function: Function): Bool {
   _inProgram = false;
   _legalized = false;
   _function(function)
 };
 
+/** Returns the function type of `function`; its argument registers' types and its result.
+ * Captures are not part of it. */
 let _signatureOf = fn(function: Function): ValueType {
   let types = Array.new<ValueType>(0);
   let i = 0;
@@ -820,6 +960,12 @@ let _signatureOf = fn(function: Function): ValueType {
   ValueType.Function(types, function.result)
 };
 
+/** Verifies `program`; indexes its functions by ID (which must be non-negative and unique) and
+ * records their signatures and the program's pools and tables, then checks each function from
+ * index `first`.
+ * @param legalized  whether to check the legalised forms
+ * @param first  the index of the first function to check; those before it were checked already
+ * @throws an internal error if it is invalid */
 let _program = fn(program: Program, legalized: Bool, first: I32): Bool {
   _legalized = legalized;
   let functions = program.functions;
@@ -861,13 +1007,22 @@ let _program = fn(program: Program, legalized: Bool, first: I32): Bool {
   true
 };
 
+// Verifies `program` as lowering produces it, before legalisation (see `_program`).
 export let verifyProgram = fn(program: Program): Bool { _program(program, false, 0) };
+// Verifies `program` in its legalised forms (see `_program`).
 export let verifyLegalizedProgram = fn(program: Program): Bool { _program(program, true, 0) };
 
+/** Verifies `program`, whose functions before index `first` were verified already in a program
+ * with the same pools up to their uses (see `_program`).
+ * @param legalized  whether to check the legalised forms */
 export let verifyProgramFrom = fn(program: Program, legalized: Bool, first: I32): Bool {
   _program(program, legalized, first)
 };
 
+/** Verifies an allocated `program`; it is legalised and within the `.jlo` limits. Registers
+ * are byte operands, so a function may use at most 256, and an import has at most 8 arguments
+ * (see `Emit._module`).
+ * @throws an internal error if it is invalid or exceeds a limit */
 export let verifyAllocatedProgram = fn(program: Program): Bool {
   for (function in program.functions) {
     let count = function.registers.len();

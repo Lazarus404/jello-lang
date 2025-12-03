@@ -1,8 +1,16 @@
 package frontend.syntax;
 
+/** @file
+ * Turns a byte offset in a source file into a line and column, for messages that name a
+ * location after parsing, such as the test assertions `frontend.semantics.Testing` builds. Each
+ * file is read and split into lines once, then cached for the rest of the run. */
+
 import { lineColumns, lineOf, lineStarts } from frontend.syntax.Source;
 import { readText } from std.io.File;
 
+/** A file located so far; its path, as given to the compiler, its text, the byte offset of each
+ * of its line starts, and the columns of each line located so far (see `lineColumns`), or null
+ * for a line not yet located. */
 typedef LocatedFile = {
   let path: Bytes;
   let text: Bytes;
@@ -10,9 +18,12 @@ typedef LocatedFile = {
   let columns: Array<?Array<I32>>;
 };
 
+// The files located so far, each read once.
 let _files = Array.new<LocatedFile>(0);
+// The file located last, which the next lookup is most likely in, or null.
 let _last: ?LocatedFile = null;
 
+// Returns the file at `path` located so far, reading it and adding it on first use.
 let _file = fn(path: Bytes): LocatedFile {
   let last = _last;
   if ((last != null) && (last.path == path)) { return last; }
@@ -27,6 +38,12 @@ let _file = fn(path: Bytes): LocatedFile {
   file
 };
 
+/** Returns the 1-based line and column of byte `offset` in the file at `path`, columns counting
+ * code points. Reads the file and finds its line starts on first use, and a line's columns the
+ * first time it is located; each lookup then binary-searches the line starts and reads the
+ * column, in whatever order offsets come.
+ * @param path  the file's path, as given to the compiler
+ * @param offset  the byte offset in the file */
 export let locate = fn(path: Bytes, offset: I32): Tuple<I32, I32> {
   let file = _file(path);
   let line = lineOf(file.starts, offset);

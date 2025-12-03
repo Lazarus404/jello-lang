@@ -1,5 +1,15 @@
 package frontend.semantics;
 
+/** @file
+ * Checks Objects into HIR for `frontend.semantics.Aggregates`; their literals, field reads and
+ * writes, and the functions of `Object`. An Object maps atoms to values, which it holds boxed, so
+ * a field reads as a Dynamic unless `Object.get<T>` reads it as a T, which the VM checks. A key is
+ * an atom, written `:name` or as a bytes literal, or any Atom value; atoms are interned at compile
+ * time, so a Bytes key must be a literal. Reads and `exists` follow `__proto__` to the Objects an
+ * Object delegates to. A call `o.m(args)` of a name that is not one of `Object`'s functions reads
+ * the function in field `m` and calls it with `o` first. Errors are located at the expression
+ * being checked. */
+
 import type { AssignOp, Expr as AstExpr, ObjectEntry, Type as AstType } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { Kind, Op } from frontend.hir.Hir;
@@ -11,12 +21,18 @@ import {
 } from frontend.semantics.TypeCheck;
 import { E0402, E0406, E0604, E0805, E0806, coded } from support.Codes;
 
+// Returns a read of the hidden constant `binding`, an Object.
 let _object = fn(binding: I32): I32 { H.local(binding, H.TYPE_OBJECT) };
 
+// Returns the Atom node of the key named `name`.
 export let namedKey = fn(name: Bytes): I32 {
   H.node(Op.Atom, H.TYPE_ATOM, H.bytesId(name), 0, [])
 };
 
+/** Checks `key`, syntax child `index`, as an Object key; `:name` or a bytes literal names the key,
+ * and anything else must be an Atom.
+ * @return the key, an Atom node for a named one
+ * @throws a located error for any other type */
 export let objectKey = fn(key: AstExpr, index: I32): I32 {
   match (key) {
     Atom(name), Bytes(name) => namedKey(name),
@@ -33,16 +49,23 @@ export let objectKey = fn(key: AstExpr, index: I32): I32 {
   }
 };
 
+/** Builds the access `op`, of type `ty`, of `object` at `key`, with `operands` after the key; the
+ * key's name for an Atom node, which then builds nothing, else the key as a child. */
 let _access = fn(op: Op, ty: I32, object: I32, key: I32, operands: Array<I32>): I32 {
   let named = H.opOf(key) == Op.Atom;
   let children = named ? [object] : [object, key];
   H.node(op, ty, named ? H.valueOf(key) : -1, 0, children.appendFrom(operands, 0))
 };
 
+// Builds a read of field `key` of `object`, as a Dynamic or as a type `ty` the VM checks.
 export let readObject = fn(object: I32, key: I32, ty: I32): I32 {
   _access(Op.ObjectGet, ty, object, key, [])
 };
 
+/** Builds a read of field `key` of `object` as the type `declared` that a linked typedef
+ * declares (`Hir.readsTyped`); an abstract type is read as a Dynamic and extracted, and so is a
+ * nullable scalar or abstract type when it is present. A Param is read as itself, and so is a
+ * Var, which can then settle on no nullable type. */
 export let readTyped = fn(object: I32, key: I32, declared: I32): I32 {
   let ty = H.resolve(declared);
   if (H.isKind(ty, Kind.Var)) { H.unify(ty, H.newVar(true)); }
@@ -60,14 +83,19 @@ export let readTyped = fn(object: I32, key: I32, declared: I32): I32 {
   H.node(Op.Block, ty, 0, 1, statements)
 };
 
+/** Builds a write of the stored `value` (`storable`) to field `key` of `object`, which yields
+ * it; a U32 is stored as a Dynamic. */
 let _write = fn(object: I32, key: I32, value: I32): I32 {
   _access(Op.ObjectSet, H.typeOf(value), object, key, [value])
 };
 
+/** Checks `value`, syntax child `index`, and builds its write to field `key` of `object`.
+ * @throws a located error for a value that cannot be boxed (`storable`) */
 let _store = fn(object: I32, key: I32, value: AstExpr, index: I32): I32 {
   let checked = checkOperand(value, index, -1);
   let ty = H.typeOf(checked);
   let outer = enterSyntax(syntaxChild(index));
+  // An Object's `__proto__` links it to the Object it delegates to; null unlinks it.
   let link = (H.opOf(key) == Op.Atom) && (H.bytesOf(H.valueOf(key)) == "__proto__");
 
   if (link && !H.isObject(ty) && (ty != H.TYPE_DYNAMIC) && (ty != H.TYPE_NULL)) {
@@ -79,22 +107,33 @@ let _store = fn(object: I32, key: I32, value: AstExpr, index: I32): I32 {
   _write(object, key, stored)
 };
 
+/** Checks `value`, syntax child `index`, and builds its write to field `name` of `object`.
+ * @throws a located error for a value that cannot be boxed (`storable`) */
 export let storeField = fn(object: I32, name: Bytes, value: AstExpr, index: I32): I32 {
   _store(object, namedKey(name), value, index)
 };
 
+// Builds a write of the checked, storable `value` to field `name` of `object`.
 export let writeField = fn(object: I32, name: Bytes, value: I32): I32 {
   _write(object, namedKey(name), value)
 };
 
+// The error for a compound assignment or step of an Object's field.
 export let OBJECT_UPDATE: Bytes = coded(E0806,
   "an Object field is Dynamic, so it cannot be updated in place; assign it a value");
 
+/** Checks `o[k] = v` and `o.k = v`, the current syntax being the assignment's, whose value is
+ * child 1; a compound assignment would need the field's type.
+ * @param object  the checked Object
+ * @param key  the checked key (`objectKey`)
+ * @throws a located error for a compound assignment */
 export let assignObject = fn(object: I32, key: I32, op: AssignOp, value: AstExpr): I32 {
   if (let Compound(_) = op) { throw OBJECT_UPDATE; }
   _store(object, key, value, 1)
 };
 
+/** Builds the statements of a loop that copies every field of the Object `source` to `target`,
+ * both hidden constants, and appends them to `statements`. */
 let _copyFields = fn(statements: Array<I32>, target: I32, source: I32) {
   let keysType = H.arrayType(H.TYPE_ATOM);
   let listed = H.opNode(Op.ObjectKeys, keysType, [_object(source)]);
@@ -111,6 +150,8 @@ let _copyFields = fn(statements: Array<I32>, target: I32, source: I32) {
   null
 };
 
+/** Checks a spread `...value` of an Object literal, syntax child `index`.
+ * @throws a located error if it is not an Object */
 let _spread = fn(value: AstExpr, index: I32): I32 {
   let source = checkPresent(value, index);
   let ty = H.typeOf(source);
@@ -122,6 +163,12 @@ let _spread = fn(value: AstExpr, index: I32): I32 {
   source
 };
 
+/** Checks an Object literal, `{ name: value, [key]: value, ...o }`; a new Object whose fields are
+ * set in source order, a spread copying every field of its Object (`Object.keys`). A leading
+ * spread is a copy of its Object, which shares its prototype.
+ * @param entries  the literal's entries; a computed entry has two syntax children, its key then
+ *   its value, and any other one
+ * @return the block that builds it */
 export let checkObject = fn(entries: Array<ObjectEntry>): I32 {
   let leading = -1;
 
@@ -161,6 +208,11 @@ export let checkObject = fn(entries: Array<ObjectEntry>): I32 {
   H.node(Op.Block, H.TYPE_OBJECT, 0, 1, statements)
 };
 
+/** Checks the type argument `T` of `Object.get<T>`; Dynamic, or a type `as` extracts.
+ * @param types  the written type arguments
+ * @param name  the call's name, for the error
+ * @return the read's type, Dynamic when none is written
+ * @throws a located error for more than one, or a type the VM does not check */
 let _readType = fn(types: Array<AstType>, name: Bytes): I32 {
   if (types.len() > 1) { throw coded(E0402, `${name} takes one type argument`); }
   if (types.len() == 0) { return H.TYPE_DYNAMIC; }
@@ -172,6 +224,8 @@ let _readType = fn(types: Array<AstType>, name: Bytes): I32 {
   ty
 };
 
+/** Checks whether `name` is a function of `Object` that the compiler checks itself, which wins
+ * over an export of that name in `std.core.Object`. */
 export let isObjectIntrinsic = fn(name: Bytes): Bool {
   match (name) {
     "get", "set", "exists", "remove", "clear", "copy", "keys", "toString" => true,
@@ -179,6 +233,17 @@ export let isObjectIntrinsic = fn(name: Bytes): Bool {
   }
 };
 
+/** Checks a call of the intrinsic `Object.name` (`isObjectIntrinsic`); `get` reads a field,
+ * Dynamic or as its T, `set` writes one and yields the value, `exists` tells whether it has the
+ * field, its own or one it delegates to, `remove` whether it held its own, `clear` empties the
+ * Object and yields it, `copy` copies it, `keys` lists its own keys in atom order, and `toString`
+ * shows it as `{a: 1}`.
+ * @param object  the checked Object
+ * @param types  the written type arguments
+ * @param args  the arguments after the Object
+ * @param first  the syntax child of `args[0]`
+ * @return the checked call
+ * @throws a located error if the arguments are wrong */
 export let checkObjectCall = fn(
   name: Bytes,
   object: I32,
@@ -209,6 +274,8 @@ export let checkObjectCall = fn(
   }
 };
 
+/** Checks the Object a static `Object.f(o, ...)` takes first, syntax child 1.
+ * @throws a located error if it is not an Object */
 export let objectArgument = fn(arg: AstExpr, name: Bytes): I32 {
   let object = checkPresent(arg, 1);
 
@@ -219,10 +286,22 @@ export let objectArgument = fn(arg: AstExpr, name: Bytes): I32 {
   objectValue(object)
 };
 
+/** Checks `o.name(args)`, a call of the function in field `name` of the Object `o`, with `o`
+ * first. The function's type is the arguments' types to a result its context gives, read as a
+ * function of that type, which the VM checks.
+ * @param object  the checked Object
+ * @param name  the field's name
+ * @param args  the arguments, syntax children from 1 on
+ * @return the block that binds `o` and calls the function
+ * @throws a located error for a spread argument */
 export let callObjectField = fn(object: I32, name: Bytes, args: Array<AstExpr>): I32 {
   callField(object, -1, name, args)
 };
 
+/** Checks a call of the function in field `name` of the Object `holder` with `receiver` first, as
+ * `callObjectField` does with the holder itself; `super.m(args)` calls one of the Object a
+ * prototype delegates to with its `this`.
+ * @param receiver  the checked Object passed first, or -1 for `holder` */
 export let callField = fn(holder: I32, receiver: I32, name: Bytes, args: Array<AstExpr>): I32 {
   if (hasSpread(args)) {
     throw coded(E0604, "an Object's function cannot take a spread; its type is the arguments'");
@@ -232,6 +311,7 @@ export let callField = fn(holder: I32, receiver: I32, name: Bytes, args: Array<A
   let first = receiver < 0 ? object : hideValue(statements, "receiver", objectValue(receiver));
   let params = [H.TYPE_OBJECT];
   while (params.len() <= args.len()) { params.push(H.newVar(false)); }
+  // The VM checks the function against this type, so its result must be inferred from the context.
   let result = H.newVar(false);
   inferLater(`o.${name}(...)'s result, which the VM checks against the function`, result);
   let callee = readObject(_object(object), namedKey(name), H.functionType(params, result));

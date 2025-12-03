@@ -1,5 +1,14 @@
 package frontend.syntax;
 
+/** @file
+ * Builds a program's `Syntax` tree by pairing the parser's syntax marks with the AST they
+ * describe. The parser records one `SyntaxMark` per `Expr`, `Stmt`, `Parameter`, `Pattern` and
+ * binding annotation when the node is complete, so its children's marks come before its own. A
+ * walk over each node's children in field order therefore meets the marks in sequence; this
+ * module is the only place that knows that order. Patterns and a binding's annotation go to a
+ * node's separate `patterns` list, so they leave its child indexes alone. `Parser.programSyntax`
+ * calls it after parsing, and the checker reads the tree to give each HIR node a source span. */
+
 import type {
   Block, Expr, ListLiteral, MatchArm, Parameter, Pattern, Program, Stmt, Type
 } from frontend.syntax.Ast;
@@ -8,10 +17,14 @@ import type { Syntax, SyntaxKind, SyntaxMark } from frontend.syntax.Source;
 import { SyntaxKind } from frontend.syntax.Source;
 import { internalError } from support.Internal;
 
+// The parser's marks for the program being walked, in the order the parser made them.
 let _marks = Array.new<SyntaxMark>(0);
+// The index in `_marks` of the next mark to take.
 let _next = 0;
+// The source path of the program being walked, given to every node.
 let _path = "";
 
+// Checks whether `left` and `right` are the same `SyntaxKind` variant.
 let _sameKind = fn(left: SyntaxKind, right: SyntaxKind): Bool {
   match ((left, right)) {
     (Expression, Expression), (Statement, Statement), (Parameter, Parameter), (Pattern, Pattern),
@@ -20,6 +33,8 @@ let _sameKind = fn(left: SyntaxKind, right: SyntaxKind): Bool {
   }
 };
 
+/** Checks whether every node in `inner` lies within the byte range `[start, end]`; none starts
+ * before `start` or ends after `end`. */
 let _contains = fn(start: I32, end: I32, inner: Array<Syntax>): Bool {
   for (node in inner) {
     if ((node.start < start) || (node.end > end)) { return false; }
@@ -27,6 +42,14 @@ let _contains = fn(start: I32, end: I32, inner: Array<Syntax>): Bool {
   true
 };
 
+/** Takes the next mark as the span of a node whose children and patterns are already built, and
+ * returns the node.
+ * @param kind  the node's syntax kind
+ * @param tag  the node's `exprTag`, `stmtTag` or `patternTag`, or 0 for a parameter or annotation
+ * @param children  the node's `Expr`, `Stmt` and `Parameter` children, in field order
+ * @param patterns  the node's patterns and binding annotations, in field order
+ * @throws an internal error if the marks are exhausted, the mark's kind or tag differs from the
+ *   node's, or its range does not contain every child and pattern */
 let _takeWith = fn(
   kind: SyntaxKind,
   tag: I32,
@@ -53,17 +76,23 @@ let _takeWith = fn(
   }
 };
 
+/** Takes the next mark as the span of a node of syntax kind `kind` and tag `tag` with `children`
+ * and no patterns, and returns the node (see `_takeWith`). */
 let _take = fn(kind: SyntaxKind, tag: I32, children: Array<Syntax>): Syntax {
   _takeWith(kind, tag, children, [])
 };
 
+// Appends the syntax of pattern `value` to `out`.
 let _addPattern = fn(out: Array<Syntax>, value: Pattern) {
   out.push(_pattern(value));
   null
 };
 
+/** Takes the mark of a binding's type annotation, which follows its pattern's mark.
+ * @return the annotation's node, with no children */
 let _annotation = fn(): Syntax { _take(SyntaxKind.Type, 0, []) };
 
+// Appends the syntax of each pattern in `values` to `out`, in order.
 let _patternList = fn(values: Array<Pattern>, out: Array<Syntax>) {
   for (pattern in values) {
     _addPattern(out, pattern);
@@ -71,6 +100,7 @@ let _patternList = fn(values: Array<Pattern>, out: Array<Syntax>) {
   null
 };
 
+// Builds the syntax of pattern `value`, whose children are its sub-patterns in field order.
 let _pattern = fn(value: Pattern): Syntax {
   let out = Array.new<Syntax>(0);
 
@@ -91,6 +121,7 @@ let _pattern = fn(value: Pattern): Syntax {
       }
       null
     },
+    // Its value is an expression, its only child.
     Unquote(inner) => {
       out.push(_expr(inner));
       null
@@ -99,16 +130,19 @@ let _pattern = fn(value: Pattern): Syntax {
   _take(SyntaxKind.Pattern, patternTag(value), out)
 };
 
+// Appends the syntax of expression `value` to `out`.
 let _add = fn(out: Array<Syntax>, value: Expr) {
   out.push(_expr(value));
   null
 };
 
+// Appends the syntax of statement `value` to `out`.
 let _addStmt = fn(out: Array<Syntax>, value: Stmt) {
   out.push(_stmt(value));
   null
 };
 
+// Appends the syntax of each expression in `values` to `out`, in order.
 let _exprs = fn(values: Array<Expr>, out: Array<Syntax>) {
   for (value in values) {
     _add(out, value);
@@ -116,11 +150,13 @@ let _exprs = fn(values: Array<Expr>, out: Array<Syntax>) {
   null
 };
 
+// Appends the syntax of the expression `value` to `out` when it is not null.
 let _optional = fn(value: ?Expr, out: Array<Syntax>) {
   if (value != null) { _add(out, value); }
   null
 };
 
+// Appends the syntax of each statement in `values` to `out`, in order.
 let _stmts = fn(values: Array<Stmt>, out: Array<Syntax>) {
   for (stmt in values) {
     _addStmt(out, stmt);
@@ -128,11 +164,19 @@ let _stmts = fn(values: Array<Stmt>, out: Array<Syntax>) {
   null
 };
 
+/** Appends the syntax of `block`'s statements, then of its tail if it has one, to `out`. A block
+ * has no mark of its own. */
 let _block = fn(block: Block, out: Array<Syntax>) {
   _stmts(block.statements, out);
   _optional(block.tail, out)
 };
 
+/** Appends the syntax of match or `with ... else` arms. For each arm, each alternative's pattern
+ * goes to `patterns` and its own guard to `out`; then the arm's shared guard and body go to
+ * `out`.
+ * @param arms  the arms
+ * @param out  the list for expressions and statements
+ * @param patterns  the list for patterns */
 let _arms = fn(arms: Array<MatchArm>, out: Array<Syntax>, patterns: Array<Syntax>) {
   for ({ alternatives, guard, body } in arms) {
     for ({ pattern, guard: own } in alternatives) {
@@ -145,6 +189,10 @@ let _arms = fn(arms: Array<MatchArm>, out: Array<Syntax>, patterns: Array<Syntax
   null
 };
 
+/** Appends one node per parameter to `out`, taking each parameter's mark after its default
+ * value's. A default or optional parameter's default value is the node's only child.
+ * @param params  the parameters
+ * @param out  the list to append to */
 let _parameters = fn(params: Array<Parameter>, out: Array<Syntax>) {
   for (param in params) {
     let defaults = Array.new<Syntax>(0);
@@ -159,6 +207,11 @@ let _parameters = fn(params: Array<Parameter>, out: Array<Syntax>) {
   null
 };
 
+/** Appends the syntax of a list literal's parts in field order. A comprehension's generator
+ * patterns go to `patterns`; its sources, guards and body go to `out`.
+ * @param value  the list literal
+ * @param out  the list for expressions
+ * @param patterns  the list for patterns */
 let _list = fn(value: ListLiteral, out: Array<Syntax>, patterns: Array<Syntax>) {
   match (value) {
     Empty => null,
@@ -185,6 +238,8 @@ let _list = fn(value: ListLiteral, out: Array<Syntax>, patterns: Array<Syntax>) 
   }
 };
 
+/** Builds the syntax of expression `value`; its children and patterns first, then its own
+ * mark. */
 let _expr = fn(value: Expr): Syntax {
   let out = Array.new<Syntax>(0);
   let patterns = Array.new<Syntax>(0);
@@ -283,6 +338,8 @@ let _expr = fn(value: Expr): Syntax {
   _takeWith(SyntaxKind.Expression, exprTag(value), out, patterns)
 };
 
+/** Builds the syntax of statement `value`; its children and patterns first, then its own
+ * mark. */
 let _stmt = fn(value: Stmt): Syntax {
   let out = Array.new<Syntax>(0);
   let patterns = Array.new<Syntax>(0);
@@ -324,6 +381,11 @@ let _stmt = fn(value: Stmt): Syntax {
   _takeWith(SyntaxKind.Statement, stmtTag(value), out, patterns)
 };
 
+/** Builds a program's root node, which has no mark. It spans from offset 0 of `path` to the end
+ * of its last child, and at least one byte.
+ * @param path  the program's source path
+ * @param children  the program's statements, then its tail
+ * @return the root node */
 let _rootSyntax = fn(path: Bytes, children: Array<Syntax>): Syntax {
   let end = 1;
 
@@ -340,6 +402,13 @@ let _rootSyntax = fn(path: Bytes, children: Array<Syntax>): Syntax {
   }
 };
 
+/** Builds the syntax tree of `program` from the marks the parser made while parsing it.
+ * @param program  the parsed program
+ * @param path  the source path the program was parsed from
+ * @param marks  the parser's marks for `program`, in the order it made them
+ * @return the root node, whose children are the program's statements and then its tail
+ * @throws an internal error if the marks and the AST disagree anywhere, including when marks are
+ *   left over */
 export let syntaxTree = fn(program: Program, path: Bytes, marks: Array<SyntaxMark>): Syntax {
   _marks = marks;
   _next = 0;

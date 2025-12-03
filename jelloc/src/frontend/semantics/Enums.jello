@@ -1,5 +1,15 @@
 package frontend.semantics;
 
+/** @file
+ * Checks enum declarations, constructions and `match` into HIR. Enums are nominal tagged unions;
+ * a module declares every enum name before it resolves any payload type, so enums may refer to
+ * themselves and to each other. Values are built by qualified constructors (`Op.EnumNew`) and
+ * read only by `match`, which `frontend.semantics.Match` checks. A generic enum's type arguments
+ * are inferred from a construction's context and payloads, or written; `Option<I32>.None`.
+ * `frontend.semantics.Typedefs` declares and defines a module's enums, and
+ * `frontend.semantics.Modules` registers `checkEnumExpr` with `frontend.semantics.TypeCheck`,
+ * which dispatches enum expressions to it. */
+
 import type {
   EnumConstructor,
   Expr as AstExpr,
@@ -37,6 +47,8 @@ import {
   widened
 } from frontend.semantics.TypeCheck;
 
+/** Checks the fields of an enum variant or a record, with its type parameters in scope.
+ * @return the fields' names and types */
 export let checkFields = fn(fields: Array<StructField>): Tuple<Array<Bytes>, Array<I32>> {
   let names = Array.new<Bytes>(0);
   let types = Array.new<I32>(0);
@@ -48,8 +60,11 @@ export let checkFields = fn(fields: Array<StructField>): Tuple<Array<Bytes>, Arr
   (names, types)
 };
 
+/** Defines the variants of the enum `name`, declared by statement `index`, at its syntax.
+ * @throws a located error if it declares the same variant twice */
 let _defineEnum = fn(index: I32, name: Bytes, constructors: Array<EnumConstructor>): Null {
   let parent = enterSyntax(syntaxChild(index));
+  // A generic enum's fields may name its type parameters.
   let params = enumParams(scopedType(name));
   let (outerNames, outerTypes) = useTypeParams(paramNames(params), params);
 
@@ -73,6 +88,10 @@ let _defineEnum = fn(index: I32, name: Bytes, constructors: Array<EnumConstructo
   null
 };
 
+/** Defines every variant of the enums among a module's top-level statements, once every type name
+ * of the module is declared. Each enum is checked at its statement's syntax.
+ * @param statements  the module's top-level statements
+ * @throws a located error if an enum declares the same variant twice */
 export let defineEnums = fn(statements: Array<Stmt>): Bool {
   for (i, statement in statements) {
     match (statement) {
@@ -83,6 +102,20 @@ export let defineEnums = fn(statements: Array<Stmt>): Bool {
   true
 };
 
+/** Checks the construction `E.V`, or `E.V(args)` when `called`, as an `Op.EnumNew` node; the
+ * current syntax is the expression's. For a generic `E` whose type arguments are not written, each
+ * is a fresh type variable, unified with `expected` first and then with the payloads' types.
+ * @param base  `E` or `E<types>`
+ * @param variant  the variant's name
+ * @param variantTypes  type arguments written on the variant, which are rejected
+ * @param args  the payload expressions
+ * @param called  whether the construction is a call
+ * @param expected  the type the context requires, or -1 for none
+ * @return the `Op.EnumNew` node
+ * @throws a located error if type arguments are written on the variant, `E`'s type argument
+ *     count is wrong, the variant is unknown, the payload count does not match (a variant without
+ *     a payload may not be called, nor one with a payload left uncalled); a payload of the wrong
+ *     type is recorded */
 let _construct = fn(
   base: AstExpr,
   variant: Bytes,
@@ -129,6 +162,7 @@ let _construct = fn(
     throw payloadMismatch(qualified, count, args.len(), called);
   }
 
+  // A field type an earlier field may bind is not declared (`widened`).
   let declared = Array.new<I32>(0);
   let i = 0;
 
@@ -140,6 +174,7 @@ let _construct = fn(
   i = 0;
 
   while (i < count) {
+    // A call's syntax children are the callee, then the arguments.
     let field = widened(checkOperand(args[i], i + 1, fieldType(ty, tag, i)), declared[i]);
 
     if (!unify(typeOf(field), fieldType(ty, tag, i))) {
@@ -151,6 +186,12 @@ let _construct = fn(
   node(Op.EnumNew, ty, tag, 0, fields)
 };
 
+/** Checks `expr`, an enum construction or a `match`. `frontend.semantics.TypeCheck` calls it,
+ * through `TypeCheck.useEnumChecks`, for a `match` and for any member or call whose base names an
+ * enum type that no local hides.
+ * @param expected  the type the context requires, or -1 for none
+ * @param statement  whether a `match` is a statement, whose arms' values are discarded
+ * @return the checked HIR node */
 export let checkEnumExpr = fn(expr: AstExpr, expected: I32, statement: Bool): I32 {
   match (expr) {
     Match(subject, arms) => checkMatch(subject, arms, expected, statement),

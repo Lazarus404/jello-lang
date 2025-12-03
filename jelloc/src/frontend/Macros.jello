@@ -1,5 +1,22 @@
 package frontend;
 
+/** @file
+ * Macros: their definitions, the programs their bodies compile to, and the expansion of their
+ * calls. `frontend.Loader` registers each module's macros and expands its calls once its imports
+ * have loaded, before the checker sees it.
+ *
+ * A macro's body runs while the program compiles, as a program of its own on a VM of its own (the
+ * `vm` library's `image_run`). The compiler compiles every macro of one file into one such
+ * program, by running itself on that VM with `--expanders`, as its global state serves one
+ * compilation at a time. The program meets syntax only as `std.macro`'s Fragment values, which
+ * name the call's arguments and the body's quotes rather than holding them; its result says what
+ * it emitted, and the expansion builds that from the ASTs it has, so the code keeps the source
+ * spans of its arguments; the rest of it is placed at the call, whose span holds theirs.
+ *
+ * Expansion is the output of each call, rewritten in turn, nested at most `_MAX_DEPTH` deep and
+ * making at most `_MAX_NODES` nodes in a module. A call that is a statement takes what its macro
+ * emits as statements; any other call must expand to one expression. */
+
 import type { Expr, Pattern, Program, QuoteBody, Stmt, Type } from frontend.syntax.Ast;
 import {
   BinaryOp, Expr, FloatSize, IntSize, Pattern, Stmt, Type, UnaryOp, integerValue, patternNames,
@@ -18,12 +35,19 @@ import { internalError } from support.Internal;
 
 load { image_run } from vm;
 
+// Runs a module image as a program on a VM of its own (`vm/src/proc/image.c`).
 let _imageRun: (Bytes, Bytes, I64) -> Bytes = image_run;
 
+// How deep expansions may nest; a call in what a call emitted is one deeper.
 const _MAX_DEPTH = 32;
+// How many syntax nodes the expansions of one module may make.
 const _MAX_NODES = 4096;
+// The steps (backward jumps and calls) one run of a macro's body may take.
 const _FUEL: I64 = 100000000;
 
+/** A macro: the file it is defined in, its name, whether it is exported, its index among its
+ * file's macros, its parameters, its body's quotes in order, each with its syntax, and the macros
+ * its module can call (`_visible`), which the syntax it makes calls. */
 typedef Definition = {
   let path: Bytes;
   let name: Bytes;
@@ -34,6 +58,8 @@ typedef Definition = {
   let scope: Array<Tuple<Bytes, I32>>;
 };
 
+/** A piece of syntax a macro emitted, as `std.macro`'s Fragment of the same name. A literal is
+ * its kind's letter, as `std.macro` encodes it, and its text. */
 enum Fragment {
   Argument(index: I32);
   Quoted(index: I32, holes: Array<Fragment>);
@@ -42,18 +68,30 @@ enum Fragment {
   Literal(kind: I32, text: Bytes);
 }
 
+// The macros of every module loaded so far.
 let _definitions = Array.new<Definition>(0);
+// The files whose macros are compiled, and each one's program, at the same index.
 let _imagePaths = Array.new<Bytes>(0);
 let _images = Array.new<Bytes>(0);
+// The standard library's directory, which a macro program's compilation needs.
 let _std = "";
+// The number the next gensym name ends with, so that names are unique in the compilation.
 let _names = 0;
+// The span an expansion failure is located at, or null.
 let _failure: ?SourceSpan = null;
 
+// The macros the module being expanded can call; each name, and its definition's index.
 let _visible = Array.new<Tuple<Bytes, I32>>(0);
+/** The names the module being expanded gives values at its top level, which no macro of it may
+ * have: a call would reach the macro and any other use the value. */
 let _values = Array.new<Bytes>(0);
+// The syntax nodes the module's expansions have made.
 let _nodes = 0;
+// How deep the expansion under way is nested.
 let _depth = 0;
 
+/** The call being expanded; its macro's definition, its arguments, whether each has been placed
+ * in the expansion yet, and its syntax, whose children are the callee's and then the arguments'. */
 let _macro = -1;
 let _arguments = Array.new<Expr>(0);
 let _placed = Array.new<Bool>(0);
@@ -65,8 +103,11 @@ let _call: Syntax = {
   patterns: []
 };
 
+// Returns where expansion failed, for the driver's diagnostic, or null.
 export let macroFailureSpan = fn(): ?SourceSpan { _failure };
 
+/** Forgets every macro and macro program, for a new compilation whose standard library is in
+ * directory `std`. */
 export let beginMacros = fn(std: Bytes) {
   _definitions = Array.new<Definition>(0);
   _imagePaths = Array.new<Bytes>(0);
@@ -77,28 +118,35 @@ export let beginMacros = fn(std: Bytes) {
   null
 };
 
+// Returns a node with no children at the span of `at`.
 let _leaf = fn(at: Syntax): Syntax {
   { ...at, children: [], patterns: [] }
 };
 
+// Returns a node with `children` at the span of `at`.
 let _node = fn(at: Syntax, children: Array<Syntax>): Syntax {
   { ...at, children, patterns: [] }
 };
 
+// Returns `syntax` placed at the call being expanded, whose span then holds every node's.
 let _placedAtCall = fn(syntax: Syntax): Syntax {
   relocated(syntax, _call.path, _call.start, _call.end)
 };
 
+// Returns the error `message`, located at `syntax`.
 let _at = fn(syntax: Syntax, message: Bytes): Bytes {
   _failure = syntaxSpan(syntax);
   message
 };
 
+// Returns the error `message` about the macro being expanded, located at its call.
 let _failed = fn(code: Bytes, message: Bytes): Bytes {
   let name = _definitions[_macro].name;
   _at(_call, coded(code, `macro ${name} ${message}`))
 };
 
+/** Returns `syntax`'s quote, the `index`th of its body, as `Macro.quoted(index, [holes])`, where
+ * the holes are the values of its unquotes, cast to Dynamic. */
 let _quotedCall = fn(
   index: I32,
   holes: Array<Tuple<Expr, Syntax>>,
@@ -119,6 +167,7 @@ let _quotedCall = fn(
   (Expr.Call(callee, [], args), at)
 };
 
+// Returns the syntax a quote's `body` holds, as a rewrite takes it, from the quote's `syntax`.
 let _quoted = fn(body: QuoteBody, syntax: Syntax): Located {
   match (body) {
     Expression(value) => Located.Expression(value, syntax.children[0]),
@@ -129,6 +178,9 @@ let _quoted = fn(body: QuoteBody, syntax: Syntax): Located {
   }
 };
 
+/** Returns the values of the unquotes in the quote `body`, in order, each with its syntax; a
+ * type's `unquote(name)` is the variable `name`, at the quote.
+ * @throws an error for a quote in the quote */
 let _holes = fn(body: QuoteBody, syntax: Syntax): Array<Tuple<Expr, Syntax>> {
   let holes = Array.new<Tuple<Expr, Syntax>>(0);
   rewrite(_quoted(body, syntax), fn(node: Located): ?Located {
@@ -154,6 +206,14 @@ let _holes = fn(body: QuoteBody, syntax: Syntax): Array<Tuple<Expr, Syntax>> {
   holes
 };
 
+/** Rewrites a macro's body as its program runs it, adding its quotes to `quotes` in order: a quote
+ * becomes a `Macro.quoted` call giving the quote's index and its unquotes' values, cast to
+ * Dynamic, and a quote that is a statement is emitted. Both the program and the expansion number
+ * the quotes this way.
+ * @param body  the body's statements, with their syntax
+ * @return the rewritten statements
+ * @throws an error for a statement a body cannot hold, a quote in a quote, or an unquote outside
+ *   a quote */
 let _body = fn(body: Located, quotes: Array<Tuple<QuoteBody, Syntax>>): Located {
   rewrite(body, fn(node: Located): ?Located {
     match (node) {
@@ -164,6 +224,7 @@ let _body = fn(body: Located, quotes: Array<Tuple<QuoteBody, Syntax>>): Located 
         Macro(_, _, _, _) => {
           throw _at(syntax[0], coded(E1000, "a macro body cannot define a macro"));
         },
+        // A quote on its own is emitted.
         Expression(Quote(_, _)) => {
           let quoted = match (values[0]) { Expression(quoted) => quoted, _ => Expr.Null };
 
@@ -182,6 +243,7 @@ let _body = fn(body: Located, quotes: Array<Tuple<QuoteBody, Syntax>>): Located 
         let index = quotes.len();
         quotes.push((quoted, syntax));
 
+        // A value may hold quotes of its own, numbered after this one.
         let holes = _holes(quoted, syntax);
         let made = Array.new<Tuple<Expr, Syntax>>(0);
 
@@ -203,6 +265,7 @@ let _body = fn(body: Located, quotes: Array<Tuple<QuoteBody, Syntax>>): Located 
   })
 };
 
+// Returns the macro statements among a module's top-level `statements`, each with its syntax.
 let _macros = fn(statements: Array<Stmt>, syntax: Array<Syntax>): Array<Tuple<Stmt, Syntax>> {
   let out = Array.new<Tuple<Stmt, Syntax>>(0);
 
@@ -215,9 +278,16 @@ let _macros = fn(statements: Array<Stmt>, syntax: Array<Syntax>): Array<Tuple<St
   out
 };
 
+// The name a macro program gives the arguments of the body it runs.
 const _ARGUMENTS = "__arguments";
+// The statement a macro program holds where a body goes.
 const _BODY = "__body";
 
+/** Returns the source of the program that runs the macros of a file, given its top-level
+ * `statements` and their `syntax`, and the macros' bodies rewritten as it runs them (`_body`): the
+ * program passes `std.macro`'s `run` one function per macro, in order, which binds the macro's
+ * parameters to its arguments and holds the statement `__body` where `spliceBodies` puts the body.
+ * @throws an error for a body that a macro cannot have */
 export let expanderSource = fn(
   statements: Array<Stmt>,
   syntax: Array<Syntax>
@@ -250,6 +320,8 @@ export let expanderSource = fn(
   (source, bodies)
 };
 
+/** Puts `bodies`, which `expanderSource` gave with `node`'s source, into `node`, the program, at
+ * its `__body` statements in order. */
 export let spliceBodies = fn(node: Located, bodies: Array<Located>): Located {
   let next = 0;
   let out = rewrite(node, fn(inner: Located): ?Located {
@@ -266,9 +338,14 @@ export let spliceBodies = fn(node: Located, bodies: Array<Located>): Located {
   out
 };
 
+/** The tag `image_run` gives a result, and the tag it gives the failure of a run that ran out of
+ * fuel. */
 const _RAN = 0;
 const _OUT_OF_FUEL = 2;
 
+/** Returns the program of the macros of the file at `path`, compiling it on first use. A failure
+ * to compile is reported as the compiler reported it.
+ * @throws the report */
 let _image = fn(path: Bytes): Bytes {
   let known = _imagePaths.indexOf(path);
   if (known >= 0) { return _images[known]; }
@@ -288,6 +365,9 @@ let _image = fn(path: Bytes): Bytes {
   made
 };
 
+/** Registers the macro statement `statement`, the `index`th of the file at `path`, whose syntax is
+ * `syntax`, and makes it callable in the module.
+ * @throws an error if the module can already call a macro of its name, or its body is invalid */
 let _define = fn(path: Bytes, index: I32, statement: Stmt, syntax: Syntax) {
   match (statement) {
     Macro(exported, name, params, body) => {
@@ -304,6 +384,8 @@ let _define = fn(path: Bytes, index: I32, statement: Stmt, syntax: Syntax) {
   null
 };
 
+/** The error for a new macro named `name` when the module can already call a macro so named, or
+ * has a top-level value so named, which its calls would hide; otherwise "". */
 let _taken = fn(name: Bytes): Bytes {
   if (_visibleIndex(name) >= 0) { return coded(E1000, `macro ${name} is already defined`); }
   if (!_values.contains(name)) { return ""; }
@@ -311,6 +393,7 @@ let _taken = fn(name: Bytes): Bytes {
     `macro ${name} has the name of a value of this module, which its calls would hide; rename one`)
 };
 
+// The names `statements` give values: each name a `let` binds, and each value import's.
 let _valueNames = fn(statements: Array<Stmt>): Array<Bytes> {
   let names = Array.new<Bytes>(0);
 
@@ -330,6 +413,7 @@ let _valueNames = fn(statements: Array<Stmt>): Array<Bytes> {
   names
 };
 
+// Returns the index of the definition of the macro `scope` names `name`, or -1.
 let _scopeIndex = fn(scope: Array<Tuple<Bytes, I32>>, name: Bytes): I32 {
   for ((local, index) in scope) {
     if (local == name) { return index; }
@@ -337,8 +421,14 @@ let _scopeIndex = fn(scope: Array<Tuple<Bytes, I32>>, name: Bytes): I32 {
   -1
 };
 
+// Returns the index of the definition of the macro the module calls `name`, or -1.
 let _visibleIndex = fn(name: Bytes): I32 { _scopeIndex(_visible, name) };
 
+/** Makes the macro `name` that the file at `path`, imported as `module`, exports callable in the
+ * module as `local`.
+ * @param at  the span of the `import macro` statement
+ * @throws an error if the file exports no such macro, or the module can already call one so
+ *   named */
 let _importMacro = fn(local: Bytes, path: Bytes, module: Bytes, name: Bytes, at: SourceSpan) {
   _failure = at;
   let taken = _taken(local);
@@ -357,6 +447,8 @@ let _importMacro = fn(local: Bytes, path: Bytes, module: Bytes, name: Bytes, at:
   throw coded(E1000, `${module} defines no macro ${name}`);
 };
 
+/** Returns the form a macro's program is given for argument `value`: its kind's letter and its
+ * value when it is a literal, perhaps negated (`std.macro`'s `literal`), or empty. */
 let _form = fn(value: Expr): Bytes {
   let (negative, literal) = match (value) {
     Unary(Negate, inner) => (true, inner),
@@ -377,29 +469,35 @@ let _form = fn(value: Expr): Bytes {
   } catch { "" }
 };
 
+// What a macro's program returned, and how far `_fragment` has read it.
 let _output = "";
 let _read = 0;
 
+// Returns the index of the first `c` in `text` from `start`, or the length of `text`.
 let _find = fn(text: Bytes, c: I32, start: I32): I32 {
   let i = start;
   while ((i < text.len()) && (Bytes.get_u8(text, i) != c)) { i++; }
   i
 };
 
+// Reads text that ends with `end` from `_output`, past `end`.
 let _upTo = fn(end: I32): Bytes {
   let start = _read;
   _read = _find(_output, end, start) + 1;
   Bytes.slice(_output, start, _read - 1 - start)
 };
 
+// Reads a number, which ends with `;`, from `_output`.
 let _number = fn(): I32 { integerValue(_upTo(";".code), false) };
 
+// Reads text, its length and `;` first, from `_output`.
 let _text = fn(): Bytes {
   let length = _number();
   _read += length;
   Bytes.slice(_output, _read - length, length)
 };
 
+// Reads the encoding of a fragment from `_output` (`std.macro`'s `run`).
 let _fragment = fn(): Fragment {
   let tag = Bytes.get_u8(_output, _read);
   _read++;
@@ -435,6 +533,7 @@ let _fragment = fn(): Fragment {
     },
   };
 
+  // A name or a literal is a node the expansion makes.
   match (fragment) {
     Name(_), Literal(_, _) => _made(1),
     _ => null,
@@ -442,11 +541,14 @@ let _fragment = fn(): Fragment {
   fragment
 };
 
+/** Returns a literal of kind `kind` (`Fragment.Literal`) and `text`, as an expression at the
+ * call. */
 let _literalExpression = fn(kind: I32, text: Bytes): Tuple<Expr, Syntax> {
   let negative = (text.len() > 0) && (Bytes.get_u8(text, 0) == "-".code);
   let digits = negative ? Bytes.slice(text, 1, text.len() - 1) : text;
   let at = _leaf(_call);
 
+  // NaN and Infinity have no literal, so they are made as they are computed.
   let quotient = fn(dividend: Bytes): Tuple<Expr, Syntax> {
     let zero = Expr.Float("0.0", FloatSize.Infer);
     let divided = Expr.Binary(BinaryOp.Divide, Expr.Float(dividend, FloatSize.Infer), zero);
@@ -471,6 +573,9 @@ let _literalExpression = fn(kind: I32, text: Bytes): Tuple<Expr, Syntax> {
   }
 };
 
+/** Returns why `source`, text that `Macro.parse` gave, does not parse, given `message`, the
+ * error lexing or parsing it after `shift` bytes that wrap it threw: where in `source`, when that
+ * is known, then why, without the error's code. */
 let _parseFailure = fn(message: Bytes, source: Bytes, shift: I32): Bytes {
   let (lexedAt, lexed) = lexFailure();
   let span = parseFailureSpan();
@@ -485,12 +590,16 @@ let _parseFailure = fn(message: Bytes, source: Bytes, shift: I32): Bytes {
   why = uncoded(why);
   if (at < 0) { return why; }
 
+  // A failure in the text that wraps it is placed at its nearer end.
   let offset = at - shift;
   let clamped = offset < 0 ? 0 : (offset > source.len() ? source.len() : offset);
   let (line, column) = sourceLocation(source, clamped);
   `at ${line}:${column}, ${why}`
 };
 
+/** Returns syntax of `kind` (`std.macro`'s `parse`) parsed from `source`, placed at the call, as a
+ * quote of that kind holds it.
+ * @throws an error if it does not parse as `kind` */
 let _parsed = fn(source: Bytes, kind: Bytes): Located {
   let prefix = kind == "auto" ? "quote { " : `quote.${kind} { `;
 
@@ -513,11 +622,15 @@ let _parsed = fn(source: Bytes, kind: Bytes): Located {
   }
 };
 
+/** Returns the syntax of argument `index` of the call: the syntax a quote holds, or else the
+ * expression.
+ * @throws an error if the macro has no such argument, or the argument is a quote that unquotes */
 let _argument = fn(index: I32): Located {
   if ((index < 0) || (index >= _arguments.len())) {
     throw _failed(E1003, "emitted an argument it was not given");
   }
 
+  // Placing an argument moves its syntax; placing it again copies it.
   let at = _call.children[index + 1];
   if (_placed[index]) { _made(_count(at)); }
   _placed[index] = true;
@@ -541,6 +654,9 @@ let _argument = fn(index: I32): Located {
   }
 };
 
+/** Counts `n` syntax nodes an expansion made against the module's limit; an argument it passes on
+ * counts only when it is placed more than once, as each copy of its syntax.
+ * @throws an error if the module's expansions have made too many */
 let _made = fn(n: I32) {
   _nodes += n;
 
@@ -550,8 +666,13 @@ let _made = fn(n: I32) {
   null
 };
 
+/** What the name of the callee starts with in a call `_marked` names the macro of, which no source
+ * can write; the macro's definition's index follows. */
 const _MARK = "\0";
 
+/** Returns `node`, syntax a macro made, with each call of a macro in `scope`, the macros of the
+ * macro's module, marked as a call of that macro, so that the call expands so wherever it is
+ * placed; unquotes, the syntax the call passes, are left alone. */
 let _marked = fn(node: Located, scope: Array<Tuple<Bytes, I32>>): Located {
   rewrite(node, fn(inner: Located): ?Located {
     match (inner) {
@@ -574,6 +695,7 @@ let _marked = fn(node: Located, scope: Array<Tuple<Bytes, I32>>): Located {
   })
 };
 
+// Returns quote `index` of the macro being expanded, with `holes` in place of its unquotes.
 let _instantiate = fn(index: I32, holes: Array<Fragment>): Located {
   let definition = _definitions[_macro];
   let quotes = definition.quotes;
@@ -582,6 +704,7 @@ let _instantiate = fn(index: I32, holes: Array<Fragment>): Located {
     throw _failed(E1003, "emitted a quote it does not have");
   }
 
+  // A node's span holds its children's, and the arguments are in the call's.
   let (body, defined) = quotes[index];
   let syntax = _placedAtCall(defined);
   _made(_count(defined));
@@ -615,6 +738,7 @@ let _instantiate = fn(index: I32, holes: Array<Fragment>): Located {
   out
 };
 
+// Returns the syntax `fragment` stands for; a name or a literal as an expression.
 let _located = fn(fragment: Fragment): Located {
   match (fragment) {
     Argument(index) => _argument(index),
@@ -628,6 +752,7 @@ let _located = fn(fragment: Fragment): Located {
   }
 };
 
+// Returns the error for `made`, syntax a macro emitted, where syntax of kind `needed` goes.
 let _misplaced = fn(made: Located, needed: Bytes): Bytes {
   let kind = match (made) {
     Expression(_, _) => "an expression",
@@ -638,6 +763,7 @@ let _misplaced = fn(made: Located, needed: Bytes): Bytes {
   _failed(E1003, `emitted ${kind} where ${needed} is needed`)
 };
 
+// Returns `fragment` as an expression.
 let _expressionOf = fn(fragment: Fragment): Tuple<Expr, Syntax> {
   match (_located(fragment)) {
     Expression(value, at) => (value, at),
@@ -646,6 +772,7 @@ let _expressionOf = fn(fragment: Fragment): Tuple<Expr, Syntax> {
   }
 };
 
+// Returns `fragment` as statements.
 let _statementsOf = fn(fragment: Fragment): Tuple<Array<Stmt>, Array<Syntax>> {
   match (fragment) {
     Name(_) => { throw _failed(E1003, "emitted a name where a statement is needed"); },
@@ -657,9 +784,11 @@ let _statementsOf = fn(fragment: Fragment): Tuple<Array<Stmt>, Array<Syntax>> {
   }
 };
 
+// Returns `fragment` as a pattern.
 let _patternOf = fn(fragment: Fragment): Tuple<Pattern, Syntax> {
   match (_located(fragment)) {
     Pattern(value, at) => (value, at),
+    // A name binds that name, and a literal matches its value.
     Expression(Variable(name), at) => (Pattern.BindPattern(name), at),
     Expression(Integer(digits, size), at) => (Pattern.Integer(digits, size), at),
     Expression(Unary(Negate, Integer(digits, size)), at) =>
@@ -673,6 +802,7 @@ let _patternOf = fn(fragment: Fragment): Tuple<Pattern, Syntax> {
   }
 };
 
+// Returns `fragment` as a type.
 let _typeOf = fn(fragment: Fragment): Type {
   match (_located(fragment)) {
     Type(value) => value,
@@ -681,6 +811,7 @@ let _typeOf = fn(fragment: Fragment): Type {
   }
 };
 
+// Returns the number of nodes `syntax` has, its own included.
 let _count = fn(syntax: Syntax): I32 {
   let { children, patterns } = syntax;
   let n = 1;
@@ -695,6 +826,9 @@ let _count = fn(syntax: Syntax): I32 {
   n
 };
 
+/** Runs macro `index`'s body for `call`, a call of it whose syntax is `syntax`, and returns what
+ * it emitted.
+ * @throws an error if the call has the wrong number of arguments, or the body fails */
 let _run = fn(index: I32, call: Expr, syntax: Syntax): Array<Fragment> {
   let args = match (call) { Call(_, _, args) => args, _ => [] };
   _macro = index;
@@ -733,6 +867,7 @@ let _run = fn(index: I32, call: Expr, syntax: Syntax): Array<Fragment> {
   fragments
 };
 
+// Expands the calls in `node`, what the macro just run emitted, one level deeper.
 let _deeper = fn(node: Located): Located {
   if (_depth >= _MAX_DEPTH) {
     throw _failed(E0901, `expands ${_MAX_DEPTH} levels deep; does it call itself without end?`);
@@ -743,6 +878,8 @@ let _deeper = fn(node: Located): Located {
   out
 };
 
+/** Returns the index of the definition of `call`'s macro, or -1 when it is not a macro call; a
+ * call `_marked` names its macro, and any other a macro the module can call. */
 let _calledMacro = fn(call: Expr): I32 {
   match (call) {
     Call(Variable(name), [], _) when (name.startsWith(_MARK)) =>
@@ -752,6 +889,8 @@ let _calledMacro = fn(call: Expr): I32 {
   }
 };
 
+/** Expands `call`, a call of macro `index` that is a statement whose syntax is `syntax`.
+ * @throws an error if it fails, or emits an import or a macro */
 let _expandStatement = fn(index: I32, call: Expr, syntax: Syntax): Located {
   let fragments = _run(index, call, syntax.children[0]);
   let statements = Array.new<Stmt>(0);
@@ -775,6 +914,9 @@ let _expandStatement = fn(index: I32, call: Expr, syntax: Syntax): Located {
   _deeper(Located.Statements(statements, made))
 };
 
+/** Expands `call`, a call of macro `index` that is an expression whose syntax is `syntax`, into one
+ * expression.
+ * @throws an error if it fails, or emits other than one expression */
 let _expandExpression = fn(index: I32, call: Expr, syntax: Syntax): Located {
   let fragments = _run(index, call, syntax);
 
@@ -787,9 +929,11 @@ let _expandExpression = fn(index: I32, call: Expr, syntax: Syntax): Located {
   _deeper(Located.Expression(value, at))
 };
 
+// Rewrites `node`, expanding the macro calls in it; the hook of every expansion.
 let _expandIn = fn(node: Located): Located {
   rewrite(node, fn(inner: Located): ?Located {
     match (inner) {
+      // A quote outside a macro body is the checker's to reject.
       Expression(Quote(_, _), _) => inner,
       Statements([Expression(call)], syntax) => {
         let index = _calledMacro(call);
@@ -804,6 +948,7 @@ let _expandIn = fn(node: Located): Located {
   })
 };
 
+// Checks whether a module needs expanding: whether it defines or imports a macro.
 export let hasMacros = fn(statements: Array<Stmt>): Bool {
   for (statement in statements) {
     match (statement) {
@@ -814,6 +959,16 @@ export let hasMacros = fn(statements: Array<Stmt>): Bool {
   false
 };
 
+/** Expands the macro calls of the module at `path`, after registering its macros, which are not
+ * part of the expanded module.
+ * @param statements  its top-level statements
+ * @param syntax  its syntax tree, whose children are the statements' syntax and then the tail's
+ * @param tail  its tail expression, or null
+ * @param imported  the macros it imports: each one's local name, its file, that file's import
+ *   path, its name there, and the span of the `import macro` statement
+ * @return the expanded statements, the expanded syntax tree, the tail, and the index each
+ *   statement ends up at among the expanded ones, or -1 for a macro or a macro import
+ * @throws an error for an invalid macro or import, or a call that does not expand */
 export let expandModule = fn(
   path: Bytes,
   statements: Array<Stmt>,
@@ -828,6 +983,7 @@ export let expandModule = fn(
   let children = syntax.children;
   let macros = _macros(statements, children);
 
+  // Imports come first in a module, so a clash is reported at the definition.
   for ((local, file, module, name, at) in imported) {
     _importMacro(local, file, module, name, at);
   }

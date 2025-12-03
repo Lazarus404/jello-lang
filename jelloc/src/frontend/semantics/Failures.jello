@@ -1,25 +1,50 @@
 package frontend.semantics;
 
+/** @file
+ * The failures a program's check recovers from. The checker records a failure at a top-level
+ * statement or a function body it can give up on, and goes on with the next, so that one run
+ * reports several. A binding whose declaration failed, or whose inferred type may be wrong, is
+ * poisoned: a module's by name, a local's by its binding, so that a local which shadows it is
+ * not. Code that uses a poisoned binding, or finds its name undeclared, fails, and the failure
+ * is dropped as a likely consequence of the first; so is any other failure in that code. A
+ * failure may carry a note, such as where a type it contradicts is declared. Warnings, about code
+ * that compiles but is likely not what was meant, are recorded apart. */
+
 import { internalError, internalRaised } from support.Internal;
 import type { SourceSpan } from frontend.syntax.Source;
 
+// The most failures one check records; it stops at the last.
 export const MAX_FAILURES = 20;
 
+// Where an instance of a generic is needed, or null outside one, and the note saying so.
 export typedef Need = Tuple<?SourceSpan, Bytes>;
 
+/** The failures recorded, each where it was found (null when unknown), its message, and where
+ * its note points (null for none) and the note. */
 let _failures = Array.new<Tuple<?SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
+// Where the note of the failure about to be thrown points, or null (see `noteFailure`).
 let _noteSpan: ?SourceSpan = null;
+// The note of the failure about to be thrown, and its message.
 let _note = "";
 let _noted = "";
+/** Where the instance of a generic being checked is needed, and the note saying so, which a
+ * failure in it without a note of its own takes (see `needInstance`); null and "" outside one. */
 let _neededAt: ?SourceSpan = null;
 let _needed = "";
+// The poisoned names of the program's modules.
 let _poisoned = Array.new<Bytes>(0);
+// The poisoned bindings of locals.
 let _poisonedLocals = Array.new<I32>(0);
+// How many failures `recordFailure` has been given, recorded or dropped.
 let _given = 0;
+// Whether the code being checked since `beginTouch` has used something poisoned.
 let _touched = false;
+// Whether a function checked since `beginDoubt` inferred its result from a body that failed.
 let _doubted = false;
+// The warnings recorded, each where it was found (null when unknown) and its message.
 let _warnings = Array.new<Tuple<?SourceSpan, Bytes>>(0);
 
+// Forgets every failure and poisoned binding, when a program's check begins.
 export let resetFailures = fn(): Bool {
   _failures = Array.new<Tuple<?SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
   _noteSpan = null;
@@ -35,10 +60,18 @@ export let resetFailures = fn(): Bool {
   true
 };
 
+/** Returns the note `noteFailure` gave the failure `message`, if it is still pending, or else
+ * the note of the instance being checked (`needInstance`).
+ * @return where the note points and the note, or null and "" if it has none */
 export let pendingNote = fn(message: Bytes): Tuple<?SourceSpan, Bytes> {
   message == _noted ? (_noteSpan, _note) : (_neededAt, _needed)
 };
 
+/** Makes the failures in the instance of a generic about to be checked note where it is needed,
+ * since its code may be in another module than the code that needs it.
+ * @param span  where it is needed, or null outside an instance
+ * @param note  the note
+ * @return the span and note it replaces, which the caller restores with another `needInstance` */
 export let needInstance = fn(span: ?SourceSpan, note: Bytes): Need {
   let outer = (_neededAt, _needed);
   _neededAt = span;
@@ -46,13 +79,24 @@ export let needInstance = fn(span: ?SourceSpan, note: Bytes): Need {
   outer
 };
 
+// Returns where the instance being checked is needed and its note (`needInstance`).
 export let instanceNeed = fn(): Need { (_neededAt, _needed) };
 
+/** Gives the failure `message`, about to leave the instance being checked, the note
+ * `pendingNote` finds for it, so that it keeps the note once the instance's is restored.
+ * @return `message`, to throw */
 export let keepNote = fn(message: Bytes): Bytes {
   let (span, note) = pendingNote(message);
   noteFailure(span, note, message)
 };
 
+/** Records a failure the checker can recover from, unless it is a compiler bug, the code that
+ * failed used something poisoned, or it repeats one already recorded. It takes the note
+ * `noteFailure` gave it, and forgets any note, recorded or not.
+ * @param span  where it was found, or null
+ * @param error  the thrown value
+ * @return whether checking may go on; false for a compiler bug or once `MAX_FAILURES` are recorded,
+ *   when the caller rethrows */
 export let recordFailure = fn(span: ?SourceSpan, error: Dynamic): Bool {
   let message = Std.string(error);
   let (noteSpan, note) = pendingNote(message);
@@ -65,6 +109,12 @@ export let recordFailure = fn(span: ?SourceSpan, error: Dynamic): Bool {
   _failures.len() < MAX_FAILURES
 };
 
+/** Gives a failure a note, such as where what it contradicts is declared, for `recordFailure`
+ * to take with it; a later failure with another message takes none.
+ * @param span  where the note points, or null for no note
+ * @param note  the note
+ * @param message  the failure's message
+ * @return `message`, to throw */
 export let noteFailure = fn(span: ?SourceSpan, note: Bytes, message: Bytes): Bytes {
   _noteSpan = span;
   _note = note;
@@ -72,9 +122,17 @@ export let noteFailure = fn(span: ?SourceSpan, note: Bytes, message: Bytes): Byt
   message
 };
 
+/** Returns how many failures checking has recovered from, recorded or dropped, so that code can
+ * tell whether a part of it failed. */
 export let failureCount = fn(): I32 { _given };
 
+/** Sorts the failures by module, in the order `paths` gives, and by place within one, so that
+ * they read as the source does; one without a place comes first.
+ * @param paths  the modules' paths
+ * @return the first failure
+ * @throws an internal error if none is recorded */
 export let sortFailures = fn(paths: Array<Bytes>): Tuple<?SourceSpan, Bytes> {
+  // Every failure given is recorded or drops after one that is, which poisoned what it used.
   if (_failures.len() == 0) {
     internalError("a failure was recovered from, but none was recorded");
   }
@@ -95,39 +153,51 @@ export let sortFailures = fn(paths: Array<Bytes>): Tuple<?SourceSpan, Bytes> {
   (_failures[0].0, _failures[0].1)
 };
 
+// Returns a failure's sort key: its module's place in `paths`, then its offset.
 let _placeKey = fn(span: ?SourceSpan, paths: Array<Bytes>): I64 {
   if (span == null) { return 0; }
   (paths.indexOf(span.path) as I64 + 1) * 4294967296 + (span.start as I64)
 };
 
+/** Takes the failures recorded, clearing the record.
+ * @return the failures, and whether checking stopped at `MAX_FAILURES` */
 export let takeFailures = fn(): Tuple<Array<Tuple<?SourceSpan, Bytes, ?SourceSpan, Bytes>>, Bool> {
   let failures = _failures;
   _failures = Array.new<Tuple<?SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
   (failures, failures.len() >= MAX_FAILURES)
 };
 
+/** Records a warning about code that compiles, once for each place and message.
+ * @param span  where it was found, or null
+ * @param message  the warning */
 export let warn = fn(span: ?SourceSpan, message: Bytes): Bool {
   let warning = (span, message);
   if (_warnings.indexOf(warning) < 0) { _warnings.push(warning); }
   true
 };
 
+// Takes the warnings recorded, in the order they were found, clearing the record.
 export let takeWarnings = fn(): Array<Tuple<?SourceSpan, Bytes>> {
   let warnings = _warnings;
   _warnings = Array.new<Tuple<?SourceSpan, Bytes>>(0);
   warnings
 };
 
+// Poisons a name whose declaration failed.
 export let poison = fn(name: Bytes): Bool {
   _poisoned.push(name);
   true
 };
 
+/** Poisons a local's binding, whose declaration failed or whose type may be wrong. A local that
+ * shadows it is a binding of its own, so it is not poisoned. */
 export let poisonLocal = fn(binding: I32): Bool {
   _poisonedLocals.push(binding);
   true
 };
 
+/** Notes a use of the module-level `name`, or a failure to find a name.
+ * @throws if the name is poisoned, a failure that is dropped */
 export let touch = fn(name: Bytes): Bool {
   if ((_poisoned.len() > 0) && (_poisoned.indexOf(name) >= 0)) {
     _touched = true;
@@ -136,6 +206,8 @@ export let touch = fn(name: Bytes): Bool {
   true
 };
 
+/** Notes a use of a local's binding.
+ * @throws if the binding is poisoned, a failure that is dropped */
 export let touchLocal = fn(binding: I32): Bool {
   if ((_poisonedLocals.len() > 0) && (_poisonedLocals.indexOf(binding) >= 0)) {
     _touched = true;
@@ -144,30 +216,42 @@ export let touchLocal = fn(binding: I32): Bool {
   true
 };
 
+// Checks whether the code being checked since `beginTouch` has used something poisoned.
 export let touched = fn(): Bool { _touched };
 
+/** Starts checking code whose failure is judged on its own; it has used nothing poisoned yet.
+ * @return whether the enclosing code had, to pass to `endTouch` */
 export let beginTouch = fn(): Bool {
   let outer = _touched;
   _touched = false;
   outer
 };
 
+/** Returns to the enclosing code after `beginTouch`.
+ * @param outer  what `beginTouch` returned */
 export let endTouch = fn(outer: Bool): Bool {
   _touched = outer;
   true
 };
 
+/** Notes that a function inferred its result type from a body that failed, so the type may be
+ * wrong. */
 export let doubt = fn(): Bool {
   _doubted = true;
   true
 };
 
+/** Starts checking code whose functions' doubts are judged on their own (see `doubt`).
+ * @return whether the enclosing code had doubted one, to pass to `endDoubt` */
 export let beginDoubt = fn(): Bool {
   let outer = _doubted;
   _doubted = false;
   outer
 };
 
+/** Returns to the enclosing code after `beginDoubt`.
+ * @param outer  what `beginDoubt` returned
+ * @return whether a function was doubted since */
 export let endDoubt = fn(outer: Bool): Bool {
   let doubted = _doubted;
   _doubted = outer;

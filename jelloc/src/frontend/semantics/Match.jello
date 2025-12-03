@@ -1,5 +1,15 @@
 package frontend.semantics;
 
+/** @file
+ * Checks patterns into HIR: a `let` that destructures, an `if` or `while` condition that tests a
+ * pattern with `let`, and `match` expressions, called through `Enums.checkEnumExpr`. A match
+ * tries its arms in order and compiles to a chain of `Op.If` (or `Op.IfStatement`) nodes. An arm's
+ * condition is its pattern's tests, left to right and outside in, and then its guard; the names it
+ * binds are declared again, from fresh reads, at the start of its body. The subject is bound once;
+ * when it is a tuple literal that every arm matches with a tuple pattern or `_`, each item is
+ * bound instead, so no tuple is built. Each arm must be useful and the arms together exhaustive,
+ * which the usefulness check of Maranget's "Warnings for pattern matching" decides. */
+
 import type {
   Block as AstBlock, Expr as AstExpr, MatchArm, MatchArms, Pattern, Type as AstType, TypeParam,
   WithClause,
@@ -38,6 +48,11 @@ import {
   mayBeNull, presentAt, requireBool, subPattern, syntaxChild, syntaxPattern, testsPattern, unlift,
 } from frontend.semantics.TypeCheck;
 
+/** A match's subject. `roots` and `types` are its bindings and their types; one, or one per item
+ * of a tuple-literal subject, whose tuple type is `tuple` (else -1). Checking the arms appends
+ * further roots; one per regexp pattern that binds its match, and one per name that alternatives
+ * share. `tag` binds the enum tag of a single root when the subject is an enum of several
+ * variants and the match has several arms, or is -1. */
 typedef Subject = {
   let roots: Array<I32>;
   let types: Array<I32>;
@@ -45,32 +60,61 @@ typedef Subject = {
   let tag: I32;
 };
 
+// Returns a `Subject` with no roots yet, for the tests of a condition or a `with`.
 let _noSubject = fn(): Subject {
   { roots: Array.new<I32>(0), types: Array.new<I32>(0), tuple: -1, tag: -1 }
 };
 
+// Returns a `Subject` whose one root is the binding `root`, of type `ty`.
 let _rootSubject = fn(root: I32, ty: I32): Subject {
   { roots: [root], types: [ty], tuple: -1, tag: -1 }
 };
 
+/** Appends a fresh root of type `ty` to `subject`.
+ * @return its index */
 let _addRoot = fn(subject: Subject, ty: I32): I32 {
   subject.roots.push(newBinding());
   subject.types.push(ty);
   subject.roots.len() - 1
 };
 
+// A path step to the T of a Null<T> known to be present; its index is 0.
 const _UNWRAP = -2;
+// A path step to the value a Dynamic holds, known to be of the type in the step's index.
 const _FROM_DYNAMIC = -3;
+/** A path step to an array or list element known to exist; its index counts from the start, or,
+ * in an array, from the end when negative, -1 being the last. */
 const _ELEMENT = -4;
+/** A path step to the items a bound spread spans; a fresh array or tuple, or a list's tail. Its
+ * index is the number of items before the spread, and a second `_SLICE` step holds the number
+ * after it. */
 const _SLICE = -5;
+/** A path step to a bits segment; its index is the segment's bit offset * 256 plus its code
+ * (`frontend.semantics.Bits`). */
 const _SEGMENT = -6;
+// A path step to the bytes after a bits pattern's fixed segments; its index is their length.
 const _REST = -7;
+// A path step to the record of a bytes layout that bytes hold; its index is the layout's type.
 const _LAYOUT = -8;
+// A path step to an Object's field, known to be there; its index is the field's name.
 const _KEY = -9;
+/** A path step to a copy of an Object without the fields a pattern names; its index is their
+ * names' entry in `_named`. */
 const _WITHOUT = -10;
+/** A path step to a field of a linked prototype's Object, read as its typedef declares; its index
+ * is the field's name. */
 const _LINKED = -11;
+// By `_WITHOUT` step, the names of the fields an Object pattern names before its rest.
 let _named = Array.new<Array<I32>>(0);
 
+/** Returns `path` extended by one step. A path is a root index, or -1 for the tuple of all roots,
+ * followed by (tag, field) steps into enum payloads, (-1, item) steps into tuples and records, and
+ * `_UNWRAP`, `_FROM_DYNAMIC`, `_ELEMENT`, `_SLICE`, `_SEGMENT`, `_REST`, `_LAYOUT`, `_KEY`,
+ * `_LINKED` and `_WITHOUT` steps. From -1, a step goes straight to root `index`, ignoring `tag`.
+ * @param path  the path so far
+ * @param tag  the variant's tag, -1 for a tuple item, or one of the steps named above
+ * @param index  the field, item or element, the type a Dynamic holds, or a spread's extent
+ * @return the extended path, a fresh array */
 let _step = fn(path: Array<I32>, tag: I32, index: I32): Array<I32> {
   if (path[0] < 0) { return [index]; }
   let out = path.copy();
@@ -79,11 +123,14 @@ let _step = fn(path: Array<I32>, tag: I32, index: I32): Array<I32> {
   out
 };
 
+// Returns the T of `ty` when it is a Null<T>, which `null` and `is T` patterns match, or -1.
 let _nullInner = fn(ty: I32): I32 {
   let t = resolve(ty);
   isKind(t, Kind.Null) ? innerOf(t) : -1
 };
 
+/** Returns a fresh array of the elements of `array` from index `before` up to `after` from its
+ * end; a block that makes it at its length and copies each element. */
 let _slice = fn(array: I32, before: I32, after: I32): I32 {
   let ty = typeOf(array);
   let element = innerOf(resolve(ty));
@@ -107,6 +154,7 @@ let _slice = fn(array: I32, before: I32, after: I32): I32 {
   ])
 };
 
+// Returns the list `value`, of type `ty`, without its first `count` elements, which exist.
 let _drop = fn(value: I32, ty: I32, count: I32): I32 {
   let out = value;
   let i = 0;
@@ -118,6 +166,7 @@ let _drop = fn(value: I32, ty: I32, count: I32): I32 {
   out
 };
 
+// Returns a copy of the Object `object` without the fields `names`, by their names' bytes.
 let _without = fn(object: I32, names: Array<I32>): I32 {
   let copy = newBinding();
   let copied = opNode(Op.ObjectCopy, TYPE_OBJECT, [object]);
@@ -132,6 +181,10 @@ let _without = fn(object: I32, names: Array<I32>): I32 {
   node(Op.Block, TYPE_OBJECT, 0, 1, statements)
 };
 
+/** Returns a fresh read of the value at `path` in `subject`, through `Op.TupleField`,
+ * `Op.EnumField`, unchecked `Op.Unwrap`, `Op.FromDynamic`, `Op.ArrayGet`, `Op.ListHead` and
+ * `Op.ListTail` nodes, or a fresh array or tuple of a spread's items. The path never starts at -1,
+ * since only tuple patterns and `_` match the tuple of all roots. */
 let _read = fn(subject: Subject, path: Array<I32>): I32 {
   let ty = subject.types[path[0]];
   let value = local(subject.roots[path[0]], ty);
@@ -152,6 +205,7 @@ let _read = fn(subject: Subject, path: Array<I32>): I32 {
       ty = innerOf(resolve(ty));
       value = opNode(Op.ListHead, ty, [value]);
     } else if (tag == _ELEMENT) {
+      // An element counted from the end reads the array again for its length.
       let at = i32Of(index);
 
       if (index < 0) {
@@ -161,6 +215,7 @@ let _read = fn(subject: Subject, path: Array<I32>): I32 {
       ty = innerOf(resolve(ty));
       value = opNode(Op.ArrayGet, ty, [value, at]);
     } else if ((tag == _SLICE) && isKind(ty, Kind.Tuple)) {
+      // Each item reads the tuple again.
       let items = Array.new<I32>(0);
       let types = Array.new<I32>(0);
       let prefix = path.slice(0, i);
@@ -185,8 +240,10 @@ let _read = fn(subject: Subject, path: Array<I32>): I32 {
       ty = segmentType(index % 256);
       value = node(Op.BitsRead, ty, index / 256, index % 256, [value]);
     } else if (tag == _REST) {
+      // The rest reads the bytes again for their length.
       value = restOf(value, _read(subject, path.slice(0, i)), index);
     } else if (tag == _LAYOUT) {
+      // A record's fields read the bytes again; a step to one field reads only that field.
       let bytes = path.slice(0, i);
       let read = fn(): I32 { _read(subject, bytes) };
 
@@ -219,6 +276,9 @@ let _read = fn(subject: Subject, path: Array<I32>): I32 {
   value
 };
 
+/** Returns fresh reads of the values at `paths` in `subject`, each located at the pattern that
+ * binds it.
+ * @param places  each path's pattern syntax */
 let _reads = fn(subject: Subject, paths: Array<Array<I32>>, places: Array<Syntax>): Array<I32> {
   let out = Array.new<I32>(0);
 
@@ -230,10 +290,15 @@ let _reads = fn(subject: Subject, paths: Array<Array<I32>>, places: Array<Syntax
   out
 };
 
+/** Rejects a pattern that cannot match a value of type `ty`.
+ * @param what  the kind of pattern with its article, such as "a variant"
+ * @throws a located error naming the pattern and the type, always */
 let _mismatch = fn(what: Bytes, ty: I32): Bool {
   throw coded(E0703, `${what} pattern cannot match ${typeName(ty)}${bufferHint(ty)}`);
 };
 
+/** Returns the tag of variant `name` of `ty`, the matched value's type.
+ * @throws a located error if `ty` is not an enum or has no such variant */
 let _tagOf = fn(ty: I32, name: Bytes): I32 {
   if (!isEnum(ty)) { _mismatch("a variant", ty); }
   let tag = variantTag(ty, name);
@@ -241,6 +306,7 @@ let _tagOf = fn(ty: I32, name: Bytes): I32 {
   tag
 };
 
+// Returns the index of the first spread in `items` at or after `start`, or -1.
 let _spreadIndex = fn(items: Array<Pattern>, start: I32): I32 {
   let i = start;
 
@@ -250,8 +316,12 @@ let _spreadIndex = fn(items: Array<Pattern>, start: I32): I32 {
   }
   -1
 };
+// Checks whether `pattern` is `null`.
 let _isNull = fn(pattern: Pattern): Bool { match (pattern) { Null => true, _ => false } };
 
+/** Returns the pattern a present T must match for `pattern`, which is not `null`, to match its
+ * Null<T>; for `is T`, which tests only presence, the name it binds or `_`, and otherwise the
+ * pattern itself. */
 let _present = fn(pattern: Pattern): Pattern {
   match (pattern) {
     IsType(_, binding) => binding != null ? Pattern.BindPattern(binding) : Pattern.Wildcard,
@@ -259,15 +329,23 @@ let _present = fn(pattern: Pattern): Pattern {
   }
 };
 
+/** Checks whether `pattern` may match a null of type Null<`inner`> without testing presence: `_`,
+ * a name, `null`, and a pin or a constant, which compare as `==` does. */
 let _takesNull = fn(pattern: Pattern, inner: I32): Bool {
   match (pattern) {
     Wildcard, BindPattern(_), Null, Pin(_) => true,
+    // A bare name that is no variant is a constant.
     Enum(name, args) => (args.len() == 0) && !(isEnum(inner) && (variantTag(inner, name) >= 0)),
     _ => false,
   }
 };
+// Returns a fresh copy of `row` without its first column, for patterns and for their types.
 let _tail<T> = fn(row: Array<T>): Array<T> { Array.new<T>(0).appendFrom(row, 1) };
 
+/** Appends to `tests` a test that the value at `path` in `subject`, of type `ty`, equals `value`,
+ * as `==` compares them. A Null<T> equals a value that cannot be null only when it is present.
+ * @param what  how a diagnostic names the pattern, such as `^n`
+ * @throws a located error if `value` is not of type `ty`, or of its T */
 let _equalTo = fn(
   subject: Subject,
   path: Array<I32>,
@@ -294,6 +372,8 @@ let _equalTo = fn(
   null
 };
 
+/** The names a pattern binds, the path of each one's value (`paths`), the pattern syntax that
+ * binds it (`places`), and the names it pins (`pins`). */
 typedef Bound = {
   let names: Array<Bytes>;
   let paths: Array<Array<I32>>;
@@ -301,6 +381,7 @@ typedef Bound = {
   let pins: Array<Bytes>;
 };
 
+// Returns an empty `Bound`.
 let _noBound = fn(): Bound {
   {
     names: Array.new<Bytes>(0),
@@ -310,6 +391,9 @@ let _noBound = fn(): Bound {
   }
 };
 
+/** Records in `bound` that a pattern binds `name` to the value at `path`.
+ * @param place  the binding pattern's syntax
+ * @throws if the pattern also pins `name`, or a located error if it binds `name` already */
 let _bind = fn(bound: Bound, name: Bytes, path: Array<I32>, place: Syntax) {
   if (bound.pins.indexOf(name) >= 0) {
     throw coded(E0705, `cannot pin ${name}: this pattern binds it`);
@@ -325,10 +409,15 @@ let _bind = fn(bound: Bound, name: Bytes, path: Array<I32>, place: Syntax) {
   null
 };
 
+// Returns fresh reads, in binding order, of the values the names in `bound` hold in `subject`.
 let _boundReads = fn(subject: Subject, bound: Bound): Array<I32> {
   _reads(subject, bound.paths, bound.places)
 };
 
+/** Returns the diagnostic for enum variant `name`, which has `count` fields, written with `given`
+ * arguments.
+ * @param called  whether the variant is written with parentheses
+ * @return the diagnostic */
 export let payloadMismatch = fn(name: Bytes, count: I32, given: I32, called: Bool): Bytes {
   if (called && (count == 0)) {
     return coded(E0803, `${name} has no fields, so it is written without parentheses`);
@@ -341,6 +430,8 @@ export let payloadMismatch = fn(name: Bytes, count: I32, given: I32, called: Boo
   coded(E0803, `${name} has ${fields}, not ${given}`)
 };
 
+/** Returns the index of the spread among `items`, an array or tuple pattern's, or -1.
+ * @throws a located error at a second spread */
 let _spreadOf = fn(items: Array<Pattern>, syntax: Syntax): I32 {
   let spread = _spreadIndex(items, 0);
   let again = spread < 0 ? -1 : _spreadIndex(items, spread + 1);
@@ -352,6 +443,8 @@ let _spreadOf = fn(items: Array<Pattern>, syntax: Syntax): I32 {
   spread
 };
 
+/** Appends the tests of the items of a tuple, array or list pattern, of type `ty`, and binds its
+ * spread, at index `spread` or -1. An item after the spread counts from the end. */
 let _items = fn(
   subject: Subject,
   items: Array<Pattern>,
@@ -387,6 +480,19 @@ let _items = fn(
   null
 };
 
+/** Appends to `tests`, in order, the Bool tests `pattern` makes of the value at `path`, and records
+ * the names it binds in `bound`. A variant pattern tests the tag unless the enum has one variant,
+ * and a capitalised name that is no variant compares with the constant it names, as a pin does
+ * with its value; a regexp pattern that binds stores its match in a further root. On a Null<T>,
+ * a pattern other than `_`, a name, `null`, a pin and a constant tests that the value is present
+ * and then matches its T. The tests take the span of the pattern that makes them.
+ * @param syntax  the pattern's syntax
+ * @param path  the matched value's path
+ * @param ty  the matched value's type
+ * @param tests  the tests so far
+ * @param bound  the names bound so far
+ * @throws a located error if the pattern cannot match `ty`, has the wrong payload count, or is a
+ *     kind of pattern that is not supported */
 let _test = fn(
   subject: Subject,
   pattern: Pattern,
@@ -427,6 +533,7 @@ let _test = fn(
   match (pattern) {
     Wildcard => null,
     BindPattern(name) => _bind(bound, name, path, syntax),
+    // `H(p)` matches bytes that hold a record of the bytes layout H, which `p` matches.
     Enum(name, args) when ((resolve(ty) == TYPE_BYTES) && isLayout(scopedType(name))) => {
       let layout = scopedType(name);
 
@@ -439,12 +546,14 @@ let _test = fn(
       _test(subject, args[0], subPattern(syntax, 0), step, layout, tests, bound)
     },
     Enum(name, args) => {
+      // A capitalised name that is no variant of the matched enum may be a constant.
       let known = isEnum(ty) ? variantTag(ty, name) : -1;
       let constant = ((known < 0) && (args.len() == 0)) ? checkPatternName(name, true) : -1;
 
       if (constant >= 0) {
         _equalTo(subject, path, ty, constant, name, tests);
       } else {
+        // A Null<T> reaches here only with a name that is no variant of its T, named in the error.
         let tag = known >= 0 ? known : _tagOf(present >= 0 ? present : ty, name);
         let count = fieldCount(ty, tag);
 
@@ -458,6 +567,7 @@ let _test = fn(
           } else {
             opNode(Op.EnumTag, TYPE_I32, [_read(subject, path)])
           };
+          // Before the fields' tests, so that the lowering decides arms on the tag.
           tests.push(opNode(Op.Eq, TYPE_BOOL, [read, i32Of(tag)]));
         }
 
@@ -508,6 +618,7 @@ let _test = fn(
       let read = _read(subject, path);
       let found = node(Op.CallNative, TYPE_DYNAMIC, matchPrefix, 0, [read, regexp]);
 
+      // The match is kept in a further root, which the arm binds.
       if (binding != null) {
         let root = _addRoot(subject, TYPE_DYNAMIC);
         found = node(Op.Assign, TYPE_DYNAMIC, subject.roots[root], 0, [found]);
@@ -525,6 +636,7 @@ let _test = fn(
       let atom = node(Op.Atom, TYPE_ATOM, bytesId(name), 0, []);
       _equalTo(subject, path, ty, atom, `:${name}`, tests)
     },
+    // A name the pattern binds is not yet bound when the pattern is tested.
     Pin(name) => {
       if (bound.names.indexOf(name) >= 0) {
         throw coded(E0705, `cannot pin ${name}: this pattern binds it`);
@@ -537,12 +649,14 @@ let _test = fn(
       tests.push(opNode(Op.IsNull, TYPE_BOOL, [_read(subject, path)]));
       null
     },
+    // A Null<T>'s `is T` is a presence test, made above.
     IsType(written, binding) => {
       if (resolve(ty) != TYPE_DYNAMIC) {
         throw coded(E0406, `is tests a Dynamic or nullable value, not ${typeName(ty)}`);
       }
 
       if (isAnyFunction(written)) {
+        // A Dynamic function's signature is not known, so it cannot be bound and called.
         if (binding != null) {
           throw coded(E0406, "is fn binds no name, since it does not fix the function's type");
         }
@@ -558,6 +672,9 @@ let _test = fn(
       null
     },
     Unquote(_) => { throw coded(E1001, "unquote is only allowed inside a quote"); },
+    /* An array's length is tested once, before any element is read; a list is tested for each
+     * cell it must have, and for its end when it has no spread. Only an array's bound spread
+     * is copied. */
     Array(items) => {
       let linked = isKind(resolve(ty), Kind.List);
       if (!linked && !isKind(resolve(ty), Kind.Array)) { _mismatch("an array", ty); }
@@ -583,7 +700,11 @@ let _test = fn(
       }
       _items(subject, items, syntax, path, ty, spread, tests, bound)
     },
+    // The parser makes a spread only as an item, which the arms above take.
     Spread(_) => null,
+    /* An Object pattern matches an Object that has every field it names, its own or one it
+     * delegates to, each read as a Dynamic; a linked prototype's value has the fields its
+     * typedef declares, of their types. */
     Object(fields) when (isObject(resolve(ty))) => {
       let names = Array.new<I32>(0);
 
@@ -650,6 +771,7 @@ let _test = fn(
       }
       null
     },
+    // The length is tested before any segment is read.
     Bits(segments) => {
       if (resolve(ty) != TYPE_BYTES) { _mismatch("a bits", ty); }
       let codes = Array.new<I32>(0);
@@ -685,10 +807,12 @@ let _test = fn(
   true
 };
 
+// Returns a test that the list at `path`, of type `ty`, ends after `cell` cells.
 let _ends = fn(subject: Subject, path: Array<I32>, ty: I32, cell: I32): I32 {
   opNode(Op.ListIsNil, TYPE_BOOL, [_drop(_read(subject, path), ty, cell)])
 };
 
+// Returns how a diagnostic names `pattern`, with payloads and tuple items elided as `(…)`.
 let _describe = fn(pattern: Pattern): Bytes {
   match (pattern) {
     Wildcard => "_",
@@ -712,6 +836,8 @@ let _describe = fn(pattern: Pattern): Bytes {
   }
 };
 
+/** Checks whether `pattern` matches every value without a test; `_`, a name, or an Object
+ * pattern that names no field. */
 let _wild = fn(pattern: Pattern): Bool {
   match (pattern) {
     Wildcard, BindPattern(_) => true,
@@ -720,10 +846,16 @@ let _wild = fn(pattern: Pattern): Bool {
   }
 };
 
+// Returns the bits of an integer pattern's `text`; a U64 one may exceed the greatest I64.
 let _bits = fn(text: Bytes): I64 {
   Bytes.get_u8(text, 0) == "-".code ? wideIntegerValue(text, false) : unsignedWideValue(text, false)
 };
 
+/** Checks whether patterns `a` and `b` of one column, neither wild, have the same head
+ * constructor. Integers compare by value, floats by their text, atoms and constants by name, and
+ * type tests by type; tuples, and nulls, always share one. A regexp or a pin shares one with
+ * nothing, since it may fail for any subject; a guard between two pins may assign the pinned
+ * name. */
 let _same = fn(a: Pattern, b: Pattern): Bool {
   match ((a, b)) {
     (Enum(x, _), Enum(y, _)) => x == y,
@@ -742,6 +874,9 @@ let _same = fn(a: Pattern, b: Pattern): Bool {
   }
 };
 
+/** Returns the sub-patterns of `head`, which is not wild and has no spread; a variant's payloads,
+ * a tuple's items or an array's elements.
+ * @return the sub-patterns, none for a literal */
 let _args = fn(head: Pattern): Array<Pattern> {
   match (head) {
     Enum(_, args) => args,
@@ -750,6 +885,8 @@ let _args = fn(head: Pattern): Array<Pattern> {
   }
 };
 
+/** Returns the number of sub-patterns of constructor `head`; for an array, of its elements other
+ * than its spread. */
 let _arity = fn(head: Pattern): I32 {
   match (head) {
     Array(items) => items.len() - (_spreadIndex(items, 0) >= 0 ? 1 : 0),
@@ -757,6 +894,8 @@ let _arity = fn(head: Pattern): I32 {
   }
 };
 
+/** Returns the types of the sub-patterns of constructor `head`, of type `ty`; the payload field
+ * types, a bytes layout's record type, the tuple item types or the array's element type. */
 let _argTypes = fn(head: Pattern, ty: I32): Array<I32> {
   if (let Enum(name, _) = head) {
     if ((resolve(ty) == TYPE_BYTES) && isLayout(scopedType(name))) { return [scopedType(name)]; }
@@ -776,16 +915,24 @@ let _argTypes = fn(head: Pattern, ty: I32): Array<I32> {
   out
 };
 
+// Returns `count` wildcard patterns.
 let _wilds = fn(count: I32): Array<Pattern> {
   let out = Array.new<Pattern>(0);
   while (out.len() < count) { out.push(Pattern.Wildcard); }
   out
 };
 
+/** Returns a fresh array of `front` followed by `row` without its first column, for patterns and
+ * for their types. */
 let _join<T> = fn(front: Array<T>, row: Array<T>): Array<T> {
   front.copy().appendFrom(row, 1)
 };
 
+/** Returns the sub-patterns by which `pattern` matches constructor `head`, or null if it cannot;
+ * wildcards for a wild pattern, and for an array or tuple, its items with wildcards for those its
+ * spread spans, as many as `head` has.
+ * @param head  the constructor, as a pattern that is not wild; for an array, a length
+ *     (`_lengths`) */
 let _cut = fn(pattern: Pattern, head: Pattern): ?Array<Pattern> {
   if (_wild(pattern)) { return _wilds(_arity(head)); }
 
@@ -803,6 +950,9 @@ let _cut = fn(pattern: Pattern, head: Pattern): ?Array<Pattern> {
   }
 };
 
+/** Returns `rows` specialised by `head`'s constructor; the rows whose first column matches it,
+ * with the sub-patterns `_cut` gives in place of that column.
+ * @param head  the constructor, as a pattern that is not wild */
 let _specialize = fn(rows: Array<Array<Pattern>>, head: Pattern): Array<Array<Pattern>> {
   let out = Array.new<Array<Pattern>>(0);
 
@@ -813,19 +963,27 @@ let _specialize = fn(rows: Array<Array<Pattern>>, head: Pattern): Array<Array<Pa
   out
 };
 
+// Returns the greater of `a` and `b`.
 let _max = fn(a: I32, b: I32): I32 { a > b ? a : b };
 
+// Returns the first column of `rows`, a fresh array.
 let _column = fn(rows: Array<Array<Pattern>>): Array<Pattern> {
   let out = Array.new<Pattern>(0);
   while (out.len() < rows.len()) { out.push(rows[out.len()][0]); }
   out
 };
 
+// Checks whether `ty` is an Array or a List, whose patterns match by length.
 let _sequence = fn(ty: I32): Bool {
   let t = resolve(ty);
   isKind(t, Kind.Array) || isKind(t, Kind.List)
 };
 
+/** Returns the constructors of an array or list column, as arrays of wildcards; one per length
+ * below the least that every pattern of the column treats alike, and a spread for the longer ones,
+ * with as many elements, the last as many as the most any pattern names after its spread. These
+ * are the slice constructors of rustc's exhaustiveness check.
+ * @param column  the column's patterns */
 let _lengths = fn(column: Array<Pattern>): Array<Pattern> {
   let fixed = -1;
   let before = 0;
@@ -852,6 +1010,9 @@ let _lengths = fn(column: Array<Pattern>): Array<Pattern> {
   out
 };
 
+/** Returns every constructor of `ty`, each with wild arguments; both Bools, the one of a tuple,
+ * every variant of an enum, or the lengths of an array or list (`_lengths`) that the first column
+ * of `rows` tells apart. A type whose values cannot be listed has none. */
 let _constructors = fn(rows: Array<Array<Pattern>>, ty: I32): Array<Pattern> {
   if (ty == TYPE_BOOL) { return [Pattern.Bool(false), Pattern.Bool(true)]; }
   if (isKind(ty, Kind.Tuple) || isRecord(ty)) { return [Pattern.Tuple(_wilds(memberCount(ty)))]; }
@@ -866,10 +1027,17 @@ let _constructors = fn(rows: Array<Array<Pattern>>, ty: I32): Array<Pattern> {
   all
 };
 
+/** Returns the constructors of `ty` when the first column of `rows` names them all; an array's and
+ * a list's always, and otherwise none.
+ * @param rows  the pattern rows
+ * @param ty  the first column's type
+ * @return the constructors, or none if the signature is incomplete */
 let _signature = fn(rows: Array<Array<Pattern>>, ty: I32): Array<Pattern> {
   let all = _constructors(rows, ty);
   if (_sequence(ty)) { return all; }
 
+  /* A tuple's or record's one constructor counts only when a pattern names it, which keeps a
+   * record that holds itself finite. */
   for (head in all) {
     let r = 0;
     let seen = false;
@@ -883,6 +1051,8 @@ let _signature = fn(rows: Array<Array<Pattern>>, ty: I32): Array<Pattern> {
   all
 };
 
+/** Returns `pattern`, of record type `ty`, as the tuple pattern of the record's fields in order, a
+ * field it does not name being `_`; any other pattern is itself. */
 let _fieldItems = fn(pattern: Pattern, ty: I32): Pattern {
   match (pattern) {
     Object(fields) => {
@@ -897,6 +1067,8 @@ let _fieldItems = fn(pattern: Pattern, ty: I32): Pattern {
   }
 };
 
+/** Returns `pattern`, of a linked prototype's type `ty`, as `_` when it tests nothing; an Object
+ * pattern whose fields are linked typedef fields bound by `_wild` patterns, or a rest. */
 let _linkedItems = fn(pattern: Pattern, ty: I32): Pattern {
   match (pattern) {
     Object(fields) => {
@@ -913,6 +1085,8 @@ let _linkedItems = fn(pattern: Pattern, ty: I32): Pattern {
   }
 };
 
+/** Returns `rows` with each first-column pattern as `_fieldItems` gives it when the column's type
+ * `ty` is a record, or `_linkedItems` when it is a linked prototype's, or else `rows` itself. */
 let _recordRows = fn(rows: Array<Array<Pattern>>, ty: I32): Array<Array<Pattern>> {
   if (!isRecord(ty) && !isLinked(ty)) { return rows; }
   let out = Array.new<Array<Pattern>>(0);
@@ -925,6 +1099,10 @@ let _recordRows = fn(rows: Array<Array<Pattern>>, ty: I32): Array<Array<Pattern>
   out
 };
 
+/** Checks whether the pattern row `row` is useful with respect to the earlier rows `given`; whether
+ * some value matches `row` but no row of `given` (Maranget, "Warnings for pattern matching"). The
+ * patterns are already checked against their column types, and `types` holds the type of each
+ * column. A record pattern matches as the tuple of its fields (`_fieldItems`). */
 let _useful = fn(given: Array<Array<Pattern>>, row: Array<Pattern>, types: Array<I32>): Bool {
   if (row.len() == 0) { return given.len() == 0; }
   let ty = types[0];
@@ -941,6 +1119,7 @@ let _useful = fn(given: Array<Array<Pattern>>, row: Array<Pattern>, types: Array
     let specialized = _specialize(rows, q[0]);
     return _useful(specialized, _join(_args(q[0]), q), _join(_argTypes(q[0], ty), types));
   }
+  // A wild `q`, or an array or tuple with a spread, tries each constructor it matches.
   let heads = _signature(rows, ty);
 
   if (spreads && _sequence(ty)) {
@@ -961,6 +1140,7 @@ let _useful = fn(given: Array<Array<Pattern>>, row: Array<Pattern>, types: Array
     }
   }
   if (heads.len() > 0) { return false; }
+  // Some constructor is missing from the first column, so only its wild rows can match it.
   let rest = Array.new<Array<Pattern>>(0);
 
   for (other in rows) {
@@ -969,6 +1149,8 @@ let _useful = fn(given: Array<Array<Pattern>>, row: Array<Pattern>, types: Array
   _useful(rest, _tail(q), _tail(types))
 };
 
+/** Checks `_useful` for a first column of a Null<T> type, whose constructors are `null` and a
+ * present T. A present T's one argument is the pattern itself, or its name or `_` for `is T`. */
 let _usefulNullable = fn(rows: Array<Array<Pattern>>, q: Array<Pattern>, types: Array<I32>): Bool {
   if (!_isNull(q[0])) {
     let presents = Array.new<Array<Pattern>>(0);
@@ -983,6 +1165,11 @@ let _usefulNullable = fn(rows: Array<Array<Pattern>>, q: Array<Pattern>, types: 
   _useful(_specialize(rows, Pattern.Null), _tail(q), _tail(types))
 };
 
+/** Returns how a diagnostic names a value that no row of `rows` matches, given that the wildcard
+ * is useful against them: the first missing case, `null` for a Null<T> or a constructor
+ * (`_constructors`) of any type but a tuple, or else `_`.
+ * @param rows  the unguarded patterns, as one-column rows
+ * @param ty  the matched value's type */
 let _missing = fn(rows: Array<Array<Pattern>>, ty: I32): Bytes {
   let inner = _nullInner(ty);
   let base = inner >= 0 ? inner : ty;
@@ -998,12 +1185,21 @@ let _missing = fn(rows: Array<Array<Pattern>>, ty: I32): Bytes {
   "_"
 };
 
+/** Rejects a non-exhaustive match, given that the wildcard is useful against `rows`.
+ * @param rows  the unguarded patterns, as one-column rows
+ * @param ty  the subject's type
+ * @throws a located error naming the case `_missing` finds, or asking for a `_` arm */
 let _notExhaustive = fn(rows: Array<Array<Pattern>>, ty: I32): Bool {
   let missing = _missing(rows, ty);
   let advice = missing == "_" ? "add a `_` arm" : `missing ${missing}`;
   throw coded(E0700, `match is not exhaustive: ${advice}`);
 };
 
+/** Joins `tests`, left-associated, by the short-circuit `op`.
+ * @param op  `Op.And` or `Op.Or`
+ * @param tests  the Bool tests
+ * @param value  the result when there are no tests
+ * @return the joined test, or a Bool constant */
 let _fold = fn(op: Op, tests: Array<I32>, value: Bool): I32 {
   if (tests.len() == 0) { return boolOf(value); }
   let out = tests[0];
@@ -1016,6 +1212,9 @@ let _fold = fn(op: Op, tests: Array<I32>, value: Bool): I32 {
   out
 };
 
+/** Returns the subject of a match of `value` with `arms` arms, bound once, and its tag too when
+ * several arms test an enum's variants.
+ * @param children  the match block's statements, to which the bindings are appended */
 let _valueSubject = fn(value: I32, arms: I32, children: Array<I32>): Subject {
   let ty = typeOf(value);
   let binding = newBinding();
@@ -1030,6 +1229,14 @@ let _valueSubject = fn(value: I32, arms: I32, children: Array<I32>): Subject {
   { roots: [binding], types: [ty], tuple: -1, tag }
 };
 
+/** Binds the subject once, as a Null<T> converted to its T unless some alternative is `null` or
+ * `is T`, or binds each item of a tuple literal that every alternative matches with a tuple
+ * pattern of its length or `_`. Also binds the enum tag when the subject is an enum of several
+ * variants and there are several arms.
+ * @param subject  the subject, syntax child 0
+ * @param arms  the arms
+ * @param children  the match block's statements, to which the declarations are appended
+ * @return the `Subject` that records the bindings */
 let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>): Subject {
   let items = match (subject) { Tuple(items) => items, _ => Array.new<AstExpr>(0) };
   let fits = items.len() > 0;
@@ -1064,6 +1271,10 @@ let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>)
   _valueSubject(aware ? checkKnown(subject, 0) : checkPresent(subject, 0), arms.len(), children)
 };
 
+/** Returns the bindings of the roots of `subject` from `first` on, the ones checking the arms
+ * appended; the regexp matches that arms bind, and the names that alternatives share. Each is a
+ * mutable binding, null (or nil, for a list) until an arm's tests assign it.
+ * @param first  the first root to bind */
 let _matchBindings = fn(subject: Subject, first: I32): Array<I32> {
   let bindings = Array.new<I32>(0);
   let r = first;
@@ -1077,6 +1288,8 @@ let _matchBindings = fn(subject: Subject, first: I32): Array<I32> {
   bindings
 };
 
+/** Declares the roots of `subject` from `first` on, as `_matchBindings` binds them.
+ * @param children  the match block's statements, to which the declarations are appended */
 let _declareMatches = fn(subject: Subject, first: I32, children: Array<I32>) {
   let bindings = _matchBindings(subject, first);
 
@@ -1086,8 +1299,14 @@ let _declareMatches = fn(subject: Subject, first: I32, children: Array<I32>) {
   null
 };
 
+/** Returns the type of a root that holds a name that alternatives share, given the name's type
+ * `ty`; Null<`ty`>, or `ty` itself for a list, which is never nullable. */
 let _rootType = fn(ty: I32): I32 { isKind(ty, Kind.List) ? ty : nullType(ty) };
 
+/** Appends a root to `subject` for each name that alternatives share. Those alternatives bind the
+ * same names, each from its own place, so each name is stored in a root of its own.
+ * @param values  the first alternative's reads of the names
+ * @return the indexes of the roots */
 let _alternativeRoots = fn(subject: Subject, values: Array<I32>): Array<I32> {
   let out = Array.new<I32>(0);
 
@@ -1097,16 +1316,20 @@ let _alternativeRoots = fn(subject: Subject, values: Array<I32>): Array<I32> {
   out
 };
 
+// The names that alternatives sharing a body bind, their types, and the indexes of their roots.
 typedef Group = {
   let names: Array<Bytes>;
   let types: Array<I32>;
   let roots: Array<I32>;
 };
 
+// Returns an empty `Group`, for an arm with one alternative.
 let _noGroup = fn(): Group {
   { names: Array.new<Bytes>(0), types: Array.new<I32>(0), roots: Array.new<I32>(0) }
 };
 
+/** Returns a Bool block that stores `value` in root `root` of `subject` and holds;
+ * `{ root = value; true }`. A value is lifted with `Op.Present` when the root is a Null<T>. */
 let _store = fn(subject: Subject, root: I32, value: I32): I32 {
   let ty = subject.types[root];
   let stored = typeOf(value) == ty ? value : opNode(Op.Present, ty, [value]);
@@ -1114,6 +1337,17 @@ let _store = fn(subject: Subject, root: I32, value: I32): I32 {
   node(Op.Block, TYPE_BOOL, 0, 1, [assign, boolOf(true)])
 };
 
+/** Appends to `tests` the stores of the names an alternative binds into its group's roots. The
+ * first alternative of a body makes the group; every alternative must bind the same names, with
+ * types that unify.
+ * @param subject  the match's subject
+ * @param current  the group so far
+ * @param first  whether this is the body's first alternative
+ * @param bound  the names the alternative binds
+ * @param tests  the alternative's tests
+ * @return the group
+ * @throws a located error if a name is not bound by every alternative or has a different type
+ *     in each */
 let _bindAlternative = fn(
   subject: Subject,
   current: Group,
@@ -1150,6 +1384,9 @@ let _bindAlternative = fn(
   group
 };
 
+/** Returns reads, in the group's order, of the values of `group`'s names in its roots in
+ * `subject`. They are stored before any guard or body runs, so a Null<T> root is read with an
+ * unchecked `Op.Unwrap`. */
 let _stored = fn(subject: Subject, group: Group): Array<I32> {
   let out = Array.new<I32>(0);
 
@@ -1161,6 +1398,15 @@ let _stored = fn(subject: Subject, group: Group): Array<I32> {
   out
 };
 
+/** Checks an alternative's pattern; appends its tests to `tests` and records the names it binds in
+ * `bound` (`_test`), then requires the pattern to be useful.
+ * @param syntax  the pattern's syntax
+ * @param path  the subject's path
+ * @param ty  the subject's type
+ * @param rows  the earlier unguarded patterns, as one-column rows
+ * @param tests  the alternative's tests
+ * @param bound  the names it binds
+ * @throws a located error if earlier arms already match every value the pattern does */
 let _armPattern = fn(
   subject: Subject,
   pattern: Pattern,
@@ -1179,6 +1425,19 @@ let _armPattern = fn(
   null
 };
 
+/** Checks an arm's body with the names its pattern binds. Without an `expected` type, a later arm
+ * of a value match takes its context from the earlier arms' `resultType`, as Null<T> so that a
+ * nullable arm is joined, not unwrapped (`A => [1], _ => []`); the lift that context gives a T tail
+ * is then removed. A list's type is used as itself, since a list is never nullable.
+ * @param names  the names the body sees
+ * @param values  their values
+ * @param body  the body
+ * @param index  the syntax child of its first statement
+ * @param expected  the type the match's context requires, or -1 for none
+ * @param resultType  the earlier arms' joined type, or -1
+ * @param statement  whether the match is a statement
+ * @return the arm's block
+ * @throws a located error if a value match's arm has no trailing expression */
 let _armBody = fn(
   names: Array<Bytes>,
   values: Array<I32>,
@@ -1190,6 +1449,7 @@ let _armBody = fn(
 ): I32 {
   let { statements, tail } = body;
   let joins = (expected < 0) && (resultType >= 0) && !statement;
+  // As an `if`'s else branch does (`TypeCheck._checkIf`), a later arm lifts only what may be null.
   let lifts = joins && !isKind(resultType, Kind.List) && (tail != null) && mayBeNull(tail);
   let context = lifts ? nullable(resultType) : joins && (tail != null) ? resultType : expected;
   let block = checkArm(names, values, statements, tail, index, context, statement);
@@ -1201,10 +1461,22 @@ let _armBody = fn(
   block
 };
 
+/** Returns fresh reads of the names a guard or body sees; the group's stored values when its
+ * alternatives share them, else the values the pattern bound.
+ * @param shared  whether the arm has several alternatives
+ * @param group  their group
+ * @param bound  the names the pattern bound */
 let _armReads = fn(subject: Subject, shared: Bool, group: Group, bound: Bound): Array<I32> {
   shared ? _stored(subject, group) : _boundReads(subject, bound)
 };
 
+/** Checks a guard, with the names its pattern binds, as a Bool test.
+ * @param names  the names the guard sees
+ * @param values  their values
+ * @param guard  the guard expression
+ * @param index  its syntax child
+ * @return the guard's block
+ * @throws a located error if the guard is not a Bool */
 let _guard = fn(names: Array<Bytes>, values: Array<I32>, guard: ?AstExpr, index: I32): I32 {
   let block = checkArm(names, values, [], guard, index, TYPE_BOOL, false);
 
@@ -1215,6 +1487,10 @@ let _guard = fn(names: Array<Bytes>, values: Array<I32>, guard: ?AstExpr, index:
   block
 };
 
+/** Checks the arms of a match of `checked`, whose bindings `children` already holds, as
+ * `checkMatch` describes; the arms' syntax children start at `first`, and their patterns at
+ * `firstPattern`.
+ * @return the match block */
 let _matchArms = fn(
   checked: Subject,
   arms: Array<MatchArm>,
@@ -1227,7 +1503,10 @@ let _matchArms = fn(
   let subjectRoots = checked.roots.len();
   let ty = checked.tuple >= 0 ? checked.tuple : checked.types[0];
   let top = checked.tuple >= 0 ? [-1] : [0];
+  // The unguarded patterns so far, as one-column rows.
   let rows = Array.new<Array<Pattern>>(0);
+  /* Each arm's condition, checked body, and its tail's syntax index; and whether the latest arm's
+   * condition has effects, which matters only for the last arm. */
   let conditions = Array.new<I32>(0);
   let bodies = Array.new<I32>(0);
   let tails = Array.new<I32>(0);
@@ -1237,6 +1516,9 @@ let _matchArms = fn(
   let patternIndex = firstPattern;
 
   for ({ alternatives, guard, body } in arms) {
+    /* Alternatives that share the body store what they bind into `group`'s roots as they test
+     * (`tested`), and the body reads them there; `last` is the last alternative's tests, and
+     * `bound` what it binds. */
     let shared = alternatives.len() > 1;
     let group = _noGroup();
     let bound = _noBound();
@@ -1246,6 +1528,7 @@ let _matchArms = fn(
     let ownGuard = false;
 
     for (j, { pattern, guard: own } in alternatives) {
+      // The pattern's errors, tests and stores are located at the pattern.
       let place = syntaxPattern(patternIndex);
       let outer = enterSyntax(place);
       patternIndex++;
@@ -1255,6 +1538,8 @@ let _matchArms = fn(
       if (shared) { group = _bindAlternative(checked, group, j == 0, bound, tests); }
       enterSyntax(outer);
 
+      /* An alternative's own guard applies to that alternative only, so a guarded one
+       * covers no row. */
       if (own == null) {
         rows.push([pattern]);
       } else {
@@ -1265,6 +1550,8 @@ let _matchArms = fn(
       if (shared) { tested.push(_fold(Op.And, tests, true)); }
       last = tests;
     }
+    /* The arm's guard follows all of its alternatives, which then count as covering no value,
+     * and sees the names of the one that matched, as the body does, through fresh reads. */
     let names = bound.names;
     let tests = last;
 
@@ -1284,7 +1571,9 @@ let _matchArms = fn(
     let { statements, tail } = body;
     let count = statements.len() + (tail == null ? 0 : 1);
 
+    // An arm that ends every path gives no value, so it takes no part in the join.
     if (!statement && !endsPath(block)) {
+      // Arms join like if branches; T, null and Null<T> give Null<T>.
       let found = typeOf(block);
       let joined = resultType < 0 ? found : joinTypes(resultType, found);
 
@@ -1297,6 +1586,7 @@ let _matchArms = fn(
     tails.push(index + statements.len());
     index += count;
     bodies.push(block);
+    // Guards, and the stores of shared names, have effects; only the last arm's value is used.
     effects = ownGuard || (guard != null) || (shared && (names.len() > 0));
   }
   _declareMatches(checked, subjectRoots, children);
@@ -1308,6 +1598,9 @@ let _matchArms = fn(
       bodies[b] = coerceTail(block, resultType, tails[b]);
     }
   }
+  /* The match is exhaustive, so a value no earlier arm takes matches an unguarded pattern of the
+   * last, and its body runs without a test. Guards there, and the stores of alternatives' names,
+   * still run for their effects. */
   let last = bodies.len() - 1;
   let result = bodies[last];
 
@@ -1330,6 +1623,16 @@ let _matchArms = fn(
   statement ? opNode(Op.Block, 0, children) : node(Op.Block, resultType, 0, 1, children)
 };
 
+/** Checks `match (subject) { arms }` as a block; the subject's bindings, the further roots, and a
+ * chain of `Op.If` (`Op.IfStatement` for a statement) whose last arm runs without a test. The
+ * current syntax is the match's; its children are the subject, then each arm's alternatives'
+ * guards, its guard, statements and tail; its patterns are numbered apart, one per alternative.
+ * @param arms  the arms
+ * @param expected  the type the context requires, or -1 for none
+ * @param statement  whether the match is a statement, which discards its arms' values
+ * @return the match block
+ * @throws a located error if there are no arms, an arm is unreachable, the arms are not exhaustive
+ *     or their types do not join, or a pattern, guard or body is invalid */
 export let checkMatch = fn(
   subject: AstExpr,
   arms: Array<MatchArm>,
@@ -1341,10 +1644,14 @@ export let checkMatch = fn(
   _matchArms(_subject(subject, arms, children), arms, 1, 0, expected, statement, children)
 };
 
+// Returns whether `pattern`, whose tests are `tests`, can fail on a value of type `ty`.
 let _canFail = fn(pattern: Pattern, tests: Array<I32>, ty: I32): Bool {
   (tests.len() > 0) && _useful([[pattern]], [Pattern.Wildcard], [ty])
 };
 
+/** Fails at `place` because `pattern` can fail on a value of type `ty`, naming a value it misses
+ * and giving `advice`.
+ * @throws a located error, always */
 let _failsHere = fn(pattern: Pattern, ty: I32, place: Syntax, advice: Bytes): Bool {
   let missing = _missing([[pattern]], ty);
   enterSyntax(place);
@@ -1352,6 +1659,15 @@ let _failsHere = fn(pattern: Pattern, ty: I32, place: Syntax, advice: Bytes): Bo
   throw coded(E0702, `this pattern can fail${example}${advice}`);
 };
 
+/** Binds the names `pattern` binds, at `syntax`, from `value`, bound once, each declared, as a
+ * local or a global, from a fresh read of it. Without `leave`, the pattern must match every
+ * value; with it, a value the pattern does not match runs `leave`, which must leave, before any
+ * name is declared, and the tests then read the value inside the block that initialises the
+ * hidden binding.
+ * @param leave  the checked block that a value the pattern does not match runs, or -1
+ * @return the `Declare` of the hidden binding and the names
+ * @throws a located error if the pattern does not fit the value, can fail without `leave`, or
+ *     binds a name twice */
 let _bindLet = fn(
   pattern: Pattern,
   syntax: Syntax,
@@ -1373,11 +1689,13 @@ let _bindLet = fn(
   let children = _matchBindings(subject, 1);
   let initial = value;
 
+  // A pattern that cannot fail tests nothing, so `leave` never runs.
   if ((leave >= 0) && (tests.len() > 0)) {
     let fails = opNode(Op.Not, TYPE_BOOL, [_fold(Op.And, tests, true)]);
     let check = opNode(Op.IfStatement, 0, [fails, leave]);
     let declared = declareBinding(Op.Const, roots[0], "let", value);
     initial = node(Op.Block, ty, 0, 1, [declared, check, local(roots[0], ty)]);
+    // The names read the value from the binding that the block initialises.
     roots[0] = newBinding();
   }
   children.push(bindingNode(Op.Const, roots[0], "let", initial));
@@ -1392,6 +1710,16 @@ let _bindLet = fn(
   opNode(Op.Declare, 0, children)
 };
 
+/** Checks a `let` whose pattern, syntax pattern 0, is not a single name, the current syntax being
+ * the statement's, as `_bindLet` binds it. An `else` block runs for a value the pattern does not
+ * match.
+ * @param mutable  whether the names may be assigned; a `let`'s may, a `const`'s may not
+ * @param value  the checked value, syntax child 0
+ * @param otherwise  the `else` block, whose statements follow the value among the syntax children,
+ *     or null
+ * @param global  whether the names are globals, for a module's statement
+ * @return the `Declare` of the hidden binding and the names
+ * @throws a located error as `_bindLet` does, or if the `else` block can finish */
 export let checkLet = fn(
   pattern: Pattern,
   mutable: Bool,
@@ -1402,6 +1730,7 @@ export let checkLet = fn(
   let leave = -1;
 
   if (otherwise != null) {
+    // As a value block, a failed last statement counts as leaving, so its error stands alone.
     leave = checkArm([], [], otherwise.statements, otherwise.tail, 1, -1, false);
 
     if (!endsPath(leave)) {
@@ -1411,17 +1740,27 @@ export let checkLet = fn(
   _bindLet(pattern, syntaxPattern(0), mutable, value, leave, global)
 };
 
+/** Binds a list comprehension generator's pattern, syntax pattern `index` of the current syntax,
+ * to `value`, an item of its source, at the start of the loop over the source, as `_bindLet`
+ * binds a `let` with an `else`: an item the pattern does not match continues the loop.
+ * @return the `Declare` of the hidden binding and the names, which are locals
+ * @throws a located error if the pattern does not fit the value or binds a name twice */
 export let bindGenerator = fn(pattern: Pattern, index: I32, value: I32): I32 {
   let skip = opNode(Op.Block, 0, [opNode(Op.Continue, 0, [])]);
   _bindLet(pattern, syntaxPattern(index), false, value, skip, false)
 };
 
+/** A condition's `let` tests so far: the roots that hold the names they bind, the names, and the
+ * statement's name, for a diagnostic. */
 typedef Chain = {
   let subject: Subject;
   let group: Group;
   let what: Bytes;
 };
 
+/** Checks a Bool part of a condition, `test`, which is child `index` of the current syntax, as a
+ * plain condition is, a Null<Bool> being unwrapped; the names that the condition's `let` tests
+ * have bound so far are declared while it is checked. */
 let _conditionTest = fn(test: AstExpr, index: I32, chain: Chain): I32 {
   let names = chain.group.names;
 
@@ -1435,6 +1774,11 @@ let _conditionTest = fn(test: AstExpr, index: I32, chain: Chain): I32 {
   checked
 };
 
+/** Adds the names that `tested`'s pattern binds, in `bound`, to the chain of `subject`'s roots in
+ * `group`; the tests that store them are appended to `tests`.
+ * @param what  the construct that chains them, for the error
+ * @return the names, their types and roots
+ * @throws a located error for a name that the chain binds already */
 let _chainBound = fn(
   subject: Subject,
   group: Group,
@@ -1462,6 +1806,13 @@ let _chainBound = fn(
   added
 };
 
+/** Checks a condition's `let pattern = value`, the current syntax being its own, into a Bool block
+ * that binds the value once and tests it. A pattern that is just the name of a variant of the
+ * value's enum tests for that variant, so `if (let Red = light)` means what it says. When `binds`
+ * holds, as in a chain of `&&`, the tests also store each name the pattern binds in a root of the
+ * chain's subject for what follows.
+ * @throws a located error for type parameters, a value that does not fit the annotation or the
+ *     pattern, or a name that the condition binds twice */
 let _letTest = fn(
   pattern: Pattern,
   typeParams: Array<TypeParam>,
@@ -1475,6 +1826,7 @@ let _letTest = fn(
   }
   let subject = chain.subject;
   let group = chain.group;
+  // The names that earlier tests bound are in scope for the value and for any pin.
   let (mark, children) = declareNames(group.names, _stored(subject, group));
   let checked = checkAnnotated(annotation, value);
   let ty = typeOf(checked);
@@ -1482,6 +1834,8 @@ let _letTest = fn(
   let tested = _rootSubject(root, ty);
   let tests = Array.new<I32>(0);
   let bound = _noBound();
+  /* A bare name of one of the subject's variants tests for it, as in `match`, null failing the
+   * test when the subject may be null; others bind. */
   let variants = _nullInner(ty) >= 0 ? _nullInner(ty) : ty;
 
   let shaped = match (pattern) {
@@ -1499,6 +1853,10 @@ let _letTest = fn(
   node(Op.Block, TYPE_BOOL, 0, 1, children)
 };
 
+/** Checks part `index` of the current syntax, `part`, of a condition that tests a pattern; a
+ * `let` there binds names only along the chain of `&&` from the condition's top, not under `||`
+ * or `!`.
+ * @return the part's Bool node */
 let _conditionPart = fn(part: AstExpr, index: I32, binds: Bool, chain: Chain): I32 {
   if (!testsPattern(part)) { return _conditionTest(part, index, chain); }
   let outer = enterSyntax(syntaxChild(index));
@@ -1522,6 +1880,12 @@ let _conditionPart = fn(part: AstExpr, index: I32, binds: Bool, chain: Chain): I
   checked
 };
 
+/** Checks an `if` or `while` condition, syntax child 0 of the current syntax, that tests a pattern
+ * with `let`. The names that its tests bind are stored in roots that are declared before the
+ * statement, so that the condition can assign them and the body can read them.
+ * @param what  the statement's name, for a diagnostic
+ * @return the roots' declarations, the condition, the names it binds, and a function that makes a
+ *     read of each */
 export let checkCondition = fn(
   condition: AstExpr,
   what: Bytes
@@ -1534,12 +1898,27 @@ export let checkCondition = fn(
   (declarations, checked, group.names, fn(): Array<I32> { _stored(subject, group) })
 };
 
+/** Returns the error for a failing `with` clause's value of type `ty`, which does not join the
+ * `with`'s type `target`. */
 let _withMismatch = fn(ty: I32, target: I32): Bytes {
   let gives = `a clause that fails gives its value, of type ${typeName(ty)}`;
   let but = ", but the `with` gives " + typeName(target);
   coded(E0706, `${gives}${but}; add an else to give another`)
 };
 
+/** Checks `with clauses { body }`, with or without `else { arms }`, as a block. Each clause is
+ * tested in turn, as a condition's `let` tests chain; its value is bound once, and the names its
+ * pattern binds are stored in roots for the clauses after it and the body. When every clause
+ * matches, the body gives the value; else the clause that failed stores its value in a root of its
+ * own, and, without arms, that value is the with's, and with them, the arms match it as a match
+ * does its subject. The current syntax is the with's; its children are each clause's guard and
+ * value, the body's statements and tail, then the arms', as a match's are; its patterns are the
+ * clauses', then the arms'.
+ * @param expected  the type the context requires, or -1
+ * @return the block
+ * @throws a located error if a `let` clause can fail, a guard is not a Bool, a name is bound
+ *     twice, the arms are empty, not exhaustive or have no clause to take a value from, or the
+ *     body's type and the failing values', or the arms', do not join */
 export let checkWith = fn(
   clauses: Array<WithClause>,
   body: AstBlock,
@@ -1548,6 +1927,8 @@ export let checkWith = fn(
 ): I32 {
   let subject = _noSubject();
   let group = _noGroup();
+  /* Each clause's statements and tests; the binding of its value, the value's type and syntax
+   * child; and the clauses that can fail, and the `<-` ones. */
   let blocks = Array.new<Array<I32>>(0);
   let tested = Array.new<Array<I32>>(0);
   let valueRoots = Array.new<I32>(0);
@@ -1562,6 +1943,7 @@ export let checkWith = fn(
     let guard = match (clause) { Clause(_, g, _) => g, Let(_, _) => null };
     let bound = match (clause) { Let(_, _) => true, _ => false };
     let valueIndex = guard == null ? index : index + 1;
+    // The names that earlier clauses bound are in scope for the value, any pin and the guard.
     let (mark, children) = declareNames(group.names, _stored(subject, group));
     let checked = checkOperand(value, valueIndex, -1);
     let ty = typeOf(checked);
@@ -1627,6 +2009,7 @@ export let checkWith = fn(
     if (arrows.len() == 0) {
       throw coded(E0706, "a `with` of `let` clauses cannot fail, so its else never runs");
     }
+    // Arms no value reaches still match the `<-` clauses' values, as they would if they failed.
     failing = arrows;
   }
   let children = Array.new<I32>(0);
@@ -1642,6 +2025,8 @@ export let checkWith = fn(
     children.push(checkedBody);
     return node(Op.Block, typeOf(checkedBody), 0, 1, children);
   }
+  /* The failing values go to the result without arms, joined with the body's; with them, to one
+   * type the arms match, Dynamic when they differ. */
   let target = otherwise || (expected < 0) ? -1 : expected;
   if (!otherwise && (target < 0) && !endsPath(checkedBody)) { target = typeOf(checkedBody); }
   let f = 0;
@@ -1677,6 +2062,7 @@ export let checkWith = fn(
         enterSyntax(syntaxChild(valueIndexes[c]));
         throw _withMismatch(ty, target);
       }
+      // A clause that fails stores its value; the store gives true.
       let stores = opNode(Op.Not, TYPE_BOOL, [_store(subject, failedRoot, converted)]);
       condition = opNode(Op.Or, TYPE_BOOL, [condition, stores]);
     }

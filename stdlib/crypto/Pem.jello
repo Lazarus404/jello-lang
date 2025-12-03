@@ -1,9 +1,18 @@
 package std.crypto;
 
+/* PEM (RFC 7468), the text form of certificates and keys: blocks of Base64
+ * between lines such as "-----BEGIN CERTIFICATE-----" and "-----END
+ * CERTIFICATE-----", whose label names what the bytes are. A program that
+ * names the type imports this module both ways:
+ *
+ *   import std.crypto.Pem as Pem;
+ *   import type { Block } from std.crypto.Pem; */
+
 let _BEGIN = "-----BEGIN ";
 let _END = "-----END ";
 let _DASHES = "-----";
 
+// One block: its label, as "CERTIFICATE", and the bytes it holds.
 export typedef Block = {
   let label: Bytes;
   let data: Bytes;
@@ -16,6 +25,7 @@ export prototype Block {
   };
 };
 
+// TEXT without its ASCII whitespace, which PEM puts between lines.
 let _compact = fn(text: Bytes): Bytes {
   let out = Bytes.new(text.len());
   let n = 0;
@@ -33,6 +43,8 @@ let _compact = fn(text: Bytes): Bytes {
   Bytes.slice(out.toString(), 0, n)
 };
 
+/* The blocks in TEXT, in order; text around them, such as comments, is left
+ * out. Throws for a block without its end line, or not in Base64. */
 export let decode = fn(text: Bytes): Array<Block> {
   let blocks = Array.new<Block>(0);
   let at = text.indexOf(_BEGIN);
@@ -56,6 +68,7 @@ export let decode = fn(text: Bytes): Array<Block> {
   blocks
 };
 
+// DATA as a PEM block labelled LABEL, its Base64 in lines of 64.
 export let encode = fn(label: Bytes, data: Bytes): Bytes {
   let base64 = Bytes.toBase64(data);
   let lines = [_BEGIN + label + _DASHES];

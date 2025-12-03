@@ -1,5 +1,20 @@
 package frontend.semantics;
 
+/** @file
+ * Declares a module's types; its enums, typedefs and prototypes, each prototype's Object type. A
+ * type alias, `typedef A = T;`, names T itself, so the two are interchangeable; a generic one,
+ * `typedef Box<T> = Array<T>;`, names its body with the type arguments it is given. A record,
+ * `typedef P = { let x: I32; };`, is a closed nominal type, generic like an enum (see `Hir.Kind`).
+ * A bytes layout, `typedef H = bytes-layout { let tag: u8; let body: rest; };`, is a record whose
+ * fields are laid out in bytes as bits segments are (see `frontend.semantics.Bits`). An abstract
+ * type, `typedef W = abstract;`, is nominal too, a native handle (see `Hir.Kind`). A record and a
+ * prototype of one name are linked: the prototype declares the type, an Object type, and the
+ * record gives it its fields, which close the shape of its values. A module
+ * declares its enum and record names first, in source order, then its aliases, then its enums'
+ * variants and records' fields; an alias another type names first is declared then, so aliases may
+ * name aliases declared after them, but not themselves. `frontend.semantics.Modules` calls
+ * `declareTypes` for each module. */
+
 import type {
   BytesLayoutField, BytesLayoutType, Stmt, StructField, TypeParam,
 } from frontend.syntax.Ast;
@@ -19,27 +34,43 @@ import {
   useTypeParams, useTypedefs,
 } from frontend.semantics.TypeCheck;
 
+// The current module's top-level statements.
 let _statements = Array.new<Stmt>(0);
+// The current module's index.
 let _module = -1;
+// Whether the current module's private types are recorded too, for private imports.
 let _opened = false;
+// The current module's aliases, by the index of their statements.
 let _aliases = Array.new<I32>(0);
+// The names of the current module's prototypes.
 let _prototypeNames = Array.new<Bytes>(0);
+// By alias, its statement's syntax.
 let _syntaxes = Array.new<Syntax>(0);
 
+// How far an alias has got: the usual three colours of a depth-first walk.
 enum State {
+  // Not declared yet.
   Waiting;
+  // Its body is being checked, so meeting it again means it refers to itself.
   Checking;
+  // Declared.
   Done;
 }
 
+// By alias, how far it has got.
 let _states = Array.new<State>(0);
 
+/** Declares the type `name` in module scope, and records it among the module's types if it is
+ * exported or the module is opened. */
 let _declare = fn(name: Bytes, exported: Bool, ty: I32) {
   declareScopedType(name, ty);
   if (exported || _opened) { exportScopedType(_module, name, exported); }
   null
 };
 
+/** Declares the alias at index `alias` of `_aliases`, unless it is declared already, checking its
+ * body at its statement's syntax.
+ * @throws a located error if its body names the alias itself, or names no type */
 let _declareAlias = fn(alias: I32) {
   if (_states[alias] == State.Done) { return null; }
 
@@ -63,6 +94,9 @@ let _declareAlias = fn(alias: I32) {
   null
 };
 
+/** Declares the alias `name` of the current module if it has one not yet declared, for a type
+ * that names it before its declaration (see `TypeCheck.useTypedefs`).
+ * @return the type it names, or -1 when there is no such alias */
 let _later = fn(name: Bytes): I32 {
   for (alias, statement in _aliases) {
     match (_statements[statement]) {
@@ -76,6 +110,9 @@ let _later = fn(name: Bytes): I32 {
   -1
 };
 
+/** Defines the fields of the record `name`, with `names` and `types`, at its statement's syntax,
+ * which is current.
+ * @throws a located error if a field is declared twice */
 let _defineRecord = fn(name: Bytes, names: Array<Bytes>, types: Array<I32>) {
   for (f, field in names) {
     if (names.indexOf(field) < f) {
@@ -86,6 +123,7 @@ let _defineRecord = fn(name: Bytes, names: Array<Bytes>, types: Array<I32>) {
   null
 };
 
+// Returns the segment code of a bytes-layout field of type `ty` (see `Hir.BITS_BIG`).
 let _layoutCode = fn(ty: BytesLayoutType): I32 {
   match (ty) {
     U8 => 8,
@@ -97,6 +135,9 @@ let _layoutCode = fn(ty: BytesLayoutType): I32 {
   }
 };
 
+/** Adds the bytes layout `name` with `fields`, at its statement's syntax, which is current.
+ * @return its record type
+ * @throws a located error if it misplaces a segment (see `Bits.placeSegments`) */
 let _declareLayout = fn(name: Bytes, fields: Array<BytesLayoutField>): I32 {
   let codes = Array.new<I32>(0);
 
@@ -107,6 +148,8 @@ let _declareLayout = fn(name: Bytes, fields: Array<BytesLayoutField>): I32 {
   declareLayout(name, codes, offsets, fixed)
 };
 
+/** Defines the fields of the record `name`, `fields`, whose types may name its type parameters,
+ * as `_defineRecord` does. */
 let _defineStruct = fn(name: Bytes, fields: Array<StructField>) {
   let params = enumParams(scopedType(name));
   let (outerNames, outerTypes) = useTypeParams(paramNames(params), params);
@@ -115,6 +158,7 @@ let _defineStruct = fn(name: Bytes, fields: Array<StructField>) {
   let f = isPrototype(scopedType(name)) ? 0 : types.len();
 
   while (f < types.len()) {
+    // A field of a type parameter is checked in each instance the program names.
     if (!isParametric(types[f]) && !readsTyped(types[f])) {
       let field = `field ${names[f]} of typedef ${name} is ${typeName(types[f])}`;
       throw coded(E0804, `${field}, which a prototype's Object cannot hold as itself`);
@@ -124,6 +168,7 @@ let _defineStruct = fn(name: Bytes, fields: Array<StructField>) {
   _defineRecord(name, names, types)
 };
 
+// Defines the fields of the bytes layout `name`, `fields`, as `_defineRecord` does.
 let _defineLayout = fn(name: Bytes, fields: Array<BytesLayoutField>) {
   let codes = layoutCodes(scopedType(name));
   let names = Array.new<Bytes>(0);
@@ -136,6 +181,7 @@ let _defineLayout = fn(name: Bytes, fields: Array<BytesLayoutField>) {
   _defineRecord(name, names, types)
 };
 
+// Returns the names of the type parameters `params`, joined, to compare two declarations'.
 let _paramKey = fn(params: Array<TypeParam>): Bytes {
   let names = "";
 
@@ -145,6 +191,11 @@ let _paramKey = fn(params: Array<TypeParam>): Bytes {
   names
 };
 
+/** Checks whether the record typedef at statement `statement`, `name`, is linked with a prototype
+ * of that name, which declares their type; the first record typedef of a name links, and any other
+ * is declared as usual, a duplicate.
+ * @throws a located error if the two are not exported alike, or do not take the same type
+ *   parameters, by name */
 let _linksPrototype = fn(
   statement: I32,
   name: Bytes,
@@ -176,6 +227,7 @@ let _linksPrototype = fn(
   found
 };
 
+// The names of the prototypes among a module's top-level statements, `statements`.
 export let prototypeNames = fn(statements: Array<Stmt>): Array<Bytes> {
   let names = Array.new<Bytes>(0);
 
@@ -185,6 +237,13 @@ export let prototypeNames = fn(statements: Array<Stmt>): Array<Bytes> {
   names
 };
 
+/** Declares the enums and typedefs among a module's top-level statements, with the module's
+ * syntax current; each is checked at its statement's syntax.
+ * @param statements  the module's top-level statements
+ * @param module  the module's index
+ * @param opened  whether private types are also recorded, for private imports
+ * @throws a located error if a type name is declared twice, a bytes layout or an abstract type
+ *   is generic, or a bytes layout misplaces a segment (see `Bits.placeSegments`) */
 export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool): Bool {
   _statements = statements;
   _module = module;
@@ -226,6 +285,7 @@ export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool)
       Typedef(exported, name, typeParams, Struct(_)) => {
         let parent = enterSyntax(syntaxChild(i));
 
+        // A record linked with a prototype gives its fields to the prototype's type.
         if (!_linksPrototype(i, name, exported, typeParams)) {
           let ty = if (typeParams.len() == 0) {
             declareRecord(name)

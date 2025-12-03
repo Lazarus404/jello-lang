@@ -1,11 +1,18 @@
 package ir;
 
+/** @file
+ * A textual listing of an IR program, for the driver's `--ir` (`Lower.lowerProgram`'s output) and
+ * `--jlo` (the allocated program) listings. Registers print as `%n`, blocks as
+ * `block n`, functions as `@n`, globals as `gn`, natives as `nn` and I64 pool entries as `#n`.
+ * Operations print with VM-style mnemonics, sized by their operand's type. */
+
 import { bytesLiteral } from support.Text;
 import type {
   BasicBlock, Function, Instruction, Native, Program, Terminator, ThrowHandler, ValueType
 } from ir.Model;
 import { argumentCount } from ir.Model;
 
+// Returns the texts of `types`, separated by commas.
 let _types = fn(types: Array<ValueType>): Bytes {
   let out = "";
 
@@ -16,6 +23,8 @@ let _types = fn(types: Array<ValueType>): Bytes {
   out
 };
 
+/** Returns the text of a value type, such as `array<i32>` or `fn(i32) -> bool`; an enum prints
+ * as `type@` and its index. */
 let _type = fn(ty: ValueType): Bytes {
   match (ty) {
     Bool => "bool",
@@ -36,8 +45,10 @@ let _type = fn(ty: ValueType): Bytes {
   }
 };
 
+// Returns the text of register `id`, `%id`.
 let _register = fn(id: I32): Bytes { `%${id}` };
 
+// Returns the texts of the registers of `ids` from index `start` on, separated by commas.
 let _registers = fn(ids: Array<I32>, start: I32): Bytes {
   let out = "";
   let i = start;
@@ -50,8 +61,12 @@ let _registers = fn(ids: Array<I32>, start: I32): Bytes {
   out
 };
 
+/** Returns the width suffix, such as `i32`, of an arithmetic or comparison on `register`; its
+ * type's text from `registers`, the function's register types. */
 let _width = fn(registers: Array<ValueType>, register: I32): Bytes { _type(registers[register]) };
 
+/** Returns `integer`, an integer op's qualified name such as `add.wrap.`, or `float`, its float
+ * name, by the type of `register` in `registers`, followed by that type's text. */
 let _qualified = fn(
   registers: Array<ValueType>,
   register: I32,
@@ -62,6 +77,8 @@ let _qualified = fn(
   name + _type(registers[register])
 };
 
+/** Returns the suffix of an `Eq` on `register`; `fn` for functions, which compare by identity,
+ * and otherwise its width. */
 let _equalityWidth = fn(registers: Array<ValueType>, register: I32): Bytes {
   match (registers[register]) {
     Function(_, _) => "fn",
@@ -69,12 +86,20 @@ let _equalityWidth = fn(registers: Array<ValueType>, register: I32): Bytes {
   }
 };
 
+// The name of each `BytesRead` or `BytesWrite` format, such as "u16.le".
 let _FORMATS = ["u16.le", "u16.be", "u32.le", "u32.be", "i32.le", "i32.be", "f32.le", "f32.be"];
+// Returns the name of a `BytesRead` or `BytesWrite` format.
 let _format = fn(format: I32): Bytes { _FORMATS[format] };
+// Returns the bit offset and width of a `BitsRead` or `BitsWrite` immediate, each after ", ".
 let _bitField = fn(imm: I32): Bytes { `, ${imm / 16}, ${imm % 16}` };
 
+/** Returns the key an object access's immediate `imm` names, as ", #index", or "" when it reads
+ * the key from a register. */
 let _atomKey = fn(imm: I32): Bytes { imm < 0 ? "" : `, #${imm}` };
 
+/** Returns the text of `instruction`, prefixed with `%dst = ` when it defines a register.
+ * @param registers  the function's register types
+ * @param pool  the program's bytes pool, which `ConstBytes` prints from */
 let _instruction = fn(
   instruction: Instruction,
   registers: Array<ValueType>,
@@ -158,6 +183,7 @@ let _instruction = fn(
     EnumNew => `enum.new ${imm}(${operands})`,
     EnumTag => `enum.tag ${operands}`,
     EnumGet => `enum.get ${operands}, ${imm}`,
+    // A key named by the immediate is an atom of the program, `#index`.
     ObjectNew => "object.new",
     ObjectGet => `object.get ${operands}${_atomKey(instruction.imm)}`,
     ObjectSet => `object.set ${operands}${_atomKey(instruction.imm)}`,
@@ -185,6 +211,7 @@ let _instruction = fn(
   (dst < 0) ? text : `${_register(dst)} = ${text}`
 };
 
+// Returns the text of `terminator`.
 let _terminator = fn(terminator: Terminator): Bytes {
   match (terminator) {
     Jump(target) => `jump block ${target}`,
@@ -196,10 +223,17 @@ let _terminator = fn(terminator: Terminator): Bytes {
   }
 };
 
+/** Returns the suffix, with a leading space, that a block label gets for `handler`; its catch
+ * block and payload register. */
 let _handler = fn(handler: ThrowHandler): Bytes {
   ` catch block ${handler.target} as ${_register(handler.payload)}`
 };
 
+/** Appends the lines of `block` to `out`; its label and handler, its instructions, then its
+ * terminator.
+ * @param registers  the function's register types
+ * @param pool  the program's bytes pool
+ * @param out  the listing's pieces */
 let _block = fn(
   block: BasicBlock,
   registers: Array<ValueType>,
@@ -218,6 +252,10 @@ let _block = fn(
   null
 };
 
+/** Appends the text of `function` to `out`; a header with its parameters, captures, result
+ * type and entry block, then each register's type, then its blocks.
+ * @param pool  the program's bytes pool
+ * @param out  the listing's pieces */
 let _function = fn(function: Function, pool: Array<Bytes>, out: Array<Bytes>) {
   let registers = function.registers;
   let header = `fn @${function.id}(`;
@@ -243,6 +281,9 @@ let _function = fn(function: Function, pool: Array<Bytes>, out: Array<Bytes>) {
   null
 };
 
+/** Returns the listing of `program`; its globals, natives, I64 and F64 pools and atoms, each
+ * section followed by a blank line when it is not empty, then its functions separated by blank
+ * lines. */
 export let printIr = fn(program: Program): Bytes {
   let out = Array.new<Bytes>(0);
 

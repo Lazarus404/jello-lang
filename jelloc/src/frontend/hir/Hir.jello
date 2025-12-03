@@ -1,9 +1,122 @@
 package frontend.hir;
 
+/** @file
+ * The flat HIR; the typed program the checker builds and lowering reads. Every node is one row in
+ * contiguous tables, so a program is a handful of arrays rather than a tree of allocations. Node,
+ * type, bytes, global, native, variant and field IDs are indexes into those tables, so spans, types
+ * and verification are plain tables keyed by ID.
+ *
+ * The module holds one current program in its globals. The `frontend.semantics` modules build it
+ * between `beginHir` and `finishHir`, interning types and byte strings and inferring types by
+ * unifying Vars; `frontend.hir.Verify` checks it, `frontend.hir.Print` prints it for `--hir`, and
+ * `ir.Lower` lowers it to the IR, each first making it current with `useHir`. */
+
 import type { SourceSpan } from frontend.syntax.Source;
 import { E0213, E0408, E0901, coded } from support.Codes;
 import { internalError } from support.Internal;
 
+/** The operation of a HIR node. A node's row holds its type, the immediates `value` and `aux`, and
+ * the edge range `[first, first + count)` of its children, which are in evaluation order. The ops
+ * whose immediates or children need saying:
+ *
+ *   Bool          value: 0 or 1
+ *   I32           value; an open literal (`openLiteral`) holds its I64 value in value and aux
+ *                 until `settleLiteral`
+ *   I64           value: low 32 bits; aux: high 32 bits
+ *   Float         value: low 32 bits of its bits; aux: high 32 bits. An F32 or F16 has its bits
+ *                 in the low 32
+ *   Bytes         value: bytes ID
+ *   Atom          value: its name's bytes ID
+ *   Null, Break, Continue
+ *   Local         value: binding ID
+ *   Assign        value: binding ID; children: value
+ *   Global        value: global ID
+ *   SetGlobal     value: global ID; children: value
+ *   InitGlobal    value: global ID; children: value. A program-body binding, in a Declare
+ *   FunctionRef   value: function ID; children: the values it captures, one per Capture of
+ *                 the function, in order. A closure
+ *   TupleField    value: field index; children: tuple
+ *   ArrayLiteral  children: the elements
+ *   ArrayConcat   children: two arrays of its type; a new array of their elements in order
+ *   ArrayPush     children: array, value; yields the array's length after the push
+ *   ArrayPop      children: array; yields the removed last element
+ *   ArrayResize   children: array, length; yields the array
+ *   BytesSlice    children: Bytes or a ByteBuffer, start, length; of a ByteBuffer, a copy
+ *   BytesConcatMany  children: Bytes; fresh Bytes of their bytes in order
+ *   BytesJoin     children: an Array<Bytes>, a separator; fresh Bytes of the parts, the
+ *                 separator between each two
+ *   BytesNew      children: length; yields a zero-filled ByteBuffer
+ *   BytesSet      children: ByteBuffer, index, byte; yields the byte
+ *   BitsPack      value: the bytes the fixed segments fill; children: BitsFields; yields fresh
+ *                 Bytes holding their values
+ *   BitsField     value: bit offset; aux: segment code (`segmentWidth`); children: the segment's
+ *                 value. Only a BitsPack's child
+ *   BitsRead      value: bit offset; aux: segment code, not a rest's; children: Bytes; yields the
+ *                 segment's value, and traps past the end
+ *   ListNil       the empty list
+ *   ListCons      children: head, tail; yields the longer list
+ *   ListHead, ListTail, ListIsNil
+ *                 children: list; the head or tail of nil traps
+ *   Present       children: a T; yields it as a Null<T>
+ *   Unwrap        value: 1 if checked, 0 if known present; children: a Null<T>; yields it as a
+ *                 T. A checked null traps
+ *   ToDynamic     children: any value; yields it boxed
+ *   FromDynamic   children: a Dynamic; yields it as the node's type, and traps unless it holds
+ *                 one
+ *   IsKind        value: a KIND_ code; aux: the enum type for KIND_ENUM, else 0; children: a
+ *                 Dynamic. A KIND_I64 test also accepts an I32
+ *   EnumNew       value: tag; children: the variant's fields
+ *   EnumTag       children: enum
+ *   EnumField     value: field index; aux: tag; children: an enum of that tag
+ *   SetField      value: field index; children: record, value; yields the value
+ *   ObjectNew     a new empty Object
+ *   ObjectGet     value: the key's name bytes ID, or -1 for a key read from the second child;
+ *                 children: Object, and that Atom key; yields the field as the node's type, which
+ *                 the VM checks (an absent field is null)
+ *   ObjectSet     value: as ObjectGet's; children: Object, the Atom key when value is -1, then
+ *                 the value, which is boxed; yields the value
+ *   ObjectHas     value and children: as ObjectGet's; whether the field is there
+ *   ObjectRemove  children: Object, Atom key; whether the field was there
+ *   ObjectClear   children: Object; removes every field and yields the Object
+ *   ObjectCopy    children: Object; a new Object with its fields and prototype
+ *   ObjectKeys    children: Object; an Array<Atom> of its own keys, in atom order
+ *   Call          value: function ID; children: arguments
+ *   CallIndirect  children: callee, arguments
+ *   CallNative    value: native ID; children: arguments
+ *   Block         aux: 1 if it ends in a tail; children: statements, then the tail. Its type is
+ *                 the tail's, but a block whose statements end every path gives no value and
+ *                 has its context's type; a tail after them never runs
+ *   If            children: condition, then, else; an expression
+ *   Try           value: the catch binding ID, or -1 for a bare catch; aux: its name's bytes ID,
+ *                 or 0; children: body, handler (blocks). The binding is the Dynamic thrown
+ *                 value and is visible only in the handler
+ *   And, Or       children: left, right; right runs only when left does not decide
+ *   Le, Ge        children: two floats; `<=` and `>=`, which NaN fails. Other types' are Gt and
+ *                 Lt negated
+ *   Let, Const    value: binding ID; aux: name's bytes ID; children: value. A Let is mutable
+ *   Parameter     value: binding ID; aux: name's bytes ID
+ *   Capture       value: binding ID; aux: name's bytes ID. A copy of an enclosing local; an
+ *                 assignment to it is shared with that local
+ *   Declare       children: bindings (Let, Const, or in the program body one InitGlobal),
+ *                 bound in order. `let (a, b) = e` binds a hidden Const to e, then a and b to
+ *                 its fields
+ *   Block         (as a statement) aux 0: a nested scope of statements, without a tail
+ *   Expression    children: value, discarded
+ *   Return, Throw children: value
+ *   IfStatement   children: condition, then block, and an optional else block or IfStatement
+ *   While         children: condition, body block, and an optional step block that ends each
+ *                 pass and that `continue` reaches; aux 1 when the body runs first (`do`)
+ *   TryStatement  as Try, with blocks without tails
+ *   Function      value: name's bytes ID; children: parameters, captures, body block
+ *   Program       children: the functions, then the program body, a Block with a tail
+ *
+ * Every other operation takes its operands as children. A function ID is the function's index
+ * among the Program's children plus 1; 0 is the program body, which nothing calls, and a call of a
+ * generic function holds 0 until `setCallee` names its instance. The program body's statements
+ * are every module's top-level statements in initialisation order, each module's regexp
+ * initialisers before its own statements and the generic function instances' regexp initialisers
+ * first of all (see `semantics.Modules._initializers`); its tail is the entry module's trailing
+ * expression. */
 export enum Op {
   Bool; I32; I64; Float; Bytes; Atom; Null;
   Local; Assign; Global; SetGlobal; InitGlobal; FunctionRef;
@@ -22,6 +135,43 @@ export enum Op {
   IfStatement; TryStatement; While; Function; Program;
 }
 
+/** The kind of a type. A type's row is `value`, `first`, `count`; the type-edge range is
+ * `[first, first + count)`.
+ *
+ * Array, List and Null keep their element type in `value`; the bare null's Null keeps -1. Tuple
+ * and Function list their elements and parameters in the type-edge range, and a Function keeps
+ * its result in `value`. An Enum keeps its name's bytes ID in `value`, and in `first` and `count`
+ * the range of its variants in the variant table. A Record, a typedef's closed record, is kept as
+ * an Enum with one variant, named as the record, that holds its fields; it is a tuple whose
+ * fields have names, built by a Tuple node and read by TupleField. The scalar kinds use none of
+ * the row.
+ *
+ * A ByteBuffer is the mutable bytes `Bytes.new` makes, written `ByteBuffer` in source. A List is
+ * immutable, and its nil is the null pointer, so it is never nullable. An Object is an open map
+ * from atoms to Dynamic values, shared by reference.
+ *
+ * A Var is a type being inferred; `value` is the type it is bound to, or -1, and `first` its flags
+ * (`_NEVER_NULL`, `_INTEGER`). Checking binds or rejects every Var, so a finished program's nodes
+ * and globals hold none.
+ *
+ * A Param is a type parameter of a generic function or enum; a type of its own, standing for every
+ * type argument that meets its bounds. `value` is its name's bytes ID and `first` its bounds
+ * (`BOUND_EQ`, `BOUND_SHOW`, `BOUND_INTEGER`) and `_NULLED`. A generic function's body is checked
+ * once with its Params, in a function that is dropped before the program is finished, so only
+ * that check's nodes hold one.
+ *
+ * A generic enum or record is an Enum or Record whose fields hold its Params. Applied to type
+ * arguments that hold no Var or Param, it is an instance; a type of the template's kind, with its
+ * name and its fields' types substituted. Applied to others, it is an Applied; `value` is the
+ * template and the type-edge range lists the arguments, until resolving makes it the instance.
+ *
+ * An Optional or a Rest is only a Function's parameter; `?T`, which a call may omit, or the last
+ * one, `T...`, which takes the rest of a call's arguments. `value` is T, and the parameter holds a
+ * Null<T> or an Array<T> (`slotType`).
+ *
+ * An Abstract is a typedef's abstract type, `typedef T = abstract;`; a native handle that only
+ * natives make and take. It keeps its name's bytes ID in `value`, and like a record each
+ * declaration is a type of its own. It is held as a Dynamic, whose null is its null. */
 export enum Kind {
   Bool; I32; I64; Bytes; Array; Tuple; Null; Function; Enum; Dynamic; ByteBuffer; List;
   Var; Param; Applied; Atom;
@@ -29,121 +179,229 @@ export enum Kind {
   Optional; Rest; Record; Object; Abstract;
 }
 
+/** A finished program; the tables `finishHir` hands over and `useHir` makes current again, as
+ * the module's own tables (`_ops` to `_fields`) describe them. */
 export typedef Hir = {
+  // The op of each node.
   let ops: Array<Op>;
+  // The node rows, `_NODE_WIDTH` slots each.
   let nodes: Array<I32>;
+  // The children of every node, each node's in one consecutive range.
   let edges: Array<I32>;
+  // The interned byte strings, by bytes ID.
   let bytes: Array<Bytes>;
+  // The kind of each type.
   let kinds: Array<Kind>;
+  // The type rows, `_TYPE_WIDTH` slots each.
   let types: Array<I32>;
+  // The element, parameter and type-argument lists of the types.
   let typeEdges: Array<I32>;
+  // The Program node.
   let root: I32;
+  // The span rows, `_SPAN_WIDTH` slots for each node.
   let spans: Array<I32>;
+  // The global rows, `_GLOBAL_WIDTH` slots each.
   let globals: Array<I32>;
+  // The native rows, `_NATIVE_WIDTH` slots each.
   let natives: Array<I32>;
+  // The variant rows of every enum, `_VARIANT_WIDTH` slots each.
   let variants: Array<I32>;
+  // The field rows of every variant, `_FIELD_WIDTH` slots each.
   let fields: Array<I32>;
 };
 
+// The width of a node row; type, `value`, `aux`, first edge, child count.
 const _NODE_WIDTH = 5;
+// The width of a type row; `value`, `first`, `count` (see `Kind`).
 const _TYPE_WIDTH = 3;
+/** The width of a global row; type, name's bytes ID, and 1 if mutable or 0 if not. Globals are
+ * module state shared by every function; the program body initialises each once. */
 const _GLOBAL_WIDTH = 3;
+/** The width of a native row; library's bytes ID, export's bytes ID, function type. A native is
+ * declared once per export. */
 const _NATIVE_WIDTH = 3;
+/** The width of a variant row; name's bytes ID, first field row, field count. An enum's variants
+ * are consecutive, in tag order. */
 const _VARIANT_WIDTH = 3;
+// The width of a field row; name's bytes ID, type.
 const _FIELD_WIDTH = 2;
+/** The width of a span row; path's bytes ID, start offset, end offset. Each node has one, taken
+ * from the span current when it is built (`setSpan`); the syntax it was checked from. */
 const _SPAN_WIDTH = 3;
 
+// The Bool type. `beginHir` interns the scalar types first, so their IDs are fixed.
 export const TYPE_BOOL: I32 = 0;
+// The I32 type.
 export const TYPE_I32: I32 = 1;
+// The I64 type.
 export const TYPE_I64: I32 = 2;
+// The Bytes type.
 export const TYPE_BYTES: I32 = 3;
+// The type of a bare `null`; a Null whose inner type is unknown.
 export const TYPE_NULL: I32 = 4;
+// The Dynamic type.
 export const TYPE_DYNAMIC: I32 = 5;
+// The ByteBuffer type, of the mutable bytes `Bytes.new` makes.
 export const TYPE_BYTE_BUFFER: I32 = 6;
+// The Atom type.
 export const TYPE_ATOM: I32 = 7;
+/** The I8 type. The integer types narrower than 32 bits, and U32, are held in 32 bits, and U64 in
+ * 64; a narrow value is kept sign- or zero-extended. */
 export const TYPE_I8: I32 = 8;
+// The I16 type.
 export const TYPE_I16: I32 = 9;
+// The U8 type.
 export const TYPE_U8: I32 = 10;
+// The U16 type.
 export const TYPE_U16: I32 = 11;
+// The U32 type.
 export const TYPE_U32: I32 = 12;
+// The U64 type.
 export const TYPE_U64: I32 = 13;
+// The F16 type.
 export const TYPE_F16: I32 = 14;
+// The F32 type.
 export const TYPE_F32: I32 = 15;
+// The F64 type.
 export const TYPE_F64: I32 = 16;
+// The Object type.
 export const TYPE_OBJECT: I32 = 17;
+// Checks whether `ty` is a float type.
 export let isFloatType = fn(ty: I32): Bool { (ty >= TYPE_F16) && (ty <= TYPE_F64) };
 
+// Checks whether `ty` is an integer type; an integer Var or Param does not count.
 export let isIntegerType = fn(ty: I32): Bool {
   ((ty >= TYPE_I32) && (ty <= TYPE_I64)) || ((ty >= TYPE_I8) && (ty <= TYPE_U64))
 };
 
+// Returns the number of bits of the integer type `ty`.
 export let integerBits = fn(ty: I32): I32 {
   (ty == TYPE_I8) || (ty == TYPE_U8) ? 8
     : (ty == TYPE_I16) || (ty == TYPE_U16) ? 16
     : (ty == TYPE_I64) || (ty == TYPE_U64) ? 64
     : 32
 };
+/** The code flag of a big-endian bits segment. A segment's code is its width in bits, 0 for a
+ * rest, plus `BITS_BIG` when it is big-endian and `BITS_FLOAT` when it is an `f32`. */
 export const BITS_BIG = 64;
+// The code flag of an `f32` bits segment.
 export const BITS_FLOAT = 128;
+// Returns the width in bits of the bits segment with code `code`, 0 for a rest.
 export let segmentWidth = fn(code: I32): I32 { code & 63 };
 
+/** Returns the type of the value of the bits segment with code `code`; Bytes for a rest, F32 for
+ * an `f32`, and otherwise I32. */
 export let segmentType = fn(code: I32): I32 {
   (code & BITS_FLOAT) != 0 ? TYPE_F32 : segmentWidth(code) == 0 ? TYPE_BYTES : TYPE_I32
 };
+// Checks whether `ty` is an unsigned integer type.
 export let isUnsigned = fn(ty: I32): Bool { (ty >= TYPE_U8) && (ty <= TYPE_U64) };
+// Checks whether `ty` is an integer or a float type.
 export let isNumberType = fn(ty: I32): Bool { isIntegerType(ty) || isFloatType(ty) };
 
+// Returns the least value of `ty`, an integer type held in 32 bits.
 export let leastValue = fn(ty: I32): I64 {
   isUnsigned(ty) ? 0 : -((1 as I64) << ((integerBits(ty) - 1) as I64))
 };
 
+// Returns the greatest value of `ty`, an integer type held in 32 bits.
 export let mostValue = fn(ty: I32): I64 {
   let width = integerBits(ty) - (isUnsigned(ty) ? 0 : 1);
   ((1 as I64) << (width as I64)) - 1
 };
 
+/** The kind code the VM's KINDOF instruction reports for a Bool. These codes are what an IsKind
+ * node's `value` tests for. */
 export const KIND_BOOL: I32 = 1;
+// The KINDOF code of an I32.
 export const KIND_I32: I32 = 2;
+// The KINDOF code of an Atom.
 export const KIND_ATOM: I32 = 3;
+// The KINDOF code of Bytes.
 export const KIND_BYTES: I32 = 4;
+// The KINDOF code of an Object.
 export const KIND_OBJECT: I32 = 6;
+// The KINDOF code of a boxed I64.
 export const KIND_I64: I32 = 7;
+// The KINDOF code of an enum value; an IsKind for it also tests the enum type, in `aux`.
 export const KIND_ENUM: I32 = 14;
+// The KINDOF code of a function.
 export const KIND_FUNCTION: I32 = 12;
+// The KINDOF code of a native handle, which an abstract type holds.
 export const KIND_HANDLE: I32 = 15;
+/** The kind codes of an F64, an F32 and an F16. An `IsKind` test of one also accepts an I32,
+ * which extraction converts. */
 export const KIND_F64: I32 = 8;
 export const KIND_F32: I32 = 9;
 export const KIND_F16: I32 = 10;
+// Checks whether the kind code `code` is a float's.
 export let isFloatKind = fn(code: I32): Bool { (code >= KIND_F64) && (code <= KIND_F16) };
 
+/** The Eq bound of a Param, as a bit in its `first`. The bounds are bit sets, so that Integer
+ * implies Eq and Show. */
 export const BOUND_EQ: I32 = 1;
+// The Show bound of a Param.
 export const BOUND_SHOW: I32 = 2;
+// The Integer bound of a Param, which includes the Eq and Show bits.
 export const BOUND_INTEGER: I32 = 7;
+/** The flag in a Param's `first` set once its template writes Null<T> for it (`nullType`), so that
+ * its type arguments must not hold null. */
 const _NULLED = 8;
 
+/** The op of each node of the current program. The tables from here to `_fields` are the program
+ * being built or read; `beginHir` starts an empty one and `useHir` makes a finished one current,
+ * and every reader sees whichever is current. */
 let _ops = Array.new<Op>(0);
+// The node rows, `_NODE_WIDTH` slots each.
 let _nodes = Array.new<I32>(0);
+// The children of every node, each node's in one consecutive range.
 let _edges = Array.new<I32>(0);
+// The interned byte strings, by bytes ID; names, literals and paths.
 let _bytes = Array.new<Bytes>(0);
+/** The open-addressing hash table over `_bytes`; each slot holds a bytes ID, or -1 if empty. It is
+ * kept at most half full. */
 let _bytesSlots = Array.new<I32>(0);
+// The kind of each type.
 let _kinds = Array.new<Kind>(0);
+// The type rows, `_TYPE_WIDTH` slots each.
 let _types = Array.new<I32>(0);
+// The element, parameter and type-argument lists of the types, each in one consecutive range.
 let _typeEdges = Array.new<I32>(0);
+/** The open-addressing hash table over the structural types; each slot holds a type ID, or -1 if
+ * empty. Enums, Records, Vars and Params are never in it. It is kept at most half full. */
 let _typeSlots = Array.new<I32>(0);
+/** By type; whether it is or holds a Var. Only a program being checked has Vars, so only then do
+ * types read from nodes and globals resolve. */
 let _open = Array.new<Bool>(0);
+// By type; whether it is or holds a Param.
 let _parametric = Array.new<Bool>(0);
+/** By type; for a generic enum, the Tuple of its Params; for an instance, the Applied it
+ * instantiates; for an Applied whose arguments hold no Var or Param, its instance; otherwise -1. */
 let _generic = Array.new<I32>(0);
+// Whether the current program is being checked, so that type reads resolve Vars.
 let _checking = false;
+// The Program node, or -1 until `finishHir`.
 let _root = -1;
+// The span rows, `_SPAN_WIDTH` slots for each node.
 let _spans = Array.new<I32>(0);
+// The global rows, `_GLOBAL_WIDTH` slots each.
 let _globals = Array.new<I32>(0);
+// The native rows, `_NATIVE_WIDTH` slots each.
 let _natives = Array.new<I32>(0);
+// The variant rows of every enum, `_VARIANT_WIDTH` slots each.
 let _variants = Array.new<I32>(0);
+// The field rows of every variant, `_FIELD_WIDTH` slots each.
 let _fields = Array.new<I32>(0);
+// The bytes ID of the current span's path, which `node` gives each node it builds; -1 for none.
 let _spanPath = -1;
+// The current span's start offset.
 let _spanStart = -1;
+// The current span's end offset.
 let _spanEnd = -1;
 
+/** Makes the finished `program` current for the read functions, and returns it. It is not being
+ * checked, so its type reads do not resolve Vars. The interning tables are not restored, so
+ * nothing may be built in it. */
 export let useHir = fn(program: Hir): Hir {
   _ops = program.ops;
   _nodes = program.nodes;
@@ -163,20 +421,33 @@ export let useHir = fn(program: Hir): Hir {
   program
 };
 
+/** Returns the number of nodes in the current program.
+ * @return the count; node IDs are `[0, count)` */
 export let nodeCount = fn(): I32 { _ops.len() };
+/** Returns the current program's Program node.
+ * @return the node ID, or -1 before `finishHir` */
 export let rootNode = fn(): I32 { _root };
+// Returns the op of node `id`.
 export let opOf = fn(id: I32): Op { _ops[id] };
+// Returns `ty` resolved while the program is being checked, and `ty` itself otherwise.
 let _current = fn(ty: I32): I32 { (_checking && (ty >= 0) && _open[ty]) ? resolve(ty) : ty };
 
+/** Returns the type of node `id`, or 0 for a statement, resolved while the program is being
+ * checked. It inlines `_current`, as this is the checker's most frequent read. */
 export let typeOf = fn(id: I32): I32 {
   let ty = _nodes[id * _NODE_WIDTH];
   (_checking && (ty >= 0) && _open[ty]) ? resolve(ty) : ty
 };
+// Returns the `value` immediate of node `id`, whose meaning the op table in `Op` gives.
 export let valueOf = fn(id: I32): I32 { _nodes[id * _NODE_WIDTH + 1] };
+// Returns the `aux` immediate of node `id`, whose meaning the op table in `Op` gives.
 export let auxOf = fn(id: I32): I32 { _nodes[id * _NODE_WIDTH + 2] };
+// Returns the number of children of node `id`.
 export let childCount = fn(id: I32): I32 { _nodes[id * _NODE_WIDTH + 4] };
+// Returns child `index` of node `id`, counting from 0.
 export let childOf = fn(id: I32, index: I32): I32 { _edges[_nodes[id * _NODE_WIDTH + 3] + index] };
 
+// Returns a fresh array of the children of node `id`.
 export let children = fn(id: I32): Array<I32> {
   let first = _nodes[id * _NODE_WIDTH + 3];
   let out = Array.new<I32>(childCount(id));
@@ -187,16 +458,24 @@ export let children = fn(id: I32): Array<I32> {
   out
 };
 
+/** Returns the I64 held in node `id`'s `value` (low half, as unsigned) and `aux` (high half); an
+ * I64 literal's value, or an open literal's. */
 export let wideValueOf = fn(id: I32): I64 {
   ((auxOf(id) as I64) << 32) | ((valueOf(id) as I64) & 4294967295)
 };
+/** Returns the last child of node `id`, which must have one, such as a value block's tail or a
+ * function's body. */
 export let lastChild = fn(id: I32): I32 { childOf(id, childCount(id) - 1) };
 
+/** Checks whether a `break` in the loop `id` leaves it: one in its condition or body, but not in
+ * the body of a loop inside it, which it leaves instead. */
 let _breaksOut = fn(id: I32): Bool { _hasBreak(childOf(id, 0)) || _hasBreak(childOf(id, 1)) };
 
+// Checks whether node `id` holds a `break` that leaves the loop around it.
 let _hasBreak = fn(id: I32): Bool {
   match (opOf(id)) {
     Break => true,
+    // Its step's, like its condition's, leaves the loop around it.
     While => _hasBreak(childOf(id, 0)) || ((childCount(id) == 3) && _hasBreak(childOf(id, 2))),
     _ => {
       let i = 0;
@@ -206,11 +485,16 @@ let _hasBreak = fn(id: I32): Bool {
   }
 };
 
+/** Checks whether the statement or block `id` ends every path through it, so that nothing after it
+ * runs. Return, Throw, Break and Continue do; a block does when its last statement does (a tail
+ * does not count); an IfStatement when it has an else and both branches do; a TryStatement when
+ * both its blocks do; a While whose condition is the constant true when no `break` leaves it. */
 let _endsPath = fn(id: I32): Bool {
   match (opOf(id)) {
     Return, Throw, Break, Continue => true,
     IfStatement => (childCount(id) == 3) && _endsPath(childOf(id, 1)) && _endsPath(childOf(id, 2)),
     TryStatement => _endsPath(childOf(id, 0)) && _endsPath(childOf(id, 1)),
+    // A loop whose condition is the constant true ends only by a `break`.
     While => {
       let condition = childOf(id, 0);
       match (opOf(condition)) { Bool => (valueOf(condition) != 0) && !_breaksOut(id), _ => false }
@@ -222,33 +506,59 @@ let _endsPath = fn(id: I32): Bool {
     _ => false,
   }
 };
+/** Checks whether the statement or block `id` ends every path through it, so that nothing after
+ * it runs; `_endsPath` gives the rules. The checker rejects a statement after one and carries
+ * narrowing past a branch that ends, and the verifier rejects a statement after one. */
 export let endsPath = fn(id: I32): Bool { _endsPath(id) };
 
+/** Checks whether node `id`'s edge range lies inside the edge table, so that every child can be
+ * read. The verifier checks it before reading any child. */
 export let childrenInBounds = fn(id: I32): Bool {
   let first = _nodes[id * _NODE_WIDTH + 3];
   let count = childCount(id);
   (first >= 0) && (count >= 0) && (first + count <= _edges.len())
 };
+// Returns the interned byte string whose bytes ID is `id`.
 export let bytesOf = fn(id: I32): Bytes { _bytes[id] };
+/** Returns the bytes ID of the path of the source span node `id` was checked from, or -1 for a
+ * node built outside any span. The verifier bounds-checks it. */
 export let spanPathOf = fn(id: I32): I32 { _spans[id * _SPAN_WIDTH] };
+// Returns the start byte offset of node `id`'s span.
 export let spanStartOf = fn(id: I32): I32 { _spans[id * _SPAN_WIDTH + 1] };
+// Returns the end byte offset of node `id`'s span.
 export let spanEndOf = fn(id: I32): I32 { _spans[id * _SPAN_WIDTH + 2] };
+/** Returns the number of span rows, which the verifier compares with the node count.
+ * @return the count */
 export let spanCount = fn(): I32 { _spans.len() / _SPAN_WIDTH };
 
+// Returns the span node `id` was checked from; the span must have a path.
 export let spanOf = fn(id: I32): SourceSpan {
   { path: _bytes[spanPathOf(id)], start: spanStartOf(id), end: spanEndOf(id) }
 };
+/** Returns the number of interned byte strings.
+ * @return the count; bytes IDs are `[0, count)` */
 export let bytesCount = fn(): I32 { _bytes.len() };
 
+/** Returns the number of globals.
+ * @return the count; global IDs are `[0, count)` */
 export let globalCount = fn(): I32 { _globals.len() / _GLOBAL_WIDTH };
+// Returns the type of the global `global`, resolved while the program is being checked.
 export let globalTypeOf = fn(global: I32): I32 { _current(_globals[global * _GLOBAL_WIDTH]) };
+// Returns the name of the global `global`.
 export let globalNameOf = fn(global: I32): Bytes { _bytes[_globals[global * _GLOBAL_WIDTH + 1]] };
+// Checks whether the global `global` may be assigned after its initialisation.
 export let globalIsMutable = fn(global: I32): Bool { _globals[global * _GLOBAL_WIDTH + 2] == 1 };
+/** Returns the number of natives.
+ * @return the count; native IDs are `[0, count)` */
 export let nativeCount = fn(): I32 { _natives.len() / _NATIVE_WIDTH };
+// Returns the name of the library the native `native` is exported from.
 export let nativeLibraryOf = fn(native: I32): Bytes { _bytes[_natives[native * _NATIVE_WIDTH]] };
+// Returns the export name of the native `native`.
 export let nativeNameOf = fn(native: I32): Bytes { _bytes[_natives[native * _NATIVE_WIDTH + 1]] };
+// Returns the Function type the native `native` is declared with.
 export let nativeTypeOf = fn(native: I32): I32 { _natives[native * _NATIVE_WIDTH + 2] };
 
+// Returns the position of `kind` in `Kind`, from 0, which type hashing uses.
 let _kindCode = fn(kind: Kind): I32 {
   match (kind) {
     Bool => 0, I32 => 1, I64 => 2, Bytes => 3, Array => 4, Tuple => 5, Null => 6, Function => 7,
@@ -258,44 +568,71 @@ let _kindCode = fn(kind: Kind): I32 {
   }
 };
 
+/** Returns the number of types.
+ * @return the count; type IDs are `[0, count)` */
 export let typeCount = fn(): I32 { _kinds.len() };
+// Returns the kind of `ty`.
 export let kindOf = fn(ty: I32): Kind { _kinds[ty] };
+/** Returns the `value` of `ty`'s row; the element, inner or result type of an Array, List, Null or
+ * Function, an Enum's or Param's name's bytes ID, an Applied's template, or a Var's binding.
+ * @param ty  the type
+ * @return the row's `value`, which is -1 for the bare null's Null and for an unbound Var */
 export let innerOf = fn(ty: I32): I32 { _types[ty * _TYPE_WIDTH] };
+/** Returns the length of `ty`'s type-edge range; a Tuple's elements, a Function's parameters or an
+ * Applied's type arguments. For an Enum it is the variant count.
+ * @param ty  the type
+ * @return the row's `count` */
 export let typeArgCount = fn(ty: I32): I32 { _types[ty * _TYPE_WIDTH + 2] };
 
+/** Returns entry `index`, from 0, of the type-edge range of the Tuple, Function or Applied `ty`;
+ * an element, parameter or type argument. */
 export let typeArg = fn(ty: I32, index: I32): I32 {
   _typeEdges[_types[ty * _TYPE_WIDTH + 1] + index]
 };
 
+/** Returns the Enum holding the variant rows of the enum type `ty`; the template of an Applied, or
+ * `ty` itself. The enum readers below take an Enum or an Applied; `tag` indexes its variants and
+ * `field` a variant's fields. */
 let _shape = fn(ty: I32): I32 {
   match (_kinds[ty]) { Applied => _types[ty * _TYPE_WIDTH], _ => ty }
 };
 
+/** Returns the slot in `_variants` where variant `tag` of enum `ty` starts. It and `variantCount`
+ * inline `_shape`, as the enum readers call them most. */
 let _variant = fn(ty: I32, tag: I32): I32 {
   let shape = match (_kinds[ty]) { Applied => _types[ty * _TYPE_WIDTH], _ => ty };
   (_types[shape * _TYPE_WIDTH + 1] + tag) * _VARIANT_WIDTH
 };
 
+// Returns the slot in `_fields` where field `field` of variant `tag` of enum `ty` starts.
 let _field = fn(ty: I32, tag: I32, field: I32): I32 {
   (_variants[_variant(ty, tag) + 1] + field) * _FIELD_WIDTH
 };
 
+// Returns the number of variants of enum `ty`, which is 0 until its variants are defined.
 export let variantCount = fn(ty: I32): I32 {
   let shape = match (_kinds[ty]) { Applied => _types[ty * _TYPE_WIDTH], _ => ty };
   _types[shape * _TYPE_WIDTH + 2]
 };
+// Returns the name of variant `tag` of enum `ty`.
 export let variantName = fn(ty: I32, tag: I32): Bytes { _bytes[_variants[_variant(ty, tag)]] };
+// Returns the number of fields of variant `tag` of enum `ty`.
 export let fieldCount = fn(ty: I32, tag: I32): I32 { _variants[_variant(ty, tag) + 2] };
 
+// Returns the name of field `field` of variant `tag` of enum `ty`.
 export let fieldName = fn(ty: I32, tag: I32, field: I32): Bytes {
   _bytes[_fields[_field(ty, tag, field)]]
 };
 
+/** Returns the type of field `field` of variant `tag` of enum `ty`. For an Applied it is the
+ * template's field type with the Applied's type arguments substituted. */
 export let fieldType = fn(ty: I32, tag: I32, field: I32): I32 {
   let declared = _fields[_field(ty, tag, field) + 1];
   match (_kinds[ty]) { Applied => _appliedField(ty, declared), _ => declared }
 };
 
+/** Returns the tag of the variant of enum `ty` named `name`, by linear search, or -1 if `ty` has
+ * no such variant. */
 export let variantTag = fn(ty: I32, name: Bytes): I32 {
   let row = _shape(ty) * _TYPE_WIDTH;
   let first = _types[row + 1];
@@ -310,29 +647,44 @@ export let variantTag = fn(ty: I32, name: Bytes): I32 {
   -1
 };
 
+/** Checks whether `ty`, which may be out of range, is a valid type ID of kind `kind`. It compares
+ * kinds directly; a Var bound to an Array is not an Array. */
 export let isKind = fn(ty: I32, kind: Kind): Bool {
   (ty >= 0) && (ty < typeCount()) && (_kinds[ty] == kind)
 };
 
+// Checks whether `ty`, which may be out of range, is a `kind` type or an Applied generic one.
 let _isNominal = fn(ty: I32, kind: Kind): Bool {
   if ((ty < 0) || (ty >= typeCount())) { return false; }
   (_kinds[ty] == kind)
     || ((_kinds[ty] == Kind.Applied) && (_kinds[_types[ty * _TYPE_WIDTH]] == kind))
 };
+/** Checks whether `ty`, which may be out of range, is a valid enum type; an Enum, or an Applied
+ * generic one. */
 export let isEnum = fn(ty: I32): Bool { _isNominal(ty, Kind.Enum) };
+/** Checks whether `ty`, which may be out of range, is a valid record type; a Record, or an
+ * Applied generic one. The enum readers read its one variant, tag 0. */
 export let isRecord = fn(ty: I32): Bool { _isNominal(ty, Kind.Record) };
+// Checks whether `ty` is `Object` or a prototype's Object type.
 export let isObject = fn(ty: I32): Bool { _isNominal(ty, Kind.Object) };
+// Checks whether `ty` is a prototype's Object type.
 export let isPrototype = fn(ty: I32): Bool { isObject(ty) && (ty != TYPE_OBJECT) };
+/** Checks whether `ty` is a prototype's type that a typedef of its name links, which gives it the
+ * typedef's fields as a record's. */
 export let isLinked = fn(ty: I32): Bool { isPrototype(ty) && (variantCount(ty) > 0) };
 
+// Returns the number of fields of `ty`, a tuple or a record.
 export let memberCount = fn(ty: I32): I32 {
   _kinds[ty] == Kind.Tuple ? typeArgCount(ty) : fieldCount(ty, 0)
 };
 
+// Returns the type of field `member` of `ty`, a tuple or a record.
 export let memberType = fn(ty: I32, member: I32): I32 {
   _kinds[ty] == Kind.Tuple ? typeArg(ty, member) : fieldType(ty, 0, member)
 };
 
+/** Returns the index of the field of record `ty` named `name`, by linear search, or -1 if it has
+ * no such field. */
 export let recordField = fn(ty: I32, name: Bytes): I32 {
   let field = 0;
   let count = fieldCount(ty, 0);
@@ -345,6 +697,13 @@ export let recordField = fn(ty: I32, name: Bytes): I32 {
   -1
 };
 
+/** Appends a node to the current program, at the current span (`setSpan`).
+ * @param op  the operation
+ * @param ty  the node's type; 0 for a statement
+ * @param value  the `value` immediate
+ * @param aux  the `aux` immediate
+ * @param children  the child nodes, in evaluation order, copied into the edge table
+ * @return the node's ID */
 export let node = fn(op: Op, ty: I32, value: I32, aux: I32, children: Array<I32>): I32 {
   let id = _ops.len();
   _ops.push(op);
@@ -362,15 +721,25 @@ export let node = fn(op: Op, ty: I32, value: I32, aux: I32, children: Array<I32>
   id
 };
 
+/** Appends a node of `op` and type `ty` over `children`, with no immediates; `node` for the many
+ * operations that need neither `value` nor `aux`.
+ * @return the node's ID */
 export let opNode = fn(op: Op, ty: I32, children: Array<I32>): I32 {
   node(op, ty, 0, 0, children)
 };
 
+/** Makes the function at index `function` the callee of the Call or FunctionRef node `id`, by
+ * storing its function ID, `function + 1`. The checker points a generic call at its instance with
+ * it, and renumbers calls once template functions are dropped.
+ * @param id  the Call or FunctionRef node
+ * @param function  the callee's function index (its function ID minus 1) */
 export let setCallee = fn(id: I32, function: I32): Bool {
   _nodes[id * _NODE_WIDTH + 1] = function + 1;
   true
 };
 
+/** Turns the `CallIndirect` node `id` into a `Call` of the function at index `function`, dropping
+ * its callee; its receiver and arguments are the call's. */
 export let callDirectly = fn(id: I32, function: I32): Bool {
   let row = id * _NODE_WIDTH;
   _ops[id] = Op.Call;
@@ -380,18 +749,25 @@ export let callDirectly = fn(id: I32, function: I32): Bool {
   true
 };
 
+// Sets the global that the `Global` node `id` reads.
 export let setGlobal = fn(id: I32, global: I32): Bool {
   _nodes[id * _NODE_WIDTH + 1] = global;
   true
 };
 
+/** Gives node `id`, a block that ends every path (`endsPath`) and so gives no value, the type
+ * `ty` its context requires. */
 export let retype = fn(id: I32, ty: I32): Bool {
   if (!endsPath(id)) { internalError("only a block that ends every path is retyped"); }
   _nodes[id * _NODE_WIDTH] = ty;
   true
 };
+/** Returns the type of a value block that ends every path, which gives no value; the type its
+ * context requires, `expected`, or Null when there is none. */
 export let noValueType = fn(expected: I32): I32 { expected >= 0 ? resolve(expected) : TYPE_NULL };
 
+/** Appends a copy of node `id` with its op, immediates and span, but with type `ty` and children
+ * `children`, and returns the copy's ID. The current span is left as it was. */
 export let copyNode = fn(id: I32, ty: I32, children: Array<I32>): I32 {
   let path = _spanPath;
   let start = _spanStart;
@@ -407,15 +783,25 @@ export let copyNode = fn(id: I32, ty: I32, children: Array<I32>): I32 {
   copy
 };
 
+/** Appends a literal of op `op` and type `ty` whose `value` and `aux` immediates hold the low and
+ * high halves of the I64 `value`, and returns its ID. */
 let _wideNode = fn(op: Op, ty: I32, value: I64): I32 {
   node(op, ty, value as I32, (value >> 32) as I32, [])
 };
+/** Appends a 64-bit literal of `value` and returns its ID.
+ * @param value  the value's bits
+ * @param ty  `TYPE_I64` or `TYPE_U64` */
 export let wideLiteral = fn(value: I64, ty: I32): I32 { _wideNode(Op.I64, ty, value) };
+// Appends a float literal of the float type `ty` whose bits are `pattern` and returns its ID.
 export let floatLiteral = fn(pattern: I64, ty: I32): I32 { _wideNode(Op.Float, ty, pattern) };
 
+/** Returns `hash` with the byte or 32-bit word `word` mixed in, one FNV-1a step. The interning
+ * tables hash bytes and type rows this way. */
 let _mix = fn(hash: I32, word: I32): I32 { (hash ^ word) * 16777619 };
+// Returns the home slot, in `[0, capacity)`, of `hash` in a table of `capacity` slots.
 let _slot = fn(hash: I32, capacity: I32): I32 { (hash & 2147483647) % capacity };
 
+// Returns a hash table of `capacity` empty slots, each -1.
 let _emptySlots = fn(capacity: I32): Array<I32> {
   let slots = Array.new<I32>(capacity);
 
@@ -425,6 +811,7 @@ let _emptySlots = fn(capacity: I32): Array<I32> {
   slots
 };
 
+// Returns the FNV-1a hash of `value`'s bytes.
 let _bytesHash = fn(value: Bytes): I32 {
   let hash = -2128831035;
 
@@ -434,6 +821,7 @@ let _bytesHash = fn(value: Bytes): I32 {
   hash
 };
 
+// Doubles `_bytesSlots` and reinserts every interned byte string, probing linearly.
 let _growBytes = fn() {
   let capacity = _bytesSlots.len() * 2;
   _bytesSlots = _emptySlots(capacity);
@@ -446,6 +834,8 @@ let _growBytes = fn() {
   null
 };
 
+/** Returns the slot of `_bytesSlots` holding `value`'s bytes ID, found by linear probing, or the
+ * empty slot it would take. */
 let _bytesSlot = fn(value: Bytes): I32 {
   let capacity = _bytesSlots.len();
   let slot = _slot(_bytesHash(value), capacity);
@@ -457,6 +847,8 @@ let _bytesSlot = fn(value: Bytes): I32 {
   slot
 };
 
+/** Interns `value` in the bytes pool and returns its bytes ID, the same for equal bytes. The table
+ * is grown first if it would become more than half full. */
 export let bytesId = fn(value: Bytes): I32 {
   if ((_bytes.len() + 1) * 2 > _bytesSlots.len()) { _growBytes(); }
   let slot = _bytesSlot(value);
@@ -469,8 +861,14 @@ export let bytesId = fn(value: Bytes): I32 {
   _bytesSlots[slot]
 };
 
+// Returns the bytes ID of `value` without interning it, or -1 if it is not interned.
 export let findBytesId = fn(value: Bytes): I32 { _bytesSlots[_bytesSlot(value)] };
 
+/** Declares a global, which the program body must initialise once with an InitGlobal.
+ * @param name  the global's name
+ * @param ty  its type
+ * @param mutable  whether it may be assigned after initialisation
+ * @return its global ID */
 export let declareGlobal = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
   let id = globalCount();
   _globals.push(ty);
@@ -479,6 +877,13 @@ export let declareGlobal = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
   id
 };
 
+/** Declares export `name` of `library` as a native. One export has one ID; declaring it again
+ * with the same type returns the existing ID.
+ * @param library  the library's name
+ * @param name  the export's name
+ * @param ty  the Function type it is called with
+ * @return its native ID
+ * @throws an error if the export is already declared with another type */
 export let declareNative = fn(library: Bytes, name: Bytes, ty: I32): I32 {
   let i = 0;
 
@@ -499,13 +904,19 @@ export let declareNative = fn(library: Bytes, name: Bytes, ty: I32): I32 {
   nativeCount() - 1
 };
 
+/** Makes `path`, `start` and `end` the span `node` gives each node it builds until the next call.
+ * @param path  the source file's path
+ * @param start  the start byte offset
+ * @param end  the end byte offset */
 export let setSpan = fn(path: Bytes, start: I32, end: I32): Bool {
+  // The path is interned only when it differs from the current span's, which saves a hash per call.
   if ((_spanPath < 0) || (_bytes[_spanPath] != path)) { _spanPath = bytesId(path); }
   _spanStart = start;
   _spanEnd = end;
   true
 };
 
+// Returns the hash of the type row of `kind`, `value` and the type-edge list `args`.
 let _typeHash = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
   let hash = _mix(_mix(-2128831035, _kindCode(kind)), value);
 
@@ -516,6 +927,7 @@ let _typeHash = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
   _mix(hash, args.len())
 };
 
+// Returns a copy of `ty`'s type-edge list, as a fresh array.
 let _typeArgs = fn(ty: I32): Array<I32> {
   let args = Array.new<I32>(0);
   let i = 0;
@@ -528,6 +940,7 @@ let _typeArgs = fn(ty: I32): Array<I32> {
   args
 };
 
+// Checks whether the row of the interned type `ty` is exactly `kind`, `value` and `args`.
 let _sameType = fn(ty: I32, kind: Kind, value: I32, args: Array<I32>): Bool {
   if (!isKind(ty, kind) || (innerOf(ty) != value) || (typeArgCount(ty) != args.len())) {
     return false;
@@ -540,6 +953,9 @@ let _sameType = fn(ty: I32, kind: Kind, value: I32, args: Array<I32>): Bool {
   true
 };
 
+/** Doubles `_typeSlots` and reinserts every interned type, skipping the Enums, Records,
+ * prototypes' Objects, Abstracts, Vars and Params, which are not interned; a linked prototype's
+ * Object row holds variants, not type edges. */
 let _growTypes = fn() {
   let capacity = _typeSlots.len() * 2;
   _typeSlots = _emptySlots(capacity);
@@ -561,10 +977,15 @@ let _growTypes = fn() {
   null
 };
 
+/** Checks whether a type of `kind` holds a type in `value`, an element, inner or result type, as
+ * Array, List, Null, Function, Optional and Rest do. */
 let _holdsInner = fn(kind: Kind): Bool {
   match (kind) { Array, List, Null, Function, Optional, Rest => true, _ => false }
 };
 
+/** Appends the type row of `kind`, `value` and the type-edge list `args` without interning it, and
+ * returns its ID. It records whether the type is open (holds a Var) and parametric (holds a
+ * Param). */
 let _addType = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
   let id = typeCount();
   _kinds.push(kind);
@@ -588,6 +1009,9 @@ let _addType = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
   id
 };
 
+/** Interns the structural type of `kind`, `value` and the type-edge list `args`, and returns the
+ * existing or added type's ID, so that equal rows have equal IDs. The table is grown first if it
+ * would become more than half full. */
 let _intern = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
   if ((typeCount() + 1) * 2 > _typeSlots.len()) { _growTypes(); }
   let capacity = _typeSlots.len();
@@ -602,9 +1026,18 @@ let _intern = fn(kind: Kind, value: I32, args: Array<I32>): I32 {
   id
 };
 
+// Returns the interned Array type of `element`.
 export let arrayType = fn(element: I32): I32 { _intern(Kind.Array, element, []) };
+// Returns the interned List type of `element`.
 export let listType = fn(element: I32): I32 { _intern(Kind.List, element, []) };
 
+/** Returns the type `?ty`. Null<Null<T>> is Null<T>, and Null<Dynamic> is Dynamic. A Param made
+ * nullable is marked `_NULLED`, so that its type arguments are checked for null. A Var is wrapped
+ * as it is; `nullable` handles one that could itself be nullable.
+ * @param ty  the inner type, resolved while checking
+ * @return the Null type, or the inner type when it already holds null
+ * @throws an error if the inner type is a List, whose nil is the null pointer, so a nullable list
+ *   could not tell nil from null */
 export let nullType = fn(ty: I32): I32 {
   let inner = _current(ty);
 
@@ -618,8 +1051,11 @@ export let nullType = fn(ty: I32): I32 {
 
   (isKind(inner, Kind.Null) || isKind(inner, Kind.Dynamic)) ? inner : _intern(Kind.Null, inner, [])
 };
+// Checks whether values of `ty` can be null; it is a Null<T> or a Dynamic.
 export let holdsNull = fn(ty: I32): Bool { isKind(ty, Kind.Null) || isKind(ty, Kind.Dynamic) };
 
+/** Checks whether `ty`'s values are references, whose null is the null pointer; Bytes, ByteBuffer,
+ * Array, Tuple, Function, an enum, a record, an Object or an abstract type. */
 export let isReference = fn(ty: I32): Bool {
   match (kindOf(ty)) {
     Bytes, ByteBuffer, Array, Tuple, Function, Enum, Applied, Record, Object, Abstract => true,
@@ -627,10 +1063,14 @@ export let isReference = fn(ty: I32): Bool {
   }
 };
 
+// Checks whether `ty` is an abstract type, null or not; a native handle's type.
 export let isHandle = fn(ty: I32): Bool {
   isKind(ty, Kind.Abstract) || (isKind(ty, Kind.Null) && isKind(innerOf(ty), Kind.Abstract))
 };
 
+/** Checks whether the VM checks a field of an Object as it reads it as `ty`: a Bool, an Atom, a
+ * 32-bit or 64-bit integer, a float, or a reference other than a buffer or an abstract type, null
+ * or not, which it checks by its exact type. */
 export let readsExactly = fn(ty: I32): Bool {
   let inner = isKind(ty, Kind.Null) ? innerOf(ty) : ty;
   let scalar = match (kindOf(ty)) { Bool, Atom, I32, I64, F16, F32, F64 => true, _ => false };
@@ -638,58 +1078,93 @@ export let readsExactly = fn(ty: I32): Bool {
   scalar || ((inner >= 0) && isReference(inner) && !unchecked)
 };
 
+/** Checks whether an Object's field can be read as the type `ty`, as a linked typedef's field is;
+ * as a type the VM checks (`readsExactly`), or as an abstract type or a nullable one it checks,
+ * read as a Dynamic and extracted. */
 export let readsTyped = fn(ty: I32): Bool {
   (ty == TYPE_DYNAMIC)
     || readsExactly(ty)
     || isHandle(ty)
     || (isKind(ty, Kind.Null) && (innerOf(ty) >= 0) && readsExactly(innerOf(ty)))
 };
+// Returns the interned Tuple type of `elements`.
 export let tupleType = fn(elements: Array<I32>): I32 { _intern(Kind.Tuple, -1, elements) };
 
+// Returns the interned Function type from `params` to `result`.
 export let functionType = fn(params: Array<I32>, result: I32): I32 {
   _intern(Kind.Function, result, params)
 };
 
+/** Returns the interned parameter type `?ty`, and interns the Null<ty> it holds, so that
+ * `slotType` adds no type once the program is finished.
+ * @throws an error if `ty` is a List (see `nullType`) */
 export let optionalType = fn(ty: I32): I32 {
   nullType(ty);
   _intern(Kind.Optional, ty, [])
 };
 
+/** Returns the interned parameter type `ty...`, and interns the Array<ty> it holds (see
+ * `optionalType`). */
 export let restType = fn(ty: I32): I32 {
   arrayType(ty);
   _intern(Kind.Rest, ty, [])
 };
 
+/** Returns the type of the value that a parameter of type `ty` holds; Null<T> for `?T`, Array<T>
+ * for `T...`, and `ty` itself for any other. */
 export let slotType = fn(ty: I32): I32 {
   match (_kinds[ty]) { Optional => nullType(innerOf(ty)), Rest => arrayType(innerOf(ty)), _ => ty }
 };
 
+/** The Var flag (in the Var's `first`) that rules out binding it to a nullable type or a List, as
+ * for a Null's inner type. The flags are ordered, each ruling out more than the one before;
+ * 0 rules out nothing. */
 const _NEVER_NULL = 1;
+/** The Var flag of an unsuffixed integer literal's type, which is bound only to an integer type
+ * or an Integer Param. It includes the `_NEVER_NULL` bit. */
 const _INTEGER = 3;
 
+// Adds an unbound Var with `flags`, which are 0, `_NEVER_NULL` or `_INTEGER`, and returns it.
 let _newVar = fn(flags: I32): I32 {
   let var = _addType(Kind.Var, -1, []);
   _types[var * _TYPE_WIDTH + 1] = flags;
   var
 };
+/** Adds an unbound Var and returns it.
+ * @param neverNull  whether it may not be bound to a type that holds null, as for a Null's inner
+ *   type */
 export let newVar = fn(neverNull: Bool): I32 { _newVar(neverNull ? _NEVER_NULL : 0) };
+/** Adds an unbound integer Var and returns it; the type of an unsuffixed literal until it is
+ * settled. */
 export let integerVar = fn(): I32 { _newVar(_INTEGER) };
+/** Returns the `first` of the Var or Param `ty`'s row; a Var's flags or a Param's bounds and
+ * `_NULLED`. */
 let _flags = fn(ty: I32): I32 { _types[ty * _TYPE_WIDTH + 1] };
 
+/** Adds a Param, a type parameter of a generic function or enum.
+ * @param name  the parameter's name
+ * @param bounds  the union of its `BOUND_` bits
+ * @return the Param */
 export let newParam = fn(name: Bytes, bounds: I32): I32 {
   let param = _addType(Kind.Param, bytesId(name), []);
   _types[param * _TYPE_WIDTH + 1] = bounds;
   param
 };
+// Checks whether the Param `ty` has every bound in `bounds`, a set of `BOUND_` bits.
 export let hasBounds = fn(ty: I32, bounds: I32): Bool { (_flags(ty) & bounds) == bounds };
+/** Checks whether the template of the Param `ty` writes Null<T> for it (it is marked `_NULLED`),
+ * so that its type arguments may not hold null. */
 export let isNulled = fn(ty: I32): Bool { (_flags(ty) & _NULLED) != 0 };
 
+// Returns the first type on the chain of bound Vars from `ty` that is not a bound Var.
 let _follow = fn(ty: I32): I32 {
   let at = ty;
   while (isKind(at, Kind.Var) && (innerOf(at) >= 0)) { at = innerOf(at); }
   at
 };
 
+/** Returns the type-edge list of the Tuple, Function or Applied `ty`, each entry resolved, as a
+ * fresh array. */
 let _resolveArgs = fn(ty: I32): Array<I32> {
   let args = _typeArgs(ty);
 
@@ -700,6 +1175,11 @@ let _resolveArgs = fn(ty: I32): Array<I32> {
   args
 };
 
+/** Returns `ty` with every bound Var replaced by its type, so that equal types without unbound
+ * Vars have equal IDs. An Applied whose arguments resolve to types without Vars or Params becomes
+ * its instance. A type without Vars is returned as it is.
+ * @param ty  the type, or a negative ID, which is returned unchanged
+ * @return the resolved type */
 export let resolve = fn(ty: I32): I32 {
   if ((ty < 0) || !_open[ty]) { return ty; }
 
@@ -717,6 +1197,8 @@ export let resolve = fn(ty: I32): I32 {
   }
 };
 
+/** Returns the type-edge list of the Tuple, Function or Applied `ty` with each Param in `params`
+ * replaced by the type at its place in `types`, as a fresh array. */
 let _substituteArgs = fn(ty: I32, params: Array<I32>, types: Array<I32>): Array<I32> {
   let args = _typeArgs(ty);
 
@@ -727,6 +1209,7 @@ let _substituteArgs = fn(ty: I32, params: Array<I32>, types: Array<I32>): Array<
   args
 };
 
+// Returns the type of `kind`, an Array, List, Null, Optional or Rest, that holds `inner`.
 let _wrapped = fn(kind: Kind, inner: I32): I32 {
   match (kind) {
     Array => arrayType(inner),
@@ -737,6 +1220,9 @@ let _wrapped = fn(kind: Kind, inner: I32): I32 {
   }
 };
 
+/** Returns `ty` with each Param in `params` replaced by the type at its place in `types`,
+ * following bound Vars. An Applied whose substituted arguments are concrete becomes its
+ * instance. */
 let _substitute = fn(ty: I32, params: Array<I32>, types: Array<I32>): I32 {
   let at = _follow(ty);
 
@@ -759,15 +1245,22 @@ let _substitute = fn(ty: I32, params: Array<I32>, types: Array<I32>): I32 {
   }
 };
 
+/** Returns `ty` with each Param in `params` replaced by the type at its place in `types`. The
+ * checker uses it to type a generic function's instance and its calls. */
 export let substitute = fn(ty: I32, params: Array<I32>, types: Array<I32>): I32 {
   _substitute(ty, params, types)
 };
 
+// Checks whether `ty`, a type or a negative ID, holds a Var that no type is bound to yet.
 export let isOpen = fn(ty: I32): Bool { (ty >= 0) && _open[ty] && _open[resolve(ty)] };
+// Checks whether `ty` holds a Param, as a generic declaration's types do.
 export let isParametric = fn(ty: I32): Bool { (ty >= 0) && _parametric[ty] };
 
+// The Vars the current `unify` has bound, so that a failed one can unbind them.
 let _trail = Array.new<I32>(0);
 
+/** Checks whether the unbound Var `var` occurs in `ty`, which binding `var` to `ty` would make a
+ * cyclic type. */
 let _occurs = fn(var: I32, ty: I32): Bool {
   let at = _follow(ty);
   if (at == var) { return true; }
@@ -783,12 +1276,20 @@ let _occurs = fn(var: I32, ty: I32): Bool {
   found
 };
 
+/** Checks whether the unbound Var `var` occurs inside `ty` but is not `ty` itself, as in
+ * Array<var>. */
 export let occursWithin = fn(var: I32, ty: I32): Bool {
   let unbound = _follow(var);
   let at = _follow(ty);
   (at != unbound) && _occurs(unbound, at)
 };
 
+/** Binds the unbound Var `var` to `ty`, recording it on `_trail`, unless `var`'s flags rule `ty`
+ * out. When `ty` is an unbound Var with fewer flags, `ty` is bound to `var` instead, so that the
+ * stricter flags survive.
+ * @param var  the unbound Var
+ * @param ty  the type to bind it to, which is not a bound Var
+ * @return false if `ty` is the bare null's type, is ruled out by `var`'s flags, or holds `var` */
 let _bind = fn(var: I32, ty: I32): Bool {
   if (isKind(ty, Kind.Var) && (_flags(var) > _flags(ty))) {
     _types[ty * _TYPE_WIDTH] = var;
@@ -799,6 +1300,7 @@ let _bind = fn(var: I32, ty: I32): Bool {
   let integerOnly = (_flags(var) == _INTEGER) && !isKind(ty, Kind.Var) && !isIntegerType(ty);
   if (integerOnly && !(isKind(ty, Kind.Param) && hasBounds(ty, BOUND_INTEGER))) { return false; }
 
+  // The bare null's type is no value's type; only `unifyResult` binds a Var to it.
   let nullable = isKind(ty, Kind.Null) || isKind(ty, Kind.Dynamic) || isKind(ty, Kind.List);
   let neverNull = (_flags(var) & _NEVER_NULL) != 0;
   if ((ty == TYPE_NULL) || (neverNull && nullable) || _occurs(var, ty)) { return false; }
@@ -808,6 +1310,8 @@ let _bind = fn(var: I32, ty: I32): Bool {
   true
 };
 
+/** Returns the Applied that `ty` is or instantiates; `ty` itself when it is an Applied, the
+ * Applied it instantiates when it is a generic enum or record instance, and otherwise -1. */
 let _application = fn(ty: I32): I32 {
   match (_kinds[ty]) {
     Applied => ty,
@@ -818,12 +1322,17 @@ let _application = fn(ty: I32): I32 {
   }
 };
 
+/** Returns the generic type that `ty` applies, when it is an Applied or an instance of a generic
+ * enum, record or prototype, or else -1. */
 export let templateOf = fn(ty: I32): I32 {
   let application = _application(ty);
   application < 0 ? -1 : innerOf(application)
 };
+// Returns the type arguments that `ty` applies its template to (`templateOf`), freshly.
 export let templateArgs = fn(ty: I32): Array<I32> { _typeArgs(_application(ty)) };
 
+/** Checks whether the types `left` and `right` are each an Applied or a generic enum instance and
+ * apply one template to arguments that unify, binding Vars as `_unify` does. */
 let _unifyApplied = fn(left: I32, right: I32): Bool {
   let leftArgs = _application(left);
   let rightArgs = _application(right);
@@ -843,6 +1352,8 @@ let _unifyApplied = fn(left: I32, right: I32): Bool {
   same
 };
 
+/** Unifies the types `a` and `b` structurally, binding Vars on `_trail`, and returns true if they
+ * unify; `unify` undoes the bindings when this fails. */
 let _unify = fn(a: I32, b: I32): Bool {
   let left = _follow(a);
   let right = _follow(b);
@@ -850,6 +1361,7 @@ let _unify = fn(a: I32, b: I32): Bool {
   if ((left < 0) || (right < 0)) { return false; }
   if (isKind(left, Kind.Var)) { return _bind(left, right); }
   if (isKind(right, Kind.Var)) { return _bind(right, left); }
+  // Interned types without Vars are equal only when their IDs are.
   if (!_open[left] && !_open[right]) { return false; }
 
   if (isKind(left, Kind.Applied) || isKind(right, Kind.Applied)) {
@@ -871,6 +1383,9 @@ let _unify = fn(a: I32, b: I32): Bool {
   same
 };
 
+/** Checks whether `a` and `b`, each a type or a negative ID, are the same type once the Vars in
+ * them are bound, and binds them so. Type arguments are invariant. When `a` and `b` cannot be made
+ * equal, no Var is bound. */
 export let unify = fn(a: I32, b: I32): Bool {
   if ((a < 0) || (b < 0) || (!_open[a] && !_open[b])) { return a == b; }
   let same = _unify(a, b);
@@ -883,6 +1398,9 @@ export let unify = fn(a: I32, b: I32): Bool {
   same
 };
 
+/** Unifies `result`, a function's result type, with `ty`, the type a `return` or the body gives,
+ * and returns true if they unify. Unlike other types, `result` may be bound to the bare null's
+ * type when it is a flagless Var; a function's result can be Null. */
 export let unifyResult = fn(result: I32, ty: I32): Bool {
   let at = _follow(result);
   if ((ty != TYPE_NULL) || !isKind(at, Kind.Var) || (_flags(at) != 0)) { return unify(result, ty); }
@@ -890,6 +1408,11 @@ export let unifyResult = fn(result: I32, ty: I32): Bool {
   true
 };
 
+/** Returns `ty` as a type that holds null; `nullType(ty)`, or, for an unbound Var that could
+ * itself be nullable, a Null of a fresh never-null Var, which the Var is bound to.
+ * @param ty  the type
+ * @return the nullable type
+ * @throws an error if `ty` is a List (see `nullType`) */
 export let nullable = fn(ty: I32): I32 {
   let inner = _current(ty);
   if (!isKind(inner, Kind.Var) || ((_flags(inner) & _NEVER_NULL) != 0)) { return nullType(inner); }
@@ -898,11 +1421,13 @@ export let nullable = fn(ty: I32): I32 {
   bound
 };
 
+// Checks whether `ty` is an unbound Var other than an integer Var; nothing is known of it yet.
 export let isUnknown = fn(ty: I32): Bool {
   let at = _current(ty);
   isKind(at, Kind.Var) && (_flags(at) != _INTEGER)
 };
 
+// Checks whether `ty` is an integer type, an unbound integer Var or an Integer Param.
 export let isInteger = fn(ty: I32): Bool {
   if (isIntegerType(ty)) { return true; }
   let at = _current(ty);
@@ -911,10 +1436,14 @@ export let isInteger = fn(ty: I32): Bool {
     || (isKind(at, Kind.Param) && hasBounds(at, BOUND_INTEGER))
 };
 
+/** Checks whether `ty`, a type or a negative ID, holds an unbound Var, unless `ty` is itself an
+ * integer Var; a type a use cannot work with yet. An integer Var inside `ty` counts until it is
+ * defaulted. */
 export let holdsUnknown = fn(ty: I32): Bool {
   (ty >= 0) && _open[ty] && !isInteger(ty) && _open[resolve(ty)]
 };
 
+// Binds each unbound integer Var in `ty` to I32.
 let _defaultIntegers = fn(ty: I32): Bool {
   let at = _follow(ty);
   if ((at < 0) || !_open[at]) { return true; }
@@ -935,15 +1464,26 @@ let _defaultIntegers = fn(ty: I32): Bool {
   true
 };
 
+/** Binds each unbound integer Var in `ty` to I32, the type of an unsuffixed literal that nothing
+ * else types, and returns `ty` resolved. A negative `ty` is returned unchanged. */
 export let defaultIntegers = fn(ty: I32): I32 {
   if ((ty < 0) || !_open[ty]) { return ty; }
   _defaultIntegers(ty);
   resolve(ty)
 };
 
+/** Appends an unsuffixed literal of `value` whose type is the integer Var `var`, and returns its
+ * ID. It is an I32 node whose `value` and `aux` hold the low and high halves of its I64 value until
+ * `settleLiteral` fixes its width. */
 export let openLiteral = fn(value: I64, var: I32): I32 { _wideNode(Op.I32, var, value) };
+/** Checks whether the open literal `id`'s value fits in an I32; its high half is the low half's
+ * sign. */
 export let fitsI32 = fn(id: I32): Bool { auxOf(id) == (valueOf(id) >> 31) };
 
+/** Gives the open literal `id` its final type; `TYPE_I64` or `TYPE_U64` makes it an I64 node, and
+ * any other type leaves it an I32 node whose `aux` is cleared.
+ * @param id  the open literal, whose value is in range for `ty`
+ * @param ty  an integer type, or an Integer Param for a literal in a template's body */
 export let settleLiteral = fn(id: I32, ty: I32): Bool {
   let slot = id * _NODE_WIDTH;
   _nodes[slot] = ty;
@@ -951,6 +1491,8 @@ export let settleLiteral = fn(id: I32, ty: I32): Bool {
   true
 };
 
+/** Turns the conversion `id`, a Convert, into a value block whose tail is its operand, when
+ * the operand turned out to have the conversion's type already. */
 export let settleConversion = fn(id: I32): Bool {
   if (typeOf(childOf(id, 0)) == typeOf(id)) {
     _ops[id] = Op.Block;
@@ -960,6 +1502,8 @@ export let settleConversion = fn(id: I32): Bool {
   true
 };
 
+/** Replaces every node's and global's type by its resolved type, once checking is done.
+ * @return the first node whose type still holds an unbound Var, or -1 */
 export let resolveTypes = fn(): I32 {
   let open = -1;
   let id = 0;
@@ -989,47 +1533,82 @@ export let resolveTypes = fn(): I32 {
   open
 };
 
+/** Declares the `std.jdll` export `name` with parameter types `params` and result type `result`,
+ * and returns its native ID. The compiler calls these exports without a `load`; for regexps,
+ * string conversion and quoting, program arguments, and exiting. */
 export let stdNative = fn(name: Bytes, params: Array<I32>, result: I32): I32 {
   declareNative("std", name, functionType(params, result))
 };
 
+/** Returns an `Op.CallNative` of the `std.jdll` export `name`, declared as `stdNative` does, on
+ * the checked arguments `args`. */
 export let callStd = fn(name: Bytes, params: Array<I32>, result: I32, args: Array<I32>): I32 {
   node(Op.CallNative, result, stdNative(name, params, result), 0, args)
 };
+/** Adds an Enum type named `name`, without variants, and returns it. Enum types are nominal; each
+ * declaration is a type of its own, never merged with another. Its variants are defined later with
+ * `defineVariants`, so that they can refer to enums declared after it. */
 export let declareEnum = fn(name: Bytes): I32 { _addType(Kind.Enum, bytesId(name), []) };
+/** Adds a Record type named `name`, without fields, and returns it. Like an enum it is nominal,
+ * and its fields are defined later, as its one variant, with `defineVariants`. */
 export let declareRecord = fn(name: Bytes): I32 { _addType(Kind.Record, bytesId(name), []) };
+/** Adds the Object type of the prototype named `name` and returns it. Like a record it is nominal;
+ * its values are Objects that delegate to the prototype. */
 export let declarePrototype = fn(name: Bytes): I32 { _addType(Kind.Object, bytesId(name), []) };
+// Adds the Abstract type named `name` and returns it; nominal, like a record.
 export let declareAbstract = fn(name: Bytes): I32 { _addType(Kind.Abstract, bytesId(name), []) };
 
+/** The generic enum instances made before their template's variants were defined, which
+ * `defineVariants` defines along with the template's. */
 let _pending = Array.new<I32>(0);
+// The nesting depth of the enum instances being defined.
 let _nesting = 0;
+/** The maximum nesting depth of generic function and enum instances, so that polymorphic recursion
+ * and self-enlarging enums fail with an error. */
 export const MAX_INSTANCE_DEPTH: I32 = 64;
 
+/** Returns the message for an instance of the generic function or enum `name` nested more than
+ * `MAX_INSTANCE_DEPTH` deep. */
 export let nestsTooDeep = fn(name: Bytes): Bytes {
   coded(E0901, `instantiating ${name} nests more than ${MAX_INSTANCE_DEPTH} deep`)
 };
 
+/** Makes the Enum or Record `ty` generic, with the Params `params`, which `_generic` records as a
+ * Tuple, and returns it. */
 let _makeGeneric = fn(ty: I32, params: Array<I32>): I32 {
   _generic[ty] = tupleType(params);
   ty
 };
 
+// Adds and returns a generic enum named `name` with the Params `params`.
 export let declareGenericEnum = fn(name: Bytes, params: Array<I32>): I32 {
   _makeGeneric(declareEnum(name), params)
 };
 
+// Adds and returns a generic record named `name` with the Params `params`.
 export let declareGenericRecord = fn(name: Bytes, params: Array<I32>): I32 {
   _makeGeneric(declareRecord(name), params)
 };
 
+// Adds and returns a generic prototype's Object type named `name` with the Params `params`.
 export let declareGenericPrototype = fn(name: Bytes, params: Array<I32>): I32 {
   _makeGeneric(declarePrototype(name), params)
 };
+/** By type, the index of its bytes layout among `_layoutCodes`, or -1; types past its end have
+ * none. */
 let _layouts = Array.new<I32>(0);
+// By bytes layout, the segment code of each of its fields (see `BITS_BIG`).
 let _layoutCodes = Array.new<Array<I32>>(0);
+// By bytes layout, the bit offset of each of its fields.
 let _layoutOffsets = Array.new<Array<I32>>(0);
+// By bytes layout, the number of bytes its fixed fields fill.
 let _layoutBytes = Array.new<I32>(0);
 
+/** Adds a record named `name` that a bytes layout lays out field by field, and returns it. Its
+ * fields are defined later, as a record's are.
+ * @param codes  each field's segment code
+ * @param offsets  each field's bit offset
+ * @param fixed  the number of bytes the fixed fields fill */
 export let declareLayout = fn(
   name: Bytes, codes: Array<I32>, offsets: Array<I32>, fixed: I32
 ): I32 {
@@ -1043,26 +1622,41 @@ export let declareLayout = fn(
   ty
 };
 
+// Checks whether `ty` is the record of a bytes layout.
 export let isLayout = fn(ty: I32): Bool {
   (ty >= 0) && (ty < _layouts.len()) && (_layouts[ty] >= 0)
 };
+// Returns the segment codes of the fields of the bytes layout `ty`.
 export let layoutCodes = fn(ty: I32): Array<I32> { _layoutCodes[_layouts[ty]] };
+// Returns the bit offsets of the fields of the bytes layout `ty`.
 export let layoutOffsets = fn(ty: I32): Array<I32> { _layoutOffsets[_layouts[ty]] };
+// Returns the number of bytes the fixed fields of the bytes layout `ty` fill.
 export let layoutBytes = fn(ty: I32): I32 { _layoutBytes[_layouts[ty]] };
 
+/** Checks whether `ty`, which may be out of range, is a generic enum or record, whose fields may
+ * hold its Params. Lowering skips it and lowers its instances instead. */
 export let isTemplateEnum = fn(ty: I32): Bool {
   (ty >= 0) && (ty < _generic.len()) && (_generic[ty] >= 0) && isKind(_generic[ty], Kind.Tuple)
 };
 
+// Returns the Params of enum or record `ty` as a fresh array, empty when it is not generic.
 export let enumParams = fn(ty: I32): Array<I32> {
   isTemplateEnum(ty) ? _typeArgs(_generic[ty]) : Array.new<I32>(0)
 };
 
+// Returns the number of type parameters of enum or record `ty`, 0 when it is not generic.
 export let enumParamCount = fn(ty: I32): I32 {
   isTemplateEnum(ty) ? typeArgCount(_generic[ty]) : 0
 };
+/** Returns the name enum or record `ty` is declared with, without type arguments. An instance or
+ * Applied has its template's name. */
 export let enumName = fn(ty: I32): Bytes { _bytes[innerOf(_shape(ty))] };
 
+/** Defines the variants of the instance `ty` of the Applied `application`, whose arguments hold no
+ * Var or Param; the template's variants with its Params substituted.
+ * @param ty  the instance
+ * @param application  the Applied it instantiates
+ * @throws an error if instances being defined nest more than `MAX_INSTANCE_DEPTH` deep */
 let _defineInstance = fn(ty: I32, application: I32) {
   let template = innerOf(application);
   if (_nesting >= MAX_INSTANCE_DEPTH) { throw nestsTooDeep(enumName(template)); }
@@ -1097,6 +1691,14 @@ let _defineInstance = fn(ty: I32, application: I32) {
   null
 };
 
+/** Returns the generic enum `template` applied to `args`. When no argument holds a Var or a Param
+ * this is the instance, made once per Applied; an Enum named as the template, whose variants are
+ * defined at once, or when the template's are if they are not yet. Otherwise it is the interned
+ * Applied.
+ * @param template  the generic enum
+ * @param args  the type arguments
+ * @return the instance or the Applied
+ * @throws an error if defining the instance nests more than `MAX_INSTANCE_DEPTH` deep */
 let _applied = fn(template: I32, args: Array<I32>): I32 {
   let concrete = true;
   let i = 0;
@@ -1109,18 +1711,36 @@ let _applied = fn(template: I32, args: Array<I32>): I32 {
   let application = _intern(Kind.Applied, template, args);
   if (!concrete) { return application; }
   if (_generic[application] >= 0) { return _generic[application]; }
+  // Linked before its variants are defined, so that its fields can hold the instance itself.
   let ty = _addType(_kinds[template], innerOf(template), []);
   _generic[application] = ty;
   _generic[ty] = application;
   if (variantCount(template) > 0) { _defineInstance(ty, application); } else { _pending.push(ty); }
   ty
 };
+/** Returns the generic enum `template` applied to `args`; its instance when the arguments hold no
+ * Var or Param, and otherwise an Applied, which resolving makes the instance.
+ * @param template  the generic enum
+ * @param args  the type arguments
+ * @return the instance or the Applied
+ * @throws an error if defining the instance nests more than `MAX_INSTANCE_DEPTH` deep */
 export let appliedType = fn(template: I32, args: Array<I32>): I32 { _applied(template, args) };
 
+/** Returns the type of a field of the Applied `ty` whose template declares it as `declared`; the
+ * declared type with the template's Params replaced by `ty`'s type arguments.
+ * @param ty  the Applied
+ * @param declared  the field's type in the template
+ * @return the substituted type */
 let _appliedField = fn(ty: I32, declared: I32): I32 {
   _substitute(declared, enumParams(innerOf(ty)), _typeArgs(ty))
 };
 
+/** Defines the variants of the Enum `ty`, in tag order, with each variant's field names and types.
+ * For a generic enum it also defines the instances made before it had variants.
+ * @param ty  the Enum, which has no variants yet
+ * @param names  the variants' names
+ * @param fieldNames  each variant's field names
+ * @param fieldTypes  each variant's field types */
 export let defineVariants = fn(
   ty: I32, names: Array<Bytes>, fieldNames: Array<Array<Bytes>>, fieldTypes: Array<Array<I32>>
 ): Bool {
@@ -1138,6 +1758,8 @@ export let defineVariants = fn(
     }
   }
 
+  /* Defines the instances made while this template had no variants. One made from here on sees
+   * them and is defined as it is made, so only the entries pending at the start are visited. */
   if (isTemplateEnum(ty)) {
     let pending = _pending.len();
     let i = 0;
@@ -1152,6 +1774,8 @@ export let defineVariants = fn(
   true
 };
 
+/** Starts an empty program and makes it current for checking; clears every table and interns the
+ * scalar types at their fixed IDs, `TYPE_BOOL` to `TYPE_F64`. */
 export let beginHir = fn(): Bool {
   _ops = Array.new<Op>(0);
   _nodes = Array.new<I32>(0);
@@ -1183,6 +1807,7 @@ export let beginHir = fn(): Bool {
   _layoutOffsets = Array.new<Array<I32>>(0);
   _layoutBytes = Array.new<I32>(0);
 
+  // In `TYPE_BOOL` to `TYPE_OBJECT` order, which fixes their IDs.
   _intern(Kind.Bool, 0, []);
   _intern(Kind.I32, 0, []);
   _intern(Kind.I64, 0, []);
@@ -1204,6 +1829,7 @@ export let beginHir = fn(): Bool {
   true
 };
 
+// Ends checking of the current program and returns its tables, with `root` as its Program node.
 export let finishHir = fn(root: I32): Hir {
   _root = root;
   _checking = false;
@@ -1224,8 +1850,13 @@ export let finishHir = fn(root: I32): Hir {
   }
 };
 
+// Whether `_typeName` spells types as source does, or as HIR dumps do.
 let _source = true;
 
+/** Returns the names of the type-edge entries of the Tuple, Function or Applied `ty`, joined by
+ * ", ".
+ * @param params  whether they are a Function's parameters, where a Null<T> is spelt so, since
+ *   `?T` there is an Optional */
 let _typeArgNames = fn(ty: I32, params: Bool): Bytes {
   let output = "";
   let count = typeArgCount(ty);
@@ -1242,11 +1873,16 @@ let _typeArgNames = fn(ty: I32, params: Bool): Bytes {
   output
 };
 
+/** Returns the name of the Null of `inner`; `?` and the inner name. `?` binds to a type atom, so a
+ * function type is parenthesised. */
 let _nullableName = fn(inner: I32): Bytes {
   let name = _typeName(inner);
   (kindOf(inner) == Kind.Function) ? `?(${name})` : `?${name}`
 };
 
+/** Returns `ty` spelt as diagnostics spell it, or as HIR dumps do when `_source` is false. A bound
+ * Var is spelt as its type, an unbound integer Var as I32 and any other unbound Var as
+ * `Unknown`. */
 let _typeName = fn(ty: I32): Bytes {
   match (kindOf(ty)) {
     Bool => _source ? "Bool" : "bool",
@@ -1281,6 +1917,7 @@ let _typeName = fn(ty: I32): Bytes {
       `${_bytes[_types[ty * _TYPE_WIDTH]]}<${_typeArgNames(_application(ty), false)}>`
     },
     Object => ty != TYPE_OBJECT ? _bytes[_types[ty * _TYPE_WIDTH]] : _source ? "Object" : "object",
+    // An unbound integer Var is named as the I32 it defaults to.
     Var => innerOf(ty) >= 0 ? _typeName(innerOf(ty))
       : _flags(ty) == _INTEGER ? _typeName(TYPE_I32)
       : _source ? "Unknown" : "unknown",
@@ -1288,27 +1925,40 @@ let _typeName = fn(ty: I32): Bytes {
   }
 };
 
+// Returns `ty` as a diagnostic names it; as source spells it.
 export let typeName = fn(ty: I32): Bytes {
   _source = true;
   _typeName(ty)
 };
 
+// Returns `ty` as a HIR dump names it, with builtin types in lower case.
 export let hirTypeName = fn(ty: I32): Bytes {
   _source = false;
   _typeName(ty)
 };
 
+/** Returns the type arguments of the Tuple, Function or Applied `ty` as diagnostics spell them,
+ * joined by ", ". */
 export let typeArgNames = fn(ty: I32): Bytes {
   _source = true;
   _typeArgNames(ty, false)
 };
 
+// Appends a Local read of the binding ID `binding`, of type `ty`, and returns its ID.
 export let local = fn(binding: I32, ty: I32): I32 { node(Op.Local, ty, binding, 0, []) };
 
+/** Appends a compiler-made binding of `value`, typed as `value` is, for a Declare.
+ * @param op  `Op.Let` or `Op.Const`
+ * @param binding  the binding ID
+ * @param name  the binding's name, for dumps
+ * @param value  the initial value
+ * @return the binding's ID */
 export let bindingNode = fn(op: Op, binding: I32, name: Bytes, value: I32): I32 {
   node(op, typeOf(value), binding, bytesId(name), [value])
 };
 
+/** Appends a Declare of one compiler-made binding, as `bindingNode` makes it.
+ * @return the Declare's ID */
 export let declareBinding = fn(op: Op, binding: I32, name: Bytes, value: I32): I32 {
   opNode(Op.Declare, 0, [bindingNode(op, binding, name, value)])
 };

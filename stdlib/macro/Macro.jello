@@ -1,21 +1,47 @@
 package std.macro;
 
+/* What a macro's body uses as it runs, while the program that calls the
+ * macro compiles. A macro takes each argument as syntax, a Fragment, and
+ * emits the syntax that replaces its call:
+ *
+ *   macro twice(x) {
+ *     Macro.emit(quote.expr { unquote(x) + unquote(x) });
+ *   }
+ *
+ * A macro body names this module as Macro without importing it, and its
+ * Fragment type likewise. A quote makes a Fragment of the syntax it holds,
+ * each unquote(value) in it replaced by the Fragment value holds, or by a
+ * literal of value when it is an I32, I64, F64, Bool, Bytes or null.
+ *
+ * The rest of this module is the compiler's: it runs a macro's body with its
+ * arguments, and reads back what it emitted. */
+
 import { appendFrom } from std.core.Array;
 import { u8 } from std.core.Bytes;
 
+// A piece of syntax a macro takes or makes; only this module looks inside.
 export enum Fragment {
+  // The call's argument at INDEX.
   Argument(index: I32);
+  // The quote at INDEX in the macro's body, with its unquotes' fragments.
   Quoted(index: I32, holes: Array<Fragment>);
+  // SOURCE, parsed as KIND when the macro's output is read.
   Parsed(source: Bytes, kind: Bytes);
+  // A name, from gensym.
   Name(name: Bytes);
+  // A literal of VALUE.
   Literal(value: Dynamic);
 }
 
+// What the macro has emitted so far.
 let _emitted = Array.new<Fragment>(0);
+// The number the next gensym name ends with.
 let _names = 0;
+// The value of each literal argument, and whether each argument is one.
 let _values = Array.new<Dynamic>(0);
 let _literal = Array.new<Bool>(0);
 
+// Checks that KIND is a kind of syntax parse reads.
 let _kind = fn(kind: Bytes) {
   match (kind) {
     "auto", "expr", "stmt", "stmts", "type", "pat" => null,
@@ -26,21 +52,30 @@ let _kind = fn(kind: Bytes) {
   }
 };
 
+// Emits FRAGMENT, which replaces the macro's call with any others emitted.
 export let emit = fn(fragment: Fragment) {
   _emitted.push(fragment);
   null
 };
 
+// Emits each of FRAGMENTS, in order.
 export let emit_all = fn(fragments: Array<Fragment>) {
   appendFrom(_emitted, fragments, 0);
   null
 };
 
+/* The syntax of SOURCE, read as KIND: "expr", "stmt", "stmts", "type",
+ * "pat", or "auto", which reads statements when SOURCE starts with a keyword
+ * that starts one and an expression otherwise. It is parsed once the macro
+ * has finished, and text that does not parse fails the call. */
 export let parse = fn(source: Bytes, kind: Bytes = "auto"): Fragment {
   _kind(kind);
   Fragment.Parsed(source, kind)
 };
 
+/* A name no other gensym call gives while the program compiles, made of
+ * PREFIX, two underscores and a number; PREFIX is letters, digits and _, and
+ * does not start with a digit. */
 export let gensym = fn(prefix: Bytes): Fragment {
   let i = 0;
 
@@ -55,6 +90,9 @@ export let gensym = fn(prefix: Bytes): Fragment {
   Fragment.Name(name)
 };
 
+/* The value of FRAGMENT, when it is a literal: an argument written as one,
+ * with an optional minus, or a literal unquoted. Its type is the literal's,
+ * so it is read with `as`, as in Macro.literal(n) as I32. */
 export let literal = fn(fragment: Fragment): Dynamic {
   match (fragment) {
     Argument(index) when (_literal[index]) => _values[index],
@@ -66,6 +104,7 @@ export let literal = fn(fragment: Fragment): Dynamic {
   }
 };
 
+// The fragment of quote INDEX, with HOLES for its unquotes in order.
 export let quoted = fn(index: I32, holes: Array<Dynamic>): Fragment {
   let made = Array.new<Fragment>(0);
   let i = 0;
@@ -86,8 +125,10 @@ export let quoted = fn(index: I32, holes: Array<Dynamic>): Fragment {
   Fragment.Quoted(index, made)
 };
 
+// The value of hex digit C.
 let _digit = fn(c: I32): I32 { c <= "9".code ? c - "0".code : c - "a".code + 10 };
 
+// The value of an argument's literal, from its form in the compiler's input.
 let _read = fn(form: Bytes): Dynamic {
   let text = Bytes.slice(form, 1, form.len() - 1);
 
@@ -116,8 +157,10 @@ let _read = fn(form: Bytes): Dynamic {
   }
 };
 
+// Appends the encoding of FRAGMENT to OUT; see run.
 let _encode: (Fragment, Array<Bytes>) -> Null = fn(_fragment, _out) { null };
 
+// Appends the encoding of the Bytes TEXT, after TAG, to OUT.
 let _text = fn(tag: Bytes, text: Bytes, out: Array<Bytes>) {
   out.push(tag + Std.string(text.len()) + ";" + text);
   null
@@ -170,6 +213,13 @@ _encode = fn(fragment, out) {
   }
 };
 
+/* Runs the macro body of EXPANDERS that the program's first argument names,
+ * with the arguments the rest describe, and returns what it emitted. The
+ * arguments are the macro's index, the number its first gensym name ends
+ * with, then a form for each argument: empty, or a literal's value after its
+ * kind. What it returns is the number the next gensym name would end with
+ * and `;`, then each fragment emitted, encoded; a number ends with `;`, and
+ * a length and `;` come before any text. */
 export let run = fn(expanders: Array<(Array<Fragment>) -> Null>): Bytes {
   let args = System.args;
   let index: I32 = Integer.parse(List.head(args));

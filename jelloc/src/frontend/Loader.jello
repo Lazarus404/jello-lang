@@ -1,5 +1,15 @@
 package frontend;
 
+/** @file
+ * Loads a program's modules; finds each imported module's file under the source roots or the
+ * standard library's directory, lexes and parses it, and resolves its import statements to
+ * module indices. Owns the loaded `Module` table, which lists dependencies before their importers
+ * and the entry last, and records the import statement a load failure is located at. Sits
+ * between the parser and the checker; the driver passes the table from `loadModules` or
+ * `loadTests` to `semantics.Modules.typeCheckModules`, and `frontend.semantics.ModuleScope`
+ * resolves names through its `Import` rows. For `--test`, it also generates the entry module that
+ * runs the test files' tests through `std.testing`'s `main`. */
+
 import type { Expr, Package, Stmt } from frontend.syntax.Ast;
 import { ImportKind, bindPatternName, isBindPattern } from frontend.syntax.Ast;
 import { Token, lexFile } from frontend.syntax.Lexer;
@@ -19,42 +29,72 @@ import { bytesLiteral } from support.Text;
 import { exists, readText } from std.io.File;
 load { file_real_path } from std;
 
+/** Returns the absolute path `path` resolves to, without `.`, `..` or symbolic links; empty when
+ * nothing is there. */
 let _realPath: (Bytes) -> Bytes = file_real_path;
 
+// Returns `path` resolved as `_realPath` does, or `path` itself when nothing is there.
 let _resolved = fn(path: Bytes): Bytes {
   let real = _realPath(path);
   real == "" ? path : real
 };
 
+/** A name one module takes from another. `statement` is the index of the importing statement,
+ * or -1 for an import no statement makes, such as the generated test entry's. An import made
+ * `privately` also finds the imported module's private top-level names; a test file's import of
+ * the module it tests, and the generated test entry's imports of the test files. */
 export enum Import {
+  /** `import { name as local }`; `local` names export `name` of the module at index `module`. A
+   * `typeOnly` import names only a type, so it runs no module unless the type is a prototype, or
+   * an alias of one, whose module then runs (see `Modules.typeCheckModules`). */
   Import(local: Bytes, module: I32, name: Bytes, typeOnly: Bool, privately: Bool, statement: I32);
+  /** `import a.b as local`; `local.name` names each value export of the module at index
+   * `module`. */
   Namespace(local: Bytes, module: I32, privately: Bool, statement: I32);
 }
 
+// A loaded source file.
 export typedef Module = {
+  // The file it was loaded from, empty for a generated entry.
   let path: Bytes;
+  // Its dotted import path, empty for the entry module.
   let name: Bytes;
+  // Its top-level statements, expanded when it has macros.
   let statements: Array<Stmt>;
+  // The whole file's syntax node; its children are the statements' syntax, then the tail's.
   let syntax: Syntax;
+  // The expression that ends it without a `;`, if any.
   let tail: ?Expr;
+  // Its imports, in statement order.
   let imports: Array<Import>;
 };
 
+/** Returns the directory part of the file path `path`; up to its last '/', or "." when it has
+ * none. */
 let _directory = fn(path: Bytes): Bytes {
   let slash = path.lastIndexOf("/");
   slash < 0 ? "." : Bytes.slice(path, 0, slash)
 };
 
+/** Returns `directory` without trailing slashes, so that a module's file is named one way and
+ * loads once. The root directory "/" is kept as it is. */
 let _trimmed = fn(directory: Bytes): Bytes {
   let end = directory.len();
   while ((end > 1) && (Bytes.get_u8(directory, end - 1) == "/".code)) { end--; }
   Bytes.slice(directory, 0, end)
 };
 
+/** Describes a package declaration as a message names it.
+ * @param parts  the package's path, empty for none */
 let _packageText = fn(parts: Array<Bytes>): Bytes {
   parts.len() == 0 ? "no package" : "`package " + parts.join(".") + ";`"
 };
 
+/** Checks a module's package declaration `packageName` against its import path `parts`, which
+ * needs a package equal to every part but the last, or none for a one-part path.
+ * @param path  the module's file
+ * @param declaration  the span of its package declaration, which the failure notes, or null
+ * @throws if they differ, naming both */
 let _checkPackage = fn(
   path: Bytes,
   packageName: Package,
@@ -81,10 +121,16 @@ let _checkPackage = fn(
   true
 };
 
+// Returns the `local` name the import `imported` binds.
 let _localOf = fn(imported: Import): Bytes {
   match (imported) { Import(local, _, _, _, _, _), Namespace(local, _, _, _) => local }
 };
 
+/** Checks whether the import `added` would bind a local name that one of `imports`, the module's
+ * imports so far, already binds. Two repeats are allowed, since types and values have separate
+ * names: `import type { E }` beside `import { E }` of the same export, which a module uses to
+ * name an enum both as a type and by its constructors, and `import type { T }` beside a namespace
+ * import of T's own module as T, as `Process<M>` and `Process.spawn` are named. */
 let _repeats = fn(imports: Array<Import>, added: Import): Bool {
   for (existing in imports) {
     if (_localOf(existing) == _localOf(added)) {
@@ -105,26 +151,49 @@ let _repeats = fn(imports: Array<Import>, added: Import): Bool {
   false
 };
 
+/** The modules loaded so far, each after the modules it imports; a module's index is its
+ * position here. */
 let _modules = Array.new<Module>(0);
+// The file path of each module in `_modules`, at the same index.
 let _paths = Array.new<Bytes>(0);
+// The import statement that first loaded each module in `_modules`, or null for none.
 let _importedAt = Array.new<?SourceSpan>(0);
+// The files being loaded, outermost first, which detect an import cycle.
 let _visiting = Array.new<Bytes>(0);
+// The source roots, trimmed, searched in order for a module outside the standard library.
 let _roots = Array.new<Bytes>(0);
+// The standard library's directory, trimmed, or empty when none was given.
 let _stdRoot = "";
 
+// The module index of each extension module the last load loaded first.
 let _extensionIndexes = Array.new<I32>(0);
+// Each name the last load's modules call as a method, `x.name(...)` or `x.name<T>(...)`, once.
 let _methodNames = Array.new<Bytes>(0);
+// Whether the last load's modules make or name a list, without which none has a list to call.
 let _listsNamed = false;
 
+/** The span a load failure is located at; the import statement being processed, or a
+ * dependency's tail expression; null when there is none. */
 let _failure: ?SourceSpan = null;
 
+/** Returns where loading failed, for the driver's diagnostic.
+ * @return the span of the import statement or tail expression that failed, or null when the
+ *   failure was in neither */
 export let loadFailureSpan = fn(): ?SourceSpan { _failure };
 
+/** Returns the source span of statement `index` of the file whose syntax node is `syntax`; the
+ * tail counts as the statement after the last. */
 let _statementSpan = fn(syntax: Syntax, index: I32): SourceSpan {
   let statement = syntax.children[index];
   { path: syntax.path, start: statement.start, end: statement.end }
 };
 
+/** Finds the file of a module. A `std.*` module is under the standard library's directory;
+ * any other is under the first source root that has it. A file already loaded counts as found.
+ * @param parts  the module's import path
+ * @return the file's path
+ * @throws an error naming every file looked for if none exists, or naming `--std` if a `std.*`
+ *   module is imported without a standard library directory */
 let _modulePath = fn(parts: Array<Bytes>): Bytes {
   let roots = _roots;
   let i = 0;
@@ -159,6 +228,11 @@ let _modulePath = fn(parts: Array<Bytes>): Bytes {
   throw coded(E0200, `module ${parts.join(".")} not found: ${tried.join(", ")}`);
 };
 
+/** Loads the module that the import statement being processed names. Loading the dependency
+ * moves `_failure` to the dependency's own statements, so it is restored afterwards; a later
+ * failure in this statement, such as a duplicate name, is then located at it.
+ * @param parts  the imported module's import path
+ * @return the module's index */
 let _import = fn(parts: Array<Bytes>): I32 {
   let at = _failure;
   let dependency = _load(_modulePath(parts), parts);
@@ -166,11 +240,18 @@ let _import = fn(parts: Array<Bytes>): I32 {
   dependency
 };
 
+/** The suffix of a test file's import path; a test file is named `NAME.test.jello`, and the last
+ * part of its import path is `NAME.test`, which no import statement can name. */
 const _TEST = ".test";
+// The suffix of a test file's name.
 const _TEST_FILE = `${_TEST}.jello`;
 
+// Checks whether the file at `path` is named as a test file is, `*.test.jello`.
 export let isTestFile = fn(path: Bytes): Bool { path.endsWith(_TEST_FILE) };
 
+/** Checks whether the test file with import path `parts` tests the module with import path
+ * `imported`, as `frontend.syntax.Lexer.test` tests `frontend.syntax.Lexer`; the import paths
+ * are equal except that the test file's last part adds `.test`. */
 let _tests = fn(parts: Array<Bytes>, imported: Array<Bytes>): Bool {
   if (parts.len() != imported.len()) { return false; }
   let last = parts.len() - 1;
@@ -183,8 +264,14 @@ let _tests = fn(parts: Array<Bytes>, imported: Array<Bytes>): Bool {
   parts[last] == imported[last] + _TEST
 };
 
+/** Checks whether a module is a test file, whose tests and hooks `frontend.semantics.Modules`
+ * checks against their fixed signatures.
+ * @param name  the module's dotted import path
+ * @return true if `name` ends in `.test` */
 export let isTestModule = fn(name: Bytes): Bool { name.endsWith(_TEST) };
 
+/** Checks whether the top-level name `name` declares a test; `test` followed by an upper-case
+ * letter, as in `testLexesNumbers`. */
 export let isTestName = fn(name: Bytes): Bool {
   (name.len() > 4)
     && name.startsWith("test")
@@ -192,11 +279,27 @@ export let isTestName = fn(name: Bytes): Bool {
     && (Bytes.get_u8(name, 4) <= "Z".code)
 };
 
+/** Checks whether the top-level name `name` declares a hook that runs before or after a test
+ * file's tests; `beforeAll` or `afterAll`. */
 export let isHookName = fn(name: Bytes): Bool { (name == "beforeAll") || (name == "afterAll") };
 
+// Returns `name` as an import names it, or its `alias` when it has one.
 export let localName = fn(name: Bytes, alias: ?Bytes): Bytes { alias ?? name };
 
+/** Parses a module's source and resolves its import statements, loading each imported module
+ * first. `load` statements name native libraries and are left to the checker. While an import
+ * statement is processed, `_failure` holds its span; it is null again on success.
+ * @param path  the module's file, or empty for the generated test entry
+ * @param text  the module's source
+ * @param parts  its import path, or empty for an entry module
+ * @param imports  imports to place before those the module's statements make; extended in place
+ * @return the module
+ * @throws an error if a dependency's package does not match its import path or it has a tail
+ *   expression, an import names a macro, a namespace import is type-only or of a native
+ *   library, or two imports bind the same name */
 let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<Import>): Module {
+  /* Lexing and parsing locate their own failures, so `_failure` is clear meanwhile; a package
+   * mismatch is then located at the importing statement again. */
   let importing = _failure;
   _failure = null;
   let lexed = lexFile(text, path);
@@ -210,6 +313,7 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
   if (parts.len() != 0) {
     _checkPackage(path, packageName, parts, packageSpan());
 
+    // The syntax tree's last child is the tail.
     if (tail != null) {
       _failure = _statementSpan(syntax, statements.len());
       throw coded(
@@ -220,13 +324,16 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
     }
   }
 
+  // A test file sees the private names of the module it tests.
   let dotted = parts.join(".");
   let testFile = isTestModule(dotted);
   let macros = Array.new<Tuple<Bytes, Bytes, Bytes, Bytes, SourceSpan>>(0);
 
   for (i, statement in statements) {
     match (statement) {
+      // `load` names a native library, not a module.
       ImportFrom(Native, _, _) => null,
+      // The macros a module imports are expanded away, so they import no names.
       ImportFrom(MacroOnly, items, importParts) => {
         let at = _statementSpan(syntax, i);
         _failure = at;
@@ -303,6 +410,7 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
     };
   }
 
+  // The checker sees the module expanded, so its imports name the statements they end up as.
   let (expanded, expandedSyntax, expandedTail, moved) =
     expandModule(path, statements, syntax, tail, macros);
 
@@ -325,6 +433,7 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
   }
 };
 
+// Appends `module`, loaded from the file `path`, to the module table and returns its index.
 let _add = fn(path: Bytes, module: Module, importedAt: ?SourceSpan): I32 {
   _modules.push(module);
   _paths.push(path);
@@ -332,10 +441,19 @@ let _add = fn(path: Bytes, module: Module, importedAt: ?SourceSpan): I32 {
   _modules.len() - 1
 };
 
+/** Loads the module at a file path, after everything it imports, and adds it to `_modules`
+ * unless it is loaded already.
+ * @param path  the module's file
+ * @param parts  its import path, or empty for the entry module
+ * @return the module's index
+ * @throws an error if the module is reached through an import cycle, or if a module already
+ *   loaded from `path` has another import path */
 let _load = fn(path: Bytes, parts: Array<Bytes>): I32 {
   let loaded = _paths.indexOf(path);
 
   if (loaded >= 0) {
+    /* A module's package fixes its import path, so a file that loaded under another import
+     * path, through another root, does not match this one. */
     let name = _modules[loaded].name;
     let dotted = parts.join(".");
 
@@ -360,6 +478,9 @@ let _load = fn(path: Bytes, parts: Array<Bytes>): I32 {
   _add(path, module, importing)
 };
 
+/** Checks whether the standard library that the last load used has the extension module of a
+ * type, `std.core.<Type>`.
+ * @param name  the type's name, such as `Array` */
 export let hasExtension = fn(name: Bytes): Bool {
   try {
     _modulePath(["std", "core", name]);
@@ -369,8 +490,11 @@ export let hasExtension = fn(name: Bytes): Bool {
   }
 };
 
+// Returns the module indexes of the extension modules the last load loaded first.
 export let loadedExtensions = fn(): Array<I32> { _extensionIndexes };
 
+/** Notes each name that `tokens` call as a method, a name between `.` and `(` or `<`, and whether
+ * they make or name a list. */
 let _noteMethodNames = fn(tokens: Array<Token>) {
   for (i, token in tokens) {
     match (token) {
@@ -384,11 +508,22 @@ let _noteMethodNames = fn(tokens: Array<Token>) {
   null
 };
 
+/** Returns the types among `types` whose extension module the last load imports, or exports a
+ * function that it calls as a method, judged by name alone: a program that calls `xs.map(f)`
+ * likely wants `std.core.Array`, and loading one module too many is cheaper than checking a
+ * program twice.
+ * A name that some type has as an intrinsic, such as `len`, could be any of them, so it counts
+ * for none; a call that needs an extension module all the same still finds it, a check later.
+ * @param types  the types to consider, such as `Array`
+ * @param intrinsic  whether a method name is some type's intrinsic
+ * @return those whose extension modules are worth loading before the program is checked */
 export let extensionsWanted = fn(types: Array<Bytes>, intrinsic: (Bytes) -> Bool): Array<Bytes> {
   types.filter(fn(extended) {
     if (!hasExtension(extended)) { return false; }
     let path = _modulePath(["std", "core", extended]);
+    // One the program imports moves to the front all the same, however it is called.
     if (_paths.indexOf(path) >= 0) { return true; }
+    // `map` and its kind are Array's too, and a program with no lists has no List to call.
     if ((_methodNames.len() == 0) || ((extended == "List") && !_listsNamed)) { return false; }
     let (tokens, _, _, _) = lexFile(readText(path), path);
     let i = 2;
@@ -405,6 +540,7 @@ export let extensionsWanted = fn(types: Array<Bytes>, intrinsic: (Bytes) -> Bool
   })
 };
 
+// Returns `found` with its module index moved to where `moved` places it.
 let _movedImport = fn(found: Import, moved: Array<I32>): Import {
   match (found) {
     Import(local, module, name, typeOnly, privately, statement) =>
@@ -414,12 +550,19 @@ let _movedImport = fn(found: Import, moved: Array<I32>): Import {
   }
 };
 
+/** Adds the extension modules of `types` to the last load, as if it had loaded them first: each,
+ * with every module it imports directly or not, moves to the front, in the order they loaded, so
+ * that every module still comes after what it imports. None of them imports the program's own.
+ * @param types  the types whose extension modules `hasExtension` finds
+ * @return the modules in their new order, the entry still last
+ * @throws an error if an extension module fails to load */
 export let addExtensions = fn(types: Array<Bytes>): Array<Module> {
   types.forEach(fn(extended) {
     let parts = ["std", "core", extended];
     _extensionIndexes.internIndex(_load(_modulePath(parts), parts));
   });
 
+  // What the extension modules import, directly or not, moves with them.
   let count = _modules.len();
   let front = Array.new<Bool>(count);
   let pending = _extensionIndexes.copy();
@@ -465,6 +608,9 @@ export let addExtensions = fn(types: Array<Bytes>): Array<Module> {
   _modules
 };
 
+/** Clears the module table and sets the directories modules are found in.
+ * @param std  the standard library's directory, or empty for none
+ * @param roots  the source roots, searched in order */
 let _begin = fn(std: Bytes, roots: Array<Bytes>) {
   _modules = Array.new<Module>(0);
   _paths = Array.new<Bytes>(0);
@@ -481,12 +627,27 @@ let _begin = fn(std: Bytes, roots: Array<Bytes>) {
   null
 };
 
+/** Loads a program; the entry module and every module it imports, directly or not, each once.
+ * Modules outside the standard library are found under the entry's directory, then under each of
+ * `paths`; `std.*` modules are found under `std`.
+ * @param entryPath  the entry module's file
+ * @param std  the standard library's directory, or empty for none
+ * @param paths  the further source roots, from `--path`, in order
+ * @return the modules in initialisation order, each after everything it imports, the entry last
+ * @throws an error if a module is missing, fails to parse, or has a bad package or import */
 export let loadModules = fn(entryPath: Bytes, std: Bytes, paths: Array<Bytes>): Array<Module> {
   _begin(std, [_directory(entryPath)].appendFrom(paths, 0));
   _load(entryPath, Array.new<Bytes>(0));
   _modules
 };
 
+/** Derives a test file's import path from the innermost source root it is under;
+ * `frontend.syntax.Lexer.test` for `tests/unit/frontend/syntax/Lexer.test.jello` under a root at
+ * `tests/unit`, even when there is also a root at `tests`. The file and the roots are compared
+ * as the paths they resolve to, so a root may be written as `.`, `./tests` or an absolute path.
+ * @param path  the test file
+ * @return its import path, whose last part keeps `.test`
+ * @throws an error if `path` does not end in `.test.jello` or is under no source root */
 let _testParts = fn(path: Bytes): Array<Bytes> {
   if (!isTestFile(path)) {
     throw coded(E0209, `a test file's name ends in ${_TEST_FILE}: ${path}`);
@@ -505,6 +666,7 @@ let _testParts = fn(path: Bytes): Array<Bytes> {
   }
   if (start < 0) { throw coded(E0209, `test file ${path} is under no --path root`); }
 
+  // The last part keeps `.test`; the parts end where `.jello` starts.
   let parts = Array.new<Bytes>(0);
   let end = file.len() - _TEST_FILE.len() + _TEST.len();
   let i = start;
@@ -519,6 +681,17 @@ let _testParts = fn(path: Bytes): Array<Bytes> {
   parts
 };
 
+/** Adds a loaded test file to the generated test entry. A private namespace import of the file,
+ * named `_` and the import's index, goes onto `imports`, so that the file runs and its tests'
+ * signatures are checked. When the file declares tests, the source of `std.testing`'s suite
+ * tuple for it goes onto `suites`; the file's name, its `beforeAll` and `afterAll` (the entry's
+ * no-op `none` for a missing hook), and one case per test, giving the test's qualified name (the
+ * file's path without `.test`, `/`, then the test's name), its declaration's `path:line` and the
+ * test function.
+ * @param index  the test file's module index
+ * @param parts  its import path
+ * @param suites  the suite tuples' source so far; extended in place
+ * @param imports  the generated entry's imports so far; extended in place */
 let _suite = fn(index: I32, parts: Array<Bytes>, suites: Array<Bytes>, imports: Array<Import>) {
   let space = `_${imports.len()}`;
   imports.push(Import.Namespace(space, index, true, -1));
@@ -555,15 +728,28 @@ let _suite = fn(index: I32, parts: Array<Bytes>, suites: Array<Bytes>, imports: 
   null
 };
 
+/** Loads test files for `--test`; each test file, as a module under the innermost source root it
+ * is in, with everything it imports, then a generated entry module that imports every test file
+ * privately and passes their suites to `std.testing`'s `main`.
+ * @param files  the test files, in the order their suites run
+ * @param std  the standard library's directory, or empty for none
+ * @param paths  the source roots, from `--path`
+ * @return the modules in initialisation order, the generated entry last
+ * @throws an error if a test file is misnamed or outside every root, or if any module
+ *   fails to load as for `loadModules` */
 export let loadTests = fn(files: Array<Bytes>, std: Bytes, paths: Array<Bytes>): Array<Module> {
   _begin(std, paths);
+  // Every file's name is checked before anything loads.
   let names = files.map(_testParts);
+  /* `std.testing` loads first, so it is checked before every test file; checking a test's
+   * signature needs its `Test` type. */
   let testing = _import(["std", "testing"]);
 
   let suites = Array.new<Bytes>(0);
   let imports = Array.new<Import>(0);
 
   for (i, file in files) {
+    // A file named twice is tested once.
     if (_paths.indexOf(file) < 0) {
       _suite(_load(file, names[i]), names[i], suites, imports);
     }
@@ -573,6 +759,8 @@ export let loadTests = fn(files: Array<Bytes>, std: Bytes, paths: Array<Bytes>):
     + "let none = fn() { null };\n"
     + `main([${suites.join(",\n  ")}])\n`;
   let made = _module("", entry, Array.new<Bytes>(0), imports);
+  /* The entry has no file of its own, so its syntax is placed at `std.testing`'s, whose `main`
+   * runs it, as a program's body is located at its entry module. */
   let at = _modules[testing].syntax;
   let placed = relocated(made.syntax, at.path, at.start, at.end);
   let tested: Module = { ...made, syntax: placed };
@@ -580,6 +768,12 @@ export let loadTests = fn(files: Array<Bytes>, std: Bytes, paths: Array<Bytes>):
   _modules
 };
 
+/** Loads the program that runs the macros of the file at `path` for `--expanders`; a generated
+ * entry module, which `frontend.Macros.expanderSource` makes and whose syntax is placed at the
+ * file, holding the macros' bodies, with what it imports.
+ * @param std  the standard library's directory, or empty for none
+ * @return the modules in initialisation order, the generated entry last
+ * @throws an error if the file fails to parse, or a macro's body is invalid */
 export let loadExpanders = fn(path: Bytes, std: Bytes): Array<Module> {
   _begin(std, [_directory(path)]);
   let program = parseProgram(lexFile(readText(path), path));
@@ -588,6 +782,7 @@ export let loadExpanders = fn(path: Bytes, std: Bytes): Array<Module> {
 
   let wrapper = _module("", source, Array.new<Bytes>(0), Array.new<Import>(0));
   let placed = relocated(wrapper.syntax, syntax.path, syntax.start, syntax.end);
+  // The bodies are in the tail, `Macro.run`'s call; `relocated` made `placed` anew.
   let tops = placed.children;
   let last = tops.len() - 1;
   let spliced = spliceBodies(Located.Expression(wrapper.tail, tops[last]), bodies);
@@ -600,4 +795,5 @@ export let loadExpanders = fn(path: Bytes, std: Bytes): Array<Module> {
   _modules
 };
 
+// Returns the file path of `module`, empty for a generated entry.
 export let modulePath = fn(module: Module): Bytes { module.path };

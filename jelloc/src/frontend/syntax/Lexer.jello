@@ -1,19 +1,38 @@
 package frontend.syntax;
 
+/** @file
+ * The lexer, where the pipeline begins; it turns a source file's bytes into the token array
+ * that `Parser.parseProgram` reads, with each token's start and end byte offsets. It rejects
+ * invalid UTF-8, skips whitespace and comments, decodes the escapes in bytes literals and
+ * templates, and reports every error as a located diagnostic. A template's holes are lexed as
+ * ordinary tokens between the texts around them. It scans by position, so lexing is linear in
+ * the source's length. */
+
 import type { FloatSize, IntSize } from frontend.syntax.Ast;
 import { sourceDiagnostic, utf8CharLength } from frontend.syntax.Source;
 import { E0001, E0002, E0003, E0004, E0005, E0006, coded } from support.Codes;
 import { hexValue } from support.Text;
 import { u8, utf8FromCodepoint, utf8Validate } from std.core.Bytes;
 
+/** A lexical token. Keywords and punctuation carry no payload; `EnumDecl` is `enum`,
+ * `ListLiteral` is `list`, `And` is `&&` and `PipePipe` is `||`. A token array ends with `Eof`. */
 export enum Token {
+  // A bytes literal, its escapes decoded.
   BytesLiteral(value: Bytes);
+  // A float constant, its text without the suffix.
   FloatConstant(literal: Bytes, size: FloatSize);
   Ident(name: Bytes);
+  /** An integer constant, its text without the suffix, keeping any `0x`, `0b` or `0o` prefix and
+   * `_` separators. */
   IntegerConstant(digits: Bytes, size: IntSize);
+  // A regexp literal, `~r/pattern/flags`, its pattern keeping its escapes.
   RegExpLiteral(pattern: Bytes, flags: Bytes);
+  /** A template's text from its opening backtick to its first hole's `${`, its escapes decoded. A
+   * template without holes is a `BytesLiteral`. */
   TemplateHead(text: Bytes);
+  // A template's text from a hole's closing `}` to the next hole's `${`.
   TemplateMiddle(text: Bytes);
+  // A template's text from its last hole's closing `}` to its closing backtick.
   TemplateTail(text: Bytes);
 
   As;
@@ -109,36 +128,52 @@ export enum Token {
   Eof;
 };
 
+/** Returns the byte of `src` at `i`.
+ * @return the byte, or -1 if `i` is out of range */
 let _byteAt = fn(src: Bytes, i: I32): I32 {
   ((i < 0) || (i >= src.len())) ? -1 : Bytes.get_u8(src, i)
 };
 
+/** Checks whether `c`, a byte or -1, is whitespace as the regexp `\s` defines it; space, tab,
+ * newline, vertical tab, form feed or carriage return. */
 let _isSpace = fn(c: I32): Bool {
   (c == " ".code) || ((c >= "\t".code) && (c <= "\r".code))
 };
 
+// Checks whether `c`, a byte or -1, is an ASCII decimal digit.
 let _isDigit = fn(c: I32): Bool {
   (c >= "0".code) && (c <= "9".code)
 };
 
+/** Returns the end of the run of decimal digits that starts at `i` in `src`.
+ * @return the position after the last digit, or `i` if there is none */
 let _digitsEnd = fn(src: Bytes, i: I32): I32 {
   let end = i;
   while (_isDigit(_byteAt(src, end))) { end++; }
   end
 };
 
+// Checks whether `src` holds `text` at `i`.
 let _startsAt = fn(src: Bytes, i: I32, text: Bytes): Bool {
   let k = 0;
   while ((k < text.len()) && (_byteAt(src, i + k) == Bytes.get_u8(text, k))) { k++; }
   k == text.len()
 };
 
+/** Finds the next occurrence of `text` in `src` at or after `i`.
+ * @return the occurrence's position, or -1 if there is none */
 let _find = fn(src: Bytes, text: Bytes, i: I32): I32 {
   let at = i;
   while ((at + text.len() <= src.len()) && !_startsAt(src, at, text)) { at++; }
   (at + text.len() <= src.len()) ? at : -1
 };
 
+/** Skips whitespace and comments. A line comment starts with `#` or `//` and runs to the
+ * newline. A block comment runs from slash-star to the next star-slash after it, so a slash, star
+ * and slash only open one. Block comments do not nest. An unterminated block comment is left in
+ * place for `_lexOne` to report where it starts.
+ * @param at  where scanning starts
+ * @return the position of the next token, or the end of `src` */
 let _skipSpace = fn(src: Bytes, at: I32): I32 {
   let pos = at;
   let cont = true;
@@ -161,6 +196,9 @@ let _skipSpace = fn(src: Bytes, at: I32): I32 {
   pos
 };
 
+/** Returns the keyword token that `word` spells, or an identifier.
+ * @param word  a word of letters, digits and `_`
+ * @return the keyword's token, or `Ident(word)` */
 let _keywordToken = fn(word: Bytes): Token {
   match (word) {
     "as" => Token.As,
@@ -205,6 +243,7 @@ let _keywordToken = fn(word: Bytes): Token {
   }
 };
 
+// Checks whether `c`, a byte or -1, may continue a word; an ASCII letter, digit or `_`.
 let _isWordChar = fn(c: I32): Bool {
   ((c >= "0".code) && (c <= "9".code))
     || ((c >= "A".code) && (c <= "Z".code))
@@ -212,6 +251,9 @@ let _isWordChar = fn(c: I32): Bool {
     || (c == "_".code)
 };
 
+/** Returns the integer size an integer suffix names.
+ * @param suffix  the suffix, such as `i64`, or ""
+ * @return the size, or `Infer` for "" */
 let _integerSize = fn(suffix: Bytes): IntSize {
   match (suffix) {
     "i8" => IntSize.I8,
@@ -226,6 +268,9 @@ let _integerSize = fn(suffix: Bytes): IntSize {
   }
 };
 
+/** Returns the float size a float suffix names.
+ * @param suffix  the suffix, such as `f32`, or ""
+ * @return the size, or `Infer` for "" */
 let _floatSize = fn(suffix: Bytes): FloatSize {
   match (suffix) {
     "f16" => FloatSize.F16,
@@ -235,6 +280,10 @@ let _floatSize = fn(suffix: Bytes): FloatSize {
   }
 };
 
+/** Returns the byte that a single-character escape stands for; `\0`, `\a`, `\b`, `\f`, `\n`,
+ * `\r`, `\t`, `\v`, or a quote, backslash or backtick escaped as itself.
+ * @param c  the byte after the backslash
+ * @return the escaped byte, or -1 if `c` does not form such an escape */
 let _escapeByte = fn(c: I32): I32 {
   match (c) {
     "0".code => 0,
@@ -253,6 +302,10 @@ let _escapeByte = fn(c: I32): I32 {
   }
 };
 
+/** Returns the length of a suffix width at `i`; 16, 32 or 64, and 8 too when `eight` is set.
+ * @param i  where the width's digits start
+ * @param eight  whether 8 is allowed, as it is for integers
+ * @return 1 or 2, or 0 if no allowed width is there */
 let _widthLength = fn(src: Bytes, i: I32, eight: Bool): I32 {
   let a = _byteAt(src, i);
   let b = _byteAt(src, i + 1);
@@ -263,22 +316,36 @@ let _widthLength = fn(src: Bytes, i: I32, eight: Bool): I32 {
   wide ? 2 : 0
 };
 
+/** Returns the integer suffix at `i`; `i` or `u` followed by 8, 16, 32 or 64.
+ * @param i  where the suffix would start
+ * @return the suffix, or "" if there is none */
 let _integerSuffix = fn(src: Bytes, i: I32): Bytes {
   let c = _byteAt(src, i);
   let width = ((c == "i".code) || (c == "u".code)) ? _widthLength(src, i + 1, true) : 0;
   Bytes.slice(src, i, (width > 0) ? width + 1 : 0)
 };
 
+/** Returns the float suffix at `i`; `f16`, `f32` or `f64`.
+ * @param i  where the suffix would start
+ * @return the suffix, or "" if there is none */
 let _floatSuffix = fn(src: Bytes, i: I32): Bytes {
   let width = (_byteAt(src, i) == "f".code) ? _widthLength(src, i + 1, false) : 0;
   Bytes.slice(src, i, (width > 0) ? width + 1 : 0)
 };
 
+/** Checks whether the dot at `dot` starts a member, as in `16.le`; a word byte other than a
+ * digit follows it, and no float suffix, as in `1.f32`. */
 let _dotStartsMember = fn(src: Bytes, dot: I32): Bool {
   let next = _byteAt(src, dot + 1);
   _isWordChar(next) && !_isDigit(next) && (_floatSuffix(src, dot + 1).len() == 0)
 };
 
+/** Rejects a constant that runs straight into a word byte or a dot, such as `12ab` or `1.5.2`,
+ * unless the dot starts a member.
+ * @param start  where the constant starts
+ * @param end  the position after the constant and its suffix
+ * @throws an "invalid constant" error, naming the whole run of word bytes and dots from `start`,
+ *   if the byte at `end` is a word byte, or a dot that does not start a member */
 let _checkConstantEnd = fn(src: Bytes, start: I32, end: I32) {
   let c = _byteAt(src, end);
 
@@ -295,9 +362,16 @@ let _checkConstantEnd = fn(src: Bytes, start: I32, end: I32) {
   null
 };
 
+/** Lexes the suffix after an integer's digits. An integer suffix makes an `IntegerConstant` of
+ * that size, and a float suffix, as in `1f32`, makes a `FloatConstant`.
+ * @param digits  the integer's text
+ * @param i  the position after the digits
+ * @return the token and the position after it
+ * @throws an "invalid constant" error if the constant runs into a word byte or a dot */
 let _lexConstant = fn(src: Bytes, digits: Bytes, i: I32): Tuple<Token, I32> {
   let integer = _integerSuffix(src, i);
   let float = (integer.len() > 0) ? "" : _floatSuffix(src, i);
+  // With no suffix at all, the integer's size is inferred.
   let token = (float.len() > 0)
     ? Token.FloatConstant(digits, _floatSize(float))
     : Token.IntegerConstant(digits, _integerSize(integer));
@@ -306,6 +380,11 @@ let _lexConstant = fn(src: Bytes, digits: Bytes, i: I32): Tuple<Token, I32> {
   (token, end)
 };
 
+/** Finds the end of a `0x`, `0b` or `0o` integer (the prefix letter in either case) whose `0`
+ * is at `i`. Its digits may be separated by `_`; the run may also be empty, which `_lexRadix`
+ * rejects.
+ * @param i  the position of the `0`
+ * @return the position after the digits, or -1 if no radix prefix is at `i` */
 let _radixEnd = fn(src: Bytes, i: I32): I32 {
   let kind = _byteAt(src, i + 1);
   let hex = (kind == "x".code) || (kind == "X".code);
@@ -327,6 +406,12 @@ let _radixEnd = fn(src: Bytes, i: I32): I32 {
   end
 };
 
+/** Lexes a radix integer and any integer suffix after it.
+ * @param i  the position of its `0`
+ * @param end  the position after its digits, from `_radixEnd`
+ * @return the `IntegerConstant` and the position after it
+ * @throws an "invalid integer literal" error if it has no digits or has a float suffix, and an
+ * "invalid constant" error if it runs into a word byte or a dot */
 let _lexRadix = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
   let text = Bytes.slice(src, i, end - i);
   let digits = 0;
@@ -346,6 +431,9 @@ let _lexRadix = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
   }
 };
 
+/** Finds the end of an exponent, `[Ee][+-]?[0-9]+`, at `i`.
+ * @param i  where the `e` would be
+ * @return the position after its digits, or -1 if there is no exponent */
 let _exponentEnd = fn(src: Bytes, i: I32): I32 {
   let e = _byteAt(src, i);
   let sign = _byteAt(src, i + 1);
@@ -354,6 +442,13 @@ let _exponentEnd = fn(src: Bytes, i: I32): I32 {
   (((e == "e".code) || (e == "E".code)) && (end > digits)) ? end : -1
 };
 
+/** Finds the end of a float at `i`, matching the regexp
+ * `([0-9]*\.[0-9]+|[0-9]+\.?)[Ee][+-]?[0-9]+|[0-9]*\.[0-9]+|[0-9]+\.` and trying its
+ * alternatives in order. So `1.`, `.5` and `1e3` are floats, and a plain run of digits is not;
+ * nor is `16.` before a word byte, so that `16.le` is a member of 16, as a bits segment's byte
+ * order is written.
+ * @param i  where the float would start
+ * @return the position after it, or -1 if no float starts at `i` */
 let _floatEnd = fn(src: Bytes, i: I32): I32 {
   let whole = _digitsEnd(src, i);
   let dot = _byteAt(src, whole) == ".".code;
@@ -368,6 +463,11 @@ let _floatEnd = fn(src: Bytes, i: I32): I32 {
   (hasWhole && dot && !_dotStartsMember(src, whole)) ? whole + 1 : -1
 };
 
+/** Lexes a float and any float suffix after it.
+ * @param i  where the float starts
+ * @param end  the position after it, from `_floatEnd`
+ * @return the `FloatConstant` and the position after it
+ * @throws an "invalid constant" error if it runs into a word byte or a dot */
 let _lexFloat = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
   let lit = Bytes.slice(src, i, end - i);
   let suffix = _floatSuffix(src, end);
@@ -376,15 +476,24 @@ let _lexFloat = fn(src: Bytes, i: I32, end: I32): Tuple<Token, I32> {
   (Token.FloatConstant(lit, _floatSize(suffix)), cur)
 };
 
+/** The position an error being thrown should point at, when that is not the start of its token;
+ * -1 otherwise. `lexFile` reads and resets it. */
 let _failAt = -1;
 
+/** A template hole being lexed; `depth` is the braces that were open in the hole around it when
+ * it opened, or -1 if it is in none, and `tick` its template's opening backtick. */
 typedef Hole = {
   let depth: I32;
   let tick: I32;
 };
 
+// The template holes `lexFile` is inside, innermost last.
 let _holes = Array.new<Hole>(0);
 
+/** Reads the hex digits of a `\u` escape; exactly four, or one to six between braces, as in
+ * `\u{1F600}`. Rejects surrogates and values past U+10FFFF.
+ * @param at  the position after the `u`
+ * @return the code point, or -1 if the escape is invalid, and the position after the escape */
 let _unicodeEscape = fn(src: Bytes, at: I32): Tuple<I32, I32> {
   let braced = _byteAt(src, at) == "{".code;
   let i = braced ? at + 1 : at;
@@ -416,6 +525,11 @@ let _unicodeEscape = fn(src: Bytes, at: I32): Tuple<I32, I32> {
   (cp, end)
 };
 
+/** Decodes the escape whose backslash is at `i`, followed by `esc`, onto `out`. A `\xHH` escape
+ * gives any byte, so the value need not be UTF-8; a `\u` escape gives a code point's UTF-8
+ * encoding.
+ * @return the position after the escape, or -1 if `esc` starts none
+ * @throws an "invalid unicode escape" or "invalid hex escape" error located at the backslash */
 let _escape = fn(src: Bytes, i: I32, esc: I32, out: Array<Bytes>): I32 {
   if (esc == "u".code) {
     let (cp, end) = _unicodeEscape(src, i + 2);
@@ -445,11 +559,19 @@ let _escape = fn(src: Bytes, i: I32, esc: I32, out: Array<Bytes>): I32 {
   i + 2
 };
 
+// Throws the error for the unknown escape whose backslash is at `i`, located there.
 let _unknownEscape = fn(src: Bytes, i: I32) {
   _failAt = i;
   throw coded(E0004, `unknown escape \\${Bytes.slice(src, i + 1, utf8CharLength(src, i + 1))}`);
 };
 
+/** Lexes a bytes literal delimited by `"` or `'`, which must end on the line it starts. Runs
+ * without escapes are copied whole and joined once at the end.
+ * @param at  the position of the opening delimiter
+ * @return the `BytesLiteral` and the position after the closing delimiter
+ * @throws an "unterminated bytes literal" error if a line or the file ends first, and an
+ * "invalid unicode escape", "invalid hex escape" or "unknown escape" error located at the
+ * escape's backslash */
 let _lexBytesLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
   let delimiter = _byteAt(src, at);
   let i = at + 1;
@@ -472,6 +594,7 @@ let _lexBytesLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
       let end = _escape(src, i, esc, out);
 
       if (end < 0) {
+        // A `\` that ends the line leaves the literal unterminated.
         if ((esc < 0) || (esc == "\n".code) || (esc == "\r".code)) {
           throw coded(E0005, "unterminated bytes literal");
         }
@@ -486,6 +609,16 @@ let _lexBytesLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
   (Token.BytesLiteral(out.join("")), i)
 };
 
+/** Lexes a template's text from `at`, after its opening backtick or a hole's closing `}`, to its
+ * closing backtick or the `${` of its next hole. The text may span lines, and keeps their line
+ * breaks. It takes the escapes of a bytes literal, and `\$` for a `$`; any other `$` is itself.
+ * @param tick  the position of the template's opening backtick, where an unterminated template
+ *     is reported
+ * @param head  whether `at` follows the opening backtick
+ * @return the token, `BytesLiteral`, `TemplateHead`, `TemplateMiddle` or `TemplateTail`, and the
+ *     position after it
+ * @throws an "unterminated template" error if the file ends first, and the escape errors of
+ *     `_lexBytesLiteral` */
 let _lexTemplate = fn(src: Bytes, at: I32, tick: I32, head: Bool): Tuple<Token, I32> {
   let i = at;
   let run = i;
@@ -514,6 +647,7 @@ let _lexTemplate = fn(src: Bytes, at: I32, tick: I32, head: Bool): Tuple<Token, 
     if (c == "\\".code) {
       out.push(Bytes.slice(src, run, i - run));
       let esc = _byteAt(src, i + 1);
+      // A `$` escapes itself, as the next run's first byte.
       let end = (esc == "$".code) ? i + 2 : _escape(src, i, esc, out);
 
       if (end < 0) {
@@ -537,11 +671,13 @@ let _lexTemplate = fn(src: Bytes, at: I32, tick: I32, head: Bool): Tuple<Token, 
   (Token.Eof, i)
 };
 
+// Checks whether `c`, a byte or -1, is an ASCII letter.
 let _isLetter = fn(c: I32): Bool {
   ((c >= "A".code) && (c <= "Z".code))
     || ((c >= "a".code) && (c <= "z".code))
 };
 
+// Checks whether `text` is spelt as a name: a letter or `_`, then letters, digits and `_`.
 export let isName = fn(text: Bytes): Bool {
   let first = _byteAt(text, 0);
   if (!_isLetter(first) && (first != "_".code)) { return false; }
@@ -554,6 +690,12 @@ export let isName = fn(text: Bytes): Bool {
   true
 };
 
+/** Lexes a regexp literal, `~r/pattern/flags`. The pattern keeps its escapes, so an escaped `/`
+ * does not end it, and the flags are the letters after the closing `/`.
+ * @param at  the position of the `~`
+ * @return the `RegExpLiteral` and the position after its flags
+ * @throws an "unterminated regexp literal" error if the file, or a line not ending in a
+ * backslash, ends before the closing `/` */
 let _lexRegExpLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
   let i = at + 3;
   let close = -1;
@@ -579,6 +721,9 @@ let _lexRegExpLiteral = fn(src: Bytes, at: I32): Tuple<Token, I32> {
   (Token.RegExpLiteral(pattern, Bytes.slice(src, flags, end - flags)), end)
 };
 
+/** Returns the two-byte operator that `op` spells.
+ * @param op  two bytes of source
+ * @return the operator's token, or `Eof` if `op` is not one */
 let _opToken = fn(op: Bytes): Token {
   match (op) {
     "==" => Token.EqualEqual,
@@ -608,6 +753,10 @@ let _opToken = fn(op: Bytes): Token {
   }
 };
 
+/** Lexes the punctuation or operator at `i`, taking the longest match; `...`, `<<=` or `>>=`,
+ * then a two-byte operator, then a single byte.
+ * @return the token and the position after it
+ * @throws an "unexpected character" error if no token starts at `i` */
 let _lexOp = fn(src: Bytes, i: I32): Tuple<Token, I32> {
   if ((i + 3 <= src.len()) && _startsAt(src, i, "...")) { return (Token.DotDotDot, i + 3); }
 
@@ -650,6 +799,10 @@ let _lexOp = fn(src: Bytes, i: I32): Tuple<Token, I32> {
   }
 };
 
+/** Lexes the token at `i`, which `_skipSpace` has already reached. A digit right after a member
+ * dot is a field number, so `p.1.0` is two field accesses rather than the float `1.0`.
+ * @return the token, `Eof` at the end of `src`, and the position after it
+ * @throws an error if the token is malformed or `i` holds an unterminated block comment */
 let _lexOne = fn(src: Bytes, i: I32): Tuple<Token, I32> {
   let c = _byteAt(src, i);
   let radix = _radixEnd(src, i);
@@ -667,6 +820,7 @@ let _lexOne = fn(src: Bytes, i: I32): Tuple<Token, I32> {
     let end = _digitsEnd(src, i);
     (Token.IntegerConstant(Bytes.slice(src, i, end - i), IntSize.Infer), end)
   } else if ((c == "/".code) && (_byteAt(src, i + 1) == "*".code)) {
+    // `_skipSpace` consumes every terminated block comment, so this one is unterminated.
     throw coded(E0005, "unterminated block comment");
   } else if (_startsAt(src, i, "~r/")) {
     _lexRegExpLiteral(src, i)
@@ -686,11 +840,17 @@ let _lexOne = fn(src: Bytes, i: I32): Tuple<Token, I32> {
   }
 };
 
+/** Checks whether the dot at `i` in `src` follows a value, which makes it member access rather
+ * than the start of a float; it follows a word byte or a closing bracket, brace or
+ * parenthesis. */
 let _memberDot = fn(src: Bytes, i: I32): Bool {
   let c = _byteAt(src, i - 1);
   _isWordChar(c) || (c == ")".code) || (c == "]".code) || (c == "}".code)
 };
 
+/** Finds where `src` stops being valid UTF-8. Only invalid source pays for the walk, since valid
+ * source passes `utf8Validate` first.
+ * @return the position of the first invalid character, or -1 if all of `src` is valid */
 let _invalidUtf8 = fn(src: Bytes): I32 {
   let i = utf8Validate(src) ? src.len() : 0;
   let bad = -1;
@@ -708,15 +868,26 @@ let _invalidUtf8 = fn(src: Bytes): I32 {
   bad
 };
 
+/** Where the last `lexFile` failed, a byte offset, and why, with the error's code; -1 and empty
+ * when it did not. */
 let _failure: Tuple<I32, Bytes> = (-1, "");
 
+// Returns where the last `lexFile` failed and why (`_failure`).
 export let lexFailure = fn(): Tuple<I32, Bytes> { _failure };
 
+// Records a failure at byte `at` of `src` because of `message`, and returns its diagnostic.
 let _failed = fn(filename: Bytes, src: Bytes, at: I32, message: Bytes): Bytes {
   _failure = (at, message);
   sourceDiagnostic(filename, src, at, message)
 };
 
+/** Lexes a source file into the form `Parser.parseProgram` takes. The final token is `Eof`,
+ * whose start and end are both the end of the source.
+ * @param src  the file's text
+ * @param filename  the file's path, used in diagnostics and passed on to the parser
+ * @return the tokens, `filename`, and each token's start and end byte offsets, at the same index
+ * @throws an error carrying a `path:line:column` diagnostic for invalid UTF-8 or any lexical
+ * error */
 export let lexFile = fn(
   src: Bytes,
   filename: Bytes
@@ -731,6 +902,7 @@ export let lexFile = fn(
   _failure = (-1, "");
   if (invalid >= 0) { throw _failed(filename, src, invalid, coded(E0001, "invalid UTF-8")); }
 
+  // The braces open in the innermost template hole being lexed, or -1 outside any.
   let depth = -1;
   _holes = Array.new<Hole>(0);
   let done = false;
@@ -742,6 +914,7 @@ export let lexFile = fn(
       pos = _skipSpace(src, pos);
       start = pos;
 
+      // A hole's own closing brace resumes its template's text.
       if ((depth == 0) && (_byteAt(src, pos) == "}".code)) {
         _lexTemplate(src, pos + 1, _holes[_holes.len() - 1].tick, false)
       } else {

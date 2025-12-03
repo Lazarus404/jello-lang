@@ -1,5 +1,12 @@
 package frontend.semantics;
 
+/** @file
+ * Checks `list[...]` literals into HIR, for `frontend.semantics.Aggregates`. Elements are consed,
+ * from the last, onto nil or a tail, so they run in order. A spread with items after it, and a
+ * comprehension, build their lists with loops: each generator loops over its source, binding its
+ * pattern to each item, and the innermost conses the body's value onto the result, which is
+ * reversed at the end. */
+
 import type { Expr as AstExpr, ListGenerator, ListLiteral } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { Kind, Op } from frontend.hir.Hir;
@@ -12,11 +19,18 @@ import {
 } from frontend.semantics.TypeCheck;
 import { E0400, coded } from support.Codes;
 
+/** Returns the element type of a literal in the context `expected`; its T when that is a List<T>,
+ * else -1, or a fresh Var when `inferred`, for a literal whose items cannot give one. */
 let _element = fn(expected: I32, inferred: Bool): I32 {
   if (H.isKind(expected, Kind.List)) { return H.innerOf(expected); }
   inferred ? H.newVar(false) : -1
 };
 
+/** Checks the items `items` of a literal, syntax children from `first` on, as elements of
+ * `element`, or of the first item's type when that is -1. An item widens to `element` only when
+ * that holds no unbound Var, as an array literal's does.
+ * @param values  the checked items, appended to
+ * @return the element type */
 let _items = fn(items: Array<AstExpr>, first: I32, element: I32, values: Array<I32>): I32 {
   let declared = H.isOpen(element) ? -1 : element;
   let ty = element;
@@ -33,6 +47,12 @@ let _items = fn(items: Array<AstExpr>, first: I32, element: I32, values: Array<I
   ty
 };
 
+/** Checks `operand`, syntax child `index`, as a List of `element`, or of its own element type
+ * when that is -1.
+ * @param what  what the operand is, for a diagnostic
+ * @return the checked list, or a nil of `element` in place of one of another element type, which
+ *     is recorded, so that the literal's type stays `element`'s
+ * @throws a located error if it is not a List */
 let _listOperand = fn(operand: AstExpr, index: I32, element: I32, what: Bytes): I32 {
   let checked = checkOperand(operand, index, element >= 0 ? H.listType(element) : -1);
   let ty = H.typeOf(checked);
@@ -50,6 +70,7 @@ let _listOperand = fn(operand: AstExpr, index: I32, element: I32, what: Bytes): 
   checked
 };
 
+// Returns `values` consed, from the last, onto `tail`, a List of type `ty`.
 let _consed = fn(values: Array<I32>, tail: I32, ty: I32): I32 {
   let list = tail;
   let i = values.len() - 1;
@@ -61,15 +82,19 @@ let _consed = fn(values: Array<I32>, tail: I32, ty: I32): I32 {
   list
 };
 
+// Returns whether the list in binding `binding`, of type `ty`, has an item.
 let _more = fn(binding: I32, ty: I32): I32 {
   let empty = H.opNode(Op.ListIsNil, H.TYPE_BOOL, [H.local(binding, ty)]);
   H.opNode(Op.Not, H.TYPE_BOOL, [empty])
 };
 
+// Returns the statement that assigns `value`, of type `ty`, to the mutable binding `binding`.
 let _assign = fn(binding: I32, ty: I32, value: I32): I32 {
   expressionOf(H.node(Op.Assign, ty, binding, 0, [value]))
 };
 
+/** Appends a loop that conses each item of the list in the mutable binding `source`, in order, onto
+ * the one in `onto`, both of type `ty`, so that `onto` ends with them reversed in front. */
 let _reverseOnto = fn(source: I32, onto: I32, ty: I32, statements: Array<I32>) {
   let head = H.opNode(Op.ListHead, H.innerOf(ty), [H.local(source, ty)]);
   let push = _assign(onto, ty, H.opNode(Op.ListCons, ty, [head, H.local(onto, ty)]));
@@ -78,12 +103,17 @@ let _reverseOnto = fn(source: I32, onto: I32, ty: I32, statements: Array<I32>) {
   null
 };
 
+// Declares a mutable hidden binding of type `ty`, initialised to `value`, in `statements`.
 let _variable = fn(statements: Array<I32>, name: Bytes, ty: I32, value: I32): I32 {
   let binding = newBinding();
   statements.push(H.declareBinding(Op.Let, binding, name, value));
   binding
 };
 
+/** Checks the items `prefix` of a literal, syntax children from 0 on, and then `tail`, the List
+ * they go in front of, as `_listOperand` does.
+ * @param what  what the tail is, for a diagnostic
+ * @return the checked items and tail */
 let _prefixed = fn(
   prefix: Array<AstExpr>,
   tail: AstExpr,
@@ -95,6 +125,8 @@ let _prefixed = fn(
   (values, _listOperand(tail, prefix.len(), element, what))
 };
 
+/** Checks `list[prefix..., ...rest, suffix...]`. Without a suffix the list is `rest` with the
+ * prefix in front, since lists are immutable; with one, `rest` is copied in front of it. */
 let _spread = fn(
   prefix: Array<AstExpr>,
   rest: AstExpr,
@@ -105,6 +137,7 @@ let _spread = fn(
   let ty = H.typeOf(list);
   if (suffix.len() == 0) { return _consed(values, list, ty); }
 
+  // The prefix is bound first, as the items run in order.
   let statements = Array.new<I32>(0);
   let reads = Array.new<I32>(0);
 
@@ -123,6 +156,8 @@ let _spread = fn(
   H.node(Op.Block, ty, 0, 1, statements)
 };
 
+/** Appends to `loop`, a comprehension's innermost loop body, the statement that conses the value
+ * of `body`, syntax child `index`, onto the list in binding `result`, of `element`s. */
 let _collect = fn(body: AstExpr, index: I32, result: I32, element: I32, loop: Array<I32>) {
   let values = Array.new<I32>(0);
   _items([body], index, element, values);
@@ -132,6 +167,8 @@ let _collect = fn(body: AstExpr, index: I32, result: I32, element: I32, loop: Ar
   null
 };
 
+/** Appends to `loop` the statement that continues it unless `guard`, syntax child `index`, holds.
+ * @throws a located error if the guard is not a Bool */
 let _guard = fn(guard: AstExpr, index: I32, loop: Array<I32>) {
   let test = checkOperand(guard, index, H.TYPE_BOOL);
 
@@ -144,6 +181,11 @@ let _guard = fn(guard: AstExpr, index: I32, loop: Array<I32>) {
   null
 };
 
+/** Checks the loop of generator `g` of a comprehension and the generators after it. Its source,
+ * and then its guard, are syntax children from `index` on, and its pattern is syntax pattern `g`.
+ * The innermost loop conses the body's value onto the list in binding `result`.
+ * @return the loop's statements, which declare its cursor and then loop
+ * @throws a located error if the source is not a List or the guard not a Bool */
 let _generator = fn(
   generators: Array<ListGenerator>,
   g: I32,
@@ -180,12 +222,16 @@ let _generator = fn(
   statements
 };
 
+/** Checks `list[for p <- xs when (g), ... do: body]`. The generators' names are in scope for the
+ * sources and guards after them and for the body, and not after the literal; a `break` or
+ * `continue` there cannot leave the comprehension's loops. */
 let _comprehension = fn(generators: Array<ListGenerator>, body: AstExpr, expected: I32): I32 {
   let element = _element(expected, true);
   let ty = H.listType(element);
   let statements = Array.new<I32>(0);
   let result = _variable(statements, "list", ty, H.opNode(Op.ListNil, ty, []));
 
+  // The body may run any number of times, as a loop's does.
   let before = narrowings();
   let mark = assignmentMark();
   enterLoop();
@@ -201,6 +247,9 @@ let _comprehension = fn(generators: Array<ListGenerator>, body: AstExpr, expecte
   H.node(Op.Block, ty, 0, 1, statements)
 };
 
+/** Checks the list literal `value` in the context `expected`.
+ * @return the checked list
+ * @throws a located error for an item, tail, spread operand, source or guard of the wrong kind */
 export let checkList = fn(value: ListLiteral, expected: I32): I32 {
   match (value) {
     Empty => H.opNode(Op.ListNil, H.listType(_element(expected, true)), []),

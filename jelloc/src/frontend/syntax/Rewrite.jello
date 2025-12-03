@@ -1,5 +1,12 @@
 package frontend.syntax;
 
+/** @file
+ * Rewrites an AST together with its `Syntax` tree, for macro expansion: a hook sees each node
+ * before its children and may replace it, and the nodes it leaves are rebuilt from their
+ * rewritten children, each child taking its own syntax with it. A statement may become several,
+ * or none. Children are visited in field order, as `frontend.syntax.SyntaxTree` pairs them, so
+ * two rewrites of one tree meet its nodes in the same order. Types have no syntax of their own. */
+
 import type {
   BitExprSegment, BitPatternSegment, Block, EnumConstructor, Expr, ListGenerator, ListLiteral,
   MatchAlternative, MatchArm, Parameter, Pattern, PrototypeField, Stmt, StructField, Type
@@ -11,6 +18,8 @@ import {
 import type { Syntax } from frontend.syntax.Source;
 import { internalError } from support.Internal;
 
+/** A node with its syntax, as a hook sees and replaces it; a statement comes as `Statements` of
+ * one, and may be replaced by any number. */
 export enum Located {
   Expression(value: Expr, syntax: Syntax);
   Statements(values: Array<Stmt>, syntax: Array<Syntax>);
@@ -18,8 +27,12 @@ export enum Located {
   Type(value: Type);
 }
 
+/** The hook of the rewrite under way; it returns a node's replacement, of the node's kind, or null
+ * to have its children rewritten instead. */
 let _hook: (Located) -> ?Located = fn(_node) { null };
 
+/** Where a node's rebuilding stands: its old children and patterns, which it takes in order from
+ * `at` (two cursors), and the new ones it makes. */
 typedef Cursor = {
   let children: Array<Syntax>;
   let patterns: Array<Syntax>;
@@ -28,6 +41,7 @@ typedef Cursor = {
   let madePatterns: Array<Syntax>;
 };
 
+// Starts rebuilding the node whose syntax is `syntax`.
 let _cursor = fn(syntax: Syntax): Cursor {
   {
     children: syntax.children,
@@ -38,10 +52,12 @@ let _cursor = fn(syntax: Syntax): Cursor {
   }
 };
 
+// Ends rebuilding the node whose syntax was `syntax`; its span with the children made.
 let _made = fn(syntax: Syntax, cursor: Cursor): Syntax {
   { ...syntax, children: cursor.made, patterns: cursor.madePatterns }
 };
 
+// Takes the next old child of `cursor`.
 let _nextChild = fn(cursor: Cursor): Syntax {
   let at = cursor.at;
   if (at[0] >= cursor.children.len()) { internalError("a rewrite ran out of syntax"); }
@@ -49,6 +65,7 @@ let _nextChild = fn(cursor: Cursor): Syntax {
   cursor.children[at[0] - 1]
 };
 
+// Takes the next old pattern of `cursor`.
 let _nextPattern = fn(cursor: Cursor): Syntax {
   let at = cursor.at;
   if (at[1] >= cursor.patterns.len()) { internalError("a rewrite ran out of pattern syntax"); }
@@ -56,8 +73,10 @@ let _nextPattern = fn(cursor: Cursor): Syntax {
   cursor.patterns[at[1] - 1]
 };
 
+// Rewrites `value`, when it is not null.
 let _optionalType = fn(value: ?Type): ?Type { value == null ? null : _type(value) };
 
+// Rewrites type `value`.
 let _type = fn(value: Type): Type {
   let replaced = _hook(Located.Type(value));
 
@@ -81,6 +100,7 @@ let _type = fn(value: Type): Type {
   }
 };
 
+// Rewrites the types of struct or constructor fields `fields`.
 let _fields = fn(fields: Array<StructField>): Array<StructField> {
   let out = Array.new<StructField>(0);
 
@@ -90,30 +110,36 @@ let _fields = fn(fields: Array<StructField>): Array<StructField> {
   out
 };
 
+// Rewrites the sub-pattern `value`, a child of `cursor`.
 let _subPattern = fn(cursor: Cursor, value: Pattern): Pattern {
   let (out, syntax) = _pattern(value, _nextChild(cursor));
   cursor.made.push(syntax);
   out
 };
 
+// Rewrites the sub-patterns `values`, children of `cursor`.
 let _subPatterns = fn(cursor: Cursor, values: Array<Pattern>): Array<Pattern> {
   values.map(fn(value: Pattern): Pattern { _subPattern(cursor, value) })
 };
 
+// Rewrites the next child of `cursor`, the expression `value`.
 let _child = fn(cursor: Cursor, value: Expr): Expr {
   let (out, syntax) = _expression(value, _nextChild(cursor));
   cursor.made.push(syntax);
   out
 };
 
+// Rewrites `value`, a child of `cursor`, when it is not null.
 let _optionalChild = fn(cursor: Cursor, value: ?Expr): ?Expr {
   value == null ? null : _child(cursor, value)
 };
 
+// Rewrites the children `values` of `cursor`.
 let _children = fn(cursor: Cursor, values: Array<Expr>): Array<Expr> {
   values.map(fn(value: Expr): Expr { _child(cursor, value) })
 };
 
+// Rewrites the statements `values`, children of `cursor`, into those they become.
 let _statements = fn(cursor: Cursor, values: Array<Stmt>): Array<Stmt> {
   let out = Array.new<Stmt>(0);
 
@@ -128,23 +154,29 @@ let _statements = fn(cursor: Cursor, values: Array<Stmt>): Array<Stmt> {
   out
 };
 
+// Rewrites `block`, whose statements and tail are children of `cursor`.
 let _block = fn(cursor: Cursor, block: Block): Block {
   let statements = _statements(cursor, block.statements);
   { statements, tail: _optionalChild(cursor, block.tail) }
 };
 
+// Rewrites the pattern `value`, the next pattern of `cursor`.
 let _patternChild = fn(cursor: Cursor, value: Pattern): Pattern {
   let (out, syntax) = _pattern(value, _nextPattern(cursor));
   cursor.madePatterns.push(syntax);
   out
 };
 
+/** Rewrites the binding annotation `value`, whose syntax is the next pattern of `cursor`, when it
+ * is not null. */
 let _annotation = fn(cursor: Cursor, value: ?Type): ?Type {
   if (value == null) { return null; }
   cursor.madePatterns.push(_nextPattern(cursor));
   _type(value)
 };
 
+/** Rewrites the parameters `params`, children of `cursor`; a parameter's node has its default
+ * value as its only child. */
 let _parameters = fn(cursor: Cursor, params: Array<Parameter>): Array<Parameter> {
   let out = Array.new<Parameter>(0);
 
@@ -163,6 +195,7 @@ let _parameters = fn(cursor: Cursor, params: Array<Parameter>): Array<Parameter>
   out
 };
 
+// Rewrites match arms, their patterns being patterns of `cursor` and the rest its children.
 let _arms = fn(cursor: Cursor, arms: Array<MatchArm>): Array<MatchArm> {
   let out = Array.new<MatchArm>(0);
 
@@ -179,6 +212,7 @@ let _arms = fn(cursor: Cursor, arms: Array<MatchArm>): Array<MatchArm> {
   out
 };
 
+// Rewrites the parts of a `list[...]` literal, children and patterns of `cursor`.
 let _list = fn(cursor: Cursor, value: ListLiteral): ListLiteral {
   match (value) {
     Empty => value,
@@ -205,6 +239,7 @@ let _list = fn(cursor: Cursor, value: ListLiteral): ListLiteral {
   }
 };
 
+// Rewrites the entries of an object literal, children of `cursor`.
 let _entries = fn(cursor: Cursor, entries: Array<ObjectEntry>): Array<ObjectEntry> {
   let made = Array.new<ObjectEntry>(0);
 
@@ -221,6 +256,7 @@ let _entries = fn(cursor: Cursor, entries: Array<ObjectEntry>): Array<ObjectEntr
   made
 };
 
+// Rewrites the segments of a bit-syntax expression, children of `cursor`.
 let _bitSegments = fn(cursor: Cursor, segments: Array<BitExprSegment>): Array<BitExprSegment> {
   let made = Array.new<BitExprSegment>(0);
 
@@ -232,6 +268,7 @@ let _bitSegments = fn(cursor: Cursor, segments: Array<BitExprSegment>): Array<Bi
   made
 };
 
+// Rewrites the clauses of a `with`, children and patterns of `cursor`.
 let _clauses = fn(cursor: Cursor, clauses: Array<WithClause>): Array<WithClause> {
   let made = Array.new<WithClause>(0);
 
@@ -251,6 +288,7 @@ let _clauses = fn(cursor: Cursor, clauses: Array<WithClause>): Array<WithClause>
   made
 };
 
+// Rewrites what a quote holds, through `cursor`.
 let _quoteBody = fn(cursor: Cursor, body: QuoteBody): QuoteBody {
   match (body) {
     Expression(inner) => QuoteBody.Expression(_child(cursor, inner)),
@@ -264,6 +302,7 @@ let _quoteBody = fn(cursor: Cursor, body: QuoteBody): QuoteBody {
   }
 };
 
+// Rewrites the children of expression `value`, through `cursor`.
 let _expressionChildren = fn(cursor: Cursor, value: Expr): Expr {
   match (value) {
     Bytes(_), RegExp(_, _), Atom(_), Bool(_), Integer(_, _), Float(_, _), Null, This, Super,
@@ -353,6 +392,7 @@ let _expressionChildren = fn(cursor: Cursor, value: Expr): Expr {
   }
 };
 
+// Rewrites expression `value` with syntax `syntax`.
 let _expression = fn(value: Expr, syntax: Syntax): Tuple<Expr, Syntax> {
   let replaced = _hook(Located.Expression(value, syntax));
 
@@ -371,6 +411,7 @@ let _expression = fn(value: Expr, syntax: Syntax): Tuple<Expr, Syntax> {
   (out, _made(syntax, cursor))
 };
 
+// Rewrites the children of statement `value`, through `cursor`.
 let _statementChildren = fn(cursor: Cursor, value: Stmt): Stmt {
   match (value) {
     LetStmt(isConst, exported, pattern, typeParams, annotation, inner, otherwise) => {
@@ -427,6 +468,7 @@ let _statementChildren = fn(cursor: Cursor, value: Stmt): Stmt {
   }
 };
 
+// Rewrites the statement `value` with syntax `syntax`, into the statements it becomes.
 let _statement = fn(value: Stmt, syntax: Syntax): Tuple<Array<Stmt>, Array<Syntax>> {
   let replaced = _hook(Located.Statements([value], [syntax]));
 
@@ -445,6 +487,7 @@ let _statement = fn(value: Stmt, syntax: Syntax): Tuple<Array<Stmt>, Array<Synta
   ([out], [_made(syntax, cursor)])
 };
 
+// Rewrites the segments of a bit-syntax pattern, children of `cursor`.
 let _bitPatternSegments = fn(
   cursor: Cursor,
   segments: Array<BitPatternSegment>
@@ -459,6 +502,7 @@ let _bitPatternSegments = fn(
   made
 };
 
+// Rewrites pattern `value` with syntax `syntax`.
 let _pattern = fn(value: Pattern, syntax: Syntax): Tuple<Pattern, Syntax> {
   let replaced = _hook(Located.Pattern(value, syntax));
 
@@ -495,6 +539,10 @@ let _pattern = fn(value: Pattern, syntax: Syntax): Tuple<Pattern, Syntax> {
   (out, _made(syntax, cursor))
 };
 
+/** Rewrites `node` with `hook`, which sees each node before its children; it returns a node's
+ * replacement, which is not itself rewritten, or null to have the node's children rewritten. A
+ * hook may start a rewrite of its own.
+ * @return the rewritten node, of `node`'s kind */
 export let rewrite = fn(node: Located, hook: (Located) -> ?Located): Located {
   let outer = _hook;
   _hook = hook;

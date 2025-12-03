@@ -1,5 +1,17 @@
 package frontend.semantics;
 
+/** @file
+ * The checker's entry point; checks a program's modules, from `frontend.Loader`, one at a time
+ * in load order, dependencies first and the entry last, and returns the program's HIR for
+ * lowering. Each module's direct functions become HIR functions; its other top-level statements
+ * become statements of the program body, function ID 0, in initialisation order, followed by the
+ * entry module's tail. Owns the program body's statements while checking; installs the checks
+ * that `frontend.semantics.TypeCheck` calls back into (enums, aggregates, values, assertions and
+ * derived equality); and, once every module is checked, rejects a global read that may run
+ * before the global is initialised (`frontend.semantics.InitOrder`) and verifies the HIR
+ * (`frontend.hir.Verify`). A failed top-level statement is recorded and checking goes on with the
+ * next; a module with a failure is the last checked. */
+
 import type { Program as AstProgram, Stmt } from frontend.syntax.Ast;
 import { bindPatternName, isBindPattern, patternNames } from frontend.syntax.Ast;
 import {
@@ -46,9 +58,21 @@ import { checkPrototype, instantiatePrototypes } from frontend.semantics.Prototy
 import { verifyHir } from frontend.hir.Verify;
 import { E0206, E0210, E0213, E0214, E0304, E0605, E0901, coded } from support.Codes;
 
+/** The checked statements of the program body so far, as HIR node IDs, in initialisation order;
+ * each module's global initialisers, effects and loops, with its regexps' initialisers before
+ * them, and the generic instances' regexps first. */
 let _initializers = Array.new<I32>(0);
+// The index of `std.testing` among the modules, or -1 when the program does not load it.
 let _testing = -1;
 
+/** Checks that a native's function type can cross the JDLL ABI; every parameter and the result
+ * must be `Bool`, `I32`, `I64`, `F32`, `F64`, `Bytes`, `Dynamic` or an abstract type, null or
+ * not, which crosses as a Dynamic, the result may also be `Void`, and there are at most 8
+ * parameters, the argument kinds a `.jlo` import records (see `Emit._module`).
+ * @param ty  the native's function type
+ * @param name  the native's export name, for errors
+ * @return `ty`
+ * @throws a located error if there are more than 8 parameters or a type cannot be passed */
 let _marshalled = fn(ty: I32, name: Bytes): I32 {
   let count = typeArgCount(ty);
 
@@ -65,6 +89,7 @@ let _marshalled = fn(ty: I32, name: Bytes): I32 {
       Bool, I32, I64, F32, F64, Bytes, Dynamic => null,
       Null when ((i == count) && (part == TYPE_NULL)) => null,
       _ when (isHandle(part)) => null,
+      // In a function type `?T` is a parameter a call may omit, not a nullable one.
       Optional => {
         let inner = typeName(innerOf(part));
         throw coded(
@@ -85,6 +110,10 @@ let _marshalled = fn(ty: I32, name: Bytes): I32 {
   ty
 };
 
+/** Inserts statements into the program body before the statements of the module being checked,
+ * so that they run first.
+ * @param first  the index in `_initializers` of the module's first statement
+ * @param inits  the statements to insert */
 let _initializeFirst = fn(first: I32, inits: Array<I32>) {
   if (inits.len() == 0) { return null; }
   _initializers = _initializers
@@ -94,11 +123,23 @@ let _initializeFirst = fn(first: I32, inits: Array<I32>) {
   null
 };
 
+/** Records a top-level value in `frontend.semantics.ModuleScope`'s export table; as an export
+ * when it is exported, and as a private name for private imports when the module is opened. Does
+ * nothing otherwise.
+ * @param index  the module's index
+ * @param name  the value's name
+ * @param exported  whether the declaration is exported
+ * @param opened  whether some running module imports this one privately */
 let _publish = fn(index: I32, name: Bytes, exported: Bool, opened: Bool) {
   if (exported || opened) { exportScoped(index, name, exported); }
   null
 };
 
+/** Checks a test file's statement against the fixed signatures of tests and hooks; a test takes
+ * `std.testing`'s `Test`, a hook takes nothing, and both return `Null`. Other statements pass.
+ * @param statement  a top-level statement of a test file
+ * @param test  the type `std.testing` exports as `Test`
+ * @throws a located error giving the required form if a test or hook has another type */
 let _checkSignature = fn(statement: Stmt, test: I32) {
   match (statement) {
     LetStmt(_, _, pattern, _, _, _, _) when (isBindPattern(pattern)) => {
@@ -121,6 +162,7 @@ let _checkSignature = fn(statement: Stmt, test: I32) {
   }
 };
 
+// Returns the name `statement` exports, or "" when it exports none by name.
 let _exportedName = fn(statement: Stmt): Bytes {
   match (statement) {
     LetStmt(_, exported, pattern, _, _, _, _) when (exported && isBindPattern(pattern)) =>
@@ -129,10 +171,16 @@ let _exportedName = fn(statement: Stmt): Bytes {
   }
 };
 
+// Returns the names `statements` export by name.
 let _exportNames = fn(statements: Array<Stmt>): Array<Bytes> {
   statements.map(_exportedName).filter(fn(name: Bytes): Bool { name != "" })
 };
 
+/** The module that must run for a type-only import of the type `name` of module `module`: the
+ * module itself when `name` is a prototype there, whose value `new` and its methods need; when it
+ * is an alias of a prototype there, or of one it imports by name, that prototype's module; else
+ * -1, as for an enum, a record or an alias of either, whose module need not run.
+ * @param modules  every module of the program */
 let _prototypeHome = fn(modules: Array<Module>, module: I32, name: Bytes): I32 {
   let { statements, imports } = modules[module];
   let prototypes = prototypeNames(statements);
@@ -164,6 +212,9 @@ let _prototypeHome = fn(modules: Array<Module>, module: I32, name: Bytes): I32 {
   -1
 };
 
+/** Rejects a statement of the extension module of the type named `owner` that exports a name
+ * one of the type's intrinsics has, since the intrinsic would always win.
+ * @throws a located error naming the intrinsic */
 let _checkExtension = fn(statement: Stmt, owner: Bytes) {
   let name = _exportedName(statement);
 
@@ -176,12 +227,28 @@ let _checkExtension = fn(statement: Stmt, owner: Bytes) {
   null
 };
 
+/** Checks one module in its own scope. Its imports are added, each located at its import
+ * statement, and its types declared. A module that only type-only imports of types other than
+ * prototypes reach does not run, so only its imports and types are declared. A module
+ * that runs then has its direct functions and templates declared and every top-level statement
+ * checked in order; natives from `load` and annotated lets of them, templates, direct functions,
+ * globals (whose initialisers join the program body), effects and loops, with its regexp
+ * initialisers placed in the program body (see `_initializers`).
+ * @param modules  every module of the program
+ * @param index  the module's index
+ * @param runs  whether the module runs; one that does not declares only its imports and types
+ * @param opened  whether some running module imports this one privately, so its private names
+ *   are recorded for such imports
+ * @return the checked tail, or -1 when the module has none or does not run
+ * @throws a located error for any type error in the module, an unsupported top-level statement,
+ *   or a test or hook with the wrong signature */
 let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bool): I32 {
   let { name: dotted, statements, syntax, tail, imports } = modules[index];
   let outer = enterSyntax(syntax);
   enterModule(index, imports, modules);
 
   for (clause in imports) {
+    // Each import is added at its statement, which locates a failure.
     let at = match (clause) {
       Import(_, _, _, _, _, statement), Namespace(_, _, _, statement) => statement,
     };
@@ -202,6 +269,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
   }
 
   if (index == _testing) { declareAssertions(index); }
+  // The `Test` type a test file's tests take.
   let test = isTestModule(dotted) && (_testing >= 0) ? exportedType(_testing, "Test") : -1;
   let first = _initializers.len();
   let functionIndex = declareFunctions(statements);
@@ -271,6 +339,10 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
             throw coded(E0605, "globals do not support type parameters");
           }
 
+          /* An annotated global is in scope in its own initialiser, so a function there can
+           * call itself through it; reading it before it is initialised is still an error,
+           * reported by `_checkInitOrder`. An unannotated global is declared after its
+           * initialiser. */
           let global = annotation == null ? -1 : annotatedGlobal(i);
           let declared = global < 0 ? -1 : globalTypeOf(global);
           let (checked, suspect) = checkGlobalInitializer(value, declared, name);
@@ -313,6 +385,7 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
           _initializers.push(checkThrow(value));
           null
         },
+        // Typedefs exports a prototype's name, which names its type and its value.
         Prototype(_, name, _, fields) => {
           _initializers.push(checkPrototype(name, fields));
           null
@@ -345,6 +418,9 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
   checkedTail
 };
 
+/** Rejects a program-body statement that may read a global before the global is initialised,
+ * directly or through any chain of calls (see `frontend.semantics.InitOrder`).
+ * @throws a located error at the first such statement, naming the global */
 let _checkInitOrder = fn() {
   let (binding, global) = firstUninitializedRead();
 
@@ -355,6 +431,10 @@ let _checkInitOrder = fn() {
   null
 };
 
+/** Ends a check that recorded failures; records the open literals that are out of range too,
+ * and throws the first failure in source order. Every failure stays recorded for the driver.
+ * @param modules  the program's modules
+ * @throws the first failure, located */
 let _failChecked = fn(modules: Array<Module>) {
   checkLiteralRanges();
   let (span, message) = sortFailures(modules.map(modulePath));
@@ -362,6 +442,12 @@ let _failChecked = fn(modules: Array<Module>) {
   throw message;
 };
 
+/** Marks which modules run and which are opened, from the imports of the modules that run.
+ * Modules come dependencies first, so walking from the entry backwards reaches every importer
+ * of a module before the module itself.
+ * @param modules  every module of the program
+ * @param runs  whether each module runs; the entry and loaded extension modules already do
+ * @param opened  whether some running module imports each one privately; set here */
 let _markRunning = fn(modules: Array<Module>, runs: Array<Bool>, opened: Array<Bool>) {
   let i = modules.len() - 1;
 
@@ -390,6 +476,9 @@ let _markRunning = fn(modules: Array<Module>, runs: Array<Bool>, opened: Array<B
   null
 };
 
+/** The entry module's result `tail` as the program gives it: a tuple, record, enum, array, list,
+ * atom or Object as the text `Std.string` shows, since the VM keeps no type to show one by, and
+ * anything else, or a value that cannot print, as it is. */
 let _result = fn(tail: I32): I32 {
   let ty = typeOf(tail);
 
@@ -400,6 +489,19 @@ let _result = fn(tail: I32): I32 {
   shown ? printed(tail, "the program's result", -1) : tail
 };
 
+/** Checks a program's modules and builds its HIR. Decides which modules run (the entry, the
+ * extension modules the loader loaded first, any module a running module imports other than
+ * type-only, and the module of a prototype a type-only import names, through an alias: see
+ * `_prototypeHome`) and which are opened (imported privately by a running module), notes the
+ * extension modules that run (`Aggregates.useExtension`), checks each module in order,
+ * instantiates the generic functions that calls need, and appends the entry's tail to the
+ * program body. Finally checks initialisation order and verifies the HIR.
+ * @param modules  the modules from `Loader.loadModules` or `Loader.loadTests`, dependencies
+ *   first, the entry last
+ * @return the program's HIR
+ * @throws a located error for the first type error in source order, every one of which
+ *   `frontend.semantics.Failures` records, or if a global may be read before it is
+ *   initialised */
 export let typeCheckModules = fn(modules: Array<Module>): Hir {
   beginCheck();
   resetExports();
@@ -425,6 +527,7 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
   let runs = Array.new<Bool>(modules.len());
   runs[entry] = true;
   let opened = Array.new<Bool>(modules.len());
+  // An extension module the loader loaded for method calls runs, so that they reach its exports.
   let extensions = loadedExtensions();
 
   for (extension in extensions) {
@@ -442,6 +545,8 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
     }
   }
 
+  /* A module that failed is the last checked, since modules after it may use what it would
+   * export. */
   let tail = -1;
   let i = 0;
 
@@ -456,11 +561,13 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
         enterSyntax(modules[entry].syntax);
         tail = _result(tail);
       }
+      // Instances of generic prototypes and functions may each use more of the other.
       instantiateTemplates();
       while (instantiatePrototypes()) { instantiateTemplates(); }
       _initializers = withInstances(_initializers);
       _initializeFirst(0, takeRegexpInits());
       enterSyntax(modules[entry].syntax);
+      // A program without a tail expression has a null result.
       if (tail < 0) { tail = opNode(Op.Null, TYPE_NULL, []); }
     }
   } catch (e) {
@@ -476,12 +583,20 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
   hir
 };
 
+/** Checks loaded modules; when a method call needed the extension module of a type that the
+ * standard library has and the load lacks, adds it to the load and checks the program again.
+ * @param modules  the loaded modules
+ * @param types  the types whose extension modules are loaded; extended in place
+ * @return the program's HIR
+ * @throws as `typeCheckModules` does, or if an extension module fails to load */
 let _checkWith = fn(modules: Array<Module>, types: Array<Bytes>): Hir {
+  // Failures recorded before are not this program's.
   resetFailures();
 
   try {
     typeCheckModules(modules)
   } catch (e) {
+    // A compiler bug is reported as it is.
     if (internalRaised()) { throw e; }
     let wanted = wantedExtensions().filter(fn(name) {
       (types.indexOf(name) < 0) && hasExtension(name)
@@ -492,11 +607,21 @@ let _checkWith = fn(modules: Array<Module>, types: Array<Bytes>): Hir {
   }
 };
 
+/** Checks a program with the extension modules its method calls need. Those whose exports it
+ * calls by name load up front, so that it is usually checked once; one that a call needed all
+ * the same is added and the program checked again (`_checkWith`).
+ * @param modules  the program, as `frontend.Loader` last loaded it
+ * @return the program's HIR */
 export let checkProgram = fn(modules: Array<Module>): Hir {
   let types = extensionsWanted(extensibleTypes(), isIntrinsicMethod);
   _checkWith(types.len() == 0 ? modules : addExtensions(types), types)
 };
 
+/** Checks a single-module program whose syntax tree is already built.
+ * @param program  the parsed program
+ * @param syntax  its syntax tree; its path names the program's file
+ * @return the program's HIR
+ * @throws as `typeCheckModules` does */
 export let typeCheckProgramWithSyntax = fn(program: AstProgram, syntax: Syntax): Hir {
   let { statements, tail } = program;
   let module: Module = {
@@ -510,6 +635,11 @@ export let typeCheckProgramWithSyntax = fn(program: AstProgram, syntax: Syntax):
   typeCheckModules([module])
 };
 
+/** Checks a single-module program, which must be the program the parser produced last, since
+ * its syntax tree is taken from the parser.
+ * @param program  the parsed program
+ * @return the program's HIR
+ * @throws as `typeCheckProgramWithSyntax` does */
 export let typeCheckProgram = fn(program: AstProgram): Hir {
   typeCheckProgramWithSyntax(program, programSyntax(program))
 };

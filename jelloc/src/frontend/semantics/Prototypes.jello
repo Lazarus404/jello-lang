@@ -1,5 +1,20 @@
 package frontend.semantics;
 
+/** @file
+ * Checks prototypes into HIR; `prototype P { fields }`, `new P(args)` and `super.m(args)`. A
+ * prototype is a constant Object, the global P, and its values are Objects of type P that delegate
+ * to it through `__proto__`. A field is an Object's field, read as a Dynamic; a method,
+ * `m(params) { ... }`, is a function whose first parameter is its `this`, of type P, so a call
+ * `o.m(args)` of a value of type P is checked against it, and reads the method from `o`, which may
+ * hold its own; `o.m` alone reads it as that function. A prototype whose `__proto__` names another
+ * prototype Q delegates to it; its values are of type Q too, and find Q's methods. `new P(args)`
+ * makes an Object that delegates to P and calls its `init` method with the arguments. A generic
+ * prototype, `prototype P<T> { fields }`, is checked once with its type parameters, and each
+ * instance the program uses, `P<A>`, is a prototype of its own, whose methods are checked with
+ * its type arguments; `new P(args)` infers them as a generic call does.
+ * `frontend.semantics.TypeCheck` declares each module's prototypes, and
+ * `frontend.semantics.Aggregates` passes `new` and `super` here. */
+
 import type { Expr as AstExpr, PrototypeField, Type as AstType } from frontend.syntax.Ast;
 import { Expr as AstExpr } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
@@ -17,6 +32,16 @@ import {
   syntaxChild, widened,
 } from frontend.semantics.TypeCheck;
 
+/** Checks a call of method `index`, named `name`, which `holder` finds, with `receiver` as its
+ * `this`; `holder` is the receiver itself for `o.m(args)`, or the prototype's `__proto__` for
+ * `super.m(args)`. The method is read from `holder` as its own type, which the VM checks, so an
+ * Object that holds a function of that name in its place calls that.
+ * @param holder  the checked Object the method is read from, or -1 for `receiver`
+ * @param receiver  the checked value of a prototype type
+ * @param origin  the prototype type the method is found from
+ * @param exact  whether `receiver` is of type `origin` exactly (`noteMethodCall`)
+ * @param args  the arguments, syntax children from 1 on
+ * @return the block that binds the values and calls the method */
 let _methodCall = fn(
   holder: I32,
   receiver: I32,
@@ -35,17 +60,26 @@ let _methodCall = fn(
   let first = H.local(held, H.typeOf(receiver));
   if (H.typeOf(receiver) != self) { first = H.opNode(Op.Convert, self, [first]); }
   let call = checkMethodCall(callee, index, first, args);
+  // Spread arguments are bound first, in a block that ends with the call.
   let site = H.opOf(call) == Op.Block ? H.lastChild(call) : call;
   noteMethodCall(site, origin, name, exact);
   statements.push(call);
   H.node(Op.Block, H.typeOf(call), 0, 1, statements)
 };
 
+/** Checks `o.name(args)` for `receiver`, a checked value of a prototype type, when it finds a
+ * method of that name (`findMethod`).
+ * @return the checked call, or -1 when it finds none */
 export let checkPrototypeCall = fn(receiver: I32, name: Bytes, args: Array<AstExpr>): I32 {
   let found = findMethod(H.typeOf(receiver), name);
   found < 0 ? -1 : _methodCall(-1, receiver, found, H.typeOf(receiver), false, name, args)
 };
 
+/** Checks `super.name(args)`, the call's syntax current with `super` the first child of its
+ * callee's; the method `name` of the Object that the prototype of the method being checked
+ * delegates to, with its `this`. A prototype that `__proto__` names gives the method's type, and
+ * any other Object's function is called as `callObjectField` calls one.
+ * @throws a located error outside a prototype's method, or for a prototype without `__proto__` */
 export let checkSuperCall = fn(name: Bytes, types: Array<AstType>, args: Array<AstExpr>): I32 {
   let outer = enterSyntax(syntaxChild(0));
   let ty = requireThis("`super`");
@@ -67,12 +101,18 @@ export let checkSuperCall = fn(name: Bytes, types: Array<AstType>, args: Array<A
   }
 };
 
+/** Returns the write of the method `name`, `value`, on `object`, the prototype of type `ty`; a
+ * sealed one's (`sealedPrototype`) seals it, so that calls of it can be direct. */
 let _writeMethod = fn(object: I32, ty: I32, name: Bytes, value: I32): I32 {
   if (!sealedPrototype(ty)) { return writeField(object, name, value); }
   let args = [toDynamic(object), toDynamic(namedKey(name)), toDynamic(value)];
   H.callStd("object_seal", [H.TYPE_DYNAMIC, H.TYPE_DYNAMIC, H.TYPE_DYNAMIC], H.TYPE_BOOL, args)
 };
 
+/** Returns the `Declare` of the global of the prototype type `ty`, `prototype name { fields }`,
+ * at its syntax; each field's value is its child. Its fields and methods are set, in order, on a
+ * new Object, which initialises the global.
+ * @throws a located error if a field is declared twice */
 let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): I32 {
   let statements = Array.new<I32>(0);
   let object = hideValue(statements, "prototype", H.opNode(Op.ObjectNew, ty, []));
@@ -96,6 +136,7 @@ let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): 
         _writeMethod(H.local(object, ty), ty, field, methodValue(ty, field, f, body))
       },
       _ => {
+        // A linked typedef declares the prototype's fields, and their types.
         let outer = enterSyntax(syntaxChild(f));
         let declared = prototypeField(ty, field);
         enterSyntax(outer);
@@ -120,6 +161,11 @@ let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): 
   H.opNode(Op.Declare, 0, [H.node(Op.InitGlobal, ty, global, 0, [body])])
 };
 
+/** Checks `prototype name { fields }` of the current module, at its syntax. A generic one is
+ * checked as a template's body, and each instance the program uses has a global of its own
+ * (`instantiatePrototypes`).
+ * @return the `Declare` of the global, or the node where a generic one's instances' are
+ * @throws a located error if a field is declared twice, or the prototype delegates to itself */
 export let checkPrototype = fn(name: Bytes, fields: Array<PrototypeField>): I32 {
   let ty = scopedType(name);
   if (delegates(ty, ty)) { throw coded(E0805, `${name} delegates to itself through __proto__`); }
@@ -131,12 +177,25 @@ export let checkPrototype = fn(name: Bytes, fields: Array<PrototypeField>): I32 
   }
 };
 
+/** Checks the instances of generic prototypes that the program uses, after every module is
+ * checked, each once; the global of each is initialised where its prototype is declared
+ * (`withInstances`). Their methods may use more instances, and generic functions, so the caller
+ * repeats it, with `instantiateTemplates`, until there are none.
+ * @return whether there were any
+ * @throws a located error if an instance's type arguments cannot be inferred */
 export let instantiatePrototypes = fn(): Bool {
   let resolved = resolveInstanceReads();
   buildInstances(_prototypeObject) || resolved
 };
 
+/** Checks `new proto(args)`, the current syntax being its own, with `proto` its first child; an
+ * Object that delegates to `proto`, after the `init` method that `proto`'s prototype type finds
+ * runs with the arguments. Its type is that prototype type, or Object for an Object.
+ * @throws a located error if `proto` is no Object, or there are arguments and no `init` */
 let _checkNew = fn(proto: AstExpr, args: Array<AstExpr>): I32 {
+  /* A prototype named as a type is made from its type, even where its value is not in scope, as
+   * when its module is imported for its types; a generic one named without type arguments has them
+   * inferred, as a generic call's are. */
   let template = prototypeNamed(proto);
   let inferred = H.isTemplateEnum(template);
   let vars = Array.new<I32>(0);
@@ -157,6 +216,7 @@ let _checkNew = fn(proto: AstExpr, args: Array<AstExpr>): I32 {
   let init = H.isPrototype(ty) ? findMethod(ty, "init") : -1;
 
   if (init >= 0) {
+    // Only a named prototype is known to be the one the Object delegates to.
     let call = _methodCall(-1, H.local(object, made), init, ty, named >= 0, "init", args);
     statements.push(expressionOf(call));
   } else if (args.len() != 0) {
@@ -172,6 +232,7 @@ let _checkNew = fn(proto: AstExpr, args: Array<AstExpr>): I32 {
   H.node(Op.Block, made, 0, 1, statements)
 };
 
+// Checks `new P(args)`, or rejects a bare `super`, with the expression's syntax current.
 export let checkPrototypeExpr = fn(expr: AstExpr): I32 {
   match (expr) {
     New(proto, args) => _checkNew(proto, args),

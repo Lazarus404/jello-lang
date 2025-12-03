@@ -1,19 +1,37 @@
 package format;
 
+/** @file
+ * The layout rules of `jelloc fmt`. `formatSource` lexes a file, splits it into lines of pieces
+ * (`format.Trivia`), and then lays the lines out again: comments at the end of a line move above
+ * it, statements sharing a line get a line each, an opening brace on a line of its own joins the
+ * line before, each line is indented by the brackets left open above it, blank lines are
+ * collapsed and added above blocks and functions, a comment alone on one line becomes a line
+ * comment, and runs of line comments become block comments, wrapped to the line width. Newlines
+ * are only whitespace to the lexer, so none of this changes what a program means; the result is
+ * lexed again and must give the same tokens, or it is not used. */
+
 import { Token, lexFile } from frontend.syntax.Lexer;
 import type { Line, Piece } from format.Trivia;
 import { PieceKind, codePiece, commentPiece, sourceLines } from format.Trivia;
 import { indexOf, split } from std.core.Bytes;
 
+// How files are laid out; the settings of a `.formatter` file.
 export typedef Style = {
+  // The spaces of one level of indentation.
   let indent: I32;
+  // The code points a comment-only line may take, its indentation included.
   let lineWidth: I32;
+  // Whether comments are removed.
   let stripComments: Bool;
+  // Whether doc comments, which open with slash-star-star, survive `stripComments`.
   let keepDocComments: Bool;
+  // Whether comments are rearranged; without it, each comment's text is kept as it is.
   let rewriteComments: Bool;
+  // Whether a block or function on one line also gets a blank line above it.
   let blankBeforeOneLineBlocks: Bool;
 };
 
+// Returns the style used where a `.formatter` file says nothing.
 export let defaultStyle = fn(): Style {
   {
     indent: 2,
@@ -25,6 +43,7 @@ export let defaultStyle = fn(): Style {
   }
 };
 
+// Checks whether `piece` is code, not a comment.
 let _isCode = fn(piece: Piece): Bool {
   match (piece.kind) {
     Code => true,
@@ -32,6 +51,7 @@ let _isCode = fn(piece: Piece): Bool {
   }
 };
 
+// Checks whether `piece` is code that opens a bracket.
 let _opens = fn(piece: Piece): Bool {
   _isCode(piece) && match (piece.token) {
     LBrace, LParen, LBracket => true,
@@ -39,6 +59,7 @@ let _opens = fn(piece: Piece): Bool {
   }
 };
 
+// Checks whether `piece` is code that closes a bracket.
 let _closes = fn(piece: Piece): Bool {
   _isCode(piece) && match (piece.token) {
     RBrace, RParen, RBracket => true,
@@ -46,25 +67,30 @@ let _closes = fn(piece: Piece): Bool {
   }
 };
 
+// Checks whether `piece` is the code `token`.
 let _is = fn(piece: Piece, token: Token): Bool { _isCode(piece) && (piece.token == token) };
 
+// Returns the index of the first code piece of `line`, or -1 when it holds only comments.
 let _firstCode = fn(line: Line): I32 {
   let k = 0;
   while ((k < line.pieces.len()) && !_isCode(line.pieces[k])) { k++; }
   k < line.pieces.len() ? k : -1
 };
 
+// Returns the index of the last code piece of `line`, or -1 when it holds only comments.
 let _lastCode = fn(line: Line): I32 {
   let k = line.pieces.len() - 1;
   while ((k >= 0) && !_isCode(line.pieces[k])) { k--; }
   k
 };
 
+// Checks whether `line` ends with code that opens a bracket.
 let _endsOpen = fn(line: Line): Bool {
   let last = line.pieces.len() - 1;
   _opens(line.pieces[last])
 };
 
+// Returns the pieces of `pieces` from `start` up to `to`.
 let _range = fn(pieces: Array<Piece>, start: I32, to: I32): Array<Piece> {
   let out = Array.new<Piece>(0);
   let k = start;
@@ -76,6 +102,7 @@ let _range = fn(pieces: Array<Piece>, start: I32, to: I32): Array<Piece> {
   out
 };
 
+// Checks whether `piece` is a doc comment, one that opens with slash-star-star.
 let _isDoc = fn(piece: Piece): Bool {
   match (piece.kind) {
     BlockComment => piece.text.startsWith("/**") && (piece.text != "/**/"),
@@ -83,6 +110,10 @@ let _isDoc = fn(piece: Piece): Bool {
   }
 };
 
+/** Returns each line of `lines` that holds only a block comment on one line, slash-star or
+ * slash-star-star, as the line comment of its text, so that a comment of one line is always a
+ * line comment; but a doc comment when `keepDoc` says, since stripping comments would then remove
+ * it. */
 let _lineCommentsOfBlocks = fn(lines: Array<Line>, keepDoc: Bool): Array<Line> {
   lines.map(fn(line: Line): Line {
     if ((line.pieces.len() != 1) || (keepDoc && _isDoc(line.pieces[0]))) { return line; }
@@ -101,6 +132,8 @@ let _lineCommentsOfBlocks = fn(lines: Array<Line>, keepDoc: Bool): Array<Line> {
   })
 };
 
+/** Removes the comments of `lines`, but doc comments when `keepDoc` says, and the lines that
+ * held only comments; their blank lines go to the line below. */
 let _stripComments = fn(lines: Array<Line>, keepDoc: Bool): Array<Line> {
   let out = Array.new<Line>(0);
   let carried = 0;
@@ -120,6 +153,8 @@ let _stripComments = fn(lines: Array<Line>, keepDoc: Bool): Array<Line> {
   out
 };
 
+/** Moves the comments that end a line of code to a line of their own above it; or, when the
+ * line ends by opening a bracket, to the first line inside. */
 let _moveTrailingComments = fn(lines: Array<Line>): Array<Line> {
   let out = Array.new<Line>(0);
 
@@ -144,6 +179,7 @@ let _moveTrailingComments = fn(lines: Array<Line>): Array<Line> {
   out
 };
 
+// Checks whether a statement that starts with `token` ends at its closing brace, with no `;`.
 let _blockStatement = fn(token: Token): Bool {
   match (token) {
     If, Match, While, For, Try, With, LBrace => true,
@@ -151,6 +187,7 @@ let _blockStatement = fn(token: Token): Bool {
   }
 };
 
+// Checks whether `token` can start a statement that follows a block statement on its line.
 let _statementStart = fn(token: Token): Bool {
   match (token) {
     Let, Const, If, Match, While, For, Try, With, Do, Return, Throw, Break, Continue, Ident(_),
@@ -159,6 +196,11 @@ let _statementStart = fn(token: Token): Bool {
   }
 };
 
+/** Returns where each statement after the first starts among `pieces` from `start` up to `to`,
+ * which hold statements one after another; after a `;`, or after the closing brace of an `if`,
+ * `match`, `while`, `for`, `try` or `with` that something other than `else` or `catch` follows.
+ * A statement that only comments or closing brackets follow is the last, and brackets closed
+ * from lines above are not counted. */
 let _statementBreaks = fn(pieces: Array<Piece>, start: I32, to: I32): Array<I32> {
   let found = Array.new<I32>(0);
 
@@ -194,6 +236,8 @@ let _statementBreaks = fn(pieces: Array<Piece>, start: I32, to: I32): Array<I32>
   found
 };
 
+/** Checks whether the brace at `at` among `pieces` opens an enum's variants, which are not
+ * statements. */
 let _enumBody = fn(pieces: Array<Piece>, at: I32): Bool {
   let k = at - 1;
 
@@ -212,6 +256,10 @@ let _enumBody = fn(pieces: Array<Piece>, at: I32): Bool {
   false
 };
 
+/** Splits the line `line` so that each statement starts a line. A block on the line that holds
+ * more than one statement is opened up, its statements on lines of their own between its braces;
+ * a block of one statement stays as it is.
+ * @param inEnum  whether the line is among an enum's variants, which are not statements */
 let _splitLine = fn(line: Line, inEnum: Bool): Array<Line> {
   let pieces = line.pieces;
   let breaks = Array.new<Bool>(pieces.len() + 1);
@@ -220,6 +268,7 @@ let _splitLine = fn(line: Line, inEnum: Bool): Array<Line> {
     for (at in _statementBreaks(pieces, 0, pieces.len())) { breaks[at] = true; }
   }
 
+  // Each bracket's partner on the line, or -1, and each brace's innermost enclosing brace, or -1.
   let partner = Array.new<I32>(pieces.len());
   let enclosing = Array.new<I32>(pieces.len());
   let open = Array.new<I32>(0);
@@ -240,12 +289,15 @@ let _splitLine = fn(line: Line, inEnum: Bool): Array<Line> {
         partner[opener] = k;
         if (_is(pieces[opener], Token.LBrace)) { braces.pop(); }
       } else if ((k > 0) && _is(piece, Token.RBrace) && _is(pieces[k - 1], Token.Semicolon)) {
+        // A brace closing a block from a line above goes on a line of its own.
         breaks[k] = true;
       }
     }
     k++;
   }
 
+  /* A block is opened up when it holds statements after its first, or a block opened up; inner
+   * braces come later on the line, so they are decided first. */
   let expanded = Array.new<Bool>(pieces.len());
   k = pieces.len() - 1;
 
@@ -278,8 +330,10 @@ let _splitLine = fn(line: Line, inEnum: Bool): Array<Line> {
   out
 };
 
+// Splits each of `lines` so that each statement starts a line (`_splitLine`).
 let _splitLines = fn(lines: Array<Line>): Array<Line> {
   let out = Array.new<Line>(0);
+  // Whether each bracket open above is an enum's brace.
   let enums = Array.new<Bool>(0);
 
   for (line in lines) {
@@ -300,6 +354,9 @@ let _splitLines = fn(lines: Array<Line>): Array<Line> {
   out
 };
 
+/** Joins each line that starts with an opening brace to the line above, as `if (c) {`, unless
+ * that line ends a statement or an item, opens a bracket itself, or ends with a comment; and each
+ * line that starts with `else` or `catch` to a closing brace above it, as `} else {`. */
 let _joinBraces = fn(lines: Array<Line>): Array<Line> {
   let out = Array.new<Line>(0);
 
@@ -331,12 +388,15 @@ let _joinBraces = fn(lines: Array<Line>): Array<Line> {
   out
 };
 
+/** The layout of each line: its indentation, in levels, whether it continues the statement above,
+ * whether it starts a statement in a block, and whether it leaves brackets open. */
 typedef Layout = {
   let indents: Array<I32>;
   let statements: Array<Bool>;
   let opening: Array<Bool>;
 };
 
+// Checks whether a line after one whose last code is `last` continues its statement or item.
 let _continues = fn(last: ?Token): Bool {
   if (last == null) { return false; }
 
@@ -346,10 +406,15 @@ let _continues = fn(last: ?Token): Bool {
   }
 };
 
+/** Indents `lines`. A line is one level in from the line that opened the innermost bracket still
+ * open above it, however many that line opened, and one level more when it continues a statement
+ * in a block. A line that starts by closing brackets is level with the
+ * line that opened the outermost of them, and so is a bracket opened after one is closed. */
 let _layout = fn(lines: Array<Line>): Layout {
   let indents = Array.new<I32>(lines.len());
   let statements = Array.new<Bool>(lines.len());
   let opening = Array.new<Bool>(lines.len());
+  // The open brackets, innermost last; each one's indentation and whether it is a brace.
   let openIndents = Array.new<I32>(0);
   let openBraces = Array.new<Bool>(0);
   let last: ?Token = null;
@@ -380,6 +445,8 @@ let _layout = fn(lines: Array<Line>): Layout {
     indents[i] = indent;
     statements[i] = (first >= 0) && (k == first) && inBlock && !continued;
 
+    /* Brackets opened after closing one from a line above are level with that line's, and a brace
+     * opened on a line that continues a statement is level with the statement's first line. */
     let base = indent;
     let braceBase = (continued && inBlock) ? indent - 1 : indent;
     let opened = 0;
@@ -411,6 +478,9 @@ let _layout = fn(lines: Array<Line>): Layout {
   { indents: indents, statements: statements, opening: opening }
 };
 
+/** Checks whether `line` starts a block or a function: an `if`, `match`, `while`, `for`, `do`,
+ * `try`, `with`, `prototype`, `enum`, `typedef` or `macro`, or a `let` or `const` bound to a
+ * function or to an `if`, `match`, `try` or `with`. */
 let _blockStart = fn(line: Line): Bool {
   let k = _firstCode(line);
   if (_is(line.pieces[k], Token.Export)) { k++; }
@@ -439,6 +509,9 @@ let _blockStart = fn(line: Line): Bool {
   }
 };
 
+/** Sets the blank lines above each line: at most one, none at the start, after an opening bracket
+ * or before a closing one, and one above a block or function that starts a statement, or above
+ * the comments directly on top of it. */
 let _spaceLines = fn(lines: Array<Line>, layout: Layout, style: Style) {
   let i = 0;
 
@@ -462,6 +535,7 @@ let _spaceLines = fn(lines: Array<Line>, layout: Layout, style: Style) {
   }
 };
 
+// Returns the number of code points in `text`.
 let _width = fn(text: Bytes): I32 {
   let count = 0;
   let k = 0;
@@ -473,6 +547,7 @@ let _width = fn(text: Bytes): I32 {
   count
 };
 
+// Returns `count` spaces.
 let _spaces = fn(count: I32): Bytes {
   let parts = Array.new<Bytes>(0);
   let k = 0;
@@ -484,8 +559,10 @@ let _spaces = fn(count: I32): Bytes {
   parts.join("")
 };
 
+// Returns the bytes of `text` from `start` to its end.
 let _from = fn(text: Bytes, start: I32): Bytes { Bytes.slice(text, start, text.len() - start) };
 
+// Returns `text` without its leading spaces and tabs.
 let _trimStart = fn(text: Bytes): Bytes {
   let k = 0;
 
@@ -496,6 +573,7 @@ let _trimStart = fn(text: Bytes): Bytes {
   _from(text, k)
 };
 
+// Returns `text` without its trailing whitespace.
 let _trimEnd = fn(text: Bytes): Bytes {
   let k = text.len();
 
@@ -506,11 +584,14 @@ let _trimEnd = fn(text: Bytes): Bytes {
   Bytes.slice(text, 0, k)
 };
 
+/** Wraps the comment text `text` at spaces into lines of at most `width` code points; a word
+ * longer than that keeps a line of its own. */
 let _wrap = fn(text: Bytes, width: I32): Array<Bytes> {
   let out = Array.new<Bytes>(0);
   let rest = text;
 
   while (_width(rest) > width) {
+    // The last space that leaves the line within the width, or else the first space.
     let cut = -1;
     let k = 0;
 
@@ -530,6 +611,11 @@ let _wrap = fn(text: Bytes, width: I32): Array<Bytes> {
   out
 };
 
+/** Returns the lines of a block comment that opens with `marker`, slash-star or slash-star-star,
+ * holding `content`, at `indent` spaces, with each line after the first starting ` * `, wrapped to
+ * `width` code points. Text in a code fence, or indented, is not wrapped.
+ * @param openOwn  whether the marker has a line of its own
+ * @param closeOwn  whether the closing star-slash has a line of its own */
 let _blockLines = fn(
   marker: Bytes,
   content: Array<Bytes>,
@@ -580,6 +666,8 @@ let _blockLines = fn(
   out
 };
 
+/** Lays out the block comment `text` at `indent` spaces, its lines after the first starting
+ * ` * `, wrapped to `width`; an empty comment stays as it is. */
 let _blockComment = fn(text: Bytes, indent: I32, width: I32): Array<Bytes> {
   let doc = text.startsWith("/**") && (text.len() > 4);
   let marker = doc ? "/**" : "/*";
@@ -611,11 +699,15 @@ let _blockComment = fn(text: Bytes, indent: I32, width: I32): Array<Bytes> {
   _blockLines(marker, content, openOwn, closeOwn, indent, width)
 };
 
+// Returns the text of the line comment `text` after its marker and one space.
 let _lineCommentText = fn(text: Bytes): Bytes {
   let body = _from(text, text.startsWith("#") ? 1 : 2);
   body.startsWith(" ") ? _from(body, 1) : body
 };
 
+/** Lays out a run of line comments, one comment per line, at `indent` spaces. A run of more than
+ * one line, or a line wider than `width` that must wrap, becomes a block comment, unless its text
+ * holds a star-slash, which would end the block early. */
 let _lineComments = fn(texts: Array<Bytes>, indent: I32, width: I32): Array<Bytes> {
   let pad = _spaces(indent);
   let content = texts.map(_lineCommentText);
@@ -640,6 +732,7 @@ let _lineComments = fn(texts: Array<Bytes>, indent: I32, width: I32): Array<Byte
   _blockLines("/*", content, false, false, indent, width)
 };
 
+// Returns the text of `line`, indented by `indent` spaces, its pieces spaced as in the source.
 let _plainLine = fn(line: Line, indent: I32): Bytes {
   let parts = [_spaces(indent), line.pieces[0].text];
   let k = 1;
@@ -652,10 +745,12 @@ let _plainLine = fn(line: Line, indent: I32): Bytes {
   parts.join("")
 };
 
+// Checks whether `line` is a single comment of kind `kind`.
 let _lone = fn(line: Line, kind: PieceKind): Bool {
   (line.pieces.len() == 1) && (line.pieces[0].kind == kind)
 };
 
+// Writes out `lines` with their layout, as text ending in a newline.
 let _render = fn(lines: Array<Line>, layout: Layout, style: Style): Bytes {
   let out = Array.new<Bytes>(0);
   let i = 0;
@@ -686,6 +781,7 @@ let _render = fn(lines: Array<Line>, layout: Layout, style: Style): Bytes {
   out.len() == 0 ? "" : out.join("\n") + "\n"
 };
 
+// Checks whether `a` and `b` are the same tokens.
 let _sameTokens = fn(a: Array<Token>, b: Array<Token>): Bool {
   if (a.len() != b.len()) { return false; }
   let k = 0;
@@ -693,6 +789,10 @@ let _sameTokens = fn(a: Array<Token>, b: Array<Token>): Bool {
   k == a.len()
 };
 
+/** Lays out the source `src` of the file at `path` in `style`.
+ * @return the laid-out text, or null when it would not lex to the same tokens, which is a bug
+ *         in the formatter
+ * @throws the diagnostic of a lexical error in `src` */
 export let formatSource = fn(src: Bytes, path: Bytes, style: Style): ?Bytes {
   let (tokens, _, starts, ends) = lexFile(src, path);
   let lines = sourceLines(src, tokens, starts, ends);

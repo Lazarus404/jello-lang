@@ -1,5 +1,14 @@
 package format;
 
+/** @file
+ * The `.formatter` file that `jelloc fmt` reads, in the nearest directory at or above where it
+ * runs that holds one. It is a JSON object: `inputs` names the files and directories to format,
+ * `exclude` those to leave alone, and `extensions` the endings of the files a directory gives
+ * (`[".jello"]` by default), each path relative to the file's own directory. The other keys set
+ * the `Style`, and `overrides`, an array of objects, sets it again for the files under each one's
+ * `paths`, the last that applies winning. Keys it does not know are ignored, and a bad value is an
+ * error located in the file. */
+
 import { Json, jsonAt, jsonField, parseJson } from support.Json;
 import { sourceDiagnostic } from frontend.syntax.Source;
 import { E0215, coded } from support.Codes;
@@ -12,21 +21,30 @@ load { file_real_path } from std;
 
 let _realPath: (Bytes) -> Bytes = file_real_path;
 
+// The name of the file.
 const _NAME = ".formatter";
 
+// The settings of the files under `paths`, real paths, as a `.formatter` object holds them.
 typedef Override = {
   let paths: Array<Bytes>;
   let settings: Json;
 };
 
+// What a `.formatter` file says.
 export typedef Formatter = {
+  // The paths to format, relative to where `jelloc` runs.
   let inputs: Array<Bytes>;
+  // The real paths of the files and directories to leave alone.
   let exclude: Array<Bytes>;
+  // The endings of the files to format under a directory.
   let extensions: Array<Bytes>;
+  // The style of the files no override applies to.
   let style: Style;
   let overrides: Array<Override>;
 };
 
+/** Returns the nearest directory at or above `start` that holds a `.formatter`, or "" when none
+ * does. */
 export let findFormatter = fn(start: Bytes): Bytes {
   let dir = start;
 
@@ -38,13 +56,16 @@ export let findFormatter = fn(start: Bytes): Bytes {
   dir
 };
 
+// The file being read, its path and text, for located errors.
 let _path = "";
 let _text = "";
 
+// Throws `message` as a diagnostic at offset `at` of the file being read.
 let _fail = fn(at: I32, message: Bytes) {
   throw sourceDiagnostic(_path, _text, at, coded(E0215, message));
 };
 
+// Returns the boolean at `key` of `settings`, or `otherwise` when it has none.
 let _bool = fn(settings: Json, key: Bytes, otherwise: Bool): Bool {
   let found = jsonField(settings, key);
   if (found == null) { return otherwise; }
@@ -58,6 +79,8 @@ let _bool = fn(settings: Json, key: Bytes, otherwise: Bool): Bool {
   }
 };
 
+/** Returns the whole number of at least 1 at `key` of `settings`, or `otherwise` when it has
+ * none. */
 let _count = fn(settings: Json, key: Bytes, otherwise: I32): I32 {
   let found = jsonField(settings, key);
   if (found == null) { return otherwise; }
@@ -81,6 +104,7 @@ let _count = fn(settings: Json, key: Bytes, otherwise: I32): I32 {
   value
 };
 
+// Returns the strings of the array at `key` of `value`, or none when it has none.
 let _strings = fn(value: Json, key: Bytes): Array<Bytes> {
   let found = jsonField(value, key);
   if (found == null) { return Array.new<Bytes>(0); }
@@ -106,6 +130,7 @@ let _strings = fn(value: Json, key: Bytes): Array<Bytes> {
   }
 };
 
+// Returns `base` with the settings `settings` holds.
 let _style = fn(settings: Json, base: Style): Style {
   {
     indent: _count(settings, "indent", base.indent),
@@ -118,11 +143,15 @@ let _style = fn(settings: Json, base: Style): Style {
   }
 };
 
+// Returns the real paths of `paths`, relative to directory `root`, that exist.
 let _realPaths = fn(root: Bytes, paths: Array<Bytes>): Array<Bytes> {
   paths.map(fn(path: Bytes): Bytes { _realPath(inDirectory(root, path)) })
     .filter(fn(path: Bytes): Bool { path != "" })
 };
 
+/** Reads the `.formatter` in directory `root`, or gives the defaults when `root` is "".
+ * @param strip  whether comments are removed where the file and its overrides do not say
+ * @throws a located diagnostic for a file that is not JSON or holds a bad value */
 export let loadFormatter = fn(root: Bytes, strip: Bool): Formatter {
   let base = defaultStyle();
 
@@ -166,6 +195,7 @@ export let loadFormatter = fn(root: Bytes, strip: Bool): Formatter {
         Object(_, _, _) => null,
         _ => _fail(jsonAt(item), "each of \"overrides\" must be an object"),
       };
+      // Checked now, so that a bad value is reported whichever files there are.
       _style(item, style);
       overrides.push({ paths: _realPaths(root, _strings(item, "paths")), settings: item });
     }
@@ -181,18 +211,22 @@ export let loadFormatter = fn(root: Bytes, strip: Bool): Formatter {
   }
 };
 
+// Checks whether the real path `real` is `under` or a path inside it.
 let _under = fn(real: Bytes, under: Bytes): Bool {
   (real == under) || real.startsWith(under == "/" ? "/" : `${under}/`)
 };
 
+// Checks whether `paths` holds `path`.
 let _holds = fn(paths: Array<Bytes>, path: Bytes): Bool {
   paths.filter(fn(each: Bytes): Bool { each == path }).len() > 0
 };
 
+// Checks whether the real path `real` is under any of `paths`.
 let _underAny = fn(real: Bytes, paths: Array<Bytes>): Bool {
   paths.filter(fn(path: Bytes): Bool { _under(real, path) }).len() > 0
 };
 
+// Returns the style of the file at `path`.
 export let styleFor = fn(formatter: Formatter, path: Bytes): Style {
   let real = _realPath(path);
   let style = formatter.style;
@@ -203,6 +237,9 @@ export let styleFor = fn(formatter: Formatter, path: Bytes): Style {
   style
 };
 
+/** Adds the files under directory `dir` with one of the formatter's extensions to `files`, in
+ * byte order at each level, but those excluded, those already seen, by real path, and those under
+ * a directory already seen, which a link can lead back to. */
 let _walk = fn(formatter: Formatter, dir: Bytes, files: Array<Bytes>, seen: Array<Bytes>): Null {
   let realDir = _realPath(dir);
   if (_holds(seen, realDir)) { return null; }
@@ -227,6 +264,9 @@ let _walk = fn(formatter: Formatter, dir: Bytes, files: Array<Bytes>, seen: Arra
   null
 };
 
+/** Returns the files to format: each of `paths` that is a file, whatever its name, and the files
+ * under each that is a directory; or, when `paths` is empty, those of the formatter's inputs.
+ * @throws an error naming a path that does not exist */
 export let formatFiles = fn(formatter: Formatter, paths: Array<Bytes>): Array<Bytes> {
   let files = Array.new<Bytes>(0);
   let seen = Array.new<Bytes>(0);

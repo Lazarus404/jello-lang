@@ -1,13 +1,24 @@
 package frontend.syntax;
 
+/** @file
+ * Source positions and the diagnostics built from them. Defines `SourceSpan` and the syntax
+ * records the parser makes and `frontend.syntax.SyntaxTree` pairs with the AST, converts byte
+ * offsets into 1-based lines and columns, and formats a located message as the source line with
+ * a caret under the offending character. The caret is padded by display width, from the
+ * `frontend.syntax.UnicodeWidth` tables. The lexer and the driver report errors through
+ * `sourceDiagnostic`; `frontend.syntax.Locations` uses `lineStarts`, `lineOf` and `lineColumns`
+ * to locate many offsets in one file. */
+
 import { wideRanges, zeroWidthRanges } from frontend.syntax.UnicodeWidth;
 
+// A byte range `[start, end)` in the file at `path`.
 export typedef SourceSpan = {
   let path: Bytes;
   let start: I32;
   let end: I32;
 };
 
+// The kind of node a syntax record describes. `Type` marks only a `let` or `const` annotation.
 export enum SyntaxKind {
   Expression;
   Statement;
@@ -16,25 +27,46 @@ export enum SyntaxKind {
   Type;
 }
 
+/** A span the parser records for one syntax node when the node is complete, so children come
+ * before their parent, in field order. Every Expr, Stmt, Parameter and Pattern node gets one,
+ * and so does the type annotation of a `let` or `const` binding; other type annotations get
+ * none. A node the parser supplies itself, such as the null of an `if` without `else`, takes the
+ * span of the source that implies it. */
 export typedef SyntaxMark = {
   let kind: SyntaxKind;
+  // The node's `exprTag`, `stmtTag` or `patternTag`, and 0 for parameters and annotations.
   let tag: I32;
+  // The byte offset of the node's first byte.
   let start: I32;
+  // The byte offset just past its last.
   let end: I32;
 };
 
+/** The source span of an AST node, as `frontend.syntax.SyntaxTree` builds it from the parser's
+ * records. */
 export typedef Syntax = {
   let path: Bytes;
   let start: I32;
   let end: I32;
+  /** The spans of its Expr, Stmt and Parameter children, in field order; a pattern's are its
+   * sub-patterns. */
   let children: Array<Syntax>;
+  /** The spans of its patterns, each followed by the span of its `let` annotation if it has one;
+   * kept apart so that they leave child indexes alone. */
   let patterns: Array<Syntax>;
 };
 
+// Returns the span of the syntax node `syntax`.
 export let syntaxSpan = fn(syntax: Syntax): SourceSpan {
   { path: syntax.path, start: syntax.start, end: syntax.end }
 };
 
+/** Returns a copy of a syntax tree with every node placed at one span, for syntax that has no
+ * source of its own.
+ * @param syntax  the tree
+ * @param path  the file every node is placed in
+ * @param start  the byte offset every node starts at
+ * @param end  the byte offset every node ends at */
 export let relocated = fn(syntax: Syntax, path: Bytes, start: I32, end: I32): Syntax {
   let moved = fn(node: Syntax): Syntax { relocated(node, path, start, end) };
   {
@@ -46,10 +78,14 @@ export let relocated = fn(syntax: Syntax, path: Bytes, start: I32, end: I32): Sy
   }
 };
 
+/** Returns the byte of `src` at `i`.
+ * @return the byte, or -1 if `i` is out of range */
 let _byteAt = fn(src: Bytes, i: I32): I32 {
   ((i < 0) || (i >= src.len())) ? -1 : Bytes.get_u8(src, i)
 };
 
+/** Returns the length of the UTF-8 character whose first byte is `c`, or 0 when no character
+ * starts with it (or `c` is -1, past the end). */
 let _leadLength = fn(c: I32): I32 {
   if (c < 0) { return 0; }
   if (c < 128) { return 1; }
@@ -60,9 +96,15 @@ let _leadLength = fn(c: I32): I32 {
   0
 };
 
+/** Returns the length of the UTF-8 character at `i`. Rejects overlong encodings, surrogates and
+ * code points past U+10FFFF.
+ * @param src  the bytes
+ * @param i  the position of the character's first byte
+ * @return 1 to 4, or 0 if the bytes at `i` are not a valid UTF-8 character */
 export let utf8CharLength = fn(src: Bytes, i: I32): I32 {
   let c = _byteAt(src, i);
   let n = _leadLength(c);
+  // The second byte's range rules out overlong forms, surrogates and code points past U+10FFFF.
   let lo = (c == 224) ? 160 : (c == 240) ? 144 : 128;
   let hi = (c == 237) ? 159 : (c == 244) ? 143 : 191;
   let k = 1;
@@ -75,9 +117,15 @@ export let utf8CharLength = fn(src: Bytes, i: I32): I32 {
   (k == n) ? n : 0
 };
 
+/** Decodes the code point of a valid UTF-8 character.
+ * @param src  the bytes
+ * @param i  the position of the character's first byte
+ * @param n  the character's length in bytes, from `utf8CharLength`
+ * @return the code point */
 let _codepoint = fn(src: Bytes, i: I32, n: I32): I32 {
   let c = Bytes.get_u8(src, i);
 
+  // The lead byte's payload; the length marker's bits come off.
   let cp = match (n) {
     1 => c,
     2 => c - 192,
@@ -93,6 +141,12 @@ let _codepoint = fn(src: Bytes, i: I32, n: I32): I32 {
   cp
 };
 
+/** Returns one bound of a range in a `frontend.syntax.UnicodeWidth` table, whose entries are 12
+ * hex digits; six for the first code point and six for the last.
+ * @param table  the table's text
+ * @param i  the index of the range
+ * @param end  0 for the range's first code point, or 6 for its last
+ * @return the code point */
 let _rangeBound = fn(table: Bytes, i: I32, end: I32): I32 {
   let v = 0;
   let k = 0;
@@ -105,6 +159,11 @@ let _rangeBound = fn(table: Bytes, i: I32, end: I32): I32 {
   v
 };
 
+/** Checks whether `cp` lies in one of `table`'s sorted, disjoint ranges, by binary search for
+ * the first range ending at or after it.
+ * @param table  a `frontend.syntax.UnicodeWidth` table
+ * @param cp  the code point
+ * @return true if a range contains `cp` */
 let _inRanges = fn(table: Bytes, cp: I32): Bool {
   let lo = 0;
   let hi = table.len() / 12;
@@ -121,23 +180,42 @@ let _inRanges = fn(table: Bytes, cp: I32): Bool {
   (lo < table.len() / 12) && (_rangeBound(table, lo, 0) <= cp)
 };
 
+/** Returns the number of terminal columns code point `cp` occupies; 0 for nonspacing and
+ * enclosing marks and format characters, 2 for East Asian Wide and Fullwidth characters, and 1
+ * otherwise. ASCII never reaches the tables, which start above it.
+ * @param cp  the code point
+ * @return 0, 1 or 2 */
 let _codepointWidth = fn(cp: I32): I32 {
   if (cp < 128) { return 1; }
   if (_inRanges(zeroWidthRanges, cp)) { return 0; }
   _inRanges(wideRanges, cp) ? 2 : 1
 };
 
+/** Returns how far to advance past the character at `i`, treating a byte that does not start a
+ * valid UTF-8 character as a character of its own.
+ * @param source  the source text
+ * @param i  the position
+ * @return the character's UTF-8 length, or 1 */
 let _step = fn(source: Bytes, i: I32): I32 {
   let n = utf8CharLength(source, i);
   (n == 0) ? 1 : n
 };
 
+/** Returns the start of the line that holds `offset`.
+ * @param source  the source text
+ * @param offset  a byte offset
+ * @return the byte offset just after the previous newline, or 0 */
 let _lineStart = fn(source: Bytes, offset: I32): I32 {
   let i = offset;
   while ((i > 0) && (Bytes.get_u8(source, i - 1) != "\n".code)) { i--; }
   i
 };
 
+/** Returns the 1-based line and column of `offset`, scanning from the start of the file.
+ * Columns count code points; a byte that is not valid UTF-8 counts as one, and so does a tab.
+ * @param source  the source text
+ * @param offset  a byte offset
+ * @return the line and column */
 export let sourceLocation = fn(source: Bytes, offset: I32): Tuple<I32, I32> {
   let line = 1;
   let column = 1;
@@ -156,6 +234,10 @@ export let sourceLocation = fn(source: Bytes, offset: I32): Tuple<I32, I32> {
   (line, column)
 };
 
+/** Returns the byte offset where each line of `source` starts, so that `lineOf` can locate
+ * many offsets in the same file without rescanning it.
+ * @param source  the source text
+ * @return the line starts in ascending order, the first being 0 */
 export let lineStarts = fn(source: Bytes): Array<I32> {
   let starts = [0];
 
@@ -165,6 +247,8 @@ export let lineStarts = fn(source: Bytes): Array<I32> {
   starts
 };
 
+/** Returns the 1-based line of byte `offset`, by binary search over `starts`, `lineStarts` of the
+ * source. */
 export let lineOf = fn(starts: Array<I32>, offset: I32): I32 {
   let low = 0;
   let high = starts.len() - 1;
@@ -181,6 +265,12 @@ export let lineOf = fn(starts: Array<I32>, offset: I32): I32 {
   low + 1
 };
 
+/** Returns the column, as `sourceLocation` counts it, of each byte of `source` from `start`, a
+ * line's start, up to and including `end`, or an empty array when those bytes are all ASCII and
+ * each byte's column is its place in the line. A byte inside a character has the character's.
+ * @param source  the source text
+ * @param start  the line's start
+ * @param end  the line's last byte, its newline when it has one */
 export let lineColumns = fn(source: Bytes, start: I32, end: I32): Array<I32> {
   let i = start;
   while ((i <= end) && (i < Bytes.len(source)) && (Bytes.get_u8(source, i) < 128)) { i++; }
@@ -202,6 +292,8 @@ export let lineColumns = fn(source: Bytes, start: I32, end: I32): Array<I32> {
   columns
 };
 
+/** Returns the caret line's padding for the character at `i` of `source`; its tab, or a space
+ * per column it takes. */
 let _padding = fn(source: Bytes, i: I32): Bytes {
   if (Bytes.get_u8(source, i) == "\t".code) { return "\t"; }
   let n = utf8CharLength(source, i);
@@ -213,6 +305,14 @@ let _padding = fn(source: Bytes, i: I32): Bytes {
   }
 };
 
+/** Formats a diagnostic as `path:line:column: message`, followed by the source line that holds
+ * `offset` and, beneath it, a caret under the character at `offset`. The caret's padding follows
+ * each preceding character's display width and copies its tabs, so it lines up in a terminal.
+ * @param path  the file's path, as shown in the message
+ * @param source  the file's text
+ * @param offset  the byte offset to point at
+ * @param message  the message text
+ * @return the diagnostic, without a final newline */
 export let sourceDiagnostic = fn(path: Bytes, source: Bytes, offset: I32, message: Bytes): Bytes {
   let (line, column) = sourceLocation(source, offset);
   let start = _lineStart(source, offset);

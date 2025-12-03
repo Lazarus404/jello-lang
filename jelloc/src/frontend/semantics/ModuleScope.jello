@@ -1,53 +1,105 @@
 package frontend.semantics;
 
+/** @file
+ * Module-level name resolution for the checker. Owns the scope of the module being checked (what
+ * each top-level value or type name refers to, imports included), a saved scope per module so that
+ * a generic function's instance can be checked in its own module's scope, and the export table of
+ * every checked module, which later modules' imports resolve against. `frontend.semantics.Modules`
+ * enters each module and adds its imports and exports; `frontend.semantics.TypeCheck`,
+ * `frontend.semantics.Enums` and `frontend.semantics.Testing` declare and look up names. Names are
+ * keyed by their ID in the HIR's bytes pool, and a scope is cleared in constant time by moving to
+ * the next epoch. */
+
 import type { Import, Module } from frontend.Loader;
 import frontend.hir.Hir as H;
 import { E0206, E0208, E0302, coded } from support.Codes;
 
+// What a module-level value name refers to.
 export enum Binding {
+  // A global, by global ID.
   Global(id: I32);
+  // A direct function, by function index.
   Function(index: I32);
+  /** Export `name` of native library `library` as `load` names it, before a typed `let` gives it
+   * a type. */
   Loaded(library: Bytes, name: Bytes);
+  // A native that a typed `let` of a `Loaded` name declares, by native ID.
   Native(id: I32);
+  // A namespace import of the module at index `module`, whose file is `path`.
   Namespace(module: I32, path: Bytes);
+  /** One of `std.testing`'s assertions, which the checker expands at each call; `module` is
+   * `std.testing`'s index. */
   Intrinsic(module: I32, name: Bytes);
+  // A generic function, by template index.
   Template(index: I32);
+  // Nothing.
   Unbound;
 }
 
+/** The current module's value bindings, in declaration order. A name is a value or a type, never
+ * both. */
 let _bindings = Array.new<Binding>(0);
+// Whether each entry of `_bindings` came from an import.
 let _imported = Array.new<Bool>(0);
+// The current module's type names' types, as HIR type IDs, in declaration order.
 let _types = Array.new<I32>(0);
+/** Whether the current module imports each module, by index, privately, which lets it find that
+ * module's private names. */
 let _opened = Array.new<Bool>(0);
 
+/** A row of an export table: an export of a checked module, or a private name of a module that
+ * some module opens, which only private imports find. */
 typedef ExportRow<T> = {
+  // The module the name belongs to.
   let module: I32;
+  // The next older row of the same name, or -1.
   let next: I32;
+  // What the name gives: a binding for a value, a HIR type for a type.
   let value: T;
+  // Whether the name is exported, rather than private.
   let exported: Bool;
 };
 
+/** An export table. The rows of one name are chained, newest first, from its head, which is
+ * indexed by the name's bytes-pool ID. */
 typedef ExportTable<T> = {
+  // The newest row of each name, by bytes-pool ID, or -1.
   let heads: Array<I32>;
   let rows: Array<ExportRow<T>>;
 };
 
+// Returns an empty export table.
 let _exportTable<T> = fn(): ExportTable<T> {
   { heads: Array.new<I32>(0), rows: Array.new<ExportRow<T>>(0) }
 };
 
+// Every checked module's value exports.
 let _valueExports = _exportTable<Binding>();
+// Every checked module's type exports, as HIR types.
 let _typeExports = _exportTable<I32>();
 
+/** The epoch of the current scope. A value name, by bytes-pool ID, is in the current scope exactly
+ * when its `_epochs` entry equals `_epoch`, and a type name when its `_typeEpochs` entry does;
+ * incrementing `_epoch` empties the scope. */
 let _epoch = 0;
+// The epoch in which each value name, by bytes-pool ID, was last recorded.
 let _epochs = Array.new<I32>(0);
+/** Where each value name, by bytes-pool ID, is in `_bindings`. Valid only when the name is in the
+ * current scope. */
 let _at = Array.new<I32>(0);
+// As `_epochs` and `_at`, for type names and `_types`.
 let _typeEpochs = Array.new<I32>(0);
 let _typeAt = Array.new<I32>(0);
+/** The bytes-pool IDs of the names the current module records, in order, so that its scope can be
+ * restored. */
 let _names = Array.new<I32>(0);
+// Where each name in `_names` is, as `_at` holds it.
 let _places = Array.new<I32>(0);
+// Whether each name in `_names` is a type.
 let _nameIsType = Array.new<Bool>(0);
 
+/** A module's scope; the current-module arrays above, shared with them while the module is
+ * current, so the saved scope keeps every name the module records. */
 typedef Scope = {
   let bindings: Array<Binding>;
   let imported: Array<Bool>;
@@ -57,9 +109,13 @@ typedef Scope = {
   let places: Array<I32>;
   let isType: Array<Bool>;
 };
+// Every entered module's scope, by module index.
 let _scopes = Array.new<Scope>(0);
+// The index of the module whose scope is current, or -1 before any.
 let _module = -1;
 
+/** Returns the index of `name` in `_types` when `types` is true, or in `_bindings` otherwise, or
+ * -1 when it is not that kind of name in the current module. */
 let _lookup = fn(name: Bytes, types: Bool): I32 {
   let id = H.findBytesId(name);
   if ((id < 0) || (id >= _epochs.len())) { return -1; }
@@ -71,6 +127,8 @@ let _lookup = fn(name: Bytes, types: Bool): I32 {
   }
 };
 
+/** Makes the name with bytes-pool ID `id` name entry `index` of `_types`, when `types`, or of
+ * `_bindings` in the current scope. */
 let _place = fn(id: I32, types: Bool, index: I32) {
   if (types) {
     _typeEpochs[id] = _epoch;
@@ -82,8 +140,10 @@ let _place = fn(id: I32, types: Bool, index: I32) {
   null
 };
 
+// Returns the index of the value name `name` in `_bindings`, or -1.
 let _index = fn(name: Bytes): I32 { _lookup(name, false) };
 
+// Checks whether `binding` is a namespace import.
 let _isNamespace = fn(binding: Binding): Bool {
   match (binding) {
     Namespace(_, _) => true,
@@ -91,6 +151,16 @@ let _isNamespace = fn(binding: Binding): Bool {
   }
 };
 
+/** Records `name` in the current scope and in `_names`, for restoring the scope. A name is a type
+ * or a value, except that a namespace import may share its name with an imported type, as
+ * `import std.concurrent.Process as Process` does with `Process<M>`; `frontend.Loader` requires
+ * the type to be of the namespace's own module. Imports are recorded before declarations, so a
+ * name an import shares is always an import's.
+ * @param types  whether it names a type
+ * @param index  its index in `_types` or `_bindings`
+ * @param binding  the value it names, or `Binding.Unbound` for a type
+ * @param imported  whether an import adds it
+ * @throws a located error if the module already records the name, as a value or a type */
 let _record = fn(name: Bytes, types: Bool, index: I32, binding: Binding, imported: Bool) {
   let id = H.bytesId(name);
 
@@ -103,6 +173,7 @@ let _record = fn(name: Bytes, types: Bool, index: I32, binding: Binding, importe
 
   let value = _epochs[id] == _epoch;
   let typed = _typeEpochs[id] == _epoch;
+  // The kind not being recorded holds the name already, and the value of the two is a namespace.
   let other = types ? value && !typed : typed && !value;
   let shared = imported && other && _isNamespace(types ? _bindings[_at[id]] : binding);
   if ((value || typed) && !shared) { throw coded(E0302, `duplicate top-level name: ${name}`); }
@@ -114,6 +185,10 @@ let _record = fn(name: Bytes, types: Bool, index: I32, binding: Binding, importe
   null
 };
 
+/** Adds the value name `name`, referring to `binding`, to the current module; `_` binds nothing
+ * that a name can find.
+ * @param imported  whether an import adds it
+ * @throws a located error if the module already records the name */
 let _add = fn(name: Bytes, binding: Binding, imported: Bool) {
   if (name == "_") { return null; }
   _record(name, false, _bindings.len(), binding, imported);
@@ -122,13 +197,21 @@ let _add = fn(name: Bytes, binding: Binding, imported: Bool) {
   null
 };
 
+/** Adds the type name `name`, naming HIR type `ty`, to the current module.
+ * @param imported  whether an import adds it
+ * @throws a located error if the module already records the name */
 let _addType = fn(name: Bytes, ty: I32, imported: Bool) {
   _record(name, true, _types.len(), Binding.Unbound, imported);
   _types.push(ty);
   null
 };
 
+/** Finds a module's row for a name in an export table, following the name's chain from its newest
+ * row, so that the last declaration wins when a name is recorded twice. A private row is found
+ * only when the current module opened that module.
+ * @return the row, or -1 when the module has no such row visible to the current module */
 let _export<T> = fn(table: ExportTable<T>, module: I32, name: Bytes): I32 {
+  // A name nothing declared is not in the bytes pool.
   let id = H.findBytesId(name);
   let e = (id >= 0) && (id < table.heads.len()) ? table.heads[id] : -1;
   while ((e >= 0) && (table.rows[e].module != module)) { e = table.rows[e].next; }
@@ -136,10 +219,13 @@ let _export<T> = fn(table: ExportTable<T>, module: I32, name: Bytes): I32 {
   if ((e >= 0) && !table.rows[e].exported && !_opened[module]) { -1 } else { e }
 };
 
+// Returns the value export row of the module at index `module` for `name`, or -1.
 let _value = fn(module: I32, name: Bytes): I32 { _export(_valueExports, module, name) };
 
+// Returns the type export row of the module at index `module` for `name`, or -1.
 let _type = fn(module: I32, name: Bytes): I32 { _export(_typeExports, module, name) };
 
+// Adds a row to an export table, at the front of its name's chain.
 let _addExport<T> = fn(table: ExportTable<T>, name: Bytes, module: I32, value: T, exported: Bool) {
   let id = H.bytesId(name);
   while (table.heads.len() <= id) { table.heads.push(-1); }
@@ -149,10 +235,13 @@ let _addExport<T> = fn(table: ExportTable<T>, name: Bytes, module: I32, value: T
   null
 };
 
+/** Returns the error message for a name `name` that the module in file `path` does not export.
+ * @param kind  "export" or "type export" */
 let _unknownExport = fn(kind: Bytes, name: Bytes, path: Bytes): Bytes {
   coded(E0208, `unknown ${kind} ${name} in ${path}`)
 };
 
+// Clears every module's exports and saved scope, before a program is checked.
 export let resetExports = fn(): Bool {
   _valueExports = _exportTable<Binding>();
   _typeExports = _exportTable<I32>();
@@ -161,6 +250,7 @@ export let resetExports = fn(): Bool {
   true
 };
 
+// Makes `scope` the current one; empties the scope, then records every name it has placed.
 let _useScope = fn(scope: Scope) {
   _epoch++;
   _bindings = scope.bindings;
@@ -177,6 +267,11 @@ let _useScope = fn(scope: Scope) {
   null
 };
 
+/** Starts an empty scope for a module, saves it as that module's, and marks the modules it imports
+ * privately as opened. `frontend.semantics.Modules` then adds each import with `addImport`.
+ * @param module  the module's index; modules are entered in index order, once each
+ * @param imports  the module's imports
+ * @param modules  every module of the program */
 export let enterModule = fn(module: I32, imports: Array<Import>, modules: Array<Module>): Bool {
   let scope: Scope = {
     bindings: Array.new<Binding>(0),
@@ -187,6 +282,7 @@ export let enterModule = fn(module: I32, imports: Array<Import>, modules: Array<
     places: Array.new<I32>(0),
     isType: Array.new<Bool>(0)
   };
+  // Modules are entered in order, once each, so the scope's index is the module's.
   _scopes.push(scope);
   _useScope(scope);
   _module = module;
@@ -204,6 +300,16 @@ export let enterModule = fn(module: I32, imports: Array<Import>, modules: Array<
   true
 };
 
+/** Adds an import to the current module's scope, resolved against the export tables. A named
+ * import binds the value export of that name if there is one, and otherwise the type export; a
+ * type-only import looks only for a type. A type that the module already names is not added
+ * again, which allows `import type { E }` beside `import { E }`.
+ * @param imported  the import
+ * @param modules  every module of the program
+ * @param typesOnly  whether the current module never runs, so it needs only the types it
+ *   imports, and a missing name is not an error
+ * @throws a located error if the imported module has no such export (unless `typesOnly`), or if
+ *   the name is already bound */
 export let addImport = fn(imported: Import, modules: Array<Module>, typesOnly: Bool): Bool {
   match (imported) {
     Import(local, module, name, typeOnly, _, _) => {
@@ -213,8 +319,11 @@ export let addImport = fn(imported: Import, modules: Array<Module>, typesOnly: B
       if (value >= 0) {
         _add(local, _valueExports.rows[value].value, true);
       } else if (ty >= 0) {
+        // `import type { E }` beside `import { E }` names the type E once.
         if (_lookup(local, true) < 0) { _addType(local, _typeExports.rows[ty].value, true); }
       } else if (!typesOnly) {
+        /* The module a types-only module imports from may not run either, and then records no
+         * values, so a missing name is not an error there. */
         let kind = typeOnly ? "type export" : "export";
         throw _unknownExport(kind, name, modules[module].path);
       }
@@ -226,6 +335,10 @@ export let addImport = fn(imported: Import, modules: Array<Module>, typesOnly: B
   true
 };
 
+/** Makes a module's saved scope, with every name it has recorded, the current one. The checker
+ * uses this to check a generic function's instance in the module that declares the template.
+ * @param module  the module's index; it must have been entered
+ * @return the index of the module whose scope was current, to restore afterwards */
 export let useModuleScope = fn(module: I32): I32 {
   let outer = _module;
   if (module == outer) { return outer; }
@@ -234,23 +347,38 @@ export let useModuleScope = fn(module: I32): I32 {
   outer
 };
 
+// Returns the index of the module whose scope is current, or -1 before any module is entered.
 export let currentModule = fn(): I32 { _module };
 
+/** Declares a top-level value of the current module.
+ * @param name  the name; `_` declares nothing
+ * @param binding  what it refers to
+ * @throws a located error if the module already records the name */
 export let declareScoped = fn(name: Bytes, binding: Binding): Bool {
   _add(name, binding, false);
   true
 };
 
+// Returns what the value name `name` refers to in the current module, or `Binding.Unbound`.
 export let scoped = fn(name: Bytes): Binding {
   let found = _index(name);
   if (found < 0) { Binding.Unbound } else { _bindings[found] }
 };
 
+/** Returns the value export `name` of the module at index `module`, or `Binding.Unbound` when it
+ * has none. */
 export let exportedValue = fn(module: I32, name: Bytes): Binding {
   let found = _value(module, name);
   found < 0 ? Binding.Unbound : _valueExports.rows[found].value
 };
 
+/** Resolves `space.name` for a namespace import; the binding `import { name }` from that module
+ * would give.
+ * @param module  the imported module's index
+ * @param path  its file, for errors
+ * @param name  the member's name
+ * @throws a located error if `name` is a type rather than a value, or the module does not export
+ *   it */
 export let namespaceMember = fn(module: I32, path: Bytes, name: Bytes): Binding {
   let found = _value(module, name);
   if (found >= 0) { return _valueExports.rows[found].value; }
@@ -261,31 +389,50 @@ export let namespaceMember = fn(module: I32, path: Bytes, name: Bytes): Binding 
   throw _unknownExport("export", name, path);
 };
 
+/** Looks up a type a module exports, such as `std.testing`'s `Test`.
+ * @param module  the module's index
+ * @param name  the type's name
+ * @return the HIR type, or -1 when the module exports no such type visible here */
 export let exportedType = fn(module: I32, name: Bytes): I32 {
   let found = _type(module, name);
   found < 0 ? -1 : _typeExports.rows[found].value
 };
 
+/** Declares the type name `name`, naming HIR type `ty`, in the current module.
+ * @throws a located error if the module already records the name */
 export let declareScopedType = fn(name: Bytes, ty: I32): Bool {
   _addType(name, ty, false);
   true
 };
 
+// Returns the HIR type the type name `name` names in the current module, or -1.
 export let scopedType = fn(name: Bytes): I32 {
   let found = _lookup(name, true);
   found < 0 ? -1 : _types[found]
 };
 
+/** Adds a type the current module declares to the type export table, as an export or, when not
+ * exported, as a private name for private imports.
+ * @param module  the current module's index
+ * @param name  the type's name, which must be declared in the current module
+ * @param exported  whether the declaration is exported */
 export let exportScopedType = fn(module: I32, name: Bytes, exported: Bool): Bool {
   _addExport(_typeExports, name, module, scopedType(name), exported);
   true
 };
 
+/** Checks whether the value name `name` of the current module is bound by an import, which the
+ * checker uses to reject assigning to it. */
 export let isImported = fn(name: Bytes): Bool {
   let found = _index(name);
   (found >= 0) && _imported[found]
 };
 
+/** Adds a value the current module declares to the value export table, as an export or, when not
+ * exported, as a private name for private imports; `_` names nothing to export.
+ * @param module  the current module's index
+ * @param name  the value's name, which must be declared in the current module
+ * @param exported  whether the declaration is exported */
 export let exportScoped = fn(module: I32, name: Bytes, exported: Bool): Bool {
   if (name == "_") { return true; }
   _addExport(_valueExports, name, module, _bindings[_index(name)], exported);

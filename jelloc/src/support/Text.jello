@@ -1,7 +1,13 @@
 package support;
 
+/** @file
+ * Text the compiler reads and writes: hex digits, bytes written back as a literal the lexer
+ * reads, and the names closest to a misspelt one, for diagnostics. Indexes count bytes. */
+
 import { toHex } from std.core.Bytes;
 
+/** Returns the value of `c`, a byte or -1, as a hexadecimal digit in either case.
+ * @return 0 to 15, or -1 if `c` is not a hex digit */
 export let hexValue = fn(c: I32): I32 {
   if ((c >= "0".code) && (c <= "9".code)) {
     c - "0".code
@@ -14,6 +20,9 @@ export let hexValue = fn(c: I32): I32 {
   }
 };
 
+/** Writes `value` as a double-quoted Jello bytes literal that lexes back to the same bytes. A
+ * newline, carriage return, tab, double quote or backslash is written as its backslash escape,
+ * other printable ASCII as itself, and every other byte as a lower-case `\xHH` escape. */
 export let bytesLiteral = fn(value: Bytes): Bytes {
   let out = ["\""];
 
@@ -33,6 +42,8 @@ export let bytesLiteral = fn(value: Bytes): Bytes {
   out.join("")
 };
 
+/** Returns the edit distance between `a` and `b`; the fewest byte insertions, deletions and
+ * substitutions that turn one into the other. */
 let _editDistance = fn(a: Bytes, b: Bytes): I32 {
   let previous = Array.new<I32>(0);
   let j = 0;
@@ -62,6 +73,8 @@ let _editDistance = fn(a: Bytes, b: Bytes): I32 {
   previous[b.len()]
 };
 
+/** Returns up to three of `names` closest to `name` by edit distance, nearest first and in their
+ * order among equals, leaving out any too far from it to be a likely misspelling. */
 export let closestNames = fn(names: Array<Bytes>, name: Bytes): Array<Bytes> {
   let limit = name.len() / 3 > 2 ? name.len() / 3 : 2;
   let distances = Array.new<I32>(0);
@@ -70,6 +83,7 @@ export let closestNames = fn(names: Array<Bytes>, name: Bytes): Array<Bytes> {
     distances.push(_editDistance(candidate, name));
   }
 
+  // Nearest first: one sweep per distance, as names are few and typos fewer.
   let found = Array.new<Bytes>(0);
   let distance = 0;
 

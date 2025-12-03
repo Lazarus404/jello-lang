@@ -1,16 +1,29 @@
 package frontend;
 
+/** @file
+ * Fixed-size sets of small non-negative integers, as bit vectors holding 32 members to an I32
+ * word. The checker's initialisation-order analysis (`frontend.semantics.InitOrder`) uses them for
+ * sets of global and function IDs. Members must lie below the size the set was made with. */
+
+/** Returns an empty set that can hold the integers `[0, size)`.
+ * @param size  one more than the largest member the set may hold
+ * @return the set, `(size + 31) / 32` zeroed words */
 export let bitsNew = fn(size: I32): Array<I32> { Array.new<I32>((size + 31) >> 5) };
 
+// Checks whether `value` is a member of `set`.
 export let bitsHas = fn(set: Array<I32>, value: I32): Bool {
   ((set[value >> 5] >> (value & 31)) & 1) == 1
 };
 
+// Adds `value` to `set`, in place.
 export let bitsAdd = fn(set: Array<I32>, value: I32): Bool {
   set[value >> 5] = set[value >> 5] | (1 << (value & 31));
   true
 };
 
+/** Adds every member of `src` to `dst`, in place. The two sets must have the same size; the
+ * initialisation-order analysis iterates this to a fixed point.
+ * @return true if `dst` gained a member */
 export let bitsUnion = fn(dst: Array<I32>, src: Array<I32>): Bool {
   let changed = false;
 
@@ -25,6 +38,7 @@ export let bitsUnion = fn(dst: Array<I32>, src: Array<I32>): Bool {
   changed
 };
 
+// Returns the members of `set` in ascending order, as a fresh array.
 export let bitsMembers = fn(set: Array<I32>): Array<I32> {
   let members = Array.new<I32>(0);
 

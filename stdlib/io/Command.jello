@@ -1,5 +1,18 @@
 package std.io;
 
+/* Child commands over std.jdll. start runs a program without waiting for it,
+ * so several can run at once; wait reaps one, finished tells without
+ * waiting whether one has ended, and kill ends one. Its standard input is
+ * /dev/null, and its standard output and error are captured whole, so a child
+ * never blocks on a full pipe. A command collected before it is waited for is
+ * killed.
+ *
+ * ENV applies over the inherited environment, in order; "NAME=VALUE" sets
+ * NAME and a bare "NAME" unsets it. The status is the exit status, 128 + the
+ * signal for a child a signal ended, and 127 for a program that cannot run,
+ * with the reason on stderr, as a POSIX shell reports them; 255, with the
+ * reason on stderr, for a child that cannot be waited for. */
+
 import { indexOf } from std.core.Bytes;
 
 load {
@@ -7,8 +20,11 @@ load {
   command_next, cpu_count
 } from std;
 
+// A child command that start began, running or ended.
 export typedef Command = abstract;
 
+/* ITEMS, each NUL-terminated, as the natives take a list; an item holding a
+ * NUL throws. */
 let _entries = fn(items: Array<Bytes>): Bytes {
   let out = "";
   let i = 0;
@@ -21,19 +37,30 @@ let _entries = fn(items: Array<Bytes>): Bytes {
   out
 };
 
+/* Starts ARGV[0], found on PATH unless it has a slash, with ARGV; a handle
+ * for the other functions. An empty ARGV traps. */
 let _start: (Bytes, Bytes) -> Command = command_start;
 export let start = fn(argv: Array<Bytes>, env: Array<Bytes>): Command { _start(_entries(argv), _entries(env)) };
 
+// Waits for COMMAND, once; its status.
 export let wait: (Command) -> I32 = command_wait;
+// What COMMAND wrote to its standard output and error, after waiting for it.
 export let stdout: (Command) -> Bytes = command_stdout;
 export let stderr: (Command) -> Bytes = command_stderr;
 
+/* Whether COMMAND has ended, without waiting for it; once it has, wait,
+ * stdout and stderr return at once. */
 export let finished: (Command) -> Bool = command_done;
 
+/* Kills COMMAND's child, at once and without letting it tidy up, if it has
+ * not ended; whether it had not. Its status is then 137, 128 + SIGKILL. */
 export let kill: (Command) -> Bool = command_kill;
 
 let _next: () -> Bool = command_next;
 
+/* The index of one of COMMANDS that has ended, waiting until one has, so
+ * that waiting for it does not block; -1 for none. Whichever ends first is
+ * found first, so a slow child holds up no other. */
 export let waitAny = fn(commands: Array<Command>): I32 {
   if (commands.len() == 0) { return -1; }
 
@@ -44,13 +71,17 @@ export let waitAny = fn(commands: Array<Command>): I32 {
       if (finished(commands[i])) { return i; }
       i++;
     }
+    // Reaps a child, of COMMANDS or another; with none left, wait in order.
     if (!_next()) { return 0; }
   }
   -1
 };
 
+// Waits for COMMAND; its status, standard output and standard error.
 export let result = fn(command: Command): Tuple<I32, Bytes, Bytes> { (wait(command), stdout(command), stderr(command)) };
 
+// Runs ARGV to completion; its status, standard output and standard error.
 export let run = fn(argv: Array<Bytes>, env: Array<Bytes>): Tuple<I32, Bytes, Bytes> { result(start(argv, env)) };
 
+// The processors this program may use, at least 1.
 export let cpuCount: () -> I32 = cpu_count;

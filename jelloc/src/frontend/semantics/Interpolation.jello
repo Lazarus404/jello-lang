@@ -1,9 +1,17 @@
 package frontend.semantics;
 
+/** @file
+ * Checks interpolations, `` `text ${hole} text` `` templates with holes, into HIR, for
+ * `frontend.semantics.Aggregates`. Each hole shows as `Std.string` shows it, and the texts that
+ * are not empty and the holes are joined in order. */
+
 import type { Expr as AstExpr } from frontend.syntax.Ast;
 import { bytesOf, joinOf, printed } from frontend.semantics.Derived;
 import { checkOperand } from frontend.semantics.TypeCheck;
 
+/** Checks the interpolation whose texts are `texts` and holes `holes`, syntax children from 0 on.
+ * @return the joined Bytes
+ * @throws a located error for a hole that cannot print */
 export let checkInterpolation = fn(texts: Array<Bytes>, holes: Array<AstExpr>): I32 {
   let parts = Array.new<I32>(0);
 

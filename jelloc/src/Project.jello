@@ -1,3 +1,14 @@
+/** @file
+ * The project that `jelloc run`, `test` and `deps.get` work in; the nearest directory at or above
+ * where they start that holds a `jello.json`. Its manifest names the source directory, `src`
+ * (`"src"` by default), the test directories, `test.dirs` (`["tests"]` by default), and the
+ * dependencies, and `dev_dependencies` for its tests alone, which `jlo_tool get-deps` fetches
+ * into `packages/<name>/`, or which a directory of `package_paths` holds as `<name>/`. Each
+ * package's own manifest names its source directory and its dependencies in turn, and both name
+ * the directory of their native libraries, `jdll` (`"jdll"` by default), which `jello` searches
+ * when it exists. Keys it does not know are ignored, and a bad value is an error located in the
+ * manifest. `Driver` searches the sources for imports. */
+
 import { Json, jsonAt, jsonField, parseJson } from support.Json;
 import { sourceDiagnostic } from frontend.syntax.Source;
 import { E0211, E0212, coded } from support.Codes;
@@ -7,20 +18,30 @@ load { file_real_path } from std;
 
 let _realPath: (Bytes) -> Bytes = file_real_path;
 
+// A project and the packages it depends on.
 export typedef Project = {
+  // The directory that holds its `jello.json`.
   let root: Bytes;
+  // The source roots of it and its packages, its own first.
   let sources: Array<Bytes>;
+  // The source roots of the packages that only its `dev_dependencies` reach, for its tests.
   let testSources: Array<Bytes>;
+  // Its test directories.
   let tests: Array<Bytes>;
+  // The directories of the native libraries it and its packages have, its own first.
   let libraries: Array<Bytes>;
 };
 
+/** A dependency some manifest names; `at` is the offset of its value in `namedIn`, the path of
+ * that manifest. */
 typedef Dependency = {
   let name: Bytes;
   let at: I32;
   let namedIn: Bytes;
 };
 
+/** Returns the path of `name` in directory `dir`, which may end with slashes; `dir` itself for
+ * "." or "", and `name` itself when it is absolute. */
 export let inDirectory = fn(dir: Bytes, name: Bytes): Bytes {
   let end = dir.len();
   while ((end > 1) && (Bytes.get_u8(dir, end - 1) == "/".code)) { end--; }
@@ -32,6 +53,8 @@ export let inDirectory = fn(dir: Bytes, name: Bytes): Bytes {
   trimmed == "/" ? `/${name}` : `${trimmed}/${name}`
 };
 
+/** Returns the directory above `dir`, which is relative where `dir` is; the directory of a file
+ * when `dir` is the file's path. */
 export let parentDirectory = fn(dir: Bytes): Bytes {
   if ((dir == ".") || (dir == "..") || ((dir.len() > 3) && dir.endsWith("/.."))) {
     return `${dir}/..`;
@@ -40,11 +63,14 @@ export let parentDirectory = fn(dir: Bytes): Bytes {
   slash < 0 ? "." : (slash == 0 ? "/" : Bytes.slice(dir, 0, slash))
 };
 
+// Returns the last component of the path `path`.
 export let baseName = fn(path: Bytes): Bytes {
   let slash = path.lastIndexOf("/");
   Bytes.slice(path, slash + 1, path.len() - slash - 1)
 };
 
+/** Returns the nearest directory at or above `start` that holds a `jello.json`, or "" when none
+ * does. */
 export let findProject = fn(start: Bytes): Bytes {
   let dir = start;
 
@@ -56,14 +82,19 @@ export let findProject = fn(start: Bytes): Bytes {
   dir
 };
 
+/** A manifest being read; its path and text, for located errors, and what it holds, which a
+ * second read of the same path reuses. */
 let _path = "";
 let _text = "";
 let _json: ?Json = null;
 
+// Throws `message`, with `code`, as a diagnostic at offset `at` of the manifest being read.
 let _fail = fn(at: I32, code: Bytes, message: Bytes) {
   throw sourceDiagnostic(_path, _text, at, coded(code, message));
 };
 
+/** Reads the manifest at `path`, which must be an object.
+ * @return the manifest */
 let _read = fn(path: Bytes): Json {
   if ((path == _path) && (_json != null)) { return _json; }
   _path = path;
@@ -81,6 +112,7 @@ let _read = fn(path: Bytes): Json {
   value
 };
 
+// Returns the string at `key` of `manifest`, or `otherwise` when it has none.
 let _string = fn(manifest: Json, key: Bytes, otherwise: Bytes): Bytes {
   let found = jsonField(manifest, key);
   if (found == null) { return otherwise; }
@@ -94,6 +126,8 @@ let _string = fn(manifest: Json, key: Bytes, otherwise: Bytes): Bytes {
   }
 };
 
+/** Returns the strings of the array at `key` of `value`, or `otherwise` when it has none.
+ * @param what  the key's name in a message, such as "test.dirs" */
 let _strings = fn(value: Json, key: Bytes, what: Bytes, otherwise: Array<Bytes>): Array<Bytes> {
   let found = jsonField(value, key);
   if (found == null) { return otherwise; }
@@ -119,6 +153,8 @@ let _strings = fn(value: Json, key: Bytes, what: Bytes, otherwise: Array<Bytes>)
   }
 };
 
+/** Adds to `found` the dependencies that `key` of `manifest`, the manifest just read, names and
+ * it lacks. */
 let _dependencies = fn(manifest: Json, key: Bytes, found: Array<Dependency>) {
   let field = jsonField(manifest, key);
   if (field == null) { return null; }
@@ -137,16 +173,19 @@ let _dependencies = fn(manifest: Json, key: Bytes, found: Array<Dependency>) {
   }
 };
 
+// Adds directory `name` of `dir` to `libraries` when it exists.
 let _addLibraries = fn(dir: Bytes, name: Bytes, libraries: Array<Bytes>) {
   let path = inDirectory(dir, name);
   if (exists(path)) { libraries.push(path); }
   null
 };
 
+// Returns each of `names` as a path in directory `dir`.
 let _within = fn(dir: Bytes, names: Array<Bytes>): Array<Bytes> {
   names.map(fn(name: Bytes): Bytes { inDirectory(dir, name) })
 };
 
+// Returns the first of `places` that holds directory `name`, or "" when none does.
 let _locate = fn(places: Array<Bytes>, name: Bytes): Bytes {
   for (place in places) {
     let candidate = inDirectory(place, name);
@@ -155,6 +194,10 @@ let _locate = fn(places: Array<Bytes>, name: Bytes): Bytes {
   ""
 };
 
+/** Finds the packages of `dependencies` from index `start` on, in `places`, adding each one's
+ * source root to `sources`, its native libraries to `libraries`, and its own dependencies to
+ * `dependencies`, which it finds in turn.
+ * @throws a located error for a dependency no place holds */
 let _resolve = fn(
   dependencies: Array<Dependency>, start: I32, places: Array<Bytes>, sources: Array<Bytes>,
   libraries: Array<Bytes>
@@ -191,6 +234,8 @@ let _resolve = fn(
   null
 };
 
+/** Reads the project at `root`, whose `jello.json` exists, and the manifests of its packages.
+ * @throws a located error for a manifest that is not valid, or a dependency no directory holds */
 export let loadProject = fn(root: Bytes): Project {
   let manifest = _read(inDirectory(root, "jello.json"));
   let sources = [inDirectory(root, _string(manifest, "src", "src"))];
@@ -212,6 +257,8 @@ export let loadProject = fn(root: Bytes): Project {
   let paths = _strings(manifest, "package_paths", "package_paths", Array.new<Bytes>(0));
   let places = [inDirectory(root, "packages")].appendFrom(_within(root, paths), 0);
 
+  /* The packages only the project's own `dev_dependencies` reach, after the others, are roots for
+   * its tests alone. */
   let dependencies = Array.new<Dependency>(0);
   _dependencies(manifest, "dependencies", dependencies);
   _resolve(dependencies, 0, places, sources, libraries);
@@ -222,6 +269,11 @@ export let loadProject = fn(root: Bytes): Project {
   { root, sources, testSources, tests, libraries }
 };
 
+/** Returns what a compile that names no input, or no output, assumes in directory `dir`: the
+ * entry module, the manifest's `entry` or else `Main.jello` in its `src`, and the module's file
+ * name, the manifest's `name` or else the directory's own, with each space or `/` made a `-`. A
+ * manifest is read when `dir` holds one.
+ * @throws a located error for a manifest that is not valid */
 export let compileDefaults = fn(dir: Bytes): Tuple<Bytes, Bytes> {
   let entry = "src/Main.jello";
   let name = "";
@@ -235,5 +287,6 @@ export let compileDefaults = fn(dir: Bytes): Tuple<Bytes, Bytes> {
 
   let base = name == "" ? baseName(_realPath(dir)) : name;
   let file = base.replaceAll(" ", "-").replaceAll("/", "-");
+  // The file system's root has no name of its own.
   (inDirectory(dir, entry), file == "" ? "main" : file)
 };

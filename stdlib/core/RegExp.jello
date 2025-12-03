@@ -1,5 +1,9 @@
 package std.core;
 
+/* Regular expressions over std.jdll's PCRE2. A regexp and a match are native
+ * handles carried as Dynamic; a failed match is null. A literal, ~r/.../flags,
+ * is a regexp compiled once, its pattern and flags checked by the compiler. */
+
 load {
   regexp_check,
   regexp_compile,
@@ -20,9 +24,13 @@ load {
   regexp_find_at,
 } from std;
 
+// What is wrong with PATTERN under FLAGS, or empty when nothing is.
 let _problem: (Bytes, Bytes) -> Bytes = regexp_check;
+// A regexp of PATTERN with FLAGS, or null when either is invalid.
 let _compile: (Bytes, Bytes) -> Dynamic = regexp_compile;
 
+/* A regexp of PATTERN with FLAGS, each of i, m, s, x and U; an invalid
+ * pattern, or any other flag, throws what is wrong with it. */
 export let compile = fn(pattern: Bytes, flags: Bytes): Dynamic {
   let re = _compile(pattern, flags);
   if (re == null) { throw "RegExp.compile: " + _problem(pattern, flags); }
@@ -37,21 +45,37 @@ export let len: (Dynamic) -> I32 = regexp_match_len;
 export let captureCount: (Dynamic) -> I32 = regexp_capture_count;
 export let group: (Dynamic, I32) -> Bytes = regexp_capture_bytes;
 export let start: (Dynamic, I32) -> I32 = regexp_capture_start;
+/* The capture of M named NAME, (?<name>...); empty when it is unset. A name
+ * the regexp does not have traps. */
 export let named: (Dynamic, Bytes) -> Bytes = regexp_capture_named;
+/* S with every match of RE replaced by WITH, in which $0 to $99, ${name} and
+ * $$ stand for the match's captures and $; an unset capture is empty, and an
+ * unknown one traps. */
 export let replace: (Bytes, Dynamic, Bytes) -> Bytes = regexp_replace;
+// S as a pattern that matches S itself, under any flags.
 export let escapeLiteral: (Bytes) -> Bytes = regexp_escape_literal;
 
+/* A text is a copy of Bytes checked once for valid UTF-8. matchAt matches it
+ * from a byte position without checking again, so a scanner that steps
+ * through a text pays for what it matches, not for the rest of the text;
+ * findAt finds the first match from a position. Invalid UTF-8, and a position
+ * inside a character, are runtime failures. */
 export let text: (Bytes) -> Dynamic = regexp_text;
 export let matchAt: (Dynamic, Dynamic, I32) -> Dynamic = regexp_match_at;
 export let findAt: (Dynamic, Dynamic, I32) -> Dynamic = regexp_find_at;
 
+// Whether RE matches anywhere in S.
 export let matches: (Bytes, Dynamic) -> Bool = fn(s: Bytes, re: Dynamic): Bool { find(s, re) != null };
 
+// S after the prefix that M, a match at its start, covers.
 export let advance: (Bytes, Dynamic) -> Bytes = fn(s: Bytes, m: Dynamic): Bytes {
   let n = len(m);
   Bytes.slice(s, n, Bytes.len(s) - n)
 };
 
+/* The parts of S between the matches of RE, as JavaScript's split gives them:
+ * an empty match splits between characters, but not at the start of a part,
+ * and one at the end of S splits nothing. S invalid UTF-8 traps. */
 export let split: (Bytes, Dynamic) -> Array<Bytes> = fn(s: Bytes, re: Dynamic): Array<Bytes> {
   let parts = Array.new<Bytes>(0);
   let all = text(s);
@@ -64,9 +88,11 @@ export let split: (Bytes, Dynamic) -> Array<Bytes> = fn(s: Bytes, re: Dynamic): 
     if (m == null) { break; }
     let begin = start(m, 0);
     let end = begin + len(m);
+    // A match at the end of S splits nothing.
     if (begin >= n) { break; }
 
     if (end == part) {
+      // An empty match where the part starts; look one character on.
       at = begin + 1;
       while ((at < n) && ((Bytes.get(s, at) & 192) == 128)) { at++; }
     } else {

@@ -1,8 +1,16 @@
 package frontend.syntax;
 
+/** @file
+ * The abstract syntax tree that `Parser.parseProgram` builds from the lexer's tokens.
+ * `frontend.syntax.SyntaxTree` pairs it with the parser's source spans, `frontend.Loader`
+ * resolves its imports, and the checker turns it into HIR. Besides the node types, the module
+ * numbers each node variant for those span records, and converts integer literal text to its
+ * value with a range check. */
+
 import { E0007, coded } from support.Codes;
 import { internalError } from support.Internal;
 
+// The width suffix of an integer literal; `Infer` when it has none.
 export enum IntSize {
   Infer;
   I8;
@@ -15,6 +23,7 @@ export enum IntSize {
   U64;
 }
 
+// The width suffix of a float literal; `Infer` when it has none.
 export enum FloatSize {
   Infer;
   F16;
@@ -22,16 +31,20 @@ export enum FloatSize {
   F64;
 }
 
+// A prefix operator; `!` or `-`.
 export enum UnaryOp {
   Not;
   Negate;
 }
 
+// An increment, `++`, or a decrement, `--`.
 export enum IncDecOp {
   Increment;
   Decrement;
 }
 
+/** A binary operator. `And` and `Or` are `&&` and `||`; `BitAnd`, `BitOr` and `BitXor` are `&`,
+ * `|` and `^`. */
 export enum BinaryOp {
   Add;
   Subtract;
@@ -53,46 +66,70 @@ export enum BinaryOp {
   Or;
 }
 
+// An assignment operator; `=`, or a compound one such as `+=` that applies its binary operator.
 export enum AssignOp {
   Assign;
   Compound(op: BinaryOp);
 }
 
+// A type as written in source.
 export enum Type {
+  // A type name, such as `I32` or a type parameter.
   Named(name: Bytes);
+  // A name with type arguments, as in `Array<I32>`.
   Generic(name: Bytes, args: Array<Type>);
+  // `?T`; among a function type's parameters, one a call may omit, and elsewhere `Null<T>`.
   OptionalArg(inner: Type);
+  // `...T` or `T...`, the type of the last parameter in a parenthesised list.
   VarargsArg(inner: Type);
+  // `(A, B) -> R`; a single parameter needs no parentheses.
   Function(args: Array<Type>, result: Type);
+  // `(A, B)`, or `()` for the empty tuple.
   Tuple(items: Array<Type>);
+  // `unquote(name)` inside a quote; the type the macro body's `name` holds.
   Unquote(name: Bytes);
 }
 
+// How a parameter receives its argument.
 export enum ParameterKind {
   Required;
+  // `name = value`; the argument may be omitted, and `value` replaces it.
   Default(value: Expr);
+  // `?name` or `?name = value`; the argument may be omitted.
   Optional(defaultValue: ?Expr);
+  // `...name`; the remaining arguments.
   Varargs;
 }
 
+// A function parameter.
 export typedef Parameter = {
+  // Its name.
   let name: Bytes;
+  // Its `: Type` annotation, if any.
   let annotation: ?Type;
+  // Whether it is required, has a default, is optional or takes the rest.
   let kind: ParameterKind;
 };
 
+// A `{ ... }` block.
 export typedef Block = {
   let statements: Array<Stmt>;
+  // The expression that ends it without a `;`, if any, which is the block's value.
   let tail: ?Expr;
 };
 
+// A type parameter, `T` or `T: A + B`.
 export typedef TypeParam = {
   let name: Bytes;
   let bounds: Array<Bytes>;
+  // The byte offsets of its name.
   let start: I32;
   let end: I32;
 };
 
+/** The kind a `quote` names after a dot, as in `quote.expr { ... }`; `Auto` when it names none, in
+ * which case the body is statements if it starts with a statement keyword and an expression
+ * otherwise. */
 export enum QuoteKind {
   Auto;
   Expression;
@@ -102,6 +139,7 @@ export enum QuoteKind {
   Pattern;
 }
 
+// The quoted syntax of a `quote` expression.
 export enum QuoteBody {
   Expression(value: Expr);
   Statement(value: Stmt);
@@ -110,38 +148,51 @@ export enum QuoteBody {
   Pattern(value: Pattern);
 }
 
+/** An entry of an object literal; `name: value` or the shorthand `name`, `[key]: value`, or
+ * `...value`. */
 export enum ObjectEntry {
   Field(name: Bytes, value: Expr);
   Computed(key: Expr, value: Expr);
   Spread(value: Expr);
 }
 
+// A generator of a list comprehension; `pattern <- source`, with an optional `when (guard)`.
 export typedef ListGenerator = {
   let pattern: Pattern;
   let source: Expr;
   let guard: ?Expr;
 };
 
+// The body of a `list[...]` literal.
 export enum ListLiteral {
+  // `list[]`.
   Empty;
+  // `list[a, b]`.
   Elements(items: Array<Expr>);
+  // `list[a, b | tail]`.
   Cons(prefix: Array<Expr>, tail: Expr);
+  // `list[a, ...rest, b]`.
   Spread(prefix: Array<Expr>, rest: Expr, suffix: Array<Expr>);
+  // `list[for p <- xs when (g), q <- ys do: body]`.
   Comprehension(generators: Array<ListGenerator>, body: Expr);
 }
 
+// The byte order of a bits segment or a bytes-layout field.
 export enum Endian {
   Big;
   Little;
 }
 
+// What a bits segment holds; an integer, an `f32` float, or the rest of the bytes.
 export enum BitValueKind {
   Integer;
   Float;
   Rest;
 }
 
+// A segment of a `bits[...]` expression, such as `u16.be(x)`.
 export typedef BitExprSegment = {
+  // In bits, and 0 for a `rest` segment.
   let width: I32;
   let endian: Endian;
   let signed: Bool;
@@ -149,7 +200,9 @@ export typedef BitExprSegment = {
   let value: Expr;
 };
 
+// A segment of a `bits[...]` pattern, such as `u16.be(x)`.
 export typedef BitPatternSegment = {
+  // In bits, and 0 for a `rest` segment.
   let width: I32;
   let endian: Endian;
   let signed: Bool;
@@ -157,51 +210,79 @@ export typedef BitPatternSegment = {
   let value: Pattern;
 };
 
+// A match arm, `p1 when (f), p2 when (g) => body`.
 export typedef MatchArm = {
+  /** The patterns that share the body, each with its own guard. The parser takes the guard
+   * before `=>` as the arm's, so the last has none of its own. */
   let alternatives: Array<MatchAlternative>;
+  // The arm's guard, which applies after all its alternatives.
   let guard: ?Expr;
   let body: Block;
 };
 
+// One pattern of a match arm, with its own guard if any.
 export typedef MatchAlternative = {
   let pattern: Pattern;
   let guard: ?Expr;
 };
 
+/** A clause of a `with` expression; `pattern when (guard) <- value`, the guard being optional, or
+ * `let pattern = value`. */
 export enum WithClause {
   Clause(pattern: Pattern, guard: ?Expr, value: Expr);
   Let(pattern: Pattern, value: Expr);
 }
 
+// The `else` arms of a `with` expression, if it has any.
 export enum MatchArms {
   None;
   Some(arms: Array<MatchArm>);
 }
 
+// A pattern, as in a `let`, a match arm, a `with` clause or a list generator.
 export enum Pattern {
+  // `_`. As the whole pattern of a `let`, `_` is a `BindPattern` instead.
   Wildcard;
+  // A name that binds the matched value.
   BindPattern(name: Bytes);
+  // `^name`, a pinned name.
   Pin(name: Bytes);
   Bool(value: Bool);
+  /** An integer, its text keeping a leading `-` for a negative literal. `'c'.code` is stored as
+   * the character's code point in decimal. */
   Integer(digits: Bytes, size: IntSize);
   Bytes(value: Bytes);
+  // `:name`.
   Atom(name: Bytes);
+  // `{ name: pattern, ... }`; a last field named `...` holds the `Spread` of `...rest`.
   Object(fields: Array<Tuple<Bytes, Pattern>>);
+  // `(p, q)`, which needs a comma, or `()`; an item may be a `Spread`.
   Tuple(items: Array<Pattern>);
+  // `[p, q]`; an item may be a `Spread`, and `[p | rest]` is `[p, ...rest]`.
   Array(items: Array<Pattern>);
+  // `Name(args)`, or a bare capitalised `Name` other than as the whole pattern of a `let`.
   Enum(name: Bytes, args: Array<Pattern>);
+  // `when ~r/pattern/flags as name` in a match arm, the binding being optional.
   RegExp(pattern: Bytes, flags: Bytes, binding: ?Bytes);
+  // `is T as name`, the binding being optional; `is fn` gives the type name `__fn__`.
   IsType(ty: Type, binding: ?Bytes);
+  // `bits[...]`.
   Bits(segments: Array<BitPatternSegment>);
+  // A float, its text keeping a leading `-` for a negative literal.
   Float(literal: Bytes, size: FloatSize);
+  // `null`.
   Null;
+  // `...rest` or `..._` in an array or tuple pattern, binding the items it spans unless null.
   Spread(binding: ?Bytes);
+  // `unquote(value)` inside a quote; the pattern, or the name bound, that `value` gives.
   Unquote(value: Expr);
 }
 
+// An expression.
 export enum Expr {
   Bytes(value: Bytes);
   RegExp(pattern: Bytes, flags: Bytes);
+  // `:name`.
   Atom(name: Bytes);
   Bool(value: Bool);
   Integer(digits: Bytes, size: IntSize);
@@ -212,42 +293,64 @@ export enum Expr {
   Variable(name: Bytes);
 
   Array(items: Array<Expr>);
+  // A `list[...]` literal.
   List(value: ListLiteral);
   Tuple(items: Array<Expr>);
   Object(entries: Array<ObjectEntry>);
+  // `...value` in a call's arguments, an array or a tuple.
   Spread(value: Expr);
   Bits(segments: Array<BitExprSegment>);
 
   Member(base: Expr, name: Bytes);
   Index(base: Expr, index: Expr);
+  // `callee(args)` or `callee<T>(args)`.
   Call(callee: Expr, typeArgs: Array<Type>, args: Array<Expr>);
+  // `base<T>` without a call.
   TypeApply(base: Expr, args: Array<Type>);
+  // `new P(args)`, `prototype` being `P` with any member path and type arguments.
   New(prototype: Expr, args: Array<Expr>);
 
+  // `fn(params): R { ... }`, or `method fn ...` when `isMethod`.
   Function(params: Array<Parameter>, result: ?Type, body: Block, isMethod: Bool);
   BlockExpr(body: Block);
+  // `if (c) { ... } else ...`; without `else`, `elseBranch` is `Null`.
   If(condition: Expr, thenBranch: Expr, elseBranch: Expr);
   Match(subject: Expr, arms: Array<MatchArm>);
+  // `with p <- e, ... { ... } else { arms }`, the `else` being optional.
   With(clauses: Array<WithClause>, body: Block, elseArms: MatchArms);
+  // `try { ... } catch (name) { ... }`, the name being optional.
   Try(body: Block, catchName: ?Bytes, catchBody: Block);
+  // `let pattern = value` as an expression, such as a block's final `let` without `;`.
   LetExpr(pattern: Pattern, typeParams: Array<TypeParam>, annotation: ?Type, value: Expr);
 
   Unary(op: UnaryOp, value: Expr);
   Binary(op: BinaryOp, left: Expr, right: Expr);
+  // `++x`, `--x`, `x++` or `x--`; `prefix` tells which form.
   IncDec(op: IncDecOp, prefix: Bool, target: Expr);
+  // `value as T`.
   Cast(value: Expr, ty: Type);
+  // `value is T`.
   Is(value: Expr, ty: Type);
+  // `c ? a : b`; without `: b`, `elseBranch` is `Null`.
   Conditional(condition: Expr, thenBranch: Expr, elseBranch: Expr);
+  // `value |> body`, where `body` refers to `value` as `%`; `topic` is whether it does.
   Pipe(value: Expr, body: Expr, topic: Bool);
+  // `%`, the value piped into a pipeline body.
   Topic;
   Assign(op: AssignOp, target: Expr, value: Expr);
   Await(value: Expr);
   Quote(kind: QuoteKind, body: QuoteBody);
+  // `unquote(value)` inside a quote; the syntax, or the literal, that `value` gives.
   Unquote(value: Expr);
+  /** A template with holes, `` `text ${hole} text` ``; `texts` has one more item than `holes`,
+   * the text before each hole and then the text after the last. */
   Interpolation(texts: Array<Bytes>, holes: Array<Expr>);
+  // `value ?? fallback`: `value` unless it is null, when `fallback` is evaluated instead.
   Coalesce(value: Expr, fallback: Expr);
 }
 
+/** What an import names; values for `import`, types for `import type`, macros for
+ * `import macro`, and a native library's exports for `load`. */
 export enum ImportKind {
   Value;
   TypeOnly;
@@ -255,21 +358,26 @@ export enum ImportKind {
   Native;
 }
 
+// A name in `import { name as alias } from path;`, the alias being optional.
 export typedef ImportItem = {
   let name: Bytes;
   let alias: ?Bytes;
 };
 
+// A struct field or enum constructor field, `name: Type`.
 export typedef StructField = {
   let name: Bytes;
   let ty: Type;
 };
 
+// An enum constructor and its fields.
 export typedef EnumConstructor = {
   let name: Bytes;
   let fields: Array<StructField>;
 };
 
+/** The type of a bytes-layout field; `u8`, `u16`, `u32`, `i32` or `f32` with an optional `.le` or
+ * `.be` byte order, `bits(N)` for 1 to 7 bits, or `rest`. */
 export enum BytesLayoutType {
   U8;
   U16(endian: Endian);
@@ -280,11 +388,16 @@ export enum BytesLayoutType {
   Rest;
 }
 
+// A field of a bytes-layout typedef, `let name: type;`.
 export typedef BytesLayoutField = {
   let name: Bytes;
   let ty: BytesLayoutType;
 };
 
+/** What a typedef defines; an alias, `typedef T = Type;`; a struct,
+ * `typedef T = { let f: Type; };`; a bytes layout,
+ * `typedef T = bytes-layout { let f: u16.be; };`; or an abstract type, `typedef T = abstract;`,
+ * whose values only natives make. */
 export enum TypedefBody {
   Alias(ty: Type);
   Struct(fields: Array<StructField>);
@@ -292,12 +405,18 @@ export enum TypedefBody {
   Abstract;
 }
 
+/** A field of a prototype; `name: value;`, or a method, `name(params) { ... };`, whose value is the
+ * `method fn` it stands for. */
 export typedef PrototypeField = {
   let name: Bytes;
   let value: Expr;
 };
 
+// A statement or declaration.
 export enum Stmt {
+  /** `let` or, when `isConst`, `const`; `exported` when it follows `export`. The `otherwise`
+   * block of `let pattern = value else { ... };` runs, and must leave, when the pattern does not
+   * match. */
   LetStmt(
     isConst: Bool,
     exported: Bool,
@@ -320,32 +439,46 @@ export enum Stmt {
     typeParams: Array<TypeParam>,
     constructors: Array<EnumConstructor>
   );
+  // `macro name(params) { statements }`.
   Macro(exported: Bool, name: Bytes, params: Array<Bytes>, body: Array<Stmt>);
 
+  // `import path as alias;`.
   ImportModule(kind: ImportKind, path: Array<Bytes>, alias: Bytes);
+  // `import { items } from path;`.
   ImportFrom(kind: ImportKind, items: Array<ImportItem>, path: Array<Bytes>);
 
+  // `while (c) { ... }`; a body's final expression is kept as its last statement.
   While(condition: Expr, body: Array<Stmt>);
+  // `do { ... } while (c);`; a body's final expression is kept as its last statement.
   DoWhile(body: Array<Stmt>, condition: Expr);
   Break;
   Continue;
   Throw(value: Expr);
+  // `return;` or `return value;`.
   Return(value: ?Expr);
+  // An expression evaluated for its effect.
   Expression(value: Expr);
+  /** `for (item in items) { ... }`, or `for (index, item in items) { ... }`, where `index` is a
+   * name; a body's final expression is kept as its last statement. */
   For(index: ?Pattern, item: Pattern, items: Expr, body: Array<Stmt>);
 }
 
+// A program's `package a.b;` declaration, if it has one.
 export enum Package {
   None;
   Path(parts: Array<Bytes>);
 }
 
+// A parsed source file.
 export typedef Program = {
+  // Its `package a.b;` declaration, if it has one.
   let packageName: Package;
   let statements: Array<Stmt>;
+  // The expression that ends it without a `;`, if any.
   let tail: ?Expr;
 };
 
+// Checks whether `pattern` is a `BindPattern`, which binds a single name.
 export let isBindPattern = fn(pattern: Pattern): Bool {
   match (pattern) {
     BindPattern(_) => true,
@@ -353,6 +486,8 @@ export let isBindPattern = fn(pattern: Pattern): Bool {
   }
 };
 
+/** Returns the name that `pattern`, a `BindPattern`, binds; any other pattern is an internal
+ * error. */
 export let bindPatternName = fn(pattern: Pattern): Bytes {
   match (pattern) {
     BindPattern(name) => name,
@@ -363,6 +498,7 @@ export let bindPatternName = fn(pattern: Pattern): Bytes {
   }
 };
 
+// Returns the names that `pattern` binds, in no particular order.
 export let patternNames = fn(pattern: Pattern): Array<Bytes> {
   let names = Array.new<Bytes>(0);
   let patterns = [pattern];
@@ -392,23 +528,40 @@ export let patternNames = fn(pattern: Pattern): Array<Bytes> {
   names
 };
 
+/** Returns the number of `expr`'s variant, counting the variants of `Expr` from 1 in
+ * declaration order; 0 is left for the syntax that is not an AST node. The parser records the
+ * number with each node's span, and `frontend.syntax.SyntaxTree` checks it against the AST node
+ * it pairs the span with. */
 export let exprTag = fn(expr: Expr): I32 { expr.tag() + 1 };
 
+// Returns the number of `pattern`'s variant, as `exprTag` does for `Expr`.
 export let patternTag = fn(pattern: Pattern): I32 { pattern.tag() + 1 };
 
+// Returns the number of `stmt`'s variant, as `exprTag` does for `Expr`.
 export let stmtTag = fn(stmt: Stmt): I32 { stmt.tag() + 1 };
 
+/** Returns the value of digit `c` (hex, either case); callers guarantee it is a digit.
+ * @return 0 to 15 */
 let _digitValue = fn(c: I32): I32 {
   if (c <= "9".code) { return c - "0".code; }
   if (c <= "F".code) { return c - "A".code + 10; }
   c - "a".code + 10
 };
 
+/** Returns the error for an integer literal out of the range of its type.
+ * @param text  the literal's text, without a suffix
+ * @param negative  whether the literal is negated
+ * @param range  the type and its range, as `I8 (-128 to 127)` */
 let _outOfRange = fn(text: Bytes, negative: Bool, range: Bytes): Bytes {
   let sign = negative ? "-" : "";
   coded(E0007, `integer literal ${sign}${text} is out of range for ${range}`)
 };
 
+/** Returns where an integer literal's digits start and their radix. The text is decimal digits
+ * or `0x`, `0b` or `0o` digits (prefix letter in either case), optionally separated by `_`; a
+ * negative match pattern's text carries its own leading `-`.
+ * @param text  the literal's text, without a suffix
+ * @return the digits' start, their radix, and whether the text has a leading `-` */
 let _digits = fn(text: Bytes): Tuple<I32, I32, Bool> {
   let minus = (text.len() > 0) && (Bytes.get_u8(text, 0) == "-".code);
   let i = minus ? 1 : 0;
@@ -426,9 +579,19 @@ let _digits = fn(text: Bytes): Tuple<I32, I32, Bool> {
   (i, radix, minus)
 };
 
+/** Returns the value of an integer literal's text (`_digits`), checked against `[least, most]`.
+ * @param text  the literal's text, without a suffix
+ * @param negative  whether the literal is negated; a leading `-` in the text flips it
+ * @param least  the least value of the type
+ * @param most  the greatest value of the type
+ * @param range  the type and its range, for the error
+ * @return the value
+ * @throws an error naming the type's range if the value does not fit */
 export let integerIn = fn(text: Bytes, negative: Bool, least: I64, most: I64, range: Bytes): I64 {
   let (start, radix, minus) = _digits(text);
   let sign = negative != minus;
+  /* Accumulated as a negative number, as Java's parseLong does, so that the most negative value
+   * fits without overflow. */
   let max: I64 = 9223372036854775807;
   let bound: I64 = sign ? -max - 1 : -max;
   let value: I64 = 0;
@@ -440,6 +603,7 @@ export let integerIn = fn(text: Bytes, negative: Bool, least: I64, most: I64, ra
 
     if (c != "_".code) {
       let digit = _digitValue(c) as I64;
+      // Division truncates towards zero, so this is the least value that does not overflow.
       if (value < (bound + digit) / (radix as I64)) { throw _outOfRange(text, negative, range); }
       value = value * (radix as I64) - digit;
     }
@@ -449,10 +613,18 @@ export let integerIn = fn(text: Bytes, negative: Bool, least: I64, most: I64, ra
   result
 };
 
+/** Returns the value of an I32 literal's text; see `integerIn`.
+ * @param text  the literal's text, without a suffix
+ * @param negative  whether the literal is negated
+ * @throws an error if the value does not fit in I32 */
 export let integerValue = fn(text: Bytes, negative: Bool): I32 {
   integerIn(text, negative, -2147483648, 2147483647, "I32 (-2147483648 to 2147483647)") as I32
 };
 
+/** Returns the value of an I64 literal's text; see `integerIn`.
+ * @param text  the literal's text, without a suffix
+ * @param negative  whether the literal is negated
+ * @throws an error if the value does not fit in I64 */
 export let wideIntegerValue = fn(text: Bytes, negative: Bool): I64 {
   integerIn(
     text,
@@ -463,10 +635,17 @@ export let wideIntegerValue = fn(text: Bytes, negative: Bool): I64 {
   )
 };
 
+/** Returns the bits of a U64 literal's text (`_digits`), which may exceed the greatest I64.
+ * @param text  the literal's text, without a suffix
+ * @param negative  whether the literal is negated; only zero may be
+ * @return the value's bits
+ * @throws an error if the value is negative or does not fit in 64 bits */
 export let unsignedWideValue = fn(text: Bytes, negative: Bool): I64 {
   let (start, radix, minus) = _digits(text);
   let range = "U64 (0 to 18446744073709551615)";
 
+  /* A value above `limit`, or at it with a digit above `last`, overflows; `limit` is the greatest
+   * U64 divided by the radix, so a value not above it is a non-negative I64. */
   let limit: I64 = match (radix) {
     16 => 1152921504606846975,
     8 => 2305843009213693951,

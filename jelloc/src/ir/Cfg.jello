@@ -1,18 +1,30 @@
 package ir;
 
+/** @file
+ * Control-flow queries over IR basic blocks; a block's successors, the register its terminator
+ * reads, whether it may throw, and the catch block a throw from it enters. Liveness
+ * (`ir.Liveness`), verification (`ir.Verify`), lowering (`ir.Lower`) and the backend's
+ * legalisation, allocation and emission share them. */
+
 import { instructionMayThrow } from ir.Model;
 import type { BasicBlock, Instruction, Terminator } from ir.Model;
 
+// Checks whether `terminator` is a `Throw`.
 let _terminatorThrows = fn(terminator: Terminator): Bool {
   match (terminator) { Throw(_, _) => true, _ => false }
 };
 
+// Returns the ID of `block`.
 export let blockId = fn(block: BasicBlock): I32 { block.id };
 
+/** Returns the register `terminator` reads; a branch's condition, or the value returned or
+ * thrown, or -1 for a `Jump`. A terminator reads at most one. */
 export let terminatorRead = fn(terminator: Terminator): I32 {
   match (terminator) { Branch(value, _, _), ReturnValue(value), Throw(value, _) => value, _ => -1 }
 };
 
+/** Returns the blocks `terminator` passes control to without a throw.
+ * @return the target block IDs; one for a `Jump`, then and else for a `Branch`, none otherwise */
 export let normalSuccessors = fn(terminator: Terminator): Array<I32> {
   match (terminator) {
     Jump(target) => [target],
@@ -21,6 +33,8 @@ export let normalSuccessors = fn(terminator: Terminator): Array<I32> {
   }
 };
 
+/** Checks whether a block of `instructions` ending in `terminator` may throw; whether the
+ * terminator is a `Throw` or an instruction may throw (see `Model.instructionMayThrow`). */
 export let blockMayThrow = fn(instructions: Array<Instruction>, terminator: Terminator): Bool {
   if (_terminatorThrows(terminator)) { return true; }
 
@@ -30,6 +44,7 @@ export let blockMayThrow = fn(instructions: Array<Instruction>, terminator: Term
   false
 };
 
+// Returns each block's index in `blocks` by its ID, with -1 for an ID with no block.
 export let blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   let indexes = Array.new<I32>(0);
 
@@ -42,6 +57,11 @@ export let blockIndexes = fn(blocks: Array<BasicBlock>): Array<I32> {
   indexes
 };
 
+/** Finds the catch block a throw from `block` enters. A block with a handler that cannot throw
+ * enters none.
+ * @param indexes  block indexes by ID, from `blockIndexes`
+ * @return the catch block's index and the payload register it receives the thrown value in, or
+ *   (-1, -1) when the block throws into none */
 export let blockCatch = fn(block: BasicBlock, indexes: Array<I32>): Tuple<I32, I32> {
   let handler = block.handler;
 

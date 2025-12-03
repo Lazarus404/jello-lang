@@ -1,9 +1,17 @@
 package std.core;
 
+/* Functions of Objects, which a program calls as Object.f(o, ...) or as
+ * o.f(...); the compiler's intrinsics get, set, exists, remove, clear, copy,
+ * keys and toString win, and a name that is neither calls the function in
+ * the Object's field of that name. */
+
+// The number of fields O has.
 export let len = fn(o: Object): I32 { o.keys().len() };
 
+// Whether O has no fields.
 export let isEmpty = fn(o: Object): Bool { len(o) == 0 };
 
+// Sets every field of OTHER on O, replacing any O has; O.
 export let merge = fn(o: Object, other: Object): Object {
   let keys = other.keys();
   let i = 0;
@@ -15,6 +23,7 @@ export let merge = fn(o: Object, other: Object): Object {
   o
 };
 
+// The values of O's fields, in the order of its keys.
 export let values = fn(o: Object): Array<Dynamic> {
   let keys = o.keys();
   let out = Array.new<Dynamic>(0);

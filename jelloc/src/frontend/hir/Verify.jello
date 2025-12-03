@@ -1,5 +1,15 @@
 package frontend.hir;
 
+/** @file
+ * Verifies a checked HIR program independently of the checker, before lowering. Every node's type
+ * is recomputed from its operands and compared with the type the checker recorded; locals are in
+ * scope where they are read; each global is initialised exactly once, in the program body; `break`,
+ * `continue` and `return` appear only where they may; every node has a source span; and no type
+ * the program uses still holds an inference `Var`, a type `Param` or an `Applied`. The nodes form
+ * a tree in which a node references only earlier nodes, each at most once.
+ * `semantics.Modules.typeCheckModules` runs it on every program it checks, and a failure is an
+ * internal error (a compiler bug) that the driver locates with `verifyFailureSpan`. */
+
 import type { Hir } from frontend.hir.Hir;
 import type { SourceSpan } from frontend.syntax.Source;
 import { internalError } from support.Internal;
@@ -14,22 +24,47 @@ import {
   spanStartOf, typeArg, typeArgCount, typeCount, typeOf, useHir, valueOf, variantCount,
 } from frontend.hir.Hir;
 
+// Whether each node, by ID, has been claimed as a child.
 let _used = Array.new<Bool>(0);
+// The type of each function, by function ID minus 1.
 let _functionTypes = Array.new<I32>(0);
+/** The types of each function's captures, in order, by function ID minus 1; what a `FunctionRef`
+ * to it must supply; -1 for a capture whose node reference is out of range. */
 let _captureTypes = Array.new<Array<I32>>(0);
+// The binding IDs in scope, innermost last.
 let _visibleIds = Array.new<I32>(0);
+// The type of each binding in `_visibleIds`.
 let _visibleTypes = Array.new<I32>(0);
+// Whether each binding in `_visibleIds` is mutable; true only for a `Let` or a `Capture`.
 let _visibleMutable = Array.new<Bool>(0);
+/** Whether each binding, by ID, has been declared anywhere in the program, since binding IDs are
+ * unique across the whole program. */
 let _declared = Array.new<Bool>(0);
+// The index in `_visibleIds` of each binding, by ID, or -1 when it is not in scope.
 let _places = Array.new<I32>(0);
+/** Whether an `InitGlobal` has initialised each global, by global ID. The program body initialises
+ * each global once, in whatever order its modules run their initialisers (a module's regexps
+ * first); the verifier does not check that order, since `frontend.semantics.InitOrder` already
+ * rejects a read before the write. */
 let _initialized = Array.new<Bool>(0);
+/** The result type of the function being checked, or -1 in the program body, where `return` is
+ * invalid. */
 let _result = -1;
+// The number of loops enclosing the statement being checked.
 let _loops = 0;
 
+/** The node being checked, or -1. Each check of a node sets it on entry and restores it on exit, so
+ * after a failure it is the node that failed. */
 let _at = -1;
 
+// Raises the internal error `invalid HIR: ` followed by `message`, which says what is wrong.
 let _fail = fn(message: Bytes): Null { internalError(`invalid HIR: ${message}`) };
 
+/** Claims child `index` of `parent`, failing unless it exists, is an earlier node than `parent` and
+ * has not been claimed before.
+ * @param parent  the parent node
+ * @param index  the child's position
+ * @return the child's node ID */
 let _child = fn(parent: I32, index: I32): I32 {
   if (!childrenInBounds(parent) || (index < 0) || (index >= childCount(parent))) {
     _fail("missing operand");
@@ -43,15 +78,21 @@ let _child = fn(parent: I32, index: I32): I32 {
   child
 };
 
+// Fails unless node `id` has exactly `count` children.
 let _arity = fn(id: I32, count: I32) {
   if (childCount(id) != count) { _fail("wrong operand count"); }
   null
 };
 
+// Returns the number of fields of `ty`, a tuple or a record, or -1 when it is neither.
 let _fieldCount = fn(ty: I32): I32 {
   (isKind(ty, Kind.Tuple) || isKind(ty, Kind.Record)) ? memberCount(ty) : -1
 };
 
+/** Describes what is wrong with node `id`'s span; a path that is not a non-empty bytes entry, or a
+ * negative or empty range.
+ * @param id  the node
+ * @return the problem, or "" when the span names a non-empty range of a file */
 let _spanProblem = fn(id: I32): Bytes {
   let path = spanPathOf(id);
 
@@ -63,6 +104,8 @@ let _spanProblem = fn(id: I32): Bytes {
   (start < 0) || (spanEndOf(id) <= start) ? "empty source span" : ""
 };
 
+/** Checks that every node has a span naming a non-empty range of a source file, and that a child
+ * from the same file lies inside its parent's range. */
 let _spans = fn() {
   if (spanCount() != nodeCount()) { _fail("every node needs a source span"); }
 
@@ -90,6 +133,7 @@ let _spans = fn() {
   null
 };
 
+// Pushes each of `ty`'s type arguments, in order, onto `reached`.
 let _reachArgs = fn(ty: I32, reached: Array<I32>) {
   let i = 0;
 
@@ -101,6 +145,12 @@ let _reachArgs = fn(ty: I32, reached: Array<I32>) {
   null
 };
 
+/** Checks that no type the program uses holds a `Var`, a `Param` or an `Applied`, so the checker
+ * inferred every type and instantiated every generic; the types of the nodes in the tree, of the
+ * globals and natives, and every type they reach, enum fields included. Nodes outside the tree,
+ * such as a generic function's checked body, are not used. One pass over the type table finds
+ * what holds one through elements and arguments, which relies on a type's parts preceding it; a
+ * worklist then follows enum fields, which may come later. */
 let _closedTypes = fn() {
   let open = Array.new<Bool>(0);
   let seen = Array.new<Bool>(typeCount());
@@ -114,6 +164,7 @@ let _closedTypes = fn() {
       _ => false,
     };
 
+    // An enum's count is of its variants, not type arguments.
     let i = 0;
     let args = match (kindOf(ty)) { Tuple, Function => typeArgCount(ty), _ => 0 };
 
@@ -126,6 +177,7 @@ let _closedTypes = fn() {
     ty++;
   }
 
+  // Many nodes share a type, which is queued once.
   let reached = Array.new<I32>(0);
   let root = rootNode();
   let id = 0;
@@ -207,11 +259,16 @@ let _closedTypes = fn() {
   null
 };
 
+// Returns the index in `_visibleIds` of local binding `id`, failing when it is not in scope.
 let _visible = fn(id: I32): I32 {
   if ((id < 0) || (id >= _places.len()) || (_places[id] < 0)) { _fail("unknown local binding"); }
   _places[id]
 };
 
+/** Brings binding `id` into scope, failing when the ID is negative or already declared.
+ * @param id  the binding ID
+ * @param ty  the binding's type
+ * @param mutable  whether it can be assigned */
 let _declare = fn(id: I32, ty: I32, mutable: Bool) {
   if (id < 0) { _fail("negative binding ID"); }
 
@@ -229,6 +286,7 @@ let _declare = fn(id: I32, ty: I32, mutable: Bool) {
   null
 };
 
+// Takes out of scope every binding after the first `start` visible ones. They stay declared.
 let _popTo = fn(start: I32) {
   while (_visibleIds.len() > start) {
     _places[_visibleIds[_visibleIds.len() - 1]] = -1;
@@ -240,17 +298,28 @@ let _popTo = fn(start: I32) {
   null
 };
 
+/** Claims child `index` of `parent` and checks it as an expression.
+ * @param parent  the parent node
+ * @param index  the child's position
+ * @return the child's type */
 let _operand = fn(parent: I32, index: I32): I32 { _expr(_child(parent, index)) };
 
+// Returns the type of global `id`, failing when there is no such global.
 let _global = fn(id: I32): I32 {
   if ((id < 0) || (id >= globalCount())) { _fail("unknown global"); }
   globalTypeOf(id)
 };
 
+/** Checks binding `index` of `Declare` node `parent` and its value. A `Let` or `Const` declares a
+ * local; an `InitGlobal` is allowed only in the program body and marks its global initialised.
+ * @param parent  the `Declare` node
+ * @param index  the binding's position
+ * @param programBody  whether the declaration is a statement of the program body */
 let _binding = fn(parent: I32, index: I32, programBody: Bool) {
   let binding = _child(parent, index);
   _arity(binding, 1);
 
+  // A local function may capture its own binding, to call itself, so that is declared first.
   let local = match (opOf(binding)) { Let, Const => true, _ => false };
   let mutable = match (opOf(binding)) { Let => true, _ => false };
   let early = local && match (opOf(childOf(binding, 0))) { FunctionRef => true, _ => false };
@@ -275,11 +344,21 @@ let _binding = fn(parent: I32, index: I32, programBody: Bool) {
   null
 };
 
+/** Returns the type of the function with function ID `functionId`, as `Call` and `FunctionRef`
+ * hold it, failing when there is none. */
 let _functionType = fn(functionId: I32): I32 {
   if ((functionId < 1) || (functionId > _functionTypes.len())) { _fail("unknown direct function"); }
   _functionTypes[functionId - 1]
 };
 
+/** Checks the children of `id` from `first` on as arguments against the parameters of
+ * `functionType`, failing with `message` when it is not a function type or the count or a type
+ * differs.
+ * @param id  the call node
+ * @param functionType  the callee's type
+ * @param first  the index of the first argument
+ * @param message  the failure message
+ * @return the function's result type */
 let _arguments = fn(id: I32, functionType: I32, first: I32, message: Bytes): I32 {
   let arity = childCount(id) - first;
 
@@ -297,17 +376,30 @@ let _arguments = fn(id: I32, functionType: I32, first: I32, message: Bytes): I32
   innerOf(functionType)
 };
 
+/** Returns the type of node `id`'s first operand without claiming it, or -1 when it has none; the
+ * type predicates all answer false for -1, as they would for no operand at all. */
 let _firstType = fn(id: I32): I32 { childCount(id) > 0 ? typeOf(childOf(id, 0)) : -1 };
 
+/** Returns the type a bytes read requires of node `id`'s first operand; ByteBuffer when the operand
+ * is one, otherwise Bytes, so any other operand fails the operand check. Reads the operand's type
+ * without claiming it.
+ * @param id  the reading node
+ * @return `TYPE_BYTE_BUFFER` or `TYPE_BYTES` */
 let _readable = fn(id: I32): I32 {
   _firstType(id) == TYPE_BYTE_BUFFER ? TYPE_BYTE_BUFFER : TYPE_BYTES
 };
 
+/** Fails with `what` when `ty` cannot be boxed as a Dynamic or thrown; a ByteBuffer, which leaves
+ * its type only through a copying slice, or a list, whose nil would box as null.
+ * @param ty  the value's type
+ * @param what  the failure message */
 let _boxable = fn(ty: I32, what: Bytes): Bool {
   if ((ty == TYPE_BYTE_BUFFER) || isKind(ty, Kind.List)) { _fail(what); }
   true
 };
 
+/** Checks whether the VM checks a Dynamic's value against `ty` exactly, so that it can be extracted
+ * as one. */
 let _extractable = fn(ty: I32): Bool {
   match (kindOf(ty)) {
     Bool, I32, I64, F16, F32, F64, Atom, Bytes, Enum, Object, Abstract => true,
@@ -315,14 +407,19 @@ let _extractable = fn(ty: I32): Bool {
   }
 };
 
+// Checks whether a Convert of `source` to `ty` widens a prototype's Object.
 let _upcast = fn(ty: I32, source: I32): Bool { isObject(ty) && isPrototype(source) };
 
+// Checks that node `id` has `count` operands, the first an Object.
 let _objectOperand = fn(id: I32, count: I32) {
   _arity(id, count);
   if (!isObject(_operand(id, 0))) { _fail("object operand type"); }
   null
 };
 
+/** Checks the ObjectGet, ObjectSet or ObjectHas node `id`; an Object, then the Atom key when its
+ * value is -1, then `extra` more operands.
+ * @return the type of its first extra operand, or Object when it has none */
 let _objectAccess = fn(id: I32, extra: I32): I32 {
   let keyed = valueOf(id) < 0;
   if (!keyed && (valueOf(id) >= bytesCount())) { _fail("object key name index"); }
@@ -333,8 +430,18 @@ let _objectAccess = fn(id: I32, extra: I32): I32 {
   extra > 0 ? _operand(id, keyed ? 2 : 1) : TYPE_OBJECT
 };
 
+/** Returns the type a number operation checks against; `ty` if it is an integer or float type,
+ * otherwise I32.
+ * @param ty  the type that sets the width */
 let _width = fn(ty: I32): I32 { isNumberType(ty) ? ty : TYPE_I32 };
 
+/** Checks node `id` as an operation on fixed operand types, failing with `message` when its arity
+ * or an operand's type differs.
+ * @param id  the node
+ * @param operands  the operands' expected types, in order
+ * @param result  the operation's result type
+ * @param message  the failure message
+ * @return `result` */
 let _typed = fn(id: I32, operands: Array<I32>, result: I32, message: Bytes): I32 {
   _arity(id, operands.len());
 
@@ -345,6 +452,11 @@ let _typed = fn(id: I32, operands: Array<I32>, result: I32, message: Bytes): I32
   result
 };
 
+/** Checks that every operand of node `id` has type `ty`, failing with `message` at the first that
+ * does not.
+ * @param id  the node
+ * @param ty  the operands' type
+ * @param message  the failure message */
 let _uniform = fn(id: I32, ty: I32, message: Bytes) {
   let i = 0;
 
@@ -356,6 +468,11 @@ let _uniform = fn(id: I32, ty: I32, message: Bytes) {
   null
 };
 
+/** Checks `ArrayGet` (two operands) or `ArraySet` (three) node `id`; an array, an I32 index and,
+ * for a set, a value of the element type.
+ * @param id  the node
+ * @param operands  the number of operands, 2 or 3
+ * @return the array's element type */
 let _array = fn(id: I32, operands: I32): I32 {
   _arity(id, operands);
 
@@ -369,6 +486,11 @@ let _array = fn(id: I32, operands: I32): I32 {
   innerOf(array)
 };
 
+/** Checks a `Try` or `TryStatement`; its body block, then its handler block with the thrown value
+ * bound as an immutable Dynamic when `valueOf(id)` is a binding. For a value try both blocks must
+ * have the try's type.
+ * @param id  the try node
+ * @param value  whether it is a `Try` expression */
 let _try = fn(id: I32, value: Bool) {
   _arity(id, 2);
 
@@ -383,11 +505,17 @@ let _try = fn(id: I32, value: Bool) {
   null
 };
 
+/** Checks that node `id`'s immediate is a valid index into the bytes table, failing with `message`
+ * when it is not. */
 let _bytesIndex = fn(id: I32, message: Bytes) {
   if ((valueOf(id) < 0) || (valueOf(id) >= bytesCount())) { _fail(message); }
   null
 };
 
+/** Checks whether `code` is a kind an `IsKind` node may test; one of the scalar or reference kinds,
+ * a float kind, or an enum kind whose auxiliary is an enum type.
+ * @param code  the kind code
+ * @param aux  the node's auxiliary, the enum type for `KIND_ENUM` */
 let _knownKind = fn(code: I32, aux: I32): Bool {
   (code == KIND_BOOL) || (code == KIND_I32) || (code == KIND_BYTES) || (code == KIND_I64)
     || (code == KIND_ATOM) || (code == KIND_OBJECT) || (code == KIND_FUNCTION)
@@ -395,6 +523,10 @@ let _knownKind = fn(code: I32, aux: I32): Bool {
     || ((code == KIND_ENUM) && isKind(aux, Kind.Enum))
 };
 
+/** Checks expression node `id` and its operands, failing unless the type recomputed from them
+ * equals the node's recorded type.
+ * @param id  the expression node
+ * @return the node's type */
 let _expr = fn(id: I32): I32 {
   let outer = _at;
   _at = id;
@@ -443,6 +575,8 @@ let _expr = fn(id: I32): I32 {
       _typed(id, captures, function, "closure capture type mismatch")
     },
 
+    /* Number operations take one number type; the result's, or a comparison's first
+     * operand's. A float has no remainder, shifts or bitwise operations. */
     Rem, Shl, Shr, BitAnd, BitOr, BitXor when (isFloatType(ty)) => {
       _fail("integer operation on a float");
       ty
@@ -454,6 +588,7 @@ let _expr = fn(id: I32): I32 {
     Eq when (_firstType(id) == TYPE_BOOL) => {
       _typed(id, [TYPE_BOOL, TYPE_BOOL], TYPE_BOOL, "bool equality requires bool operands")
     },
+    // Atoms, Objects and native handles compare by identity.
     Eq when ((_firstType(id) == TYPE_ATOM) || isObject(_firstType(id))
       || isKind(_firstType(id), Kind.Abstract)) => {
       let t = _firstType(id);
@@ -485,6 +620,7 @@ let _expr = fn(id: I32): I32 {
       _arity(id, 1);
       let source = _operand(id, 0);
 
+      // A prototype's Object, or a nullable one, widens to Object or a prototype it delegates to.
       let objects = (isKind(ty, Kind.Null) && isKind(source, Kind.Null))
         ? _upcast(innerOf(ty), innerOf(source))
         : _upcast(ty, source);
@@ -726,6 +862,7 @@ let _expr = fn(id: I32): I32 {
       if (!isObject(ty)) { _fail("object type"); }
       ty
     },
+    // A field is read as Dynamic or as a type the VM checks.
     ObjectGet => {
       _objectAccess(id, 0);
       if ((ty != TYPE_DYNAMIC) && !readsExactly(ty)) { _fail("object read as an unchecked type"); }
@@ -766,6 +903,8 @@ let _expr = fn(id: I32): I32 {
   ty
 };
 
+/** Checks the `else` branch of `IfStatement` node `id`, if it has one; a block or another
+ * `IfStatement`. */
 let _otherwise = fn(id: I32) {
   if (childCount(id) != 3) { return null; }
 
@@ -784,6 +923,10 @@ let _otherwise = fn(id: I32) {
   }
 };
 
+/** Checks statement node `id` and its operands. An `else` branch must be a block or an
+ * `IfStatement`.
+ * @param id  the statement node
+ * @param programBody  whether it is a statement of the program body */
 let _statement = fn(id: I32, programBody: Bool): Bool {
   let outer = _at;
   _at = id;
@@ -856,6 +999,12 @@ let _statement = fn(id: I32, programBody: Bool): Bool {
   true
 };
 
+/** Checks block `id`; its statements in a scope of their own, then its tail if `aux` is 1. Fails
+ * when a statement follows one that ends every path, or when the computed type differs from the
+ * block's.
+ * @param id  the block node
+ * @param programBody  whether it is the program body, whose statements may initialise globals
+ * @return the tail's type, or 0 when the block has no tail */
 let _block = fn(id: I32, programBody: Bool): I32 {
   let outer = _at;
   _at = id;
@@ -875,12 +1024,18 @@ let _block = fn(id: I32, programBody: Bool): I32 {
   let tail = auxOf(id) == 1 ? _operand(id, statements) : 0;
   _popTo(scope);
 
+  // A value block that ends every path gives no value, so its type is its context's.
   let ty = (auxOf(id) == 0) && endsPath(id) ? typeOf(id) : tail;
   if (ty != typeOf(id)) { _fail("block type mismatch"); }
   _at = outer;
   ty
 };
 
+/** Checks `Function` node `id`; its `Parameter` children against its type's parameters, then its
+ * `Capture` children against `_captureTypes`, then its body in a scope holding only those. A body
+ * that can fall through must end in a tail of the result type.
+ * @param id  the function node
+ * @param functionId  its function ID */
 let _function = fn(id: I32, functionId: I32) {
   let outer = _at;
   _at = id;
@@ -903,6 +1058,7 @@ let _function = fn(id: I32, functionId: I32) {
     if (typeOf(param) != expected) { _fail("parameter type mismatch"); }
     _arity(param, 0);
 
+    // A capture may be assigned; the local it copies shares the write.
     _declare(valueOf(param), expected, i >= params);
     i++;
   }
@@ -912,6 +1068,7 @@ let _function = fn(id: I32, functionId: I32) {
   let body = _child(id, childCount(id) - 1);
   let tail = _block(body, false);
 
+  // A tail that runs is the result; one after the end of every path never runs.
   if (!endsPath(body)) {
     if (auxOf(body) != 1) { _fail("function falls through without value"); }
     if (tail != innerOf(ty)) { _fail("function result type mismatch"); }
@@ -921,6 +1078,8 @@ let _function = fn(id: I32, functionId: I32) {
   null
 };
 
+/** Returns the types of the captures of `Function` node `function`, which follow its parameters
+ * and precede its body; -1 for one whose node reference is out of range. */
 let _capturesOf = fn(function: I32): Array<I32> {
   let captures = Array.new<I32>(0);
   let c = typeArgCount(typeOf(function));
@@ -934,6 +1093,10 @@ let _capturesOf = fn(function: I32): Array<I32> {
   captures
 };
 
+/** Verifies `program` and makes it the current HIR. The `Program` node must be the last node, with
+ * the functions as its children and then the body block, which must have a tail. A failure names
+ * the first problem found, and `verifyFailureSpan` then locates it.
+ * @throws an internal error at the first node that fails a check */
 export let verifyHir = fn(program: Hir): Bool {
   useHir(program);
   _at = -1;
@@ -947,6 +1110,7 @@ export let verifyHir = fn(program: Hir): Bool {
 
   _used = Array.new<Bool>(count);
 
+  // Direct calls may reach any function, so collect their types first.
   _functionTypes = Array.new<I32>(0);
   _captureTypes = Array.new<Array<I32>>(0);
   let i = 0;
@@ -996,6 +1160,9 @@ export let verifyHir = fn(program: Hir): Bool {
   true
 };
 
+/** Returns where the last verification failed, for the driver's diagnostic.
+ * @return the span of the node it failed at, or null when it failed outside a node or at a node
+ *   whose span is itself invalid */
 export let verifyFailureSpan = fn(): ?SourceSpan {
   let valid = (_at >= 0) && (_at < spanCount()) && (_spanProblem(_at) == "");
   valid ? spanOf(_at) : null

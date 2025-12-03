@@ -1,31 +1,51 @@
 package backend.jello;
 
+/** @file
+ * Legalisation; rewrites the IR from `ir.Lower` so that every instruction maps to one VM
+ * instruction, in the form the VM encodes most directly. A tuple becomes a struct filled field by
+ * field, an enum field index moves into a register, a thrown value is boxed to Dynamic, I32
+ * operations with a constant operand take their immediate forms, unread I32 constants are
+ * dropped, and a branch on a negation branches on its operand instead. Registers stay virtual
+ * and blocks stay unordered; register allocation (`backend.jello.Allocate`) and layout
+ * (`backend.jello.Emit`) follow. */
+
 import type { BasicBlock, Function, Instruction, Program } from ir.Model;
 import { Op, Terminator, ValueType, instructionAt } from ir.Model;
 import { terminatorRead } from ir.Cfg;
 import { verifyProgramFrom } from ir.Verify;
 
+// The register types of the function being legalised, with the temporaries legalisation adds.
 let _registers = Array.new<ValueType>(0);
+// The legalised instructions of the block being legalised.
 let _out = Array.new<Instruction>(0);
 
+// Adds a virtual register of type `ty` to the function being legalised and returns it.
 let _fresh = fn(ty: ValueType): I32 {
   _registers.push(ty);
   _registers.len() - 1
 };
 
+/** The HIR node of the instruction or throw being legalised, which the instructions it becomes
+ * keep. */
 let _node = -1;
 
+/** Appends an `op` instruction with `dst` (or -1), `args` and `imm`, located at `_node`, to
+ * `_out`. */
 let _emit = fn(op: Op, dst: I32, args: Array<I32>, imm: I32) {
   _out.push(instructionAt(op, dst, args, imm, _node));
   null
 };
 
+/** Appends the legal form of `insn` to `_out`; `TupleNew` and `EnumGet` are rewritten, and every
+ * other instruction is kept as it is.
+ * @param insn  an instruction from lowering */
 let _instruction = fn(insn: Instruction) {
   let dst = insn.dst;
   let args = insn.args;
   _node = insn.node;
 
   match (insn.op) {
+    // A tuple is an empty struct, then a `StructSet` for each field.
     TupleNew => {
       _emit(Op.StructNew, dst, Array.new<I32>(0), 0);
 
@@ -34,6 +54,7 @@ let _instruction = fn(insn: Instruction) {
       }
       null
     },
+    // `ENUM_GET` reads the field index from a register, so a `ConstI32` loads it first.
     EnumGet => {
       let index = _fresh(ValueType.I32);
       _emit(Op.ConstI32, index, Array.new<I32>(0), insn.imm);
@@ -46,6 +67,9 @@ let _instruction = fn(insn: Instruction) {
   }
 };
 
+/** Legalises the instructions and terminator of `block`.
+ * @param block  a block from lowering
+ * @return the legalised block */
 let _block = fn(block: BasicBlock): BasicBlock {
   _out = Array.new<Instruction>(0);
 
@@ -56,6 +80,7 @@ let _block = fn(block: BasicBlock): BasicBlock {
   let terminator = block.terminator;
 
   let selected = match (terminator) {
+    // `THROW` takes a Dynamic payload, so a value of any other type is boxed first.
     Throw(value, _) when (match (_registers[value]) { Dynamic => true, _ => false }) => terminator,
     Throw(value, node) => {
       _node = node;
@@ -68,11 +93,19 @@ let _block = fn(block: BasicBlock): BasicBlock {
   { ...block, instructions: _out, terminator: selected }
 };
 
+// How often each register is defined; parameters and catch payloads count as definitions.
 let _defs = Array.new<I32>(0);
+// How often each register is read, by instructions and terminators.
 let _uses = Array.new<I32>(0);
+// The value of each register a `ConstI32` defines; meaningful only where `_isConstant` is set.
 let _constants = Array.new<I32>(0);
+// Whether a `ConstI32` defines each register.
 let _isConstant = Array.new<Bool>(0);
 
+/** Counts the definitions and reads of every register of the function being legalised, and
+ * records the `ConstI32` definitions.
+ * @param params  the function's parameter registers
+ * @param blocks  its blocks */
 let _count = fn(params: Array<I32>, blocks: Array<BasicBlock>) {
   let n = _registers.len();
   _defs = Array.new<I32>(n);
@@ -123,12 +156,26 @@ let _count = fn(params: Array<I32>, blocks: Array<BasicBlock>) {
   null
 };
 
+/** Checks whether `register` holds a known constant; it is defined once, by a `ConstI32`, so it
+ * holds that constant wherever it is read, since every read follows its definition. */
 let _known = fn(register: I32): Bool { _isConstant[register] && (_defs[register] == 1) };
 
+/** Returns `insn` as the immediate form `op`, reading `operand` and taking the value of
+ * `constant` as its immediate.
+ * @param insn  the binary instruction
+ * @param op  the immediate op
+ * @param operand  the register operand
+ * @param constant  the register holding a known constant
+ * @return the rewritten instruction, with `insn`'s destination and HIR node */
 let _withImmediate = fn(insn: Instruction, op: Op, operand: I32, constant: I32): ?Instruction {
   instructionAt(op, insn.dst, [operand], _constants[constant], insn.node)
 };
 
+/** Returns the immediate form of an I32 `Add`, `Sub`, `Mul`, `Eq` or `Lt` with a known constant
+ * operand. Either operand may be the constant of `Add`, `Mul` and `Eq`; only the right one of
+ * `Sub` and `Lt`.
+ * @param insn  an instruction
+ * @return the immediate form, or null when there is none */
 let _immediate = fn(insn: Instruction): ?Instruction {
   let args = insn.args;
   if (args.len() != 2) { return null; }
@@ -151,6 +198,8 @@ let _immediate = fn(insn: Instruction): ?Instruction {
   }
 };
 
+/** Returns `block` with each I32 operation that has a known constant operand in its immediate
+ * form, moving the read counts from the constant to the immediate's operand. */
 let _withImmediates = fn(block: BasicBlock): BasicBlock {
   let instructions = block.instructions;
   let out = Array.new<Instruction>(0);
@@ -173,6 +222,8 @@ let _withImmediates = fn(block: BasicBlock): BasicBlock {
   { ...block, instructions: out }
 };
 
+/** Checks whether the last of `out` is a `Not` defining `condition`, which nothing else defines
+ * or reads, so that a branch can test its operand instead. */
 let _negatesOnly = fn(out: Array<Instruction>, condition: I32): Bool {
   if (out.len() == 0) { return false; }
 
@@ -181,6 +232,8 @@ let _negatesOnly = fn(out: Array<Instruction>, condition: I32): Bool {
   isNot && (last.dst == condition) && (_defs[condition] == 1) && (_uses[condition] == 1)
 };
 
+/** Returns `block` without the `ConstI32`s nobody reads, and branching on `x` with its targets
+ * swapped rather than on a negation of `x` computed just before it and read nowhere else. */
 let _withoutDeadCode = fn(block: BasicBlock): BasicBlock {
   let out = Array.new<Instruction>(0);
 
@@ -201,12 +254,23 @@ let _withoutDeadCode = fn(block: BasicBlock): BasicBlock {
   { ...block, instructions: out, terminator: chosen }
 };
 
+/** Selects the forms a hand-written program would use; constant I32 operands as immediates, no
+ * `ConstI32` nobody reads, and a branch on `x` with its targets swapped instead of on a negation
+ * of `x` computed just before it and read nowhere else. Every block takes its immediates before
+ * any loses its dead constants, since the counts must first settle.
+ * @param params  the function's parameter registers
+ * @param blocks  its blocks, from `_block`
+ * @return the blocks with those forms selected */
 let _select = fn(params: Array<I32>, blocks: Array<BasicBlock>): Array<BasicBlock> {
   _count(params, blocks);
   blocks.map(_withImmediates).map(_withoutDeadCode)
 };
 
+/** Legalises `function`'s blocks, then selects their forms (see `_select`).
+ * @param function  a function from lowering
+ * @return the legalised function, with any temporaries added to its registers */
 let _function = fn(function: Function): Function {
+  // A copy; legalisation adds temporaries, and the input program stays intact.
   _registers = function.registers.copy();
 
   let legal = function.blocks.map(_block);
@@ -218,6 +282,9 @@ let _function = fn(function: Function): Function {
   }
 };
 
+/** Legalises the functions of `program` from index `kept`, keeping those before it, which are
+ * legalised already, and checks the result with `Verify.verifyProgramFrom`. The input is not
+ * modified. */
 let _legalize = fn(program: Program, kept: I32): Program {
   let functions = program.functions;
   let selected = Array.new<Function>(0);
@@ -238,8 +305,15 @@ let _legalize = fn(program: Program, kept: I32): Program {
   legalized
 };
 
+/** Legalises every function of `program` (see `_legalize`). `Driver` passes the result to
+ * `Allocate.allocateProgram`.
+ * @param program  a program from `Lower.lowerProgram`
+ * @return the legalised program */
 export let legalizeJlo = fn(program: Program): Program { _legalize(program, 0) };
 
+/** Legalises `program`, which `Lower.relowerBodyInParts` lowered from the legalised program
+ * `earlier`; the functions it took from `earlier`, all but its last, are legalised already.
+ * @return the legalised program */
 export let relegalizeJlo = fn(program: Program, earlier: Program): Program {
   _legalize(program, earlier.functions.len() - 1)
 };

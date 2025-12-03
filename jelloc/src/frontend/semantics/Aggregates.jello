@@ -1,5 +1,17 @@
 package frontend.semantics;
 
+/** @file
+ * Checks arrays, tuples, records and Bytes into HIR; their literals, indexing, tuple and record
+ * fields, indexed and field assignment and steps, array methods, and the builtin namespaces
+ * `Array`, `Atom`, `Bytes`, `List`, `Std` and `System`, and a bytes layout's `pack` and `unpack`;
+ * `frontend.semantics.Math` checks `Math`, `Float` and `Integer`, `frontend.semantics.Lists` list
+ * literals, `frontend.semantics.Interpolation` templates with holes and
+ * `frontend.semantics.Prototypes` `new` and `super`. Arrays and records are shared by reference,
+ * and arrays grow; tuples and Bytes are immutable values, and a buffer from `Bytes.new` is the
+ * only mutable bytes. `frontend.semantics.TypeCheck` dispatches these
+ * expressions to `checkAggregateExpr`, which `frontend.semantics.Modules` registers. Errors are
+ * located at the expression being checked. */
+
 import type {
   AssignOp, BinaryOp, Expr as AstExpr, IncDecOp, ObjectEntry, Type as AstType,
 } from frontend.syntax.Ast;
@@ -40,6 +52,10 @@ import {
   E0807, E0808, E0900, coded,
 } from support.Codes;
 
+/** Checks operand `expr` as an I32.
+ * @param index  its syntax child
+ * @param what  what it is, for the error, such as "index"
+ * @throws a located error if it is not I32 */
 let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   let checked = checkOperand(expr, index, H.TYPE_I32);
 
@@ -50,6 +66,11 @@ let _i32 = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   checked
 };
 
+/** Checks operand `expr` as bytes to read; Bytes or a ByteBuffer, or a Null<T> of either,
+ * converted to its T.
+ * @param index  its syntax child
+ * @param what  the error message
+ * @throws a located error, `what`, if it is neither */
 let _readable = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   let checked = checkPresent(expr, index);
   let ty = H.typeOf(checked);
@@ -61,6 +82,11 @@ let _readable = fn(expr: AstExpr, index: I32, what: Bytes): I32 {
   checked
 };
 
+/** Checks operand `expr`, which must be of kind `kind`, a Null<T> converted to its T.
+ * @param index  its syntax child
+ * @param expected  the type the context requires, or -1 for none
+ * @param what  the error message
+ * @throws a located error, `what`, if it has another kind */
 let _of = fn(expr: AstExpr, index: I32, kind: Kind, expected: I32, what: Bytes): I32 {
   let checked = checkPresentAs(expr, index, expected);
 
@@ -71,6 +97,9 @@ let _of = fn(expr: AstExpr, index: I32, kind: Kind, expected: I32, what: Bytes):
   checked
 };
 
+/** Decodes `value` as exactly one UTF-8 code point, for a literal's `.code`, as in `"A".code`.
+ * @param value  the literal's bytes
+ * @return the code point, or -1 if `value` is not exactly one well-formed character */
 let _codePoint = fn(value: Bytes): I32 {
   if (value.len() == 0) { return -1; }
   let first = Bytes.get_u8(value, 0);
@@ -90,20 +119,25 @@ let _codePoint = fn(value: Bytes): I32 {
     code = (code << 6) | (next & 63);
     i++;
   }
+  // Overlong forms, surrogates and values past U+10FFFF are not characters.
   let least = size == 2 ? 128 : size == 3 ? 2048 : size == 4 ? 65536 : 0;
   if ((code < least) || ((code >= 55296) && (code <= 57343)) || (code > 1114111)) { return -1; }
   code
 };
 
+// Checks whether `space` names a builtin namespace that nothing in scope hides.
 let _builtin = fn(space: Bytes): Bool {
   match (space) {
     "Array", "Atom", "Bytes", "Float", "Function", "Integer", "List", "Math", "Object", "Std",
     "System", "Tuple" => !isBound(space),
+    // A program may name an enum Enum.
     "Enum" => !isBound(space) && (scopedType(space) < 0),
     _ => false,
   }
 };
 
+/** Builds `System.args`, the program's arguments as a List<Bytes>; a block that conses each
+ * argument from `args_get`, from the last down, onto nil. */
 let _args = fn(): I32 {
   let ty = H.listType(H.TYPE_BYTES);
   let args = newBinding();
@@ -122,16 +156,28 @@ let _args = fn(): I32 {
   H.node(Op.Block, ty, 0, 1, [empty, counter, loop, H.local(args, ty)])
 };
 
+/** Returns the index of the field `member` of the record type `ty`.
+ * @throws a located error if the record has no such field */
 let _fieldOf = fn(ty: I32, member: Bytes): I32 {
   let field = H.recordField(ty, member);
   if (field < 0) { throw coded(E0800, `${H.typeName(ty)} has no field ${member}`); }
   field
 };
 
+// Returns a read of field `field` of the checked record `record` (`Op.TupleField`).
 let _readField = fn(record: I32, field: I32): I32 {
   H.node(Op.TupleField, H.fieldType(H.typeOf(record), 0, field), field, 0, [record])
 };
 
+/** Checks `base.member` that is not an enum construction or namespace export; a record's field, a
+ * tuple field `.0`, `.1`, ... (`Op.TupleField`), a one-character literal's `.code` (an I32
+ * constant), `Math.PI`, `Math.E` or `System.args`.
+ * @param base  syntax child 0
+ * @param member  the member's name
+ * @return the checked node
+ * @throws a located error for a literal that is not one character, a base that is neither a
+ *     record nor a tuple, or a field it does not have (a tuple field name with a leading zero is
+ *     never one) */
 let _member = fn(base: AstExpr, member: Bytes): I32 {
   match (base) {
     Bytes(value) when (member == "code") => {
@@ -153,6 +199,7 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
   let checked = checkPresent(base, 0);
   let tuple = objectValue(checked);
   let ty = H.typeOf(tuple);
+  // A prototype's method reads as its function, whose first parameter is its `this`.
   let found = prototypeMethod(checked, member);
 
   if (found >= 0) {
@@ -164,6 +211,7 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
     if (H.isRecord(ty)) { return _readField(tuple, _fieldOf(ty, member)); }
 
     if (ty == H.TYPE_OBJECT) {
+      // A linked typedef's field reads as its type.
       let linked = prototypeField(H.typeOf(checked), member);
       if (linked < 0) { return readObject(tuple, namedKey(member), H.TYPE_DYNAMIC); }
       return readTyped(tuple, namedKey(member), linked);
@@ -192,11 +240,24 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
   H.node(Op.TupleField, H.typeArg(ty, field), field, 0, [tuple])
 };
 
+/** Checks a record literal, `{ name: value, ... }`, of the record type `ty` its context requires.
+ * A leading `...r` spread copies the fields that the literal does not name from `r`, a record of
+ * the same type. Values are evaluated in source order; when that is not the fields' order, each
+ * is bound to a hidden constant first, and the result is the last child of a block that declares
+ * them, as the spread is.
+ * @param entries  the literal's entries, which are its syntax children
+ * @param ty  the record type
+ * @return the `Op.Tuple` node, or the block
+ * @throws a located error for a computed key, a spread other than the first entry or of another
+ *   type, a field the record does not have or that the literal names twice, or a field without a
+ *   value; a value of the wrong type is recorded */
 let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
   let count = H.fieldCount(ty, 0);
   let values = Array.new<I32>(0);
   while (values.len() < count) { values.push(-1); }
 
+  /* By entry, its field; and whether the named fields come in the record's order, so their values
+   * can be evaluated in place. */
   let fields = Array.new<I32>(0);
   let ordered = true;
   let last = -1;
@@ -274,6 +335,12 @@ let _record = fn(entries: Array<ObjectEntry>, ty: I32): I32 {
   H.node(Op.Block, ty, 0, 1, statements)
 };
 
+/** Checks a tuple literal that spreads tuples among its items (`...t`), whose fields are items in
+ * turn. Since a tuple's fields are read after it, every item and spread tuple is bound in order to
+ * a hidden constant, which the result's block declares. An item takes its context from the item
+ * type at its place in `expected`, if that is a tuple, as `_tuple` does.
+ * @return the block
+ * @throws a located error if a spread is not a tuple */
 let _spreadTuple = fn(items: Array<AstExpr>, expected: I32): I32 {
   let fits = H.isKind(expected, Kind.Tuple);
   let declared = fits ? declaredArgs(expected) : Array.new<I32>(0);
@@ -300,6 +367,12 @@ let _spreadTuple = fn(items: Array<AstExpr>, expected: I32): I32 {
   H.node(Op.Block, ty, 0, 1, statements)
 };
 
+/** Checks a tuple literal as `Op.Tuple`, or as `_spreadTuple` does when it spreads tuples. When
+ * `expected` is a tuple of the same length, each item takes its context from the matching item
+ * type.
+ * @param items  the items, syntax children in order
+ * @param expected  the type the context requires, or -1 for none
+ * @return the tuple node */
 let _tuple = fn(items: Array<AstExpr>, expected: I32): I32 {
   if (hasSpread(items)) { return _spreadTuple(items, expected); }
   let fits = H.isKind(expected, Kind.Tuple) && (H.typeArgCount(expected) == items.len());
@@ -316,6 +389,14 @@ let _tuple = fn(items: Array<AstExpr>, expected: I32): I32 {
   H.opNode(Op.Tuple, H.tupleType(types), values)
 };
 
+/** Checks an array literal as `Op.ArrayLiteral`, or, when it spreads arrays (`...xs`), as the
+ * `Op.ArrayConcat` of its runs of items and those arrays, in order. Its element type comes from
+ * `expected`, or else its first item; an empty one's is a type variable, inferred from later uses.
+ * @param items  the items, syntax children in order
+ * @param expected  the type the context requires, or -1 for none
+ * @return the literal node
+ * @throws a failure that ends the check; an item whose type does not unify with the element type
+ *   is recorded */
 let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
   let declared = H.isKind(expected, Kind.Array) ? H.innerOf(expected) : -1;
   let element = declared >= 0 ? declared : items.len() == 0 ? H.newVar(false) : -1;
@@ -349,6 +430,11 @@ let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
   joinArrays(parts, values, H.arrayType(H.resolve(element)))
 };
 
+/** Checks `base[index]` as a read; `Op.BytesGet` of Bytes or a buffer, or `Op.ArrayGet`.
+ * @param base  syntax child 0, a Null<T> converted to its T
+ * @param index  syntax child 1, an I32
+ * @return the read
+ * @throws a located error if `base` cannot be indexed */
 let _index = fn(base: AstExpr, index: AstExpr): I32 {
   let value = objectValue(checkPresent(base, 0));
   let ty = H.typeOf(value);
@@ -365,6 +451,14 @@ let _index = fn(base: AstExpr, index: AstExpr): I32 {
   }
 };
 
+/** Returns two reads of the checked operand `id`, which an update reads and then writes. An I32
+ * constant, or a local or global when `stable`, is used as itself and copied; anything else is
+ * bound to a hidden constant, whose declaration is appended to `declared`, and read twice.
+ * @param id  the checked operand
+ * @param stable  whether nothing between the two reads can change a local or global
+ * @param declared  the declarations the update's block starts with
+ * @param name  the hidden binding's name
+ * @return the two reads */
 let _twice = fn(id: I32, stable: Bool, declared: Array<I32>, name: Bytes): Tuple<I32, I32> {
   let leaf = match (H.opOf(id)) { I32 => true, Local, Global => stable, _ => false };
   if (leaf) { return (id, H.node(H.opOf(id), H.typeOf(id), H.valueOf(id), 0, [])); }
@@ -372,21 +466,36 @@ let _twice = fn(id: I32, stable: Bool, declared: Array<I32>, name: Bytes): Tuple
   (H.local(binding, H.typeOf(id)), H.local(binding, H.typeOf(id)))
 };
 
+/** Returns the element type of `target`, a checked array or buffer; the array's, or I32 for a
+ * buffer's byte. */
 let _elementOf = fn(target: I32): I32 {
   let ty = H.typeOf(target);
   H.isKind(ty, Kind.ByteBuffer) ? H.TYPE_I32 : H.innerOf(ty)
 };
 
+/** Returns a read of `target[index]`; `Op.BytesGet` for a buffer, else `Op.ArrayGet`.
+ * @param target  the checked array or buffer
+ * @param index  the checked index */
 let _get = fn(target: I32, index: I32): I32 {
   let op = H.isKind(H.typeOf(target), Kind.ByteBuffer) ? Op.BytesGet : Op.ArrayGet;
   H.opNode(op, _elementOf(target), [target, index])
 };
 
+/** Returns a write of `value` to `target[index]`; `Op.BytesSet` for a buffer, else `Op.ArraySet`.
+ * @param target  the checked array or buffer
+ * @param index  the checked index
+ * @param value  the checked value
+ * @return the write, whose value is `value` */
 let _set = fn(target: I32, index: I32, value: I32): I32 {
   let op = H.isKind(H.typeOf(target), Kind.ByteBuffer) ? Op.BytesSet : Op.ArraySet;
   H.opNode(op, _elementOf(target), [target, index, value])
 };
 
+/** Checks `a[i]`, child 0 of the current syntax, as an assignment target.
+ * @param base  the indexed expression
+ * @param index  the index
+ * @return the checked array, buffer or Object, and the checked index or key (`objectKey`)
+ * @throws a located error if the target is Bytes, which is immutable, or cannot be indexed */
 let _indexTarget = fn(base: AstExpr, index: AstExpr): Tuple<I32, I32> {
   let outer = enterSyntax(syntaxChild(0));
   let array = objectValue(checkPresent(base, 0));
@@ -405,6 +514,9 @@ let _indexTarget = fn(base: AstExpr, index: AstExpr): Tuple<I32, I32> {
   (array, checkedIndex)
 };
 
+/** Returns the result of an update whose write is `set`, of type `ty`; the write, or the old
+ * value when `postfix`, recovered by undoing the step `op`, after the declarations in
+ * `declared`. */
 let _updated = fn(set: I32, ty: I32, op: BinaryOp, postfix: Bool, declared: Array<I32>): I32 {
   let undo = match (op) { Add => Op.Sub, _ => Op.Add };
   let result = postfix ? H.opNode(undo, ty, [set, one(ty)]) : set;
@@ -413,6 +525,18 @@ let _updated = fn(set: I32, ty: I32, op: BinaryOp, postfix: Bool, declared: Arra
   H.node(Op.Block, ty, 0, 1, declared)
 };
 
+/** Builds `array[index] op= checked`. The array, the index and the value are evaluated once each,
+ * in that order; the element is read after the index and before the value, as Java does, and the
+ * index is checked on the read and on the write. `+=` on an Array<Bytes> concatenates.
+ * @param array  the checked array or buffer
+ * @param index  the checked index
+ * @param op  the binary operator applied, as `binaryValues` applies it
+ * @param checked  the checked value
+ * @param step  whether this is `a[i]++`, `a[i]--`, `++a[i]` or `--a[i]`
+ * @param postfix  whether the result is the old element, recovered by undoing the step (wrapping)
+ * @return the update, a block when it binds the array or index
+ * @throws a located error if a step's element is not an integer, or the operator does not suit
+ *   the element */
 let _updateIndex = fn(
   array: I32,
   index: I32,
@@ -427,6 +551,8 @@ let _updateIndex = fn(
     let steps = "increment and decrement require an integer element";
     throw coded(E0500, `${steps}, not ${H.typeName(element)}`);
   }
+  /* Nothing runs between a step's read and write, so a local or global array or index is read
+   * again rather than bound. */
   let declared = Array.new<I32>(0);
   let (arrayRead, arrayWrite) = _twice(array, step, declared, "array");
   let (indexRead, indexWrite) = _twice(index, step, declared, "index");
@@ -434,6 +560,15 @@ let _updateIndex = fn(
   _updated(_set(arrayWrite, indexWrite, updated), element, op, postfix, declared)
 };
 
+/** Checks `a[i] = v` and `a[i] op= v`; the current syntax is the assignment's, whose children are
+ * the target, then the value.
+ * @param base  the indexed expression
+ * @param index  the index
+ * @param op  the assignment operator
+ * @param value  the assigned value
+ * @return the write or update
+ * @throws a failure that ends the check; a value whose type does not unify with the element type
+ *   is recorded, and nothing more is checked of the assignment */
 let _assignIndex = fn(base: AstExpr, index: AstExpr, op: AssignOp, value: AstExpr): I32 {
   let (array, checkedIndex) = _indexTarget(base, index);
   if (H.typeOf(array) == H.TYPE_OBJECT) { return assignObject(array, checkedIndex, op, value); }
@@ -456,6 +591,12 @@ let _assignIndex = fn(base: AstExpr, index: AstExpr, op: AssignOp, value: AstExp
   }
 };
 
+/** Checks `a[i]++`, `a[i]--`, `++a[i]` and `--a[i]`; the current syntax is the step's.
+ * @param base  the indexed expression
+ * @param index  the index
+ * @param op  increment or decrement
+ * @param prefix  whether the value is the updated element rather than the old
+ * @return the update */
 let _stepIndex = fn(base: AstExpr, index: AstExpr, op: IncDecOp, prefix: Bool): I32 {
   let (array, checkedIndex) = _indexTarget(base, index);
   if (H.typeOf(array) == H.TYPE_OBJECT) { throw OBJECT_UPDATE; }
@@ -463,10 +604,19 @@ let _stepIndex = fn(base: AstExpr, index: AstExpr, op: IncDecOp, prefix: Bool): 
   _updateIndex(array, checkedIndex, binary, one(_elementOf(array)), true, !prefix)
 };
 
+/** Checks `r.name`, child 0 of the current syntax, as an assignment target.
+ * @param base  the record or Object expression
+ * @param member  the field's name
+ * @param inPlace  whether the target is updated in place, by a compound assignment or a step
+ * @return the checked record or Object; for a record the field's index and type, for a
+ *   prototype's method -2 and the method's type, and for an Object -1 and the type a linked
+ *   typedef gives the field, or -1; and the type of the value whose field it is
+ * @throws a located error if the target is not a record's field, or is a method updated in place */
 let _fieldTarget = fn(base: AstExpr, member: Bytes, inPlace: Bool): Tuple<I32, I32, I32, I32> {
   let outer = enterSyntax(syntaxChild(0));
   let checked = checkPresent(base, 0);
   enterSyntax(outer);
+  // A prototype's method is replaced only by a function of its type.
   let replaced = prototypeMethod(checked, member);
   let record = objectValue(checked);
   let ty = H.typeOf(record);
@@ -493,6 +643,8 @@ let _fieldTarget = fn(base: AstExpr, member: Bytes, inPlace: Bool): Tuple<I32, I
   (record, field, H.fieldType(ty, 0, field), ty)
 };
 
+/** Builds `record.field op= checked`, or for an Object `field` -1 and a field `member` of the type
+ * `ty` a linked typedef gives it, as `_updateIndex` builds an element's update. */
 let _updateField = fn(
   record: I32,
   field: I32,
@@ -520,6 +672,7 @@ let _updateField = fn(
   _updated(set, ty, op, postfix, declared)
 };
 
+// Checks `r.name = v` and `r.name op= v`, as `_assignIndex` checks an element's.
 let _assignField = fn(base: AstExpr, member: Bytes, op: AssignOp, value: AstExpr): I32 {
   let inPlace = match (op) { Compound(_) => true, _ => false };
   let (record, field, ty, owner) = _fieldTarget(base, member, inPlace);
@@ -557,6 +710,7 @@ let _assignField = fn(base: AstExpr, member: Bytes, op: AssignOp, value: AstExpr
   }
 };
 
+// Checks `r.name++`, `r.name--`, `++r.name` and `--r.name` (see `_stepIndex`).
 let _stepField = fn(base: AstExpr, member: Bytes, op: IncDecOp, prefix: Bool): I32 {
   let (record, field, ty, _) = _fieldTarget(base, member, true);
   if (ty < 0) { throw OBJECT_UPDATE; }
@@ -564,15 +718,23 @@ let _stepField = fn(base: AstExpr, member: Bytes, op: IncDecOp, prefix: Bool): I
   _updateField(record, field, member, ty, binary, one(ty), true, !prefix)
 };
 
+/** Checks `Std.string(x)`, whose arguments are `args`; Bytes is itself; anything else prints as
+ * `Derived.printed` does.
+ * @return the Bytes node */
 let _string = fn(args: Array<AstExpr>): I32 {
   checkArity(args, 1, "Std.string");
   printed(checkOperand(args[0], 1, -1), "Std.string", 1)
 };
 
+// Builds the length of the checked tuple `tuple`; its type's, once it is evaluated.
 let _tupleLength = fn(tuple: I32): I32 {
   H.node(Op.Block, H.TYPE_I32, 0, 1, [expressionOf(tuple), i32Of(H.typeArgCount(H.typeOf(tuple)))])
 };
 
+/** Builds `Tuple.get(tuple, index)`, the field at the checked I32 `index` of the checked `tuple`,
+ * as a Dynamic: the field a constant index names, else a read of an array of the fields, which
+ * traps when the index is out of range. The tuple is evaluated first.
+ * @throws a located error for a field that cannot become Dynamic (`toDynamic`) */
 let _tupleField = fn(tuple: I32, index: I32): I32 {
   let statements = Array.new<I32>(0);
   let fields = tupleFields(tuple, 1, statements);
@@ -591,14 +753,22 @@ let _tupleField = fn(tuple: I32, index: I32): I32 {
   H.node(Op.Block, H.TYPE_DYNAMIC, 0, 1, statements)
 };
 
+/** A loaded extension module; the type it extends, its module index, and the names it exports,
+ * for the closest ones a missing name's diagnostic lists. */
 typedef Extension = {
   let name: Bytes;
   let module: I32;
   let exports: Array<Bytes>;
 };
+// The extension modules that run in the program being checked.
 let _extensions = Array.new<Extension>(0);
+/** The types a call needed the extension module of when it was not loaded, or loaded too late to
+ * be checked first. */
 let _wanted = Array.new<Bytes>(0);
 
+/** A builtin generic over a type parameter T; its qualified name, its signature over T, its HIR
+ * op, the parameter whose Array<T> or List<T> gives T, or -1, and the diagnostic for each
+ * argument of the wrong type (`checkInstance`). */
 typedef Builtin = {
   let name: Bytes;
   let signature: (I32) -> I32;
@@ -606,7 +776,9 @@ typedef Builtin = {
   let container: I32;
   let messages: Array<Bytes>;
 };
+// The diagnostic for an array length of the wrong type.
 const _LENGTH = "array length must be ";
+// The generic builtins, known before any program is checked.
 let _BUILTINS: Array<Builtin> = [
   {
     name: "Array.new",
@@ -622,6 +794,7 @@ let _BUILTINS: Array<Builtin> = [
     container: 0,
     messages: ["Array.resize requires an array", _LENGTH]
   },
+  // A list is immutable; nil is the empty list, and the head or tail of nil traps.
   {
     name: "List.nil",
     signature: fn(t) { H.functionType([], H.listType(t)) },
@@ -679,9 +852,13 @@ let _BUILTINS: Array<Builtin> = [
     messages: ["List.is_nil requires a list"]
   }
 ];
+/** The type parameters of every generic builtin, T alone, made for each program by
+ * `declareBuiltins`. */
 let _T = Array.new<I32>(0);
+// The signatures of the generic builtins in the program being checked, by `_BUILTINS` index.
 let _signatures = Array.new<I32>(0);
 
+// Makes the generic builtins' signatures in the program being checked.
 export let declareBuiltins = fn(): Bool {
   let t = H.newParam("T", 0);
   _T = [t];
@@ -691,6 +868,9 @@ export let declareBuiltins = fn(): Bool {
   true
 };
 
+/** Returns the index in `_BUILTINS` of a generic builtin.
+ * @param name  its name, `Space.name`
+ * @return the index, or -1 if `name` is not a generic builtin */
 let _builtinIndex = fn(name: Bytes): I32 {
   for (i, builtin in _BUILTINS) {
     if (builtin.name == name) { return i; }
@@ -698,13 +878,18 @@ let _builtinIndex = fn(name: Bytes): I32 {
   -1
 };
 
+/** Returns the index in `_BUILTINS` of the generic builtin `qualified` when it takes its container
+ * first, so that it is a method too, or -1; List's nil and cons are statics alone. */
 let _receiverBuiltin = fn(qualified: Bytes): I32 {
   let index = _builtinIndex(qualified);
   if (index < 0) { return -1; }
   _BUILTINS[index].container == 0 ? index : -1
 };
+// The empty type argument list, for a method call.
 let _NO_TYPES = Array.new<AstType>(0);
 
+/** Returns the operand count of the static form of the Bytes intrinsic `Bytes.name`, the bytes
+ * first, or 0 if there is none; `new` takes a length rather than bytes. */
 let _bytesArity = fn(name: Bytes): I32 {
   match (name) {
     "len", "toString", "new" => 1,
@@ -714,6 +899,9 @@ let _bytesArity = fn(name: Bytes): I32 {
   }
 };
 
+/** Checks whether `Type.name`, as `qualified`, is an intrinsic function of a type, which the
+ * compiler checks itself and which wins over an export of that name in the type's extension
+ * module; a generic builtin, or one `_static` or `_method` checks. */
 let _intrinsic = fn(qualified: Bytes): Bool {
   let bytes = "Bytes.";
   let object = "Object.";
@@ -729,18 +917,26 @@ let _intrinsic = fn(qualified: Bytes): Bool {
     _ => false,
   }
 };
+// Checks whether `name` is an intrinsic function of the type named `owner` (see `_intrinsic`).
 export let isIntrinsic = fn(owner: Bytes, name: Bytes): Bool { _intrinsic(`${owner}.${name}`) };
 
+// The types that an extension module, `std.core.<Type>`, can extend.
 let _EXTENSIBLE = ["Array", "Atom", "Bytes", "Enum", "List", "Object", "Tuple"];
 
+// Returns the types that an extension module can extend.
 export let extensibleTypes = fn(): Array<Bytes> { _EXTENSIBLE };
 
+/** Checks whether any type that an extension module can extend has an intrinsic method `name`, as
+ * `len`; a call of it alone says nothing of which extension module the program needs. */
 export let isIntrinsicMethod = fn(name: Bytes): Bool {
   _EXTENSIBLE.first(fn(owner) { isIntrinsic(owner, name) }) != null
 };
 
+// Checks whether `name` names a type that an extension module can extend.
 let _extensible = fn(name: Bytes): Bool { _EXTENSIBLE.indexOf(name) >= 0 };
 
+/** Returns the type that the module with dotted import path `name` extends; `Array` for
+ * `std.core.Array`, or "" when it is no extension module. */
 export let extendedType = fn(name: Bytes): Bytes {
   let prefix = "std.core.";
   if (!name.startsWith(prefix)) { return ""; }
@@ -748,17 +944,24 @@ export let extendedType = fn(name: Bytes): Bytes {
   _extensible(extended) ? extended : ""
 };
 
+/** Notes that the module at index `module`, which runs, is the extension module of the type named
+ * `owner`, exporting `exports`. */
 export let useExtension = fn(owner: Bytes, module: I32, exports: Array<Bytes>): Bool {
   _extensions.push({ name: owner, module, exports });
   true
 };
 
+/** Returns the types whose extension modules the last check needed but did not have, which
+ * `frontend.semantics.Modules.checkProgram` loads before checking the program again. */
 export let wantedExtensions = fn(): Array<Bytes> { _wanted };
 
+/** Checks whether `qualified`, `Type.name` with the namespace `space`, names a function of the
+ * extension module of an extensible type rather than an intrinsic. */
 let _extends = fn(space: Bytes, qualified: Bytes): Bool {
   _extensible(space) && !_intrinsic(qualified)
 };
 
+// Returns the type whose extension module extends `ty`, or "" for none.
 let _extensionOf = fn(ty: I32): Bytes {
   match (H.kindOf(ty)) {
     Array => "Array",
@@ -772,6 +975,8 @@ let _extensionOf = fn(ty: I32): Bytes {
   }
 };
 
+/** Returns the extension module of the type named `owner` and its exports, or -1 when it has not
+ * been checked before the current module, which notes the type as wanted. */
 let _extensionModule = fn(owner: Bytes): Tuple<I32, Array<Bytes>> {
   let module = -1;
   let exports = Array.new<Bytes>(0);
@@ -787,6 +992,7 @@ let _extensionModule = fn(owner: Bytes): Tuple<I32, Array<Bytes>> {
     e++;
   }
 
+  // Modules are checked in order, so one after the current module has exported nothing yet.
   if ((module < 0) || (module > currentModule())) {
     _wanted.internIndex(owner);
     module = -1;
@@ -794,6 +1000,12 @@ let _extensionModule = fn(owner: Bytes): Tuple<I32, Array<Bytes>> {
   (module, exports)
 };
 
+/** Checks a call of the function `name` that the extension module of the type named `owner`
+ * exports, as `Type.name(args)` or as the method `x.name(args)`. Resolution is static: the module
+ * must run and be checked before the calling module, and otherwise the type is noted as wanted.
+ * @param receiver  a method's checked receiver, or -1
+ * @throws a located error if the module exports no such name, listing the closest names it does
+ *   export, or the name is no function */
 let _extensionCall = fn(
   owner: Bytes,
   name: Bytes,
@@ -829,6 +1041,16 @@ let _extensionCall = fn(
   }
 };
 
+/** Checks a call of a generic builtin as `checkInstance` does a generic function's, except that a
+ * container argument is checked first, so that T comes from it, unless T is written.
+ * @param index  the builtin's index in `_BUILTINS`
+ * @param name  the name the call uses, for errors
+ * @param types  the written type arguments
+ * @param receiver  a method's checked receiver, or -1 for a static
+ * @param args  the call's arguments, after any receiver
+ * @param expected  the type the context requires, or -1 for none
+ * @return the builtin's node
+ * @throws a located error if the argument count is wrong or an argument has the wrong type */
 let _checkBuiltin = fn(
   index: I32,
   name: Bytes,
@@ -854,6 +1076,11 @@ let _checkBuiltin = fn(
   H.opNode(builtin.op, H.innerOf(ty), children)
 };
 
+/** Checks the bytes a call of a Bytes intrinsic reads or writes; the checked `receiver` of a
+ * method, or else the first of the static's `args`.
+ * @param ty  the type they must have, Bytes or ByteBuffer, or -1 for either
+ * @param what  the error message
+ * @throws a located error, `what`, if they have another type */
 let _bytesOperand = fn(receiver: I32, args: Array<AstExpr>, ty: I32, what: Bytes): I32 {
   if (receiver < 0) {
     if (ty < 0) { return _readable(args[0], 1, what); }
@@ -866,10 +1093,17 @@ let _bytesOperand = fn(receiver: I32, args: Array<AstExpr>, ty: I32, what: Bytes
   receiver
 };
 
+/** Checks the I32 operand `at` of a call of a Bytes intrinsic, counting the bytes as operand 0,
+ * which a method's `args` lack (`skip` is 1). */
 let _bytesI32 = fn(args: Array<AstExpr>, skip: I32, at: I32, what: Bytes): I32 {
   _i32(args[at - skip], at - skip + 1, what)
 };
 
+/** Checks a call of the Bytes intrinsic `Bytes.name`, other than `new`, as a static, whose first
+ * argument is the bytes, or as a method of the checked `receiver`, whose arguments follow the
+ * bytes; each form builds the same node.
+ * @param receiver  the method's receiver, or -1 for a static
+ * @throws a located error if the argument count is wrong or an argument has the wrong type */
 let _bytesCall = fn(name: Bytes, receiver: I32, args: Array<AstExpr>): I32 {
   let qualified = `Bytes.${name}`;
   let skip = receiver < 0 ? 0 : 1;
@@ -887,18 +1121,21 @@ let _bytesCall = fn(name: Bytes, receiver: I32, args: Array<AstExpr>): I32 {
       let bytes = _bytesOperand(receiver, args, -1, requires);
       H.opNode(Op.BytesGet, H.TYPE_I32, [bytes, _bytesI32(args, skip, 1, "byte index")])
     },
+    // An index out of range or a byte outside 0-255 traps.
     "set", "set_u8" => {
       let wanted = `${qualified} requires a buffer from Bytes.new; Bytes values are immutable`;
       let buffer = _bytesOperand(receiver, args, H.TYPE_BYTE_BUFFER, wanted);
       let index = _bytesI32(args, skip, 1, "byte index");
       H.opNode(Op.BytesSet, H.TYPE_I32, [buffer, index, _bytesI32(args, skip, 2, "byte")])
     },
+    // Of a buffer, this makes a copy; the only way bytes leave one.
     "slice" => {
       let bytes = _bytesOperand(receiver, args, -1, requires);
       let start = _bytesI32(args, skip, 1, "slice start");
       let length = _bytesI32(args, skip, 2, "slice length");
       H.opNode(Op.BytesSlice, H.TYPE_BYTES, [bytes, start, length])
     },
+    // A copy of a buffer's bytes.
     "toString" => {
       let statements = Array.new<I32>(0);
       let wanted = `${qualified} requires a buffer from Bytes.new`;
@@ -916,6 +1153,10 @@ let _bytesCall = fn(name: Bytes, receiver: I32, args: Array<AstExpr>): I32 {
   }
 };
 
+/** Checks `Array.join(parts, separator)`, or `parts.join(separator)` of the checked `receiver`:
+ * fresh Bytes of an Array<Bytes>'s parts with the separator between each two, copied once.
+ * @param receiver  the parts, for a method, or -1 for a static
+ * @throws a located error if the argument count is wrong or an argument has the wrong type */
 let _arrayJoin = fn(receiver: I32, args: Array<AstExpr>): I32 {
   let skip = receiver < 0 ? 0 : 1;
   checkArity(args, 2 - skip, "Array.join");
@@ -931,6 +1172,18 @@ let _arrayJoin = fn(receiver: I32, args: Array<AstExpr>): I32 {
   H.opNode(Op.BytesJoin, H.TYPE_BYTES, [parts, separator])
 };
 
+/** Checks a call of a builtin namespace's function; `Array.f(args)`, `Bytes.f(args)`,
+ * `List.f(args)`, `Tuple.f(args)`, `Std.string(x)`, `System.exit(status)`, an assertion such as
+ * `System.assert(condition)`, or one `frontend.semantics.Math` checks. Arguments follow the callee
+ * in the call's syntax.
+ * @param space  the namespace
+ * @param name  the function's name
+ * @param types  the written type arguments, as in `f<T>`
+ * @param args  the arguments
+ * @param expected  the type the context requires, or -1 for none
+ * @return the checked call
+ * @throws a located error if the function is unknown, takes no type arguments but is given some,
+ *     or its arguments are wrong */
 let _static = fn(
   space: Bytes,
   name: Bytes,
@@ -955,12 +1208,14 @@ let _static = fn(
       return checkObjectCall(name, objectArgument(args[0], qualified), types, rest, 2);
     }
     if (types.len() != 0) { throw coded(E0402, `${qualified} does not take type arguments`); }
+    // `Function.name(f, args)` is checked as `f.name(args)` is.
     let outer = enterSyntax(withoutCallee());
     let call = checkFunctionIntrinsic(name, checkPresent(args[0], 0), rest);
     enterSyntax(outer);
     return call;
   }
 
+  // A function of an extension module may be generic.
   if ((types.len() != 0) && !_extends(space, qualified)) {
     throw coded(E0402, `${qualified} does not take type arguments`);
   }
@@ -970,10 +1225,12 @@ let _static = fn(
   }
 
   match (qualified) {
+    // A buffer is zero-filled; a negative length traps.
     "Bytes.new" => {
       checkArity(args, 1, qualified);
       H.opNode(Op.BytesNew, H.TYPE_BYTE_BUFFER, [_i32(args[0], 1, "bytes length")])
     },
+    // An atom is interned at compile time, so its name must be a literal.
     "Atom.intern" => {
       checkArity(args, 1, qualified);
 
@@ -996,6 +1253,7 @@ let _static = fn(
     "System.args" => {
       throw coded(E0601, "System.args is a value, not a function; read it without parentheses");
     },
+    // The static forms of the methods of the same names.
     "Atom.toString", "Tuple.toString" => {
       checkArity(args, 1, qualified);
       let kind = space == "Atom" ? Kind.Atom : Kind.Tuple;
@@ -1019,6 +1277,7 @@ let _static = fn(
     },
     "System.assert" => checkSystemAssertion("assert", qualified, args),
     "System.assertEq" => checkSystemAssertion("assertEq", qualified, args),
+    // Exits with `status & 255` after flushing output; it never returns.
     "System.exit" => {
       checkArity(args, 1, qualified);
       H.callStd("process_exit", [H.TYPE_I32], H.TYPE_I32, [_i32(args[0], 1, "exit status")])
@@ -1030,6 +1289,19 @@ let _static = fn(
   }
 };
 
+/** Checks a method call `base.name(args)`; a call of a record's function field, `toString` of an
+ * Atom, a tuple or an enum, `tag` of an enum, `len` of a tuple, a Bytes intrinsic of Bytes or a
+ * buffer (`_bytesCall`), an array or list method from `_BUILTINS`, a function of `Object`, or a
+ * function of the receiver type's extension module (`_extensionCall`); else, of an Object, a call
+ * of its field (`callObjectField`). The call's syntax is current, and its callee's first child is
+ * `base`.
+ * @param base  the receiver, a Null<T> converted to its T
+ * @param name  the method's name
+ * @param types  the written type arguments, which only an Object's `get` takes
+ * @param args  the arguments
+ * @param expected  the type the context requires, or -1 for none
+ * @return the checked call
+ * @throws a located error if the receiver has no such method or field */
 let _method = fn(
   base: AstExpr,
   name: Bytes,
@@ -1044,6 +1316,7 @@ let _method = fn(
   let outer = enterSyntax(syntaxChild(0));
   let receiver = checkPresent(base, 0);
   enterSyntax(outer);
+  // A prototype's method wins over a function of `Object`, and a linked field holds a function.
   let declared = H.typeOf(receiver);
 
   if (H.isPrototype(declared) && (types.len() == 0)) {
@@ -1061,8 +1334,11 @@ let _method = fn(
 
   if (ty == H.TYPE_OBJECT) {
     if (isObjectIntrinsic(name)) { return checkObjectCall(name, receiver, types, args, 1); }
+    /* Until std.core.Object is checked, which needs the check to fail first, its exports are
+     * unknown; `_extensionCall` then fails and notes it as wanted. */
     let (module, exports) = _extensionModule("Object");
 
+    // A linked value's shape is closed; the module, once wanted, is checked first next time.
     if (linkedMember(declared, name).1 && (exports.indexOf(name) < 0)) {
       throw coded(E0800, `${H.typeName(declared)} has no method or field ${name}`);
     }
@@ -1102,6 +1378,7 @@ let _method = fn(
     },
     Object => callObjectField(receiver, name, args),
     Function when (isFunctionIntrinsic(name)) => checkFunctionIntrinsic(name, receiver, args),
+    // A variant's tag is its index in its enum's declaration.
     Enum, Applied when (name == "tag") => {
       checkArity(args, 0, "tag");
       H.opNode(Op.EnumTag, H.TYPE_I32, [receiver])
@@ -1117,6 +1394,12 @@ let _method = fn(
   }
 };
 
+/** Checks `H.pack(record)`, the Bytes of a record of the bytes layout H, or `H.unpack(bytes)`,
+ * the record the bytes hold, or null when their length is not the layout's.
+ * @param ty  the layout's record type
+ * @param name  the function's name
+ * @return the checked call
+ * @throws a located error for another name, type arguments, or a wrong argument */
 let _layoutCall = fn(ty: I32, name: Bytes, types: Array<AstType>, args: Array<AstExpr>): I32 {
   let qualified = `${H.typeName(ty)}.${name}`;
 
@@ -1147,6 +1430,7 @@ let _layoutCall = fn(ty: I32, name: Bytes, types: Array<AstType>, args: Array<As
     throw coded(E0400, `${takes}, not ${H.typeName(H.typeOf(record))}`);
   }
 
+  // A literal's values are packed as they are; any other record is read field by field.
   if (H.opOf(record) == Op.Tuple) {
     return packLayout(ty, H.children(record));
   }
@@ -1160,12 +1444,23 @@ let _layoutCall = fn(ty: I32, name: Bytes, types: Array<AstType>, args: Array<As
   H.node(Op.Block, H.TYPE_BYTES, 0, 1, statements)
 };
 
+/** Checks a call whose callee is a member or has type arguments; a builtin namespace's function or
+ * a method. A namespace import's exports and plain calls are checked by
+ * `frontend.semantics.TypeCheck`.
+ * @param callee  the callee
+ * @param typeArgs  type arguments written after the callee
+ * @param args  the arguments
+ * @param expected  the type the context requires, or -1 for none
+ * @return the checked call
+ * @throws a located error for an unbound namespace name, type arguments on a method, or any other
+ *     callee */
 let _call = fn(
   callee: AstExpr,
   typeArgs: Array<AstType>,
   args: Array<AstExpr>,
   expected: I32
 ): I32 {
+  // `Array.new<T>(n)` parses either way round.
   let (target, types) = match (callee) {
     TypeApply(base, applied) when (typeArgs.len() == 0) => (base, applied),
     _ => (callee, typeArgs),
@@ -1192,6 +1487,14 @@ let _call = fn(
   }
 };
 
+/** Checks an aggregate expression; a tuple, array, record or bits literal, an interpolation (see
+ * `frontend.semantics.Interpolation`), a member, an index, a builtin or method call, or an indexed
+ * or field assignment or step. A record literal's context is its record type.
+ * `frontend.semantics.TypeCheck` calls it through `TypeCheck.useAggregateChecks`, with a Null<T>
+ * context already reduced to T.
+ * @param expr  the expression
+ * @param expected  the type the context requires, or -1 for none
+ * @return the checked HIR node */
 export let checkAggregateExpr = fn(expr: AstExpr, expected: I32): I32 {
   match (expr) {
     Tuple(items) => _tuple(items, expected),

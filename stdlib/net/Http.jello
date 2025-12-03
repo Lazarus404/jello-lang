@@ -1,14 +1,30 @@
 package std.net;
 
+/* HTTP/1.1 over std.net.Tcp: a server running a process for each
+ * connection, which keeps it open for request after request, and a client.
+ * Bodies are read whole, sized by Content-Length or sent chunked, up to
+ * 16 MiB, beyond which the server answers 413; the server answers with
+ * Content-Length. It speaks plain HTTP only. A program imports this module
+ * both ways:
+ *
+ *   import std.net.Http as Http;
+ *   import type { Request, Response, Header, Client } from std.net.Http;
+ *
+ * Header names compare without regard to ASCII case. */
+
 import std.concurrent.Process as Process;
 import type { Process, Inbox } from std.concurrent.Process;
 import std.net.Tcp as Tcp;
 import type { Listener, Stream } from std.net.Tcp;
 
+// The most a request or status line and its headers may take.
 let _HEAD_MAX = 65536;
+// How much a read asks for.
 let _READ = 16384;
+// The most a body may take; a request with a larger one gets a 413.
 let _BODY_MAX = 16777216;
 
+// One header: its name, as it was sent, and its value.
 export typedef Header = {
   let name: Bytes;
   let value: Bytes;
@@ -21,6 +37,7 @@ export prototype Header {
   };
 };
 
+// TEXT with its ASCII capitals made small.
 let _lower = fn(text: Bytes): Bytes {
   let n = Bytes.len(text);
   let i = 0;
@@ -37,6 +54,7 @@ let _lower = fn(text: Bytes): Bytes {
   Bytes.toString(out)
 };
 
+// The value of the first of HEADERS called NAME, small already, or null.
 let _find = fn(headers: Array<Header>, name: Bytes): ?Bytes {
   let i = 0;
 
@@ -48,6 +66,7 @@ let _find = fn(headers: Array<Header>, name: Bytes): ?Bytes {
   null
 };
 
+// The number TEXT spells in BASE, 10 or 16, or -1 when it is not one.
 let _number = fn(text: Bytes, base: I32): I32 {
   let n = Bytes.len(text);
   if ((n == 0) || (n > 9)) { return -1; };
@@ -67,6 +86,9 @@ let _number = fn(text: Bytes, base: I32): I32 {
   v
 };
 
+/* A request: its method, VERB, such as "GET", its target, such as
+ * "/index.html?q=1", its version, such as "HTTP/1.1", its headers and its
+ * body. */
 export typedef Request = {
   let verb: Bytes;
   let target: Bytes;
@@ -83,13 +105,16 @@ export prototype Request {
     this.headers = headers;
     this.body = body;
   };
+  // The value of its first header called NAME, or null.
   header(name: Bytes): ?Bytes { _find(this.headers, _lower(name)) };
+  // Its target up to any query.
   path(): Bytes {
     let q = Bytes.indexOf(this.target, "?");
     q < 0 ? this.target : Bytes.slice(this.target, 0, q)
   };
 };
 
+// A response: its status, such as 200, its headers and its body.
 export typedef Response = {
   let status: I32;
   let headers: Array<Header>;
@@ -102,13 +127,16 @@ export prototype Response {
     this.headers = Array.new<Header>(0);
     this.body = body;
   };
+  // Adds a header called NAME of VALUE; this response.
   withHeader(name: Bytes, value: Bytes): Response {
     this.headers.push(new Header(name, value));
     this
   };
+  // The value of its first header called NAME, or null.
   header(name: Bytes): ?Bytes { _find(this.headers, _lower(name)) };
 };
 
+// The reason phrase that goes with STATUS.
 let _reason = fn(status: I32): Bytes {
   match (status) {
     100 => "Continue", 200 => "OK", 201 => "Created", 202 => "Accepted", 204 => "No Content",
@@ -123,6 +151,8 @@ let _reason = fn(status: I32): Bytes {
   }
 };
 
+/* Reads a stream in lines and runs of bytes, keeping what it has read
+ * ahead. */
 typedef _Reader = {
   let stream: Stream;
   let buf: Bytes;
@@ -135,6 +165,7 @@ prototype _Reader {
     this.buf = "";
     this.at = 0;
   };
+  // Reads more; false at the end of the stream.
   fill(): Bool {
     let more = this.stream.read(_READ);
     if (Bytes.len(more) == 0) { return false; };
@@ -143,7 +174,10 @@ prototype _Reader {
     this.at = 0;
     true
   };
+  /* The next line, without its CRLF, or null at the end of the stream;
+   * throws once it passes LIMIT bytes. */
   line(limit: I32): ?Bytes {
+    // How far past AT the search has found no CRLF; the next starts there.
     let searched = 0;
 
     while (true) {
@@ -161,6 +195,7 @@ prototype _Reader {
     }
     null
   };
+  // The next N bytes; throws at the end of the stream first.
   take(n: I32): Bytes {
     let held = Bytes.len(this.buf) - this.at;
 
@@ -169,6 +204,7 @@ prototype _Reader {
       this.at = this.at + n;
       return out;
     };
+    // Gathered in parts and joined once, so that a long body is copied once more, not once a read.
     let parts = Array.new<Bytes>(0);
     parts.push(Bytes.slice(this.buf, this.at, held));
     let need = n - held;
@@ -191,6 +227,7 @@ prototype _Reader {
     }
     Bytes.join(parts, "")
   };
+  // The rest of the stream, gathered in parts and joined once.
   rest(): Bytes {
     let parts = Array.new<Bytes>(0);
     let total = Bytes.len(this.buf) - this.at;
@@ -207,6 +244,7 @@ prototype _Reader {
     }
     Bytes.join(parts, "")
   };
+  // The headers up to the blank line ending them, within LIMIT bytes in all.
   headers(limit: I32): Array<Header> {
     let out = Array.new<Header>(0);
     let used = 0;
@@ -229,6 +267,7 @@ prototype _Reader {
     }
     out
   };
+  // A body in chunks, and the trailer after them.
   chunked(): Bytes {
     let parts = Array.new<Bytes>(0);
     let total = 0;
@@ -250,6 +289,8 @@ prototype _Reader {
     }
     ""
   };
+  /* A body as HEADERS size it: chunked, by Content-Length, or, when
+   * TO_END, as the rest of the stream; else empty. */
   body(headers: Array<Header>, toEnd: Bool): Bytes {
     let coding = _find(headers, "transfer-encoding");
 
@@ -269,6 +310,8 @@ prototype _Reader {
   };
 };
 
+/* The head and body of a message: FIRST, its start line, then HEADERS, and
+ * a Content-Length for BODY unless HEADERS give one. */
 let _message = fn(first: Bytes, headers: Array<Header>, body: Bytes, close: Bool): Bytes {
   let parts = Array.new<Bytes>(0);
   parts.push(first);
@@ -294,18 +337,22 @@ let _message = fn(first: Bytes, headers: Array<Header>, body: Bytes, close: Bool
   Bytes.join(parts, "")
 };
 
+// Whether a message of VERSION with HEADERS keeps its connection open.
 let _keeps = fn(version: Bytes, headers: Array<Header>): Bool {
   let connection = match (_find(headers, "connection")) { null => "", c => _lower(c) };
   if (version == "HTTP/1.0") { return Bytes.contains(connection, "keep-alive"); };
   !Bytes.contains(connection, "close")
 };
 
+// HANDLE's response to REQ, or a 500 when it throws.
 let _respond = fn(handle: (Request) -> Response, req: Request): Response {
   let res: ?Response = null;
   try { res = handle(req); } catch (_) {};
   match (res) { null => new Response(500, ""), done => done }
 };
 
+/* Answers the requests on S with HANDLE, one after another, until the
+ * client closes it or asks to, or sends what is not HTTP/1.x. */
 let _converse = fn(s: Stream, handle: (Request) -> Response) {
   let r = new _Reader(s);
   let open = true;
@@ -349,6 +396,9 @@ let _converse = fn(s: Stream, handle: (Request) -> Response) {
   s.close();
 };
 
+/* Answers every connection LISTENER accepts in a process of its own, with
+ * HANDLE, until accepting fails, as it does once the listener closes,
+ * throwing why. A request HANDLE throws for gets a 500. */
 export let serve = fn(listener: Listener, handle: (Request) -> Response) {
   while (true) {
     let s = listener.accept();
@@ -356,6 +406,8 @@ export let serve = fn(listener: Listener, handle: (Request) -> Response) {
   }
 };
 
+/* A connection to a server, for requests one after another; HOST is what
+ * its requests' Host header says. */
 export typedef Client = {
   let host: Bytes;
   let stream: Stream;
@@ -368,6 +420,8 @@ export prototype Client {
     this.stream = stream;
     this.reader = new _Reader(stream);
   };
+  /* Sends a request to TARGET with method VERB, HEADERS and BODY, and reads
+   * its response; throws when the server closes the connection first. */
   send(verb: Bytes, target: Bytes, headers: Array<Header>, body: Bytes): Response {
     let all = Array.new<Header>(0);
     if (_find(headers, "host") == null) { all.push(new Header("Host", this.host)); };
@@ -390,10 +444,13 @@ export prototype Client {
     res.body = bodiless ? "" : this.reader.body(res.headers, !_keeps(parts[0], res.headers));
     res
   };
+  // GETs TARGET.
   get(target: Bytes): Response { this.send("GET", target, Array.new<Header>(0), "") };
+  // Closes the connection.
   close() { this.stream.close(); };
 };
 
+// A client connected to HOST and PORT.
 export let connect = fn(host: Bytes, port: I32): Client {
   new Client(host + ":" + Std.string(port), Tcp.connect(host, port))
 };

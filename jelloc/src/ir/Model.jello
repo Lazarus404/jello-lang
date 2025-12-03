@@ -1,5 +1,15 @@
 package ir;
 
+/** @file
+ * The IR; a program of functions over typed virtual registers, each function a control-flow
+ * graph of basic blocks. Lowering builds it from the checked HIR (`ir.Lower`), legalisation
+ * rewrites it to the forms the Jello VM executes (`backend.jello.Legalize`), allocation fits
+ * its registers into the 256 a `.jlo` function may use (`backend.jello.Allocate`), and
+ * emission writes it as a `.jlo` module (`backend.jello.Emit`). `ir.Verify` checks it after
+ * lowering, legalisation and allocation. This module holds the data types; the records among
+ * them are read by field, as `insn.op` or `block.terminator`. */
+
+// The type of a register, a field or a signature, as the VM distinguishes them.
 export enum ValueType {
   Bool;
   I32;
@@ -14,10 +24,80 @@ export enum ValueType {
   ArrayOf(element: ValueType);
   ListOf(element: ValueType);
   TupleOf(elements: Array<ValueType>);
+  // An enum or record, by its index among the program's `enums`.
   Nominal(id: I32);
   Function(args: Array<ValueType>, result: ValueType);
 }
 
+/** The operation of an instruction. Every instruction has one shape; an operation, the
+ * register it defines (-1 when it defines none), the registers it reads in order, and an
+ * immediate. Arithmetic and comparisons take their width from their operand registers; F16 has
+ * only Add, Sub, Mul and Convert.
+ *
+ *   ConstBool, ConstI32  imm: the value
+ *   ConstI64             imm: index into the program's I64 pool
+ *   ConstFloat           imm: an F16's or F32's bits, or index into the program's F64 pool
+ *   ConstBytes           imm: index into the program's bytes pool
+ *   ConstAtom            imm: index into the program's atoms
+ *   ConstFunction, Call  imm: function ID
+ *   ConstFunction        args: the function's captures, boxed, in order; a
+ *                        closure of them
+ *   CallIndirect         args: callee, then arguments
+ *   CallNative           imm: index into the program's natives; args: arguments
+ *   TupleGet, EnumGet    imm: field index; a legalised EnumGet also reads it
+ *                        from its second argument, an I32 register
+ *   EnumNew              imm: variant tag; args: fields
+ *   ArraySet             args: array, index, value
+ *   ArrayResize          args: array, length
+ *   ArrayConcat          args: two arrays of the result's type; a new array
+ *   BytesSlice           args: bytes, start, length; shares the storage, or copies a buffer's
+ *   BytesConcatMany      args: the Bytes it joins, in order; at most 255, and lowering
+ *                        joins at most 64
+ *   BytesJoin            args: an array of Bytes, a separator
+ *   BytesNew             args: length; zero-filled, for a ByteBuffer or `bits[...]`
+ *   BytesSet             args: bytes, index, byte; traps on a byte outside 0-255
+ *   BytesBlit            args: destination, source, offset; copies all of source
+ *   BytesFreeze          args: bytes; a fresh buffer, filled, becomes Bytes no one writes
+ *   BitsRead, BitsWrite  args: bytes, and a BitsWrite's I32 value; imm: bit offset * 16 + width,
+ *                        a width of 1 to 8 bits, most significant bit first
+ *   BytesRead            args: bytes, byte offset; imm: format 0 to 7, U16, U32, I32 or F32,
+ *                        each little-endian then big-endian, the order of the VM's opcodes
+ *   BytesWrite           args: bytes, byte offset, value; imm: format, as BytesRead's
+ *   ListCons             args: head, tail
+ *   ObjectGet, ObjectHas args: Object, and an Atom key when imm is -1; imm: the key's index into
+ *                        the program's atoms, or -1. A get unboxes the field as the destination's
+ *                        type, an absent one being null
+ *   ObjectSet            args: Object, the key when imm is -1, value; imm: as ObjectGet's
+ *   ObjectRemove         args: Object, Atom key
+ *   ObjectKeys           args: Object; an array of its own keys, in atom order
+ *   ListHead, ListTail   args: a list; trap on nil, the empty list
+ *   GlobalGet            imm: global
+ *   GlobalSet            args: value; imm: global
+ *   IsNull               args: a Dynamic or a reference
+ *   NullCheck            args: a Dynamic or a reference; traps when it is null
+ *   Unbox                args: a Dynamic, as the destination's type; traps
+ *                        unless it holds one or a null reference
+ *   Eq                   of Atoms, compares their identities
+ *   Div, Rem             truncate towards zero; trap on a zero divisor and on
+ *                        the minimum value divided by -1
+ *   Shl, Shr             take the count modulo the width; Shr is arithmetic
+ *   DivU, RemU, LtU      as Div, Rem and Lt, on operands read as unsigned
+ *   Zext                 args: an I32; zero-extends it to an I64
+ *   Convert              args: a value; converts it to the destination's type, one of the two
+ *                        a float. To an integer it truncates towards zero and traps on NaN, an
+ *                        infinity or a value out of range of an I32 or I64 destination
+ *   KindOf               args: a Dynamic; the VM's KINDOF code
+ *   IsEnum               args: a Dynamic; imm: enum. Whether it holds that enum
+ *
+ * The rest exist only after legalisation, when instructions map one to one onto VM
+ * operations and TupleNew is gone, or, for the spills, after allocation:
+ *
+ *   StructNew            an empty tuple, filled by StructSet
+ *   StructSet            args: struct, value; imm: field index
+ *   AddImm, SubImm,      args: an I32; imm: the I32 right operand
+ *   MulImm, EqImm, LtImm
+ *   SpillPush            args: the value; imm: spill slot
+ *   SpillPop             imm: spill slot; defines the slot's value */
 export enum Op {
   ConstBool; ConstI32; ConstI64; ConstFloat; ConstBytes; ConstAtom; ConstNull; ConstFunction; Move;
   Add; Sub; Mul; Div; Rem; Shl; Shr; BitAnd; BitOr; BitXor; Neg; Not; Eq; Lt; Sext; Trunc; DivU;
@@ -31,6 +111,9 @@ export enum Op {
   StructNew; StructSet; AddImm; SubImm; MulImm; EqImm; LtImm; SpillPush; SpillPop;
 }
 
+/** One IR instruction; see `Op` for the meaning of each field per operation. `dst` is the
+ * register it defines, or -1, and `args` the registers it reads, in order. `node` is the HIR node
+ * it was lowered from, whose span locates a trap at run time, or -1 for none. */
 export typedef Instruction = {
   let op: Op;
   let dst: I32;
@@ -39,6 +122,7 @@ export typedef Instruction = {
   let node: I32;
 };
 
+// Builds an instruction that records the HIR node it was lowered from.
 export let instructionAt = fn(
   op: Op,
   dst: I32,
@@ -49,22 +133,30 @@ export let instructionAt = fn(
   { op, dst, args, imm, node }
 };
 
+// Builds an instruction with no HIR node (see `instructionAt`).
 export let instruction = fn(op: Op, dst: I32, args: Array<I32>, imm: I32): Instruction {
   { op, dst, args, imm, node: -1 }
 };
 
+/** How a basic block ends. Targets are block IDs; the other fields are registers, except a
+ * throw's HIR `node`. */
 export enum Terminator {
   Jump(target: I32);
   Branch(condition: I32, thenTarget: I32, elseTarget: I32);
   ReturnValue(value: I32);
+  // Throws `value`; `node` is the throw's HIR node, as for an instruction.
   Throw(value: I32, node: I32);
 }
 
+/** The handler of a block in a try region; a throw from the block enters block `target` with
+ * the thrown value in the Dynamic register `payload`. */
 export typedef ThrowHandler = {
   let target: I32;
   let payload: I32;
 };
 
+/** A basic block; its ID, its instructions, its terminator, and the handler of the innermost
+ * try region it is in, or null outside any. */
 export typedef BasicBlock = {
   let id: I32;
   let instructions: Array<Instruction>;
@@ -72,6 +164,10 @@ export typedef BasicBlock = {
   let handler: ?ThrowHandler;
 };
 
+/** An IR function. `registers` gives each register's type by register number, and `params`
+ * the registers the parameters arrive in. The last `captures` of `params` are a closure's
+ * captures; Dynamic registers the VM fills from the function value, after the arguments.
+ * `entry` is the ID of the block execution starts in. */
 export typedef Function = {
   let id: I32;
   let params: Array<I32>;
@@ -82,11 +178,15 @@ export typedef Function = {
   let entry: I32;
 };
 
+/** A nominal type's layout; an enum's field types of each variant, by tag, or a record's field
+ * types, a struct of its own type. */
 export enum EnumSchema {
   Enum(variants: Array<Array<ValueType>>);
   Record(fields: Array<ValueType>);
 }
 
+/** An export of a native library and its signature, as the program calls it. A `void` one
+ * returns nothing, and its calls' values are null. */
 export typedef Native = {
   let library: Bytes;
   let name: Bytes;
@@ -95,6 +195,11 @@ export typedef Native = {
   let void: Bool;
 };
 
+/** A whole program. The function with ID 0 is the entry; `ir.Lower` lists it last. `bytes`,
+ * `wides` and `floats` are the pools `ConstBytes`, `ConstI64` and an F64 `ConstFloat` index, the
+ * last holding bits; `atoms` are the names `ConstAtom` indexes; `enums` are the layouts
+ * `Nominal` types refer to by index; `globals` are the types of the module state `GlobalGet`
+ * and `GlobalSet` address; `natives` are the exports `CallNative` calls. */
 export typedef Program = {
   let functions: Array<Function>;
   let bytes: Array<Bytes>;
@@ -106,6 +211,7 @@ export typedef Program = {
   let natives: Array<Native>;
 };
 
+// Returns one more than the highest ID of `functions`, the first one free.
 export let nextFunctionId = fn(functions: Array<Function>): I32 {
   let next = 0;
 
@@ -115,14 +221,20 @@ export let nextFunctionId = fn(functions: Array<Function>): I32 {
   next
 };
 
+// Returns how many of `function`'s parameters are arguments; the rest are its captures.
 export let argumentCount = fn(function: Function): I32 {
   function.params.len() - function.captures
 };
 
+/** Checks whether `instruction` may throw; only a `Call` or `CallIndirect` can, since a
+ * callee's uncaught throw unwinds into the caller. Traps do not throw. */
 export let instructionMayThrow = fn(instruction: Instruction): Bool {
   match (instruction.op) { Call, CallIndirect => true, _ => false }
 };
 
+/** Checks whether `Eq` compares values of type `ty` by identity, as atoms, functions and Objects
+ * are, and the native handles Dynamic registers hold for abstract types; the checker compares no
+ * other Dynamic so. */
 export let comparesByIdentity = fn(ty: ValueType): Bool {
   match (ty) {
     Atom, Object, Function(_, _), Dynamic => true,
@@ -130,6 +242,7 @@ export let comparesByIdentity = fn(ty: ValueType): Bool {
   }
 };
 
+// Checks whether type lists `left` and `right` have the same length and pairwise equal types.
 let _valueTypesEqual = fn(left: Array<ValueType>, right: Array<ValueType>): Bool {
   if (left.len() != right.len()) { return false; }
 
@@ -139,6 +252,7 @@ let _valueTypesEqual = fn(left: Array<ValueType>, right: Array<ValueType>): Bool
   true
 };
 
+// Checks whether two value types are structurally equal; enums are equal by index.
 export let valueTypeEqual = fn(left: ValueType, right: ValueType): Bool {
   match ((left, right)) {
     (Bool, Bool), (I32, I32), (I64, I64), (F16, F16), (F32, F32), (F64, F64),
@@ -152,6 +266,8 @@ export let valueTypeEqual = fn(left: ValueType, right: ValueType): Bool {
   }
 };
 
+/** Returns the index of `ty` in `types`, adding it if it is not there. A linear scan, since a
+ * function has few distinct register types. */
 export let internValueType = fn(types: Array<ValueType>, ty: ValueType): I32 {
   for (i, known in types) {
     if (valueTypeEqual(known, ty)) { return i; }
@@ -160,6 +276,8 @@ export let internValueType = fn(types: Array<ValueType>, ty: ValueType): I32 {
   types.len() - 1
 };
 
+/** Checks whether a register of type `ty` can hold null; a Dynamic or a reference other than a
+ * list, whose null pointer is nil. */
 export let canBeNull = fn(ty: ValueType): Bool {
   match (ty) {
     Bool, I32, I64, F16, F32, F64, Atom, ListOf(_) => false,

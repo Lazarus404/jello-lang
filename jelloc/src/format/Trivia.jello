@@ -1,44 +1,67 @@
 package format;
 
+/** @file
+ * The source lines `jelloc fmt` rearranges. The lexer drops whitespace and comments, but each
+ * token's byte offsets leave them in the gaps between tokens, so `sourceLines` reads the comments
+ * back out of those gaps and splits the file into lines of pieces: each token's text as written,
+ * and each comment. A template, from its opening backtick to its closing one, holes and all, is
+ * one piece, so nothing inside it is ever moved; neither is anything inside a bytes or regexp
+ * literal, whose text is copied as it is. */
+
 import { Token } from frontend.syntax.Lexer;
 import { indexOfFrom } from std.core.Bytes;
 
+// What a piece of a line is.
 export enum PieceKind {
+  // A token, or a whole template.
   Code;
+  // A `//` or `#` comment, up to the end of its line.
   LineComment;
+  // A slash-star comment, which may span lines.
   BlockComment;
 }
 
+// One piece of a line; its text as the source spells it, and, for code, its first token.
 export typedef Piece = {
   let kind: PieceKind;
   let text: Bytes;
+  // The token, a template's `TemplateHead` for a whole template, and `Eof` for a comment.
   let token: Token;
+  // The whitespace before it on its line in the source; the first piece's is ignored.
   let space: Bytes;
 };
 
+// A line of pieces, and the blank lines above it.
 export typedef Line = {
   let pieces: Array<Piece>;
   let blanks: I32;
 };
 
+// Checks whether `c`, a byte, is whitespace other than a newline.
 let _isBlank = fn(c: I32): Bool {
   (c == " ".code) || (c == "\t".code) || (c == "\r".code) || (c == 11) || (c == 12)
 };
 
+// Returns a code piece.
 export let codePiece = fn(text: Bytes, token: Token, space: Bytes): Piece {
   { kind: PieceKind.Code, text: text, token: token, space: space }
 };
 
+// Returns a comment piece of `kind`.
 export let commentPiece = fn(kind: PieceKind, text: Bytes, space: Bytes): Piece {
   { kind: kind, text: text, token: Token.Eof, space: space }
 };
 
+/** Returns the position after the last byte of `text` before `end` that is not whitespace, at
+ * or after `start`. */
 let _trimmedEnd = fn(text: Bytes, start: I32, end: I32): I32 {
   let at = end;
   while ((at > start) && _isBlank(Bytes.get_u8(text, at - 1))) { at--; }
   at
 };
 
+/** Splits `src` into lines of pieces, from its tokens and their offsets as `lexFile` returns
+ * them. Trailing whitespace goes, and so do blank lines at the end. */
 export let sourceLines = fn(
   src: Bytes,
   tokens: Array<Token>,
@@ -80,6 +103,7 @@ export let sourceLines = fn(
         while ((pos < gapEnd) && _isBlank(Bytes.get_u8(src, pos))) { pos++; }
         space = Bytes.slice(src, begin, pos - begin);
       } else if ((c == "/".code) && (Bytes.get_u8(src, pos + 1) == "*".code)) {
+        // As the lexer reads it, the comment ends at the first star-slash after its slash-star.
         let close = indexOfFrom(src, "*/", pos + 2);
         let end = close < 0 ? gapEnd : close + 2;
         add(commentPiece(PieceKind.BlockComment, Bytes.slice(src, pos, end - pos), space));
@@ -98,6 +122,7 @@ export let sourceLines = fn(
     match (token) {
       Eof => { i = tokens.len(); },
       _ => {
+        // A template, with its holes, is one piece, ending at its own tail.
         let last = i;
 
         if (let TemplateHead(_) = token) {

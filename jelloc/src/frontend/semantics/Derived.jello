@@ -1,5 +1,17 @@
 package frontend.semantics;
 
+/** @file
+ * Operations the checker derives from a type's structure. Structural `==` compares two tuples,
+ * records, enums, arrays or lists of the same type element by element, each element as `==`
+ * compares its own type. `Std.string` shows a tuple, record, enum, array, list or nullable as a
+ * value literal; a record as `{x: 1, y: 2}`. Each type gets at most one generated HIR function of
+ * each kind, `equal` and `string`, which calls the function of each element type, its own
+ * included, so a recursive enum compares and prints to any depth. Owns the tables of generated
+ * functions per type. `frontend.semantics.Modules` installs `structuralEquality` and `unsupported`
+ * into `frontend.semantics.TypeCheck`; `frontend.semantics.Aggregates` and
+ * `frontend.semantics.Interpolation` call `printed` for `Std.string` and template holes, and
+ * `frontend.semantics.Testing` calls `literalOf` to show an assertion's values. */
+
 import type { BinaryOp } from frontend.syntax.Ast;
 import { BinaryOp } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
@@ -12,8 +24,15 @@ import {
 } from frontend.semantics.TypeCheck;
 import { E0500, coded } from support.Codes;
 
+/** The enum and record types whose fields `_unsupported` is examining. One that holds itself is
+ * supported when the rest of it is, so one being examined counts as supported. */
 let _deciding = Array.new<I32>(0);
 
+/** Finds an unsupported part among the fields of every variant of an enum, or of a record, as
+ * `_unsupported`.
+ * @param ty  the enum or record type
+ * @param printing  whether the question is about `Std.string` rather than `==`
+ * @return the first unsupported field type, or -1 */
 let _fieldsUnsupported = fn(ty: I32, printing: Bool): I32 {
   _deciding.push(ty);
   let tag = 0;
@@ -32,6 +51,13 @@ let _fieldsUnsupported = fn(ty: I32, printing: Bool): I32 {
   found
 };
 
+/** Finds a part of a type that `==` cannot compare or, when printing, that `Std.string` cannot
+ * print; a byte buffer; when printing, a function; for `==`, a `Dynamic`; and a type parameter
+ * without the bound `Eq`, or `Show` when printing. Looks through nullables, arrays, lists, tuples,
+ * and enum and record fields.
+ * @param ty  the type
+ * @param printing  whether the question is about `Std.string` rather than `==`
+ * @return the unsupported type, or -1 when `ty` is supported */
 let _unsupported = fn(ty: I32, printing: Bool): I32 {
   match (H.kindOf(ty)) {
     Function => printing ? ty : -1,
@@ -54,12 +80,25 @@ let _unsupported = fn(ty: I32, printing: Bool): I32 {
     _ => -1,
   }
 };
+/** Finds a part of a type that `==` or `Std.string` cannot handle (see `_unsupported`).
+ * `frontend.semantics.Modules` installs it into `frontend.semantics.TypeCheck` with
+ * `useUnsupported`.
+ * @param ty  the type
+ * @param printing  whether the question is about `Std.string` rather than `==`
+ * @return the unsupported type, or -1 when `ty` is supported */
 export let unsupported = fn(ty: I32, printing: Bool): I32 { _unsupported(ty, printing) };
 
+/** Suggests how to make an unsupported type supported, for an error message; the bound a type
+ * parameter needs.
+ * @param bad  the type `_unsupported` found
+ * @param printing  whether the bound needed is `Show` rather than `Eq`
+ * @return a hint beginning "; it ", or empty when `bad` is not a type parameter */
 let _boundHint = fn(bad: I32, printing: Bool): Bytes {
   H.isKind(bad, Kind.Param) ? `; it ${needsBound(bad, printing ? "Show" : "Eq")}` : ""
 };
 
+/** Checks whether every variant of the enum `ty` has no payload, so that its tag alone identifies
+ * its value. */
 let _tagOnly = fn(ty: I32): Bool {
   let tag = 0;
 
@@ -70,9 +109,12 @@ let _tagOnly = fn(ty: I32): Bool {
   true
 };
 
+// Builds the `Bool` constant `value`.
 export let boolOf = fn(value: Bool): I32 { H.node(Op.Bool, H.TYPE_BOOL, value ? 1 : 0, 0, []) };
+// Builds the `I32` constant `value`.
 export let i32Of = fn(value: I32): I32 { H.node(Op.I32, H.TYPE_I32, value, 0, []) };
 
+// Returns the test that the I32 node `length` is `count`, or with `open` more than `count - 1`.
 export let lengthTest = fn(length: I32, count: I32, open: Bool): I32 {
   if (open) {
     H.opNode(Op.Gt, H.TYPE_BOOL, [length, i32Of(count - 1)])
@@ -80,21 +122,31 @@ export let lengthTest = fn(length: I32, count: I32, open: Bool): I32 {
     H.opNode(Op.Eq, H.TYPE_BOOL, [length, i32Of(count)])
   }
 };
+// Builds the short-circuit `left && right` over `Bool` nodes.
 let _and = fn(left: I32, right: I32): I32 { H.opNode(Op.And, H.TYPE_BOOL, [left, right]) };
+// Builds `!value` over the `Bool` node `value`.
 let _not = fn(value: I32): I32 { H.opNode(Op.Not, H.TYPE_BOOL, [value]) };
+// Builds an `I32` `EnumTag` node reading the tag of the enum node `value`.
 let _tag = fn(value: I32): I32 { H.opNode(Op.EnumTag, H.TYPE_I32, [value]) };
 
+// Builds the `IfStatement` `if (!equal) { return false; }` over the `Bool` node `equal`.
 let _unlessEqual = fn(equal: I32): I32 {
   let unequal = _not(equal);
   let bail = H.opNode(Op.Block, 0, [H.opNode(Op.Return, 0, [boolOf(false)])]);
   H.opNode(Op.IfStatement, 0, [unequal, bail])
 };
+// Builds an `Expression` statement that evaluates `value` and discards it.
 export let expressionOf = fn(value: I32): I32 { H.opNode(Op.Expression, 0, [value]) };
 
+/** Builds a loop that runs the statements `body` while `more` holds, and the statements `step`
+ * after each pass, where a `continue` goes too. */
 export let steppedWhile = fn(more: I32, body: Array<I32>, step: Array<I32>): I32 {
   H.opNode(Op.While, 0, [more, H.opNode(Op.Block, 0, body), H.opNode(Op.Block, 0, step)])
 };
 
+/** The parts of a loop over the indices of an array: the counter's binding, its declaration from
+ * 0, the test that it is below the array's length, and the statement that adds one to it, for
+ * the loop's step (`steppedWhile`). */
 export typedef IndexLoop = {
   let index: I32;
   let start: I32;
@@ -102,6 +154,7 @@ export typedef IndexLoop = {
   let next: I32;
 };
 
+// Builds the parts of a loop over the indices of an array, whose length `length` reads.
 export let indexLoop = fn(length: () -> I32): IndexLoop {
   let index = newBinding();
   let start = H.declareBinding(Op.Let, index, "index", i32Of(0));
@@ -110,6 +163,12 @@ export let indexLoop = fn(length: () -> I32): IndexLoop {
   { index, start, more, next: expressionOf(H.node(Op.Assign, H.TYPE_I32, index, 0, [sum])) }
 };
 
+/** Builds the body of `equal` for a tuple or record type; the conjunction of every field's
+ * equality, or `true` for the empty tuple.
+ * @param left  the first parameter's binding
+ * @param right  the second parameter's binding
+ * @param ty  the tuple or record type
+ * @return the body's statements and tail */
 let _tuples = fn(left: I32, right: I32, ty: I32): Array<I32> {
   let equal = -1;
   let i = H.memberCount(ty) - 1;
@@ -125,10 +184,22 @@ let _tuples = fn(left: I32, right: I32, ty: I32): Array<I32> {
   [equal < 0 ? boolOf(true) : equal]
 };
 
+/** Builds an `EnumField` node reading one field of an enum local known to have a given tag.
+ * @param binding  the enum local's binding
+ * @param ty  the enum type
+ * @param tag  the variant's tag
+ * @param field  the field's index in the variant
+ * @return the node */
 let _field = fn(binding: I32, ty: I32, tag: I32, field: I32): I32 {
   H.node(Op.EnumField, H.fieldType(ty, tag, field), field, tag, [H.local(binding, ty)])
 };
 
+/** Builds the body of `equal` for an enum type; the tags are equal and, for a variant with
+ * fields, chosen by the left tag in an `If` chain, every field is equal.
+ * @param left  the first parameter's binding
+ * @param right  the second parameter's binding
+ * @param ty  the enum type
+ * @return the body's statements and tail */
 let _enums = fn(left: I32, right: I32, ty: I32): Array<I32> {
   let fields = boolOf(true);
   let tag = H.variantCount(ty) - 1;
@@ -155,6 +226,12 @@ let _enums = fn(left: I32, right: I32, ty: I32): Array<I32> {
   [_and(tags, fields)]
 };
 
+/** Builds the body of `equal` for an array type; return false unless the lengths are equal, then
+ * loop over the indices returning false at the first unequal element, and end in `true`.
+ * @param left  the first parameter's binding
+ * @param right  the second parameter's binding
+ * @param ty  the array type
+ * @return the body's statements and tail */
 let _arrays = fn(left: I32, right: I32, ty: I32): Array<I32> {
   let length = newBinding();
   let loop = indexLoop(fn() { H.local(length, H.TYPE_I32) });
@@ -177,6 +254,12 @@ let _arrays = fn(left: I32, right: I32, ty: I32): Array<I32> {
   ]
 };
 
+/** Builds the body of `equal` for a list type; walk both lists together, returning false when the
+ * right one ends first or the heads differ, and end in whether the right one has ended too.
+ * @param left  the first parameter's binding
+ * @param right  the second parameter's binding
+ * @param ty  the list type
+ * @return the body's statements and tail */
 let _lists = fn(left: I32, right: I32, ty: I32): Array<I32> {
   let a = newBinding();
   let b = newBinding();
@@ -202,11 +285,16 @@ let _lists = fn(left: I32, right: I32, ty: I32): Array<I32> {
   ]
 };
 
+// The types that have a generated `equal` function.
 let _equalTypes = Array.new<I32>(0);
+// The function index of each type's `equal`, at the type's position in `_equalTypes`.
 let _equalFunctions = Array.new<I32>(0);
+// The types that have a generated `string` function.
 let _stringTypes = Array.new<I32>(0);
+// The function index of each type's `string`, at the type's position in `_stringTypes`.
 let _stringFunctions = Array.new<I32>(0);
 
+// Forgets the functions generated for the previous program, before a program is checked.
 export let resetDerived = fn(): Bool {
   _equalTypes = Array.new<I32>(0);
   _equalFunctions = Array.new<I32>(0);
@@ -215,6 +303,17 @@ export let resetDerived = fn(): Bool {
   true
 };
 
+/** Returns the derived function of one kind for a type, generating it on first use. The function
+ * is declared before its body is built, so the body can call it recursively.
+ * @param types  the types that have a function of this kind
+ * @param functions  their function indices; both tables are extended on generation
+ * @param name  the function's name, `equal` or `string`
+ * @param params  the parameters' names; every parameter has type `ty`
+ * @param ty  the type; it must be fully known
+ * @param result  the function's result type
+ * @param body  builds the body's statements and tail from the parameters' bindings and `ty`
+ * @return the function's index
+ * @throws a located error if `ty` still holds an unbound type variable */
 let _derived = fn(
   types: Array<I32>,
   functions: Array<I32>,
@@ -246,6 +345,10 @@ let _derived = fn(
   index
 };
 
+/** Builds the body of `equal` for a tuple, record, enum, array or list type.
+ * @param params  the bindings of the two parameters
+ * @param ty  the type
+ * @return the body's statements and tail */
 let _equalBody = fn(params: Array<I32>, ty: I32): Array<I32> {
   match (H.kindOf(ty)) {
     Tuple, Record => _tuples(params[0], params[1], ty),
@@ -255,6 +358,17 @@ let _equalBody = fn(params: Array<I32>, ty: I32): Array<I32> {
   }
 };
 
+/** Builds `left == right`, or `left != right`, for two tuples, records, enums, arrays or lists of
+ * the same type. An enum whose variants have no payloads compares tags; anything else calls the
+ * type's derived `equal`. Inside a template's body it builds a plain `Eq` node instead, since each
+ * instance compares its own types. `frontend.semantics.Modules` installs it into
+ * `frontend.semantics.TypeCheck` with `useStructuralEquality`.
+ * @param op  `Equal` or `NotEqual`
+ * @param left  the checked left operand
+ * @param right  the checked right operand, of the same type
+ * @return the comparison's `Bool` node
+ * @throws a located error naming the part of the type that `==` cannot compare, with a bound
+ *   hint for a type parameter */
 export let structuralEquality = fn(op: BinaryOp, left: I32, right: I32): I32 {
   let ty = H.defaultIntegers(H.typeOf(left));
   let bad = _unsupported(ty, false);
@@ -264,6 +378,7 @@ export let structuralEquality = fn(op: BinaryOp, left: I32, right: I32): I32 {
     throw coded(E0500, `${undefined}, which holds ${H.typeName(bad)}${_boundHint(bad, false)}`);
   }
 
+  // A template's body generates nothing; its instances compare their own types.
   let equal = if (inTemplate()) {
     H.opNode(Op.Eq, H.TYPE_BOOL, [left, right])
   } else if (H.isKind(ty, Kind.Enum) && _tagOnly(ty)) {
@@ -277,14 +392,18 @@ export let structuralEquality = fn(op: BinaryOp, left: I32, right: I32): I32 {
   match (op) { NotEqual => _not(equal), _ => equal }
 };
 
+// Builds the `Bytes` constant `value`.
 export let bytesOf = fn(value: Bytes): I32 {
   H.node(Op.Bytes, H.TYPE_BYTES, H.bytesId(value), 0, [])
 };
 
+// Builds the `BytesConcat` of the `Bytes` nodes `left` and `right`.
 export let concatOf = fn(left: I32, right: I32): I32 {
   H.opNode(Op.BytesConcat, H.TYPE_BYTES, [left, right])
 };
 
+/** Builds the join of the `Bytes` nodes `parts`, in order; "" for none, the part for one, a
+ * `BytesConcat` for two, and a `BytesConcatMany` for more. */
 export let joinOf = fn(parts: Array<I32>): I32 {
   if (parts.len() == 0) { return bytesOf(""); }
   if (parts.len() == 1) { return parts[0]; }
@@ -292,6 +411,12 @@ export let joinOf = fn(parts: Array<I32>): I32 {
   H.opNode(Op.BytesConcatMany, H.TYPE_BYTES, parts)
 };
 
+/** Builds the join of texts between delimiters, separated by ", ".
+ * @param open  the opening delimiter
+ * @param names  the label shown before each text, as "name: ", or none for no labels
+ * @param texts  the `Bytes` nodes to join
+ * @param close  the closing delimiter
+ * @return a `Bytes` node */
 let _listed = fn(open: Bytes, names: Array<Bytes>, texts: Array<I32>, close: Bytes): I32 {
   let parts = Array.new<I32>(0);
 
@@ -304,6 +429,11 @@ let _listed = fn(open: Bytes, names: Array<Bytes>, texts: Array<I32>, close: Byt
   joinOf(parts)
 };
 
+/** Builds the body of `string` for a tuple type, which shows "(a, b)", or "(a,)" for one field,
+ * or for a record type, which shows "{x: 1, y: 2}".
+ * @param value  the parameter's binding
+ * @param ty  the tuple or record type
+ * @return the body's tail */
 let _tupleText = fn(value: I32, ty: I32): Array<I32> {
   let record = H.isKind(ty, Kind.Record);
   let names = Array.new<Bytes>(0);
@@ -324,8 +454,15 @@ let _tupleText = fn(value: I32, ty: I32): Array<I32> {
   }
 };
 
+// Returns the qualified name, "E.V", of the variant with tag `tag` of the enum `ty`.
 let _variantName = fn(ty: I32, tag: I32): Bytes { `${H.enumName(ty)}.${H.variantName(ty, tag)}` };
 
+/** Builds the text of an enum local known to have a given tag; "E.V" for a variant without a
+ * payload, "E.V(a, b)" for one with.
+ * @param value  the enum local's binding
+ * @param ty  the enum type
+ * @param tag  the variant's tag
+ * @return a `Bytes` node */
 let _variantText = fn(value: I32, ty: I32, tag: I32): I32 {
   let name = _variantName(ty, tag);
   if (H.fieldCount(ty, tag) == 0) { return bytesOf(name); }
@@ -339,6 +476,11 @@ let _variantText = fn(value: I32, ty: I32, tag: I32): I32 {
   _listed(`${name}(`, Array.new<Bytes>(0), texts, ")")
 };
 
+/** Builds the body of `string` for an enum type; an `If` chain on the tag choosing each variant's
+ * text, the last variant's as the fallback.
+ * @param value  the parameter's binding
+ * @param ty  the enum type
+ * @return the body's tail */
 let _enumText = fn(value: I32, ty: I32): Array<I32> {
   let tag = H.variantCount(ty) - 1;
   let text = _variantText(value, ty, tag);
@@ -351,6 +493,13 @@ let _enumText = fn(value: I32, ty: I32): Array<I32> {
   [text]
 };
 
+/** Builds the body of `string` for an array or a list, which shows "[a, b]": each element's text
+ * is pushed onto an array of texts, which one `BytesJoin` joins with ", " between the brackets.
+ * @param setup  the statement declaring the cursor
+ * @param more  the `Bool` node that holds while elements remain
+ * @param element  the node of the current element
+ * @param next  the statement that advances the cursor
+ * @return the body's statements and tail */
 let _bracketed = fn(setup: I32, more: I32, element: I32, next: I32): Array<I32> {
   let texts = newBinding();
   let ty = H.arrayType(H.TYPE_BYTES);
@@ -364,12 +513,17 @@ let _bracketed = fn(setup: I32, more: I32, element: I32, next: I32): Array<I32> 
   ]
 };
 
+/** Builds the body of `string` for an array type, iterating by index.
+ * @param value  the parameter's binding
+ * @param ty  the array type
+ * @return the body's statements and tail */
 let _arrayText = fn(value: I32, ty: I32): Array<I32> {
   let loop = indexLoop(fn() { H.opNode(Op.ArrayLen, H.TYPE_I32, [H.local(value, ty)]) });
   let at = H.local(loop.index, H.TYPE_I32);
   let item = H.innerOf(ty);
   let element = H.opNode(Op.ArrayGet, item, [H.local(value, ty), at]);
 
+  // An item that `Array.new` left unset is null, shown as `null`, whatever the item type.
   let shown = match (H.kindOf(item)) {
     Bytes, Tuple, Record, Enum, Array => H.opNode(Op.Present, H.nullType(item), [element]),
     _ => element,
@@ -377,6 +531,10 @@ let _arrayText = fn(value: I32, ty: I32): Array<I32> {
   _bracketed(loop.start, loop.more, shown, loop.next)
 };
 
+/** Builds the body of `string` for a list type, walking a cursor down the list.
+ * @param value  the parameter's binding
+ * @param ty  the list type
+ * @return the body's statements and tail */
 let _listText = fn(value: I32, ty: I32): Array<I32> {
   let rest = newBinding();
   let more = _not(H.opNode(Op.ListIsNil, H.TYPE_BOOL, [H.local(rest, ty)]));
@@ -386,12 +544,21 @@ let _listText = fn(value: I32, ty: I32): Array<I32> {
   _bracketed(H.declareBinding(Op.Let, rest, "rest", H.local(value, ty)), more, head, next)
 };
 
+/** Builds the text of a nullable value; "null", or the text of the value it holds.
+ * @param value  the value's binding
+ * @param ty  the nullable type
+ * @param quoted  whether Bytes, atoms and Dynamics it holds show as literals
+ * @return the text */
 let _nullableText = fn(value: I32, ty: I32, quoted: Bool): I32 {
   let present = _shown(H.opNode(Op.Unwrap, H.innerOf(ty), [H.local(value, ty)]), quoted);
   let missing = H.opNode(Op.IsNull, H.TYPE_BOOL, [H.local(value, ty)]);
   H.opNode(Op.If, H.TYPE_BYTES, [missing, bytesOf("null"), present])
 };
 
+/** Builds the body of `string` for a tuple, record, enum, array, list or nullable type.
+ * @param params  a one-element array holding the parameter's binding
+ * @param ty  the type
+ * @return the body's statements and tail */
 let _stringBody = fn(params: Array<I32>, ty: I32): Array<I32> {
   match (H.kindOf(ty)) {
     Tuple, Record => _tupleText(params[0], ty),
@@ -402,37 +569,55 @@ let _stringBody = fn(params: Array<I32>, ty: I32): Array<I32> {
   }
 };
 
+/** Builds the text `Std.string` shows for a value; the derived `string` bodies show their
+ * elements through it.
+ * @param value  the value node
+ * @param quoted  whether a `Bytes` value is shown as a quoted literal rather than as itself
+ * @return a `Bytes` node */
 let _shown = fn(value: I32, quoted: Bool): I32 {
+  /* An integer type variable stays open; it prints the same at either width, and a later use may
+   * still make it I64. Inside another type it is defaulted, since a derived function is generated
+   * per type. */
   let present = H.typeOf(value);
   let ty = H.isInteger(present) ? present : H.defaultIntegers(present);
+  // A variant without a payload is a constant, shown by name.
   if (isNullaryVariant(value)) { return bytesOf(_variantName(ty, H.valueOf(value))); }
 
   match (H.kindOf(ty)) {
     Bytes => quoted ? H.callStd("quote", [H.TYPE_BYTES], H.TYPE_BYTES, [value]) : value,
+    // An atom shows as its name, and as a literal, `:name`, inside another value.
     Atom when (quoted) => concatOf(bytesOf(":"), _shown(value, false)),
+    // A U32 is boxed zero-extended, as an I64.
     Bool, I32, I64, Atom, I8, I16, U8, U16, U32, F64, F32, F16, Var => {
       let boxed = H.opNode(Op.ToDynamic, H.TYPE_DYNAMIC, [value]);
       H.callStd("to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [boxed])
     },
     U64 => H.callStd("u64_string", [H.TYPE_U64], H.TYPE_BYTES, [value]),
+    // Inside another value, Bytes and atoms that a Dynamic holds show as literals too.
     Dynamic => H.callStd(quoted ? "object_string" : "to_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES,
       [value]),
+    // An Object shows as `{a: 1, b: "x"}`, its fields in atom order.
     Object => {
       let boxed = H.opNode(Op.ToDynamic, H.TYPE_DYNAMIC, [value]);
       H.callStd("object_string", [H.TYPE_DYNAMIC], H.TYPE_BYTES, [boxed])
     },
+    // The type of `null` itself has one value.
     Null when (H.innerOf(ty) < 0) => {
       H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("null")])
     },
+    /* At the top level a value that is present shows as it would alone, Bytes unquoted; the
+     * derived `string` shows it as it is shown inside another value. */
     Null when (!quoted) => {
       let held = newBinding();
       let declared = H.declareBinding(Op.Let, held, "held", value);
       H.node(Op.Block, H.TYPE_BYTES, 0, 1, [declared, _nullableText(held, ty, false)])
     },
+    // A native handle shows as its type, `<Window>`, since only its library sees inside it.
     Abstract => {
       let name = bytesOf(`<${H.typeName(ty)}>`);
       H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), name])
     },
+    // A template's body generates nothing; its instances print their own types.
     _ when (inTemplate()) => {
       H.node(Op.Block, H.TYPE_BYTES, 0, 1, [expressionOf(value), bytesOf("")])
     },
@@ -445,6 +630,12 @@ let _shown = fn(value: I32, quoted: Bool): I32 {
   }
 };
 
+/** Builds `Std.string(value)` of the checked `value`; `Bytes` as itself, and anything else as a
+ * value literal, with any `Bytes` inside it quoted.
+ * @param what  the call or form printing it, for the error
+ * @param at  the syntax child the error is located at, or -1 for the node being checked
+ * @throws a located error if the value holds a type that cannot print, such as a function, a
+ *     buffer or a type parameter without the bound Show */
 export let printed = fn(value: I32, what: Bytes, at: I32): I32 {
   let ty = H.typeOf(value);
   let bad = _unsupported(ty, true);
@@ -458,4 +649,8 @@ export let printed = fn(value: I32, what: Bytes, at: I32): I32 {
   _shown(value, false)
 };
 
+/** Builds a value's text as a literal, with `Bytes` quoted even at the top level, as an assertion's
+ * failure message shows it.
+ * @param value  the checked value
+ * @return a `Bytes` node */
 export let literalOf = fn(value: I32): I32 { _shown(value, true) };

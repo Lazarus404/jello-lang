@@ -1,5 +1,13 @@
 package frontend.semantics;
 
+/** @file
+ * Checks the builtin namespaces `Math`, `Float` and `Integer` into calls of std.jdll natives. A
+ * Math function takes numbers of any type, converted to F64, and returns an F64, but `clz32` and
+ * `imul` take and return I32, and `min`, `max` and `hypot` take one number or more.
+ * `Float.is_nan` and `Float.is_infinite` test a number. `Float.parse` reads Bytes as an F64, and
+ * `Integer.parse` as the integer type the context requires, or I32; text that is not a number of
+ * that type throws. `frontend.semantics.Aggregates` calls `checkNumberCall`. */
+
 import type { Expr as AstExpr } from frontend.syntax.Ast;
 import { FloatSize } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
@@ -11,6 +19,10 @@ import {
 } from frontend.semantics.TypeCheck;
 import { E0400, E0600, E0800, coded } from support.Codes;
 
+/** Checks argument `index` of `args`, syntax child `index + 1`, as a number of type `ty`, I32 or
+ * F64; any number converts to F64.
+ * @param name  the name the call uses, for the error
+ * @throws a located error if it is not a number of that type */
 let _number = fn(args: Array<AstExpr>, index: I32, ty: I32, name: Bytes): I32 {
   let value = checkOperand(args[index], index + 1, ty);
   let checked = H.typeOf(value);
@@ -25,6 +37,8 @@ let _number = fn(args: Array<AstExpr>, index: I32, ty: I32, name: Bytes): I32 {
   throw coded(E0400, `${name} requires ${wanted}, not ${H.typeName(checked)}`);
 };
 
+/** Returns the number of F64 arguments Math function `name` takes; -1 for one or more, 0 if it
+ * is not one that converts its arguments to F64. */
 let _arity = fn(name: Bytes): I32 {
   match (name) {
     "abs", "ceil", "floor", "trunc", "round", "sqrt", "cbrt", "exp", "expm1", "log",
@@ -36,6 +50,8 @@ let _arity = fn(name: Bytes): I32 {
   }
 };
 
+/** Checks a call of a Math function that converts its arguments to F64 (see `_arity`).
+ * @throws a located error if the function is unknown or its arguments are wrong */
 let _converting = fn(name: Bytes, qualified: Bytes, args: Array<AstExpr>): I32 {
   let arity = _arity(name);
   if (arity == 0) { throw coded(E0800, `unknown function ${qualified}`); }
@@ -55,10 +71,12 @@ let _converting = fn(name: Bytes, qualified: Bytes, args: Array<AstExpr>): I32 {
   let native = `math_${name}`;
   if (arity == 1) { return H.callStd(native, [H.TYPE_F64], H.TYPE_F64, [value]); }
 
+  // One argument to hypot is its magnitude.
   if ((args.len() == 1) && (name == "hypot")) {
     return H.callStd("math_abs", [H.TYPE_F64], H.TYPE_F64, [value]);
   }
 
+  // The rest fold left, pairwise: min(a, b, c) is min(min(a, b), c).
   let pair = H.stdNative(native, [H.TYPE_F64, H.TYPE_F64], H.TYPE_F64);
   let i = 1;
 
@@ -70,6 +88,9 @@ let _converting = fn(name: Bytes, qualified: Bytes, args: Array<AstExpr>): I32 {
   value
 };
 
+/** Checks a call of `Math.name`; `round` rounds half away from zero, `fround` to the nearest F32,
+ * and `min` and `max` are NaN if any argument is, ordering -0 below +0.
+ * @throws a located error if the function is unknown or its arguments are wrong */
 let _math = fn(name: Bytes, qualified: Bytes, args: Array<AstExpr>): I32 {
   match (name) {
     "random" => {
@@ -91,6 +112,11 @@ let _math = fn(name: Bytes, qualified: Bytes, args: Array<AstExpr>): I32 {
   }
 };
 
+/** Returns a block that binds `text`, throws `message` unless the export `kind_valid` accepts it,
+ * then reads it with the export `kind_parse`.
+ * @param kind  "float" or "integer"
+ * @param extra  `kind_valid`'s arguments after the text
+ * @param result  `kind_parse`'s result type */
 let _parse = fn(text: I32, kind: Bytes, extra: Array<I32>, result: I32, message: Bytes): I32 {
   let statements = Array.new<I32>(0);
   let binding = bindOnce(statements, "text", text);
@@ -110,6 +136,8 @@ let _parse = fn(text: I32, kind: Bytes, extra: Array<I32>, result: I32, message:
   H.node(Op.Block, result, 0, 1, statements)
 };
 
+/** Checks argument 0 of `args` as Bytes.
+ * @throws a located error if it is not */
 let _text = fn(args: Array<AstExpr>, name: Bytes): I32 {
   checkArity(args, 1, name);
   let text = checkOperand(args[0], 1, H.TYPE_BYTES);
@@ -121,6 +149,8 @@ let _text = fn(args: Array<AstExpr>, name: Bytes): I32 {
   text
 };
 
+/** Checks `Integer.parse(text)` as the integer type `expected` is, or I32. Text that is not a sign
+ * and decimal digits, a minus for an unsigned type, or a value out of range throws. */
 let _integerParse = fn(args: Array<AstExpr>, qualified: Bytes, expected: I32): I32 {
   let resolved = H.resolve(expected);
   let ty = H.isIntegerType(resolved) ? resolved : H.TYPE_I32;
@@ -131,6 +161,8 @@ let _integerParse = fn(args: Array<AstExpr>, qualified: Bytes, expected: I32): I
   (ty == H.TYPE_I64) ? value : H.opNode(Op.Convert, ty, [value])
 };
 
+/** Returns the constant `space.name`, `Math.PI` or `Math.E`, the F64 nearest pi or e, or -1 when
+ * there is no such constant. */
 export let numberConstant = fn(space: Bytes, name: Bytes): I32 {
   match (`${space}.${name}`) {
     "Math.PI" => floatLiteral("3.141592653589793", FloatSize.Infer, false, H.TYPE_F64),
@@ -139,6 +171,11 @@ export let numberConstant = fn(space: Bytes, name: Bytes): I32 {
   }
 };
 
+/** Checks a call of `space.name`, where `space` is `Math`, `Float` or `Integer`.
+ * @param args  the arguments, syntax children from 1
+ * @param expected  the type the context requires, or -1 for none
+ * @return the checked call
+ * @throws a located error if the function is unknown or its arguments are wrong */
 export let checkNumberCall = fn(
   space: Bytes,
   name: Bytes,
@@ -153,6 +190,7 @@ export let checkNumberCall = fn(
       let value = _number(args, 0, H.TYPE_F64, qualified);
       H.callStd(`float_${name}`, [H.TYPE_F64], H.TYPE_BOOL, [value])
     },
+    // NaN, Infinity and -Infinity are numbers; a value past F64's range is infinite.
     "Float.parse" => {
       _parse(_text(args, qualified), "float", [], H.TYPE_F64, "Float.parse: not a number")
     },

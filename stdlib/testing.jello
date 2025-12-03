@@ -1,8 +1,28 @@
 package std;
 
+/* The test harness `jelloc --test` builds on. A test is a top-level
+ * `let testXxx = fn(t: Test) { ... }` in a *.test.jello file; the compiler
+ * passes every test to main.
+ *
+ * The compiler declares five assertions here and expands each call, so they
+ * take values of any type `==` compares, evaluate each argument once and
+ * report where they were called; a passing one builds no strings:
+ *
+ *   equal(t, got, want)       got == want
+ *   notEqual(t, got, want)    got != want
+ *   isTrue(t, condition)      a Bool that holds
+ *   isNull(t, value)          a nullable value that is null
+ *   throws(t, fn() { ... })   a function that throws
+ *
+ * A failure shows each value as a literal, as Std.string prints a tuple or
+ * an enum; Bytes quoted, `Shape.Circle(1)`, `(1, "one")`, `[1, 2]`, `null`;
+ * it reaches the reporters below. */
+
 import { split, startsWith } from std.core.Bytes;
 import { writeText } from std.io.File;
 
+/* The running test; its name, whether it has failed, been skipped or been
+ * stopped, and what it has logged, in order. */
 export enum Test { Test(name: Bytes, state: Array<Bool>, output: Array<Bytes>); }
 
 let _FAILED = 0;
@@ -12,40 +32,51 @@ let _STOPPED = 2;
 let _state = fn(t: Test): Array<Bool> { match (t) { Test(_, state, _) => state } };
 let _output = fn(t: Test): Array<Bytes> { match (t) { Test(_, _, output) => output } };
 
+/* T's name; its file's path less .test.jello, its function's name and any
+ * subtests' names, joined by slashes. */
 export let name = fn(t: Test): Bytes { match (t) { Test(value, _, _) => value } };
 
+// Records MESSAGE in T's output, shown when T fails or under -v.
 export let log = fn(t: Test, message: Bytes): Null {
   _output(t).push(message);
   null
 };
 
+// Reports that T failed, saying MESSAGE; the test goes on.
 export let fail = fn(t: Test, message: Bytes): Null {
   _state(t)[_FAILED] = true;
   log(t, message)
 };
 
+/* Stops T; the runner catches what this throws, and a test that catches it
+ * itself is still stopped. */
 let _stop = fn(t: Test): Null {
   _state(t)[_STOPPED] = true;
   throw "test stopped: " + name(t);
   null
 };
 
+// Stops T again if it was stopped while code that catches throws ran.
 let _stillStopped = fn(t: Test): Null {
   if (_state(t)[_STOPPED]) { _stop(t); }
   null
 };
 
+// Reports that T failed, saying MESSAGE, and stops it.
 export let fatal = fn(t: Test, message: Bytes): Null {
   fail(t, message);
   _stop(t)
 };
 
+// Skips the rest of T, saying why in MESSAGE; a skipped test passes.
 export let skip = fn(t: Test, message: Bytes): Null {
   _state(t)[_SKIPPED] = true;
   log(t, message);
   _stop(t)
 };
 
+/* The reporters the assertions' expansions call, with AT, where the assertion
+ * is, and the values it shows. */
 export let failEqual = fn(t: Test, at: Bytes, got: Bytes, want: Bytes): Null { fail(t, at + ": got " + got + ", want " + want) };
 export let failNotEqual = fn(t: Test, at: Bytes, got: Bytes): Null { fail(t, at + ": got " + got + ", want any other value") };
 export let failNotNull = fn(t: Test, at: Bytes, got: Bytes): Null { fail(t, at + ": got " + got + ", want null") };
@@ -61,13 +92,20 @@ export let throwsAt = fn(t: Test, at: Bytes, body: () -> Null): Null {
   null
 };
 
+// From the command line; the --run prefix and -v.
 let _filter = "";
 let _verbose = false;
 
+/* The options the tests and their libraries take after -- (`tests.jlo -v --
+ * --update`), as Go's flag package registers them: each declared as its
+ * module loads, before main reads the command line, with whether it takes a
+ * value and what it is for; and the ones given, with their values. */
 let _declared = Array.new<Tuple<Bytes, Bool, Bytes>>(0);
 let _given = Array.new<Tuple<Bytes, Bytes>>(0);
+// Whether main has read the command line, so the options can be read.
 let _parsed = false;
 
+// The index of the declared option NAME, or -1.
 let _declaration = fn(name: Bytes): I32 {
   let i = 0;
 
@@ -85,9 +123,14 @@ let _declare = fn(name: Bytes, valued: Bool, help: Bytes): Null {
   null
 };
 
+/* Declares the option NAME, which takes no value, for after --; HELP says
+ * what it does, in the usage. */
 export let declareFlag = fn(name: Bytes, help: Bytes): Null { _declare(name, false, help) };
+// Declares the option NAME, which takes a value, for after --.
 export let declareOption = fn(name: Bytes, help: Bytes): Null { _declare(name, true, help) };
 
+/* The index in _given of option NAME's last value, or -1; NAME must be
+ * declared, taking a value or not as VALUED says. */
 let _lastGiven = fn(name: Bytes, valued: Bool): I32 {
   let at = _declaration(name);
   if (at < 0) { throw "option " + name + " was never declared"; }
@@ -105,8 +148,12 @@ let _lastGiven = fn(name: Bytes, valued: Bool): I32 {
   last
 };
 
+/* Whether the flag NAME was given; an undeclared name, or a read before the
+ * tests run, throws. */
 export let flag = fn(name: Bytes): Bool { _lastGiven(name, false) >= 0 };
 
+/* The value given for the option NAME, the last if given more than once, or
+ * FALLBACK; an undeclared name, or a read before the tests run, throws. */
 export let option = fn(name: Bytes, fallback: Bytes): Bytes {
   let last = _lastGiven(name, true);
   if (last < 0) { return fallback; }
@@ -114,8 +161,12 @@ export let option = fn(name: Bytes, fallback: Bytes): Bytes {
   value
 };
 
+/* Whether the test or subtest FULL runs; under --run PREFIX, those PREFIX
+ * names and their ancestors. */
 let _selected = fn(full: Bytes): Bool { startsWith(full, _filter) || startsWith(_filter, full + "/") };
 
+/* Whether --run selects T's subtest SUBTEST, so that a library can skip the
+ * work for one that would not run. */
 export let selected = fn(t: Test, subtest: Bytes): Bool { _selected(name(t) + "/" + subtest) };
 
 let _print = fn(text: Bytes) {
@@ -123,6 +174,9 @@ let _print = fn(text: Bytes) {
   null
 };
 
+/* Runs BODY as the test FULL, declared at WHERE (empty for a subtest);
+ * whether it passed. A throw that escapes the test fails it; a trap ends the
+ * program, after === RUN has named the test. */
 let _run = fn(full: Bytes, where: Bytes, body: (Test) -> Null): Bool {
   _print("=== RUN   " + full + "\n");
   let t = Test.Test(full, [false, false, false], Array.new<Bytes>(0));
@@ -136,6 +190,7 @@ let _run = fn(full: Bytes, where: Bytes, body: (Test) -> Null): Bool {
     let i = 0;
 
     while (i < output.len()) {
+      // A message's later lines are indented further, as Go's are.
       let lines = split(output[i], "\n");
       let j = 0;
 
@@ -149,6 +204,8 @@ let _run = fn(full: Bytes, where: Bytes, body: (Test) -> Null): Bool {
   !failed
 };
 
+/* Runs BODY as T's subtest SUBTEST, named T's name, a slash and SUBTEST;
+ * whether it passed. A failed subtest fails T. */
 export let run = fn(t: Test, subtest: Bytes, body: (Test) -> Null): Bool {
   let full = name(t) + "/" + subtest;
   if (!_selected(full)) { return true; }
@@ -158,6 +215,8 @@ export let run = fn(t: Test, subtest: Bytes, body: (Test) -> Null): Bool {
   passed
 };
 
+/* Runs HOOK, test file FILE's HOOKNAME; whether it returned. A throw is
+ * reported as the file's failure. */
 let _hook = fn(file: Bytes, hookName: Bytes, hook: () -> Null): Bool {
   try {
     hook();
@@ -170,6 +229,8 @@ let _hook = fn(file: Bytes, hookName: Bytes, hook: () -> Null): Bool {
 
 let _USAGE = "usage: <tests.jlo> [--run prefix] [--list] [-v] [-- options...]\n\n  --run prefix  run the tests and subtests whose names start with prefix\n  --list        print the names of the tests --run selects, and run none\n  -v            show every test's result and output, not only failures'\n  -- options    the tests' own options, which follow\n";
 
+/* Prints MESSAGE and the usage, with the declared options, on standard
+ * error, and exits 2. */
 let _usage = fn(message: Bytes) {
   let text = message + "\n" + _USAGE;
   let i = 0;
@@ -185,6 +246,7 @@ let _usage = fn(message: Bytes) {
   null
 };
 
+// Reads the options after --, in ARGS.
 let _options = fn(args: List<Bytes>): Null {
   let rest = args;
 
@@ -203,6 +265,12 @@ let _options = fn(args: List<Bytes>): Null {
   null
 };
 
+/* Runs SUITES, one per test file; its name, its beforeAll and afterAll, and
+ * its tests, each a name, where it is declared and the test. A file's hooks
+ * run around its selected tests, if it has any; its tests run only when its
+ * beforeAll returns, and its afterAll runs either way. Prints ok and exits 0
+ * when every test and hook passes; prints FAIL and exits 1 otherwise, and 2
+ * for a bad command line. */
 export let main = fn(suites: Array<Tuple<Bytes, () -> Null, () -> Null, Array<Tuple<Bytes, Bytes, (Test) -> Null>>>>): Null {
   let listing = false;
   let args = System.args;

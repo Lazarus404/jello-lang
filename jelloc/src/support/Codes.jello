@@ -1,5 +1,11 @@
 package support;
 
+/** @file
+ * The stable codes of the compiler's errors, and what `jelloc --explain` says of each. A code is
+ * never renumbered or reused; one that no longer applies keeps its explanation. Each names one
+ * kind of error, so that every message it ends explains alike. Notes, warnings, internal errors
+ * and command-line errors have none. */
+
 export const E0001 = "E0001";
 export const E0002 = "E0002";
 export const E0003 = "E0003";
@@ -100,6 +106,7 @@ export const E1001 = "E1001";
 export const E1002 = "E1002";
 export const E1003 = "E1003";
 
+// Returns each code, in order, with its title and its explanation; built only when asked for.
 let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
   (E0001, "the source is not valid UTF-8",
     "A source file must be UTF-8. The error points at the first byte that starts no valid "
@@ -438,14 +445,17 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     + "needed, or text that `Macro.parse` cannot parse. The message says which.")
 ] };
 
+// Returns `message` ending with `code`, as ` [E0302]`.
 export let coded = fn(code: Bytes, message: Bytes): Bytes { `${message} [${code}]` };
 
+// Returns `message` without the code `coded` ended it with, or unchanged when it has none.
 export let uncoded = fn(message: Bytes): Bytes {
   let n = message.len();
   let tagged = (n > 8) && (Bytes.slice(message, n - 8, 3) == " [E") && message.endsWith("]");
   tagged ? Bytes.slice(message, 0, n - 8) : message
 };
 
+// Returns every code, in order.
 export let errorCodes = fn(): Array<Bytes> {
   let explained = _explained();
   let codes = Array.new<Bytes>(0);
@@ -456,6 +466,8 @@ export let errorCodes = fn(): Array<Bytes> {
   codes
 };
 
+/** Returns `text` broken into lines of at most 80 bytes, each ending with a newline; at a space
+ * where there is one, which the break replaces. */
 let _wrapped = fn(text: Bytes): Bytes {
   let lines = Array.new<Bytes>(0);
   let start = 0;
@@ -476,6 +488,8 @@ let _wrapped = fn(text: Bytes): Bytes {
   `${lines.join("\n")}\n`
 };
 
+/** Returns what `jelloc --explain` prints for `code`; its title, then its explanation, or ""
+ * for an unknown code. */
 export let explain = fn(code: Bytes): Bytes {
   let explained = _explained();
 

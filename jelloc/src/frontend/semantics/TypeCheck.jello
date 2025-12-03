@@ -1,5 +1,25 @@
 package frontend.semantics;
 
+/** @file
+ * The core of the type checker; it checks expressions, statements and function bodies and
+ * builds the flat HIR (`frontend.hir.Hir`) for them. It sits after module resolution and before
+ * lowering to IR, which reads the finished HIR. `frontend.semantics.Modules` drives it one
+ * module at a time; `beginCheck`, then per module `declareFunctions`, `checkDirect` and the
+ * statement checkers, and at the end `instantiateTemplates` and `finishProgram`. Enum, value,
+ * aggregate, assertion and derived-equality checks live in `frontend.semantics.Enums`,
+ * `frontend.semantics.Values`, `frontend.semantics.Aggregates`, `frontend.semantics.Testing`
+ * and `frontend.semantics.Derived`, which import this module and are installed through the
+ * `use...` hooks; `frontend.semantics.Match` checks `match` arms through `checkArm`, and
+ * `frontend.semantics.Narrowing` tracks which Null<T> locals are known present.
+ *
+ * It owns the local scope (the visible bindings, the frames of enclosing functions and their
+ * captures), the table of functions, the generic function templates and their pending instances,
+ * and the current syntax, whose span every node built takes and which locates a failure. Types
+ * are inferred by unifying Vars; open integer literals get a width at the end of the program. A
+ * generic function's body is checked once with its type parameters as Params, and its instances
+ * are checked at their type arguments after every module. A statement of a block that fails is
+ * recorded (`frontend.semantics.Failures`), and checking goes on after it. */
+
 import type {
   AssignOp, BinaryOp, Block as AstBlock, Expr as AstExpr, FloatSize, IncDecOp, IntSize, Parameter,
   ParameterKind, Pattern, PrototypeField, Stmt, Type as AstType, TypeParam, UnaryOp,
@@ -39,6 +59,8 @@ import {
 } from support.Codes;
 
 load { f64_low_bits, f64_high_bits, f32_bits, f16_bits, regexp_check } from std;
+/** The bits of the F64, F32 and F16 nearest a float literal's text; std.jdll's `strtod`, `strtof`
+ * and its own rounding to F16, which goes through the nearest F64. An F64's come in halves. */
 let _f64Low: (Bytes) -> I32 = f64_low_bits;
 let _f64High: (Bytes) -> I32 = f64_high_bits;
 
@@ -47,54 +69,121 @@ let _f64Bits = fn(text: Bytes): I64 {
 };
 let _f32Bits: (Bytes) -> I32 = f32_bits;
 let _f16Bits: (Bytes) -> I32 = f16_bits;
+/** What is wrong with a regexp's pattern and flags, as PCRE2 compiles them at run time, or ""
+ * when nothing is. */
 let _regexpProblem: (Bytes, Bytes) -> Bytes = regexp_check;
 
+/** The bytes IDs of the names of the visible local bindings, innermost last. A function body
+ * swaps in a scope of its own (`_checkFunction`). */
 let _nameIds = Array.new<I32>(0);
+// The binding IDs of the visible locals, parallel to `_nameIds`.
 let _ids = Array.new<I32>(0);
+/** For each visible local, parallel to `_nameIds`, what `_latest` held for its name before it
+ * was declared, which `_popTo` restores. */
 let _hidden = Array.new<I32>(0);
+/** By a name's bytes ID, the place in `_nameIds` of the innermost binding of that name, so
+ * finding one takes no scan. A place that an enclosing function's scope left may hold another
+ * name, or be past the end, so `_find` checks it. */
 let _latest = Array.new<I32>(0);
+// The binding ID `newBinding` gives out next.
 let _nextBinding = 0;
+/** By binding ID, its type; -1 for a hidden binding, and `-2 - t` for a local generic function
+ * of template `t`. `_typeOfBinding` stores a type back once resolved. */
 let _bindingTypes = Array.new<I32>(0);
+/** By binding ID, whether it may be assigned; a closure's copy of a local may be if the local
+ * may. */
 let _mutable = Array.new<Bool>(0);
+// By binding ID, the syntax that declares it, for a note on a failure that contradicts it.
 let _declarations = Array.new<Syntax>(0);
+/** The syntax of the statement that declares each global, by global ID; one that no statement
+ * declares has none. */
 let _globalDeclarations = Array.new<Syntax>(0);
+// By global, the constant a `const` holds (see `_isConstant`), which its reads copy, or -1.
 let _globalConstants = Array.new<I32>(0);
+/** The place in `_nameIds` where the innermost block's bindings start; a local declared again
+ * from there on is a duplicate. */
 let _scopeStart = 0;
+/** How many loops enclose the statement being checked in its function, for `break` and
+ * `continue`. */
 let _loops = 0;
+/** What a `break` or `continue` that no loop in its construct encloses cannot leave, such as a
+ * list comprehension, or "" when it is outside every loop. */
 let _barrier = "";
+/** How many `try` bodies enclose the statement being checked in its function; at most 16 (see
+ * `ir.Verify`). */
 let _tries = 0;
 
+/** A function enclosing the one being checked, as its visible locals stood when the inner
+ * function began. */
 typedef Frame = {
+  // The locals' name bytes IDs.
   let nameIds: Array<I32>;
+  // Parallel to `nameIds`; the locals' binding IDs.
   let ids: Array<I32>;
 };
+/** The functions enclosing the one being checked, innermost last; a local found in
+ * `_frames[d]` belongs to the function at nesting depth `d`. */
 let _frames = Array.new<Frame>(0);
 
+// What a function copies from the functions enclosing it.
 typedef Closure = {
+  // Its `Capture` nodes, one per local of an enclosing function that it copies.
   let captures: Array<I32>;
+  /** Parallel to `captures`; for each `Capture`, the `Local` read, in the function around it, of
+   * the value it copies. A function literal's `FunctionRef` takes these as its children. */
   let sources: Array<I32>;
 };
+// Returns a closure that copies nothing yet.
 let _newClosure = fn(): Closure { { captures: Array.new<I32>(0), sources: Array.new<I32>(0) } };
+/** By function nesting depth, outermost first and the function being checked last; what each
+ * copies. */
 let _closures = [_newClosure()];
 
+/** A function of the program: a direct function, a function literal, a generated function, a
+ * template's instance, or a function that checks a template's body. */
 typedef FunctionInfo = {
+  // Its name.
   let name: Bytes;
+  /** Its function type, or -1 while its result type is inferred, until its body's check begins
+   * (`_functionType`). */
   let ty: I32;
+  // The names of its parameters.
   let params: Array<Bytes>;
+  // Its `Function` node, or -1 until its body is checked.
   let node: I32;
+  // The types of its parameters, as its function type has them.
   let paramTypes: Array<I32>;
+  /** The defaults of its parameters that have one, in order; constant nodes that a call copies
+   * where it omits the argument. Empty, and shared, when it has none. */
   let defaults: Array<I32>;
+  // Its syntax, whose first children are its parameters'; a generated function's has none.
   let syntax: Syntax;
+  // Whether `finishProgram` drops it because it checks a template's body.
   let dropped: Bool;
+  /** The prototype type it is a method of, whose first parameter is its `this`; -2 for a
+   * `method fn`, which sees the `this` of the method around it, or -1. */
   let methodKind: I32;
 };
+/** The functions, by function index. A function index is a `Call` or `FunctionRef` value minus 1,
+ * until `_programFunctions` renumbers the kept functions. */
 let _functions = Array.new<FunctionInfo>(0);
+/** The syntax of the function being checked when its result type is declared, for a note on a
+ * value that contradicts it; otherwise a node without a span. */
 let _resultSyntax = _noSyntax();
+/** The result type of the function being checked. While it is inferred, it is the join of the
+ * results checked so far, or -1 before the first. */
 let _result = -1;
+/** Whether the result type of the function being checked is inferred; it is then the join of
+ * the types of every `return` value and the tail, as an `if`'s branches are joined. */
 let _resultInferred = false;
+/** The results of the functions whose result types are inferred, those of the function being
+ * checked from `_resultsStart` on; `_joinResults` converts them to the joined type. */
 let _results = Array.new<I32>(0);
+// Where the results of the function being checked start in `_results`.
 let _resultsStart = 0;
 
+/** Returns a childless syntax node spanning `start` to `end` of file `path`, to locate a node or
+ * failure that has no syntax of its own. */
 let _spanSyntax = fn(path: Bytes, start: I32, end: I32): Syntax {
   {
     path,
@@ -105,108 +194,214 @@ let _spanSyntax = fn(path: Bytes, start: I32, end: I32): Syntax {
   }
 };
 
+// Returns a syntax node with an empty path, which stands for no source position.
 let _noSyntax = fn(): Syntax { _spanSyntax("", 0, 0) };
+/** The syntax of the node being checked. Nodes built while it is current take its span, and
+ * when a check throws, it locates the failure. */
 let _syntax = _noSyntax();
+// The syntax of the module being checked, whose children are its statements.
 let _moduleSyntax = _noSyntax();
+// The top-level statements of the module being checked.
 let _statements = Array.new<Stmt>(0);
+/** The statement index of each direct function of the module being checked, in order; function
+ * `_firstDirect + i` is declared by statement `_directStatements[i]`. */
 let _directStatements = Array.new<I32>(0);
+// By top-level statement of the module being checked, whether it declares a direct function.
 let _directLets = Array.new<Bool>(0);
+// The function index of the first direct function of the module being checked.
 let _firstDirect = 0;
+/** By statement of the module being checked, the global that an annotated binding declares, or
+ * -1 until `annotatedGlobal` declares it. */
 let _globals = Array.new<I32>(0);
+/** The name that the top-level binding being checked binds, or "" outside one. A function in it
+ * sees the module's annotated globals wherever they are declared (`_aheadBinding`), and
+ * diagnostics name it. A template's instance is checked outside any, since another module's
+ * statements may be current. */
 let _bodyName = "";
 
+/** A generic function, checked once as a template and instantiated once per tuple of type
+ * arguments. */
 typedef Template = {
+  // Its name.
   let name: Bytes;
+  // Its type parameters, as Params.
   let params: Array<I32>;
+  // Its `fn` value.
   let value: AstExpr;
+  // That value's syntax.
   let syntax: Syntax;
+  // The index of the module that declares it.
   let module: I32;
+  // The `_bodyName` it is in.
   let bodyName: Bytes;
+  // The names of the type parameters around it, followed by its own.
   let names: Array<Bytes>;
+  // The types those around it stand for there.
   let envTypes: Array<I32>;
+  // The local templates it can call.
   let locals: Array<I32>;
+  // Per instance, the tuple type of its type arguments.
   let keys: Array<I32>;
+  // Parallel to `keys`; each instance's function index.
   let functions: Array<I32>;
+  /** The function that checks its body once with its Params, which `finishProgram` drops; -1
+   * until the body is checked. */
   let checker: I32;
 };
+// The generic functions, by template index.
 let _templates = Array.new<Template>(0);
+// The names of the type parameters in scope, innermost last.
 let _envNames = Array.new<Bytes>(0);
+/** The types the type parameters in `_envNames` stand for; Params in a template's body, and an
+ * instance's type arguments in the instance's. */
 let _envTypes = Array.new<I32>(0);
+// The generic type aliases; each a Param that names it in module scope, standing for no type.
 let _aliases = Array.new<I32>(0);
 
+// A generic type alias.
 typedef Alias = {
+  // Its Params.
   let params: Array<I32>;
+  // The type it names, holding its Params.
   let body: I32;
 };
+// Parallel to `_aliases`; the generic aliases.
 let _aliasTypes = Array.new<Alias>(0);
+/** Whether a template's body is being checked. Nothing that outlives the check is then
+ * generated; no instance is queued, no regexp global is declared, and the functions added are
+ * dropped. */
 let _templateBody = false;
 
+// A prototype's method.
 typedef Method = {
+  // Its function index.
   let function: I32;
+  // The name of its field.
   let field: Bytes;
 };
+// The prototypes' methods.
 let _prototypeMethods = Array.new<Method>(0);
+// The methods of generic prototypes' instances, each a function of its own.
 let _instanceMethods = Array.new<Method>(0);
 
+// A call of a prototype's method, read from its receiver.
 typedef MethodCall = {
+  // Its `CallIndirect` node.
   let call: I32;
+  // The prototype type the method is found from.
   let origin: I32;
+  // The method's name.
   let name: Bytes;
+  /** Whether the receiver is of type `origin` exactly, as for `super` and `new`, so that no
+   * prototype delegating to `origin` can override the method. */
   let exact: Bool;
 };
+// The method calls, which `finishProgram` makes direct where the method is fixed.
 let _methodCalls = Array.new<MethodCall>(0);
+// The `methodKind` of each function being checked, innermost last.
 let _methods = Array.new<I32>(0);
+// The prototype types of the program, each named by its type name, whose value is its global.
 let _prototypes = Array.new<I32>(0);
 
+// A prototype of the program.
 typedef PrototypeInfo = {
+  // Its global.
   let global: I32;
+  /** The prototype type its `__proto__` names, -1 when it is some other value, or -2 when it has
+   * none. */
   let parent: I32;
 };
+// Parallel to `_prototypes`; the prototypes.
 let _prototypeInfos = Array.new<PrototypeInfo>(0);
+// The prototype types whose `init` is a field that holds a value rather than a method.
 let _initFields = Array.new<I32>(0);
 
+/** A generic prototype, whose global in `_prototypeInfos` is -1; each instance has a global of
+ * its own. */
 typedef Generic = {
+  // The module that declares it.
   let module: I32;
+  // Its statement.
   let statement: Stmt;
+  // Its statement's syntax.
   let syntax: Syntax;
+  /** The node its statement leaves among the module's statements, where its instances' globals
+   * are initialised (`withInstances`), or -1 before it is checked. */
   let placeholder: I32;
 };
+// The generic prototypes' types.
 let _generics = Array.new<I32>(0);
+// Parallel to `_generics`; the generic prototypes.
 let _genericPrototypes = Array.new<Generic>(0);
 
+// An instance of a generic prototype that the program uses.
 typedef Instance = {
+  // Its global.
   let global: I32;
+  // The `Declare` that initialises its global, or -1 until it is built.
   let init: I32;
+  // How deeply it nests in other instances, as a `PendingCall` has it.
   let nesting: I32;
+  // Where it is needed and the note saying so (`_needHere`).
   let need: Need;
 };
+/** The types of the instances of generic prototypes that the program uses, in the order of their
+ * first use. */
 let _instanceTypes = Array.new<I32>(0);
+// Parallel to `_instanceTypes`; the instances.
 let _instances = Array.new<Instance>(0);
+// How many of `_instances` have an initialiser (`buildInstances`); they are built in order.
 let _built = 0;
 
+/** A read of the global of a generic prototype's instance whose type arguments are being
+ * inferred, which `resolveInstanceReads` points at the instance once they are. */
 typedef OpenRead = {
+  // The `Global` node.
   let read: I32;
+  // How deeply the instance checked there nests (`_instanceDepth`).
   let depth: I32;
+  // Where it is needed and the note saying so (`_needHere`).
   let need: Need;
 };
+// The open reads, in the order they were checked.
 let _openReads = Array.new<OpenRead>(0);
+/** By direct function of the module being checked, as `_directStatements`, the field of the
+ * prototype it is the method of, or -1 for a `let`. */
 let _directFields = Array.new<I32>(0);
+/** The lowest frame depth a capture may reach. A local template's body captures no local of the
+ * functions around it, though closures inside it may capture its own locals. */
 let _captureFloor = 0;
 
+// A generic call whose instance `instantiateTemplates` checks.
 typedef PendingCall = {
+  // The `Call` node.
   let call: I32;
+  // Its template index.
   let template: I32;
+  // Its type arguments.
   let types: Array<I32>;
+  // How deeply instances nest there.
   let depth: I32;
+  // Where it is needed and the note saying so (`_needHere`).
   let need: Need;
 };
+// The pending generic calls, in the order they were checked.
 let _pending = Array.new<PendingCall>(0);
+// How deeply the instance being checked nests in other instances; 0 outside one.
 let _instanceDepth = 0;
+// An empty list of type-parameter names, for a body checked without type parameters.
 let _NO_NAMES = Array.new<Bytes>(0);
+// An empty list of types, for a body checked without type parameters or local templates.
 let _NO_TYPES = Array.new<I32>(0);
 
+/** Checks whether a template's body is being checked; nothing that outlives the check is
+ * generated then (`frontend.semantics.Derived` derives no functions). */
 export let inTemplate = fn(): Bool { _templateBody };
 
+/** Makes `syntax` current, so the nodes built while it is current take its span and a failure
+ * is located there.
+ * @param syntax  the syntax node to enter
+ * @return the syntax it replaces, which the caller restores with another `enterSyntax` */
 export let enterSyntax = fn(syntax: Syntax): Syntax {
   let outer = _syntax;
   _syntax = syntax;
@@ -214,49 +409,80 @@ export let enterSyntax = fn(syntax: Syntax): Syntax {
   outer
 };
 
+// Returns the span of `syntax`, or null for a node without one.
 let _spanOf = fn(syntax: Syntax): ?SourceSpan {
   syntax.path != "" ? syntaxSpan(syntax) : null
 };
 
+/** Returns the span of the node being checked, which after a failure is the node the check
+ * failed on; the driver reports a failure there.
+ * @return the span, or null outside a node */
 export let currentSpan = fn(): ?SourceSpan { _spanOf(_syntax) };
 
+/** Records a failure at the current span, so that checking can go on (see
+ * `frontend.semantics.Failures`).
+ * @param error  the thrown value
+ * @throws `error` again if it ends the check */
 export let recover = fn(error: Dynamic): Bool {
   if (!recordFailure(currentSpan(), error)) { throw error; }
   true
 };
 
+/** Returns where an instance that the code being checked needs is needed, and its note: where
+ * the instance being checked is needed, inside one, so that the note points at the program's own
+ * code, or else the current span and no note yet (`_needing` writes it). */
 let _needHere = fn(): Need {
   let need = instanceNeed();
   need.0 != null ? need : (currentSpan(), "")
 };
 
+/** Makes the failures in the instance `name` note where it is needed, `need` (`_needHere`).
+ * @return what it replaces, which the caller restores with `needInstance` */
 let _needing = fn(need: Need, name: Bytes): Need {
   needInstance(need.0, need.1 != "" ? need.1 : `in ${name}, which is needed here`)
 };
 
+// Returns the syntax node `syntax` with `children` in place of its own.
 let _withChildren = fn(syntax: Syntax, children: Array<Syntax>): Syntax {
   { ...syntax, children }
 };
 
+// Returns child `index` of the current syntax; an operand, in AST field order.
 export let syntaxChild = fn(index: I32): Syntax { _syntax.children[index] };
 
+/** Returns the current syntax without its first child, so that a call `Space.f(x, args)` is indexed
+ * as `x.f(args)` is, with `x` its first child. */
 export let withoutCallee = fn(): Syntax {
   _withChildren(_syntax, Array.new<Syntax>(0).appendFrom(_syntax.children, 1))
 };
 
+/** Records `failure` at child `index` of the current syntax, which stays current, so that
+ * checking goes on as if the value fitted (see `recover`).
+ * @throws `failure` if it ends the check */
 let _rejectAt = fn(index: I32, failure: Bytes) {
   let outer = enterSyntax(syntaxChild(index));
   recover(failure as Dynamic);
   enterSyntax(outer);
   null
 };
+// Exports `_rejectAt` for the other checker modules.
 export let rejectAt = fn(index: I32, failure: Bytes): Null { _rejectAt(index, failure) };
 
+/** Returns a pattern of the current syntax, in AST field order; for a binding, pattern 0 is its
+ * name pattern and pattern 1 its annotation.
+ * @param index  the pattern's index
+ * @return the pattern's syntax */
 export let syntaxPattern = fn(index: I32): Syntax {
   _syntax.patterns[index]
 };
+/** Returns sub-pattern `index` of the pattern syntax `syntax`, such as an item of a tuple
+ * pattern. */
 export let subPattern = fn(syntax: Syntax, index: I32): Syntax { syntax.children[index] };
 
+/** Finds the innermost visible local named `name` that was declared at or after place `start`.
+ * @param name  the local's name
+ * @param start  the first place in `_nameIds` to consider; 0 for the whole function
+ * @return its place in `_nameIds`, or -1 if there is none */
 let _find = fn(name: Bytes, start: I32): I32 {
   let nameId = H.findBytesId(name);
   if ((nameId < 0) || (nameId >= _latest.len())) { return -1; }
@@ -264,6 +490,9 @@ let _find = fn(name: Bytes, start: I32): I32 {
   ((found >= start) && (found < _nameIds.len()) && (_nameIds[found] == nameId)) ? found : -1
 };
 
+/** Creates a binding that no source name refers to, such as a match subject's. It is hidden;
+ * its type in `_bindingTypes` is -1.
+ * @return the new binding ID */
 export let newBinding = fn(): I32 {
   let id = _nextBinding;
   _nextBinding++;
@@ -273,6 +502,12 @@ export let newBinding = fn(): I32 {
   id
 };
 
+/** Declares a local in the innermost scope, hiding any binding of the same name. A local named
+ * `_` gets a binding that no name can find.
+ * @param name  the local's name
+ * @param ty  its type, or `-2 - t` for a local generic function of template `t`
+ * @param mutable  whether it may be assigned
+ * @return the new binding ID */
 let _declare = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
   let id = newBinding();
   _bindingTypes[id] = ty;
@@ -287,6 +522,8 @@ let _declare = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
   id
 };
 
+/** Removes the visible locals from place `start` on, so the bindings they hid are found again.
+ * @param start  the first place in `_nameIds` to remove */
 let _popTo = fn(start: I32) {
   while (_nameIds.len() > start) {
     let last = _nameIds.len() - 1;
@@ -298,37 +535,60 @@ let _popTo = fn(start: I32) {
   null
 };
 
+/** Returns the template that a binding is, when it is a local generic function.
+ * @param id  the binding ID
+ * @return the template index, or -1 if the binding is no local generic function */
 let _bindingTemplate = fn(id: I32): I32 {
   let ty = _bindingTypes[id];
   ty < -1 ? -2 - ty : -1
 };
 
+/** Returns the type of a binding, resolved, since unification may have bound its Vars after it
+ * was declared. A Var stays bound once bound, so the resolved type is stored back.
+ * @param id  the binding ID
+ * @return its resolved type */
 let _typeOfBinding = fn(id: I32): I32 {
   let ty = H.resolve(_bindingTypes[id]);
   _bindingTypes[id] = ty;
   ty
 };
 
+/** Builds a node of op `op`, type `ty` and `value` immediate `value`, without children, and
+ * returns its ID. */
 let _leaf = fn(op: Op, ty: I32, value: I32): I32 { H.node(op, ty, value, 0, []) };
+// Builds a node of op `op` and type `ty` whose one child is `operand`, and returns its ID.
 let _unary = fn(op: Op, ty: I32, operand: I32): I32 { H.opNode(op, ty, [operand]) };
 
+/** Builds a node of op `op` and type `ty` whose children are `left` and `right`, and returns its
+ * ID. */
 let _binary = fn(op: Op, ty: I32, left: I32, right: I32): I32 {
   H.opNode(op, ty, [left, right])
 };
 
+/** Returns the type that a type name not yet in module scope names, by declaring it now; a type
+ * alias declared later in the module. `frontend.semantics.Typedefs` installs it while it declares a
+ * module's types (`useTypedefs`); otherwise there is none, and it returns -1. */
 let _laterType: (Bytes) -> I32 = fn(_name) { -1 };
 
+// Installs the declaration of a module's later type aliases (see `_laterType`).
 export let useTypedefs = fn(later: (Bytes) -> I32): Bool {
   _laterType = later;
   true
 };
 
+// Returns the type `name` names in module scope, declaring it if it is a later alias, or -1.
 let _namedType = fn(name: Bytes): I32 {
   let named = scopedType(name);
   named >= 0 ? named : _laterType(name)
 };
+// Returns the index of `ty` among the generic aliases, or -1 when it is not one.
 let _aliasIndex = fn(ty: I32): I32 { H.isKind(ty, Kind.Param) ? _aliases.indexOf(ty) : -1 };
 
+/** Declares a generic type alias.
+ * @param name  its name
+ * @param params  its Params
+ * @param body  the type it names, holding its Params
+ * @return the Param that names it in module scope */
 export let declareGenericAlias = fn(name: Bytes, params: Array<I32>, body: I32): I32 {
   let alias = H.newParam(name, 0);
   _aliases.push(alias);
@@ -336,16 +596,28 @@ export let declareGenericAlias = fn(name: Bytes, params: Array<I32>, body: I32):
   alias
 };
 
+/** Returns the number of type parameters of `ty`, a type in module scope; an enum's or a generic
+ * alias's. */
 let _typeParamCount = fn(ty: I32): I32 {
   let alias = _aliasIndex(ty);
   alias >= 0 ? _aliasTypes[alias].params.len() : H.enumParamCount(ty)
 };
 
+/** Returns the diagnostic for a type given the wrong number of type arguments.
+ * @param name  the type's name
+ * @param params  how many type arguments it takes
+ * @param count  how many it was given
+ * @return the diagnostic */
 let _arityMismatch = fn(name: Bytes, params: I32, count: I32): Bytes {
   coded(E0402,
     `${name} takes ${params}${params == 1 ? " type argument" : " type arguments"}, not ${count}`)
 };
 
+/** Checks that a type takes the number of type arguments written.
+ * @param name  the type's name, as written
+ * @param ty  the type, or -1 if the name is no type
+ * @param count  how many type arguments are written
+ * @throws a located error if `ty` is -1 or takes a different number of type arguments */
 export let checkTypeArgCount = fn(name: Bytes, ty: I32, count: I32): Bool {
   if (ty < 0) {
     touch(name);
@@ -355,11 +627,20 @@ export let checkTypeArgCount = fn(name: Bytes, ty: I32, count: I32): Bool {
   true
 };
 
+/** Returns the end of a diagnostic for a use of a type parameter that needs a bound it lacks,
+ * showing how to declare it; `needs the bound Eq: write <T: Eq>`.
+ * @param param  the Param
+ * @param bound  the bound's name; Eq, Show or Integer
+ * @return the text */
 export let needsBound = fn(param: I32, bound: Bytes): Bytes {
   `needs the bound ${bound}: write <${H.typeName(param)}: ${bound}>`
 };
+// Returns the HIR types of the AST types `types`, in order (see `checkType`).
 let _checkTypes = fn(types: Array<AstType>): Array<I32> { types.map(checkType) };
 
+/** Returns the HIR types of a function type's parameter types `types`; `?T` is an Optional and
+ * `T...` a Rest (see `checkType`).
+ * @throws a located error if a required parameter follows an optional one */
 let _checkParamTypes = fn(types: Array<AstType>): Array<I32> {
   let checked = Array.new<I32>(0);
   let optional = false;
@@ -383,12 +664,17 @@ let _checkParamTypes = fn(types: Array<AstType>): Array<I32> {
   checked
 };
 
+/** Returns the type that a type parameter in scope stands for, searching from the innermost.
+ * @param name  the type parameter's name
+ * @return the type, or -1 if no type parameter in scope has that name */
 let _envType = fn(name: Bytes): I32 {
   let i = _envNames.len() - 1;
   while ((i >= 0) && (_envNames[i] != name)) { i--; }
   i >= 0 ? _envTypes[i] : -1
 };
 
+/** Returns the type of a function's declared result `ty`; `Void`, which no value has, is the Null
+ * that a function without a value returns. */
 let _resultType = fn(ty: AstType): I32 {
   match (ty) {
     Named(name) when ((name == "Void") && (scopedType(name) < 0)) => H.TYPE_NULL,
@@ -396,6 +682,10 @@ let _resultType = fn(ty: AstType): I32 {
   }
 };
 
+/** Returns `ty`, after checking that each field a linked typedef gives it, when it is a generic
+ * prototype's instance, is of a type its Objects hold (`Hir.readsTyped`), as a type argument may
+ * not be. A field that holds a Var or a Param is checked once it is settled.
+ * @throws a located error for a field of another type */
 let _heldFields = fn(ty: I32): I32 {
   let count = H.isLinked(ty) ? H.fieldCount(ty, 0) : 0;
   let f = 0;
@@ -413,6 +703,13 @@ let _heldFields = fn(ty: I32): I32 {
   ty
 };
 
+/** Returns the HIR type that an AST type denotes. A name is a builtin type, a type parameter in
+ * scope or a type in module scope; `Array`, `List`, `Tuple` and `Null` take their type arguments
+ * here, a generic enum is applied to its arguments, and `?T` is a Null<T>.
+ * @param ty  the AST type
+ * @return the HIR type ID
+ * @throws a located error if a name is no type, a type has the wrong number of type arguments, or
+ *   the type is a variadic or a parenthesised tuple type */
 export let checkType = fn(ty: AstType): I32 { match (ty) {
   Named(name) => match (name) {
     "I32" => H.TYPE_I32,
@@ -430,12 +727,15 @@ export let checkType = fn(ty: AstType): I32 { match (ty) {
     "F16" => H.TYPE_F16,
     "F32" => H.TYPE_F32,
     "F64" => H.TYPE_F64,
+    // `checkTypeParams` rejects a type parameter named as a type is.
     _ => {
       let named = _envNames.len() != 0 ? _envType(name) : -1;
 
       if (named < 0) {
         named = _namedType(name);
 
+        /* A declared type of the name hides the builtin `Atom`, `Object` or `ByteBuffer`; a
+         * bare `Array` or `List` lacks its type argument. */
         if (named >= 0) {
           checkTypeArgCount(name, named, 0);
         } else {
@@ -478,6 +778,10 @@ export let checkType = fn(ty: AstType): I32 { match (ty) {
   Tuple(_) => { throw coded(E0401, "tuple types are written Tuple<A, B>") },
 } };
 
+/** Checks the current binding's type annotation with the annotation's syntax (pattern 1 of the
+ * current syntax) current, so a failure is located there.
+ * @param annotation  the annotation, or null
+ * @return its type, or -1 without one */
 export let checkAnnotation = fn(annotation: Null<AstType>): I32 {
   if (annotation == null) { return -1; }
   let outer = enterSyntax(syntaxPattern(1));
@@ -486,53 +790,87 @@ export let checkAnnotation = fn(annotation: Null<AstType>): I32 {
   ty
 };
 
+/** The checker that `frontend.semantics.Enums` installs for enum constructions and `match`. It
+ * takes the expression, the type its context requires (or -1), and whether a `match` is a
+ * statement, and returns the HIR node. */
 let _checkEnum: (AstExpr, I32, Bool) -> I32 = fn(_expr, _expected, _statement) { -1 };
 
+/** Installs `check` as the checker for enum constructions and `match`; `frontend.semantics.Modules`
+ * installs `Enums.checkEnumExpr`, since that module imports this one. */
 export let useEnumChecks = fn(check: (AstExpr, I32, Bool) -> I32): Bool {
   _checkEnum = check;
   true
 };
+/** The checker that `frontend.semantics.Match` installs for a `let` whose pattern is not a single
+ * name. It takes the pattern, whether its names may be assigned, the checked value, the block of a
+ * `let ... else` (or null) and whether the names are globals, and returns the declaration. */
 let _checkLetPattern: (Pattern, Bool, I32, Null<AstBlock>, Bool) -> I32 =
   fn(_pattern, _mutable, _value, _otherwise, _global) { -1 };
 
+// Installs `check` as the checker for a `let` that destructures (`frontend.semantics.Match`).
 export let useLetChecks = fn(check: (Pattern, Bool, I32, Null<AstBlock>, Bool) -> I32): Bool {
   _checkLetPattern = check;
   true
 };
+/** A checked `if` or `while` condition: the declarations that go before the statement, the
+ * condition, the names that its `let` tests bind, and a function that makes a read of each, for
+ * the body, whose syntax must then be current. */
 typedef CheckedCondition = Tuple<Array<I32>, I32, Array<Bytes>, () -> Array<I32>>;
+// Returns no reads; the reads of a condition that binds no names.
 let _noReads = fn(): Array<I32> { Array.new<I32>(0) };
+/** The checker that `frontend.semantics.Match` installs for an `if` or `while` condition that tests
+ * a pattern with `let`; it takes the condition and the statement's name, and returns what
+ * `_checkCondition` does. */
 let _checkLetCondition: (AstExpr, Bytes) -> CheckedCondition =
   fn(_condition, _what) { (Array.new<I32>(0), -1, Array.new<Bytes>(0), _noReads) };
 
+/** Installs `check` as the checker for a condition that tests a pattern
+ * (`frontend.semantics.Match`). */
 export let useConditionChecks = fn(check: (AstExpr, Bytes) -> CheckedCondition): Bool {
   _checkLetCondition = check;
   true
 };
 
+/** Checks whether `base`, the base of a member such as `E.V`, names an enum in module scope, bare
+ * or with type arguments (`E` or `E<T>`), that no local hides (`_isLocal`). */
 let _isEnumName = fn(base: AstExpr): Bool {
   match (base) {
     Variable(name), TypeApply(Variable(name), _) => H.isEnum(scopedType(name)) && !_isLocal(name),
     _ => false,
   }
 };
+/** The checker that `frontend.semantics.Values` installs for casts, `is` tests, and `==` and `!=`
+ * between two values that are not literal nulls. It takes the expression and the type its
+ * context requires, and returns the HIR node. */
 let _checkValue: (AstExpr, I32) -> I32 = fn(_expr, _expected) { -1 };
 
+/** Installs `check` as the checker for casts, `is` tests and value equality
+ * (`frontend.semantics.Values`). */
 export let useValueChecks = fn(check: (AstExpr, I32) -> I32): Bool {
   _checkValue = check;
   true
 };
+/** The checker that `frontend.semantics.Aggregates` installs for tuple and array literals, members,
+ * indexing, element assignment and increment, and calls whose callee is a member or a type
+ * application, such as the methods of arrays, lists and Bytes. It takes the expression and the
+ * type its context requires, and returns the HIR node. */
 let _checkAggregate: (AstExpr, I32) -> I32 = fn(_expr, _expected) { -1 };
 
+/** Returns the prototype type that declares the prototype type `ty`; its generic prototype when
+ * it is an instance or an Applied of one, and `ty` itself otherwise. */
 let _prototypeOf = fn(ty: I32): I32 {
   let template = ty >= 0 ? H.templateOf(ty) : -1;
   template >= 0 ? template : ty
 };
 
+// Returns what the `__proto__` of the prototype type `ty` is, as `_prototypeInfos` has it.
 export let prototypeParent = fn(ty: I32): I32 {
   let at = _prototypes.indexOf(_prototypeOf(ty));
   at < 0 ? -2 : _prototypeInfos[at].parent
 };
 
+/** Checks whether a value of the prototype type `source` delegates to the prototype type `target`
+ * through the `__proto__`s of the prototypes; a value of type `source` is then one of `target`. */
 export let delegates = fn(source: I32, target: I32): Bool {
   let at = prototypeParent(source);
   let steps = 0;
@@ -543,18 +881,26 @@ export let delegates = fn(source: I32, target: I32): Bool {
   }
   (target >= 0) && (at == target)
 };
+// Checks whether `init` is a field of the prototype type `ty` that holds a value.
 export let hasInitField = fn(ty: I32): Bool { _initFields.indexOf(_prototypeOf(ty)) >= 0 };
 
+/** Checks whether a value of type `source` widens to `target` as one of a prototype's does; to
+ * Object, or to a prototype it delegates to. */
 export let upcasts = fn(source: I32, target: I32): Bool {
   H.isPrototype(source) && ((target == H.TYPE_OBJECT) || delegates(source, target))
 };
 
+/** Returns the prototype type whose `this` the function being checked sees; its own, as a
+ * prototype's method, or, through `method fn`s, that of the method around them; -1 for none. */
 let _methodContext = fn(): I32 {
   let i = _methods.len() - 1;
   while ((i >= 0) && (_methods[i] == -2)) { i--; }
   i >= 0 ? _methods[i] : -1
 };
 
+/** Returns `_methodContext()`, the prototype type whose `this` is visible.
+ * @param what  `this` or `super`, for the diagnostic
+ * @throws where no method's `this` is visible */
 export let requireThis = fn(what: Bytes): I32 {
   let ty = _methodContext();
   if (ty >= 0) { return ty; }
@@ -566,30 +912,47 @@ export let requireThis = fn(what: Bytes): I32 {
     : `${what} is only inside a prototype's method`);
 };
 
+// Installs `check` as the checker for aggregates (`frontend.semantics.Aggregates`).
 export let useAggregateChecks = fn(check: (AstExpr, I32) -> I32): Bool {
   _checkAggregate = check;
   true
 };
+/** The checker that `frontend.semantics.Testing` installs for calls of `std.testing`'s assertions.
+ * It takes `std.testing`'s module index, the assertion, the name the call uses and the arguments,
+ * and returns the HIR node. */
 let _checkAssertion: (I32, Bytes, Bytes, Array<AstExpr>) -> I32 =
   fn(_module, _assertion, _name, _args) { -1 };
 
+/** Installs `check` as the checker for `std.testing`'s assertions
+ * (`frontend.semantics.Testing`). */
 export let useAssertionChecks = fn(check: (I32, Bytes, Bytes, Array<AstExpr>) -> I32): Bool {
   _checkAssertion = check;
   true
 };
+/** The builder that `frontend.semantics.Derived` installs for structural `==` and `!=`. It takes
+ * the operator and the checked operands, two tuples, enums, arrays or lists of one type, and
+ * returns the comparison. */
 let _structuralEquality: (BinaryOp, I32, I32) -> I32 = fn(_op, _left, _right) { -1 };
 
+// Installs `build` as the builder for structural equality (`frontend.semantics.Derived`).
 export let useStructuralEquality = fn(build: (BinaryOp, I32, I32) -> I32): Bool {
   _structuralEquality = build;
   true
 };
+/** The search that `frontend.semantics.Derived` installs for the part of a type that `==` cannot
+ * compare or, when printing, that `Std.string` cannot print. It takes the type and whether it is
+ * printed, and returns that part, or -1 if there is none. */
 let _unsupported: (I32, Bool) -> I32 = fn(_ty, _printing) { -1 };
 
+// Installs `find` as the search for a type's unsupported part (`frontend.semantics.Derived`).
 export let useUnsupported = fn(find: (I32, Bool) -> I32): Bool {
   _unsupported = find;
   true
 };
 
+/** Checks whether `base.member` names a variant of an enum type; when `base` also names a
+ * namespace import, as `import type { E }` and `import a.E as E` may, only a variant of it does,
+ * and any other member is the namespace's. */
 let _isVariant = fn(base: AstExpr, member: Bytes): Bool {
   _isEnumName(base) && match (base) {
     Variable(name) when (_isNamespace(name)) => H.variantTag(scopedType(name), member) >= 0,
@@ -597,6 +960,8 @@ let _isVariant = fn(base: AstExpr, member: Bytes): Bool {
   }
 };
 
+/** Checks whether `_checkEnum` checks `expr`; a `match`, a member of an enum type such as `E.V`,
+ * or a call of one. */
 let _isEnumExpr = fn(expr: AstExpr): Bool {
   match (expr) {
     Match(_, _) => true,
@@ -607,6 +972,9 @@ let _isEnumExpr = fn(expr: AstExpr): Bool {
   }
 };
 
+/** Checks that a call of `name` passes `count` arguments, `args`.
+ * @param name  the name the call uses, for the error
+ * @throws a located error if the count differs */
 export let checkArity = fn(args: Array<AstExpr>, count: I32, name: Bytes): Bool {
   if (args.len() != count) {
     throw coded(E0600, `${name} takes ${count}${count == 1 ? " argument" : " arguments"}`);
@@ -614,26 +982,49 @@ export let checkArity = fn(args: Array<AstExpr>, count: I32, name: Bytes): Bool 
   true
 };
 
+/** Checks an operand of the current syntax, converted to the type its context requires. Unlike
+ * `checkPresent`, it leaves a Null<T> as it is.
+ * @param expr  the operand
+ * @param index  its child index in the current syntax
+ * @param expected  the type the context requires, or -1
+ * @return the HIR node */
 export let checkOperand = fn(expr: AstExpr, index: I32, expected: I32): I32 {
   _checkExpr(expr, syntaxChild(index), expected)
 };
 
+// Checks whether node `id` is a `Local` read of a binding known to be present.
 let _known = fn(id: I32): Bool {
   match (H.opOf(id)) { Local => isNarrowed(H.valueOf(id)), _ => false }
 };
 
+/** Converts a Null<T> value to a T with an `Unwrap`, which is checked unless the value reads a
+ * local known to be present.
+ * @param id  the Null<T> value
+ * @return the `Unwrap` node */
 let _unwrap = fn(id: I32): I32 {
   H.node(Op.Unwrap, H.innerOf(H.typeOf(id)), _known(id) ? 0 : 1, 0, [id])
 };
 
+/** Unwraps a value when it reads a Null<T> local known to be present.
+ * @param id  the value
+ * @return the unchecked `Unwrap` of `id`, or `id` itself */
 export let presentKnown = fn(id: I32): I32 {
   (H.isKind(H.typeOf(id), Kind.Null) && _known(id)) ? _unwrap(id) : id
 };
 
+/** Returns a hint on getting Bytes from a ByteBuffer, to append to a diagnostic that rejects a
+ * value's type.
+ * @param ty  the rejected type
+ * @return the hint, or "" if `ty` is no ByteBuffer */
 export let bufferHint = fn(ty: I32): Bytes {
   ty == H.TYPE_BYTE_BUFFER ? "; copy a buffer's bytes out with buffer.toString()" : ""
 };
 
+/** Says why a value of type `ty` cannot be boxed as a Dynamic, which a cast to Dynamic, an Object
+ * field and `throw` all do: a buffer from `Bytes.new`, a list, U64, ?U64 or ?U32, none of which
+ * reads back as itself.
+ * @param verb  what the value would do, such as "become Dynamic"
+ * @return the reason, "a list cannot become Dynamic: ...", or "" if it can be boxed */
 export let unboxable = fn(ty: I32, verb: Bytes): Bytes {
   if (ty == H.TYPE_BYTE_BUFFER) {
     return `a buffer from Bytes.new cannot ${verb}${bufferHint(ty)}`;
@@ -641,6 +1032,7 @@ export let unboxable = fn(ty: I32, verb: Bytes): Bytes {
   if (H.isKind(ty, Kind.List)) { return `a list cannot ${verb}: its nil would read as null`; }
   let held = (H.isKind(ty, Kind.Null) && (H.innerOf(ty) >= 0)) ? H.resolve(H.innerOf(ty)) : ty;
 
+  // Only a U32 itself is boxed as the I64 of its value.
   let limit = if (held == H.TYPE_U64) {
     "I64"
   } else if ((held == H.TYPE_U32) && (held != ty)) {
@@ -652,6 +1044,15 @@ export let unboxable = fn(ty: I32, verb: Bytes): Bytes {
   `a ${H.typeName(ty)} cannot ${verb}: ${negative}`
 };
 
+/** Converts a value to the type its context requires. Unifying the types first binds any Vars
+ * that make them equal; an unknown context only unifies. Otherwise one of these may apply; a T
+ * lifts to Null<T> (`Present`), a bare null takes the Null<T> type, or a Null<T> converts to T
+ * (`_unwrap`). A value that fits none of them is returned unchanged, for the caller to reject.
+ * @param id  the value
+ * @param context  the type the context requires, or -1 for none
+ * @return the converted value, or `id`
+ * @throws a located error if the value is a ByteBuffer that does not fit, or would need implicit
+ *   boxing to Dynamic */
 let _coerce = fn(id: I32, context: I32): I32 {
   let ty = H.typeOf(id);
   if ((context < 0) || (ty == context)) { return id; }
@@ -662,6 +1063,7 @@ let _coerce = fn(id: I32, context: I32): I32 {
     return id;
   }
   if (H.unify(ty, expected) || H.isUnknown(expected)) { return id; }
+  // A prototype's Object is an Object, and one of each prototype it delegates to.
   if (upcasts(ty, expected)) { return _unary(Op.Convert, expected, id); }
 
   if (H.holdsNull(expected)) {
@@ -674,6 +1076,7 @@ let _coerce = fn(id: I32, context: I32): I32 {
       return _unary(Op.Convert, expected, id);
     }
 
+    // A literal is retyped; any other bare null, such as `{ f(); null }`, still runs.
     if (ty == H.TYPE_NULL) {
       let typed = _leaf(Op.Null, expected, 0);
       return match (H.opOf(id)) {
@@ -683,6 +1086,7 @@ let _coerce = fn(id: I32, context: I32): I32 {
     }
   }
   if (H.isKind(ty, Kind.Null) && H.unify(H.innerOf(ty), expected)) { return _unwrap(id); }
+  // A nullable prototype's Object is also one of each prototype it delegates to, once unwrapped.
   let held = H.isKind(ty, Kind.Null) ? H.innerOf(ty) : -1;
 
   if ((held >= 0) && upcasts(H.resolve(held), expected)) {
@@ -693,16 +1097,20 @@ let _coerce = fn(id: I32, context: I32): I32 {
     throw coded(E0411, `a buffer from Bytes.new is not ${H.typeName(expected)}${bufferHint(ty)}`);
   }
 
+  // A value is never boxed implicitly.
   if ((expected == H.TYPE_DYNAMIC) && (ty != H.TYPE_NULL)) {
     throw coded(E0404, "a value becomes Dynamic only with `as Dynamic`");
   }
   id
 };
 
+// Returns `value` as an `Object`; a prototype's Object widens to it.
 export let objectValue = fn(value: I32): I32 {
   H.isPrototype(H.typeOf(value)) ? _unary(Op.Convert, H.TYPE_OBJECT, value) : value
 };
 
+/** Checks whether every value of the number type `source` is one of the number type `target`,
+ * so that it widens implicitly. A float holds every integer whose bits fit its significand. */
 let _widens = fn(source: I32, target: I32): Bool {
   match ((H.kindOf(source), H.kindOf(target))) {
     (I8, I16), (I8, I32), (I8, I64), (I16, I32), (I16, I64), (I32, I64) => true,
@@ -715,6 +1123,14 @@ let _widens = fn(source: I32, target: I32): Bool {
   }
 };
 
+/** Returns `value` converted to `declared`, or to the T of a declared Null<T>, when both are
+ * number types and every value of its type is one of that type (`_widens`); otherwise `value`.
+ * Only a declared type widens a value, such as a binding's, a parameter's or an element's, never
+ * an operand's; nor a type variable that an earlier value of the same call or literal bound, as
+ * the order of values would then matter, so those pass -1 for a type open when they began
+ * (`declaredArgs`).
+ * @param value  the checked value
+ * @param declared  the declared type, or -1 for none */
 export let widened = fn(value: I32, declared: I32): I32 {
   if (declared < 0) { return value; }
   let target = H.resolve(declared);
@@ -725,11 +1141,18 @@ export let widened = fn(value: I32, declared: I32): I32 {
   nullable ? _coerce(converted, target) : converted
 };
 
+/** Returns the diagnostic for the checked `value` given to the field `name`, of type `ty`, of a
+ * value of type `owner`, which does not unify with it. */
 export let fieldMismatch = fn(owner: I32, name: Bytes, ty: I32, value: I32): Bytes {
   let field = `field ${name} of ${H.typeName(owner)}`;
   coded(E0400, `${field} is ${H.typeName(ty)}, but this value is ${H.typeName(H.typeOf(value))}`)
 };
 
+/** Unwraps a Null<T> value whose inner type is known, at the syntax of the operand it came from;
+ * a bare null is left as it is.
+ * @param id  the value
+ * @param index  its child index in the current syntax
+ * @return the unwrapped value, or `id` */
 let _presentAt = fn(id: I32, index: I32): I32 {
   let ty = H.typeOf(id);
   if (!H.isKind(ty, Kind.Null) || (H.innerOf(ty) < 0)) { return id; }
@@ -738,13 +1161,22 @@ let _presentAt = fn(id: I32, index: I32): I32 {
   enterSyntax(outer);
   present
 };
+// Exports `_presentAt` for the other checker modules.
 export let presentAt = fn(id: I32, index: I32): I32 { _presentAt(id, index) };
 
+/** Unwraps a Null<T> value whose inner type is known, as `_presentAt` does, at the current
+ * syntax. */
 export let present = fn(id: I32): I32 {
   let ty = H.typeOf(id);
   H.isKind(ty, Kind.Null) && (H.innerOf(ty) >= 0) ? _unwrap(id) : id
 };
 
+/** Converts a value to the type its context requires (`_coerce`), at the syntax of the operand
+ * it came from, so a failure is located there.
+ * @param id  the value
+ * @param expected  the type the context requires, or -1
+ * @param index  its child index in the current syntax
+ * @return the converted value */
 let _coerceAt = fn(id: I32, expected: I32, index: I32): I32 {
   let outer = enterSyntax(syntaxChild(index));
   let coerced = _coerce(id, expected);
@@ -752,13 +1184,21 @@ let _coerceAt = fn(id: I32, expected: I32, index: I32): I32 {
   coerced
 };
 
+// Exports `_coerceAt` for the other checker modules.
 export let coerceAt = fn(id: I32, expected: I32, index: I32): I32 {
   _coerceAt(id, expected, index)
 };
 
+/** Converts the tail of a branch's block to the type the branches join to, so that the branch
+ * stays a block. A block that ends every path takes the type instead.
+ * @param block  the block, which has a tail or ends every path
+ * @param ty  the joined type
+ * @param tail  the tail's child index in the current syntax
+ * @return the converted block, or `block` itself when it already has type `ty` */
 export let coerceTail = fn(block: I32, ty: I32, tail: I32): I32 {
   if (H.typeOf(block) == ty) { return block; }
 
+  // Such a block has no tail to convert.
   if (H.endsPath(block)) {
     H.retype(block, ty);
     return block;
@@ -768,10 +1208,19 @@ export let coerceTail = fn(block: I32, ty: I32, tail: I32): I32 {
   H.node(Op.Block, ty, 0, 1, children)
 };
 
+/** Returns the diagnostic for a use of `what`, a value's name or a phrase such as "this value",
+ * whose type is still unknown. */
 export let unknownType = fn(what: Bytes): Bytes {
   coded(E0403, `the type of ${what} is not known here; annotate it`)
 };
 
+/** Rejects an operand whose type is still unknown; typing runs left to right, so an operand's
+ * type must be known where it is used.
+ * @param id  the checked operand
+ * @param expr  the expression it was checked from; a variable is named in the diagnostic
+ * @param index  its child index in the current syntax, which locates a failure
+ * @return `id`
+ * @throws a located error if its type is an unbound Var */
 let _operand = fn(id: I32, expr: AstExpr, index: I32): I32 {
   if (H.isUnknown(H.typeOf(id))) {
     enterSyntax(syntaxChild(index));
@@ -780,19 +1229,45 @@ let _operand = fn(id: I32, expr: AstExpr, index: I32): I32 {
   id
 };
 
+/** Checks an operand whose value is used as a present T; a Null<T> is unwrapped, and the type
+ * must be known.
+ * @param expr  the operand
+ * @param index  its child index in the current syntax
+ * @param expected  the type the context requires, or -1
+ * @return the HIR node */
 let _value = fn(expr: AstExpr, index: I32, expected: I32): I32 {
   _operand(_presentAt(_checkExpr(expr, syntaxChild(index), expected), index), expr, index)
 };
 
+/** Checks an operand of the current syntax, without a context, whose type must be known; a Null<T>
+ * stays one.
+ * @param expr  the operand
+ * @param index  its child index in the current syntax
+ * @return the HIR node */
 export let checkKnown = fn(expr: AstExpr, index: I32): I32 {
   _operand(_checkExpr(expr, syntaxChild(index), -1), expr, index)
 };
+/** Checks an operand of the current syntax whose value is used as a present T, without a
+ * context (`_value`).
+ * @param expr  the operand
+ * @param index  its child index in the current syntax
+ * @return the HIR node */
 export let checkPresent = fn(expr: AstExpr, index: I32): I32 { _value(expr, index, -1) };
 
+/** Checks an operand as `checkPresent` does, in a context that requires a type.
+ * @param expr  the operand
+ * @param index  its child index in the current syntax
+ * @param expected  the type the context requires
+ * @return the HIR node */
 export let checkPresentAs = fn(expr: AstExpr, index: I32, expected: I32): I32 {
   _value(expr, index, expected)
 };
 
+/** Returns the type both of two types convert to; their common type when they unify, or Null<T>
+ * for T together with a bare null or Null<T>. Unifying may bind Vars in either.
+ * @param a  the first type
+ * @param b  the second type
+ * @return the joined type, or -1 if there is none */
 export let joinTypes = fn(a: I32, b: I32): I32 {
   if (H.unify(a, b)) { return H.resolve(a); }
 
@@ -806,16 +1281,24 @@ export let joinTypes = fn(a: I32, b: I32): I32 {
   -1
 };
 
+/** Returns the type the values of two branches, `a` and `b`, join to (`joinTypes`). A branch that
+ * ends every path gives no value, so the other's type is the join; when both do, the first's. */
 export let joinBranches = fn(a: I32, b: I32): I32 {
   if (H.endsPath(b)) { return H.typeOf(a); }
   if (H.endsPath(a)) { return H.typeOf(b); }
   joinTypes(H.typeOf(a), H.typeOf(b))
 };
 
+/** Returns value `id` without the `Op.Present` lifts that a Null<T> context gave its T values,
+ * looking through a block's tail and both branches of an `If` or a `try`, so that a conditional
+ * unlifts as a plain value does; a branch that ends every path is kept, and a read of a local
+ * known to be present is unwrapped.
+ * @return the unlifted value, of type T, or -1 if some value was not lifted */
 let _unlifted = fn(id: I32): I32 {
   match (H.opOf(id)) {
     Present => H.childOf(id, 0),
     Local when (_known(id)) => {
+      // The unwrap takes the read's span, which lies inside whatever holds it.
       let { path, start, end } = H.spanOf(id);
       H.setSpan(path, start, end);
       let unwrapped = _unwrap(id);
@@ -836,12 +1319,16 @@ let _unlifted = fn(id: I32): I32 {
   }
 };
 
+/** Returns `id`, an `If` or a `try`, with its two branches at children `first` and `first + 1`
+ * unlifted (`_unlifted`), or -1 if either cannot be. */
 let _unliftedBranches = fn(id: I32, first: I32): I32 {
   let (one, other) = (H.childOf(id, first), H.childOf(id, first + 1));
   if (H.endsPath(one) && H.endsPath(other)) { return -1; }
   let oneValue = H.endsPath(one) ? one : _unlifted(one);
   let otherValue = H.endsPath(other) ? other : _unlifted(other);
   if ((oneValue < 0) || (otherValue < 0)) { return -1; }
+  /* A branch that never finishes takes the type of the one that does, on a copy, since an
+   * enclosing value may still fail to unlift and keep the original. */
   let ty = H.typeOf(H.endsPath(one) ? otherValue : oneValue);
 
   let typed = fn(branch: I32): I32 {
@@ -853,17 +1340,29 @@ let _unliftedBranches = fn(id: I32, first: I32): I32 {
   H.copyNode(id, ty, rebuilt)
 };
 
+/** Undoes the `Op.Present` lifts that a Null<T> context applied to a value whose own type is T:
+ * a branch or arm checked against a Null<T> so that a Null<T> of its own stays one.
+ * @param value  the value
+ * @return the value unlifted, with the T type, or `value` itself */
 export let unlift = fn(value: I32): I32 {
   let unlifted = _unlifted(value);
   unlifted < 0 ? value : unlifted
 };
 
+// Checks whether the expression `value` is the literal `null`.
 let _isNull = fn(value: AstExpr): Bool { match (value) { Null => true, _ => false } };
 
+/** Checks whether `left op right` is `==` or `!=` between two values, which
+ * `frontend.semantics.Values` checks; a comparison with a literal null is a null test instead. */
 let _isValueEquality = fn(op: BinaryOp, left: AstExpr, right: AstExpr): Bool {
   match (op) { Equal, NotEqual => !_isNull(left) && !_isNull(right), _ => false }
 };
 
+/** Narrows the Null<T> local that a condition proves present when it has a known outcome;
+ * `x != null` when true, `x == null` when false. Only a local of the function being checked is
+ * narrowed, and any other condition narrows nothing.
+ * @param cond  the condition
+ * @param present  the outcome the condition is known to have */
 let _narrowBy = fn(cond: AstExpr, present: Bool) {
   match (cond) {
     Binary(op, left, right) => {
@@ -882,14 +1381,26 @@ let _narrowBy = fn(cond: AstExpr, present: Bool) {
   }
 };
 
+/** An open literal; an unsuffixed integer literal typed by an integer Var, which `_settleTypes`
+ * gives a width. */
 typedef OpenLiteral = {
+  // The literal node.
   let id: I32;
+  // Its digits, for a range diagnostic.
   let text: Bytes;
+  // Whether it is negated.
   let negative: Bool;
 };
+// The open literals, in the order they were checked.
 let _literals = Array.new<OpenLiteral>(0);
 
+/** Builds an open literal and records it in `_literals`.
+ * @param text  the digits
+ * @param negative  whether it is negated
+ * @param var  its type, an integer Var
+ * @return the literal node */
 let _openLiteral = fn(text: Bytes, negative: Bool, var: I32): I32 {
+  // One above the greatest I64 holds its U64 bits until its type is known (`_fits`).
   let id = H.openLiteral(
     negative ? wideIntegerValue(text, true) : unsignedWideValue(text, false), var
   );
@@ -897,6 +1408,9 @@ let _openLiteral = fn(text: Bytes, negative: Bool, var: I32): I32 {
   id
 };
 
+/** Returns the literal `text` of the integer type `ty`; an `I64` node for I64 and U64, and an `I32`
+ * node holding the value's 32 bits for the others.
+ * @throws an error naming the type's range if the value does not fit */
 let _typedLiteral = fn(text: Bytes, negative: Bool, ty: I32): I32 {
   match (H.kindOf(ty)) {
     I32 => _leaf(Op.I32, ty, integerValue(text, negative)),
@@ -911,6 +1425,7 @@ let _typedLiteral = fn(text: Bytes, negative: Bool, ty: I32): I32 {
   }
 };
 
+// Returns the integer type a literal's suffix `size` names, or `inferred` without one.
 export let sizedType = fn(size: IntSize, inferred: I32): I32 {
   match (size) {
     Infer => inferred, I32 => H.TYPE_I32, I64 => H.TYPE_I64,
@@ -919,10 +1434,14 @@ export let sizedType = fn(size: IntSize, inferred: I32): I32 {
   }
 };
 
+/** Returns a float literal of the float type `ty` with the value nearest the decimal `text`.
+ * @param negative  whether it is negated; `-0.0` keeps its sign
+ * @throws an error naming `ty` if the value rounds to an infinity */
 let _floatLiteral = fn(text: Bytes, negative: Bool, ty: I32): I32 {
   let written = negative ? `-${text}` : text;
   let pattern = ty == H.TYPE_F64 ? _f64Bits(written)
     : ((ty == H.TYPE_F32 ? _f32Bits(written) : _f16Bits(written)) as I64);
+  // An infinity has every exponent bit set and no fraction bit.
   let infinite = ty == H.TYPE_F64 ? (pattern & 9223372036854775807) == 9218868437227405312
     : ty == H.TYPE_F32 ? (pattern & 2147483647) == 2139095040 : (pattern & 32767) == 31744;
 
@@ -932,6 +1451,13 @@ let _floatLiteral = fn(text: Bytes, negative: Bool, ty: I32): I32 {
   H.floatLiteral(pattern, ty)
 };
 
+/** Checks a float literal. An unsuffixed one takes the expected float type, or else is an F64.
+ * @param text  its text, without a suffix
+ * @param size  its suffix's size, or `Infer` without one
+ * @param negative  whether it is negated
+ * @param expected  the type the context requires, or -1
+ * @return the `Float` node
+ * @throws a located error if it is out of range */
 let _checkFloat = fn(text: Bytes, size: FloatSize, negative: Bool, expected: I32): I32 {
   let context = expected < 0 ? -1 : H.resolve(expected);
 
@@ -944,7 +1470,13 @@ let _checkFloat = fn(text: Bytes, size: FloatSize, negative: Bool, expected: I32
   _floatLiteral(text, negative, ty)
 };
 
+/** Returns the unsuffixed integer literal `text` as a float literal of the float type `ty`, whose
+ * value it must be exactly: its significant bits fit the significand, and an F16's is below 2^16.
+ * The value reaches `_floatLiteral` as a C hexadecimal float, `0x` digits `p` a power of two,
+ * which reads exactly; a U64 above the greatest I64 included.
+ * @throws an error naming `ty` if it is not one of its values */
 let _exactFloat = fn(text: Bytes, negative: Bool, ty: I32): I32 {
+  // The magnitude's bits, read as unsigned; that of the least I64, -2^63, is its own bits.
   let magnitude = negative ? -wideIntegerValue(text, true) : unsignedWideValue(text, false);
   let greatest = 9223372036854775807;
   let power = 0;
@@ -975,6 +1507,17 @@ let _exactFloat = fn(text: Bytes, negative: Bool, ty: I32): I32 {
   _floatLiteral(`0x${digits}p${power}`, negative && (digits != "0"), ty)
 };
 
+/** Checks an integer literal. An unsuffixed one takes the expected integer type, an integer
+ * Var included. Without one, or with an expected type still unknown, its type is a new integer
+ * Var that later uses bind and that otherwise defaults to I32; with any other expected type it is
+ * an I32, which the context then rejects. In a float context it is a float of the same value
+ * (`_exactFloat`).
+ * @param text  the digits
+ * @param size  its suffix's size, or `Infer` without one
+ * @param negative  whether it is negated
+ * @param expected  the type the context requires, or -1
+ * @return an `I32` or `I64` node, or an open literal
+ * @throws a located error for a literal out of range */
 let _checkInteger = fn(text: Bytes, size: IntSize, negative: Bool, expected: I32): I32 {
   let context = expected < 0 ? -1 : H.resolve(expected);
 
@@ -992,8 +1535,16 @@ let _checkInteger = fn(text: Bytes, size: IntSize, negative: Bool, expected: I32
   H.isIntegerType(ty) ? _typedLiteral(text, negative, ty) : _openLiteral(text, negative, ty)
 };
 
+// Checks whether `ty` is an integer or float type, an integer Var or an Integer Param.
 let _isNumber = fn(ty: I32): Bool { H.isInteger(ty) || H.isFloatType(H.resolve(ty)) };
 
+/** Checks `-value` or `!value`. Negating a number literal makes a negative literal; any other
+ * negation (`Neg`) needs a number operand, and `!` (`Not`) a Bool; an unsigned one wraps.
+ * @param op  the operator
+ * @param value  the operand
+ * @param expected  the type the context requires, or -1; it types a negated literal
+ * @return the HIR node
+ * @throws a located error if the operand's type does not suit the operator */
 let _checkUnary = fn(op: UnaryOp, value: AstExpr, expected: I32): I32 {
   match (op) {
     Negate => match (value) {
@@ -1021,6 +1572,12 @@ let _checkUnary = fn(op: UnaryOp, value: AstExpr, expected: I32): I32 {
   }
 };
 
+/** Checks `value == null` or `value != null` as an `IsNull` or `IsPresent` test.
+ * @param op  the operator
+ * @param value  the operand that is not `null`
+ * @param index  its child index in the current syntax
+ * @return the Bool test
+ * @throws a located error if the operand cannot hold null */
 let _checkNullComparison = fn(op: BinaryOp, value: AstExpr, index: I32): I32 {
   let operand = checkOperand(value, index, -1);
   let ty = H.typeOf(operand);
@@ -1037,15 +1594,31 @@ let _checkNullComparison = fn(op: BinaryOp, value: AstExpr, index: I32): I32 {
   }
 };
 
+/** Builds a comparison, inside a `Not` when negated; `!=`, `<=` and `>=` are built this way
+ * from `Eq`, `Gt` and `Lt`.
+ * @param op  the comparison; `Eq`, `Lt` or `Gt`
+ * @param left  the left operand
+ * @param right  the right operand
+ * @param negate  whether to negate it
+ * @return the Bool node */
 let _compare = fn(op: Op, left: I32, right: I32, negate: Bool): I32 {
   let compared = _binary(op, H.TYPE_BOOL, left, right);
   negate ? _unary(Op.Not, H.TYPE_BOOL, compared) : compared
 };
 
+/** Checks whether node `id` constructs a variant without fields, such as `E.None`; an `EnumNew`
+ * without children, a constant. */
 export let isNullaryVariant = fn(id: I32): Bool {
   match (H.opOf(id)) { EnumNew => H.childCount(id) == 0, _ => false }
 };
 
+/** Compares an enum value with a variant that has no fields by tag; `e == E.V` is equality of
+ * `e`'s tag (`EnumTag`) with `V`'s, whatever `e`'s payload.
+ * @param op  the operator
+ * @param left  the left operand
+ * @param right  the right operand; one of the two is the variant
+ * @return the Bool node
+ * @throws a located error if `op` is not `==` or `!=` */
 let _variantEquality = fn(op: BinaryOp, left: I32, right: I32): I32 {
   let negate = match (op) {
     Equal => false,
@@ -1060,6 +1633,9 @@ let _variantEquality = fn(op: BinaryOp, left: I32, right: I32): I32 {
   )
 };
 
+/** Returns the source text of a binary operator, for diagnostics.
+ * @param op  the operator
+ * @return its text, such as "<=" */
 let _operatorText = fn(op: BinaryOp): Bytes {
   match (op) {
     Add => "+", Subtract => "-", Multiply => "*", Divide => "/", Remainder => "%",
@@ -1070,6 +1646,13 @@ let _operatorText = fn(op: BinaryOp): Bytes {
   }
 };
 
+/** Returns a hint on what a bitwise operator applied to a Bool likely meant; the logical
+ * operator when both operands are Bools, otherwise parentheses, since comparisons bind tighter
+ * than `&`, `|` and `^` (as in C and Java); `a & 1 == 0` is `a & (1 == 0)`.
+ * @param op  the operator
+ * @param left  the checked left operand
+ * @param right  the checked right operand
+ * @return the hint, or "" if `op` is not bitwise or neither operand is a Bool */
 let _bitwiseHint = fn(op: BinaryOp, left: I32, right: I32): Bytes {
   let leftBool = H.typeOf(left) == H.TYPE_BOOL;
   let rightBool = H.typeOf(right) == H.TYPE_BOOL;
@@ -1079,6 +1662,9 @@ let _bitwiseHint = fn(op: BinaryOp, left: I32, right: I32): Bytes {
     : `; comparisons bind tighter, so write (a ${_operatorText(op)} b) == c`
 };
 
+/** Builds the float operation `op` on `left` and `right`, of the float type `ty`; arithmetic but
+ * `%`, and comparison, where NaN is unordered (`Op.Le`, `Op.Ge`).
+ * @throws an error for any other operator */
 let _floatBinary = fn(op: BinaryOp, ty: I32, left: I32, right: I32): I32 {
   let arithmetic = match (op) {
     Add => Op.Add,
@@ -1100,7 +1686,18 @@ let _floatBinary = fn(op: BinaryOp, ty: I32, left: I32, right: I32): I32 {
   _compare(comparison, left, right, match (op) { NotEqual => true, _ => false })
 };
 
+/** Builds the binary operation `op` on the checked operands `leftValue` and `rightValue`. Bytes
+ * support `+` (`BytesConcat`), `==` and `!=` (`BytesEq`). Enums of one type compare by tag against
+ * a variant without fields, and tuples, enums, records, arrays and lists of one type otherwise
+ * compare structurally (`_structuralEquality`). Bools support `&&`, `||`, `==` and `!=`; functions
+ * and abstract types of one type `==` and `!=`, which compare by identity, as any two Objects do;
+ * a type parameter supports `==` and `!=` with the Eq bound; and number operations need both
+ * operands of one type.
+ * `frontend.semantics.Values` calls it for value equality, and `_checkBinary` for the rest.
+ * @throws a located error if an operand's type is unknown, is a ByteBuffer or Dynamic, or does not
+ *   suit the operator */
 export let binaryValues = fn(op: BinaryOp, leftValue: I32, rightValue: I32): I32 {
+  // Any two Objects compare, by identity.
   let objects = H.isObject(H.typeOf(leftValue)) && H.isObject(H.typeOf(rightValue));
   let left = objects ? objectValue(leftValue) : leftValue;
   let right = objects ? objectValue(rightValue) : rightValue;
@@ -1108,6 +1705,8 @@ export let binaryValues = fn(op: BinaryOp, leftValue: I32, rightValue: I32): I32
   let rightType = H.typeOf(right);
 
   if (H.isOpen(leftType) || H.isOpen(rightType)) {
+    /* An integer Var takes the other integer operand's type; otherwise each
+     * operand's integer Vars default to I32 here. */
     if (H.isInteger(leftType) && H.isInteger(rightType)) {
       H.unify(leftType, rightType);
     } else {
@@ -1152,6 +1751,7 @@ export let binaryValues = fn(op: BinaryOp, leftValue: I32, rightValue: I32): I32
   if (same && equality && structural) { return _structuralEquality(op, left, right); }
   let bools = (leftType == H.TYPE_BOOL) && (rightType == H.TYPE_BOOL);
   let atoms = (leftType == H.TYPE_ATOM) && (rightType == H.TYPE_ATOM);
+  // Functions, Objects and native handles compare by identity.
   let identity = same
     && match (H.kindOf(leftType)) { Function, Object, Abstract => true, _ => false };
 
@@ -1167,6 +1767,8 @@ export let binaryValues = fn(op: BinaryOp, leftValue: I32, rightValue: I32): I32
     _ => null,
   };
 
+  /* A type parameter allows only what its bounds do; one with the Integer
+   * bound is an integer type. */
   if (same && H.isKind(leftType, Kind.Param) && !H.isInteger(leftType)) {
     if (!equality || !H.hasBounds(leftType, H.BOUND_EQ)) {
       let bound = needsBound(leftType, equality ? "Eq" : "Integer");
@@ -1174,6 +1776,7 @@ export let binaryValues = fn(op: BinaryOp, leftValue: I32, rightValue: I32): I32
     }
     return _compare(Op.Eq, left, right, match (op) { NotEqual => true, _ => false });
   }
+  // Integer operations take both operands of one integer type, and float ones of one float type.
   let ty = leftType;
 
   if (!H.isInteger(ty) || (rightType != ty)) {
@@ -1208,6 +1811,7 @@ export let binaryValues = fn(op: BinaryOp, leftValue: I32, rightValue: I32): I32
   }
 };
 
+// Checks whether `expr` is an unsuffixed integer or float literal, or one negated.
 let _isOpenNumber = fn(expr: AstExpr): Bool {
   let literal = match (expr) {
     Unary(op, value) => match (op) { Negate => value, _ => expr },
@@ -1221,6 +1825,14 @@ let _isOpenNumber = fn(expr: AstExpr): Bool {
   }
 };
 
+/** Checks a binary expression other than value equality. A comparison with a literal null is a
+ * null test; arithmetic passes an integer context to its left operand, and the right operand
+ * takes the left's type as its context. `&&` and `||` narrow their right operand by their left.
+ * @param op  the operator
+ * @param leftExpr  the left operand
+ * @param rightExpr  the right operand
+ * @param expected  the type the context requires, or -1
+ * @return the HIR node */
 let _checkBinary = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr, expected: I32): I32 {
   let isEquality = match (op) { Equal, NotEqual => true, _ => false };
 
@@ -1229,12 +1841,14 @@ let _checkBinary = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr, expec
       : _checkNullComparison(op, leftExpr, 0);
   }
 
+  // Arithmetic has its operands' type, so `let x: I64 = 1 << 40` types both as I64.
   let arithmetic = match (op) {
     Add, Subtract, Multiply, Divide, Remainder => true,
     ShiftLeft, ShiftRight, BitAnd, BitOr, BitXor => true,
     _ => false,
   };
   let context = arithmetic && _isNumber(expected) ? expected : -1;
+  // An unsuffixed number on the left takes a float type from the right, as in `2.0 * x`.
   let logical = match (op) { And, Or => true, _ => false };
 
   if ((context < 0) && _isOpenNumber(leftExpr) && !_isOpenNumber(rightExpr) && !logical) {
@@ -1245,21 +1859,31 @@ let _checkBinary = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr, expec
     );
   }
   let left = _value(leftExpr, 0, context);
+  // `x != null && ...` and `x == null || ...` narrow x on the right, which may not run.
   let before = narrowings();
   match (op) { And => _narrowBy(leftExpr, true), Or => _narrowBy(leftExpr, false), _ => null };
+  // A Dynamic left gives no context; `binaryValues` reports it.
   let right = checkOperand(rightExpr, 1, H.typeOf(left) == H.TYPE_DYNAMIC ? -1 : H.typeOf(left));
   keepNarrowings(before);
   binaryValues(op, left, right)
 };
 
+/** Returns the type of a function. Only a direct function whose result type is inferred and
+ * whose body's check has not begun has none yet; its body is then checked first. While that
+ * check runs, a recursive call's result is a Var.
+ * @param index  the function index
+ * @return the function type */
 let _functionType = fn(index: I32): I32 {
   if (_functions[index].ty < 0) { checkDirect(index); }
   touch(_functions[index].name);
   _functions[index].ty
 };
 
+/** Returns the number of parameters that function `index` has before those its syntax declares;
+ * 1, its `this`, for a prototype's method. */
 let _receivers = fn(index: I32): I32 { _functions[index].methodKind >= 0 ? 1 : 0 };
 
+// Returns the function index of the method `name` that the prototype type `ty` declares, or -1.
 let ownMethod = fn(ty: I32, name: Bytes): I32 {
   let declaring = _prototypeOf(ty);
 
@@ -1271,6 +1895,8 @@ let ownMethod = fn(ty: I32, name: Bytes): I32 {
   -1
 };
 
+/** Returns the function index of the method `name` of the generic prototype's instance `ty`, or
+ * -1 before it is checked. */
 let _instanceMethod = fn(ty: I32, name: Bytes): I32 {
   for ({ function, field } in _instanceMethods) {
     if ((_functions[function].methodKind == ty) && (field == name)) { return function; }
@@ -1278,6 +1904,8 @@ let _instanceMethod = fn(ty: I32, name: Bytes): I32 {
   -1
 };
 
+/** Returns the function index of the method `name` that a value of the prototype type `ty` finds;
+ * its prototype's own, or one of a prototype it delegates to; -1 when none declares one. */
 export let findMethod = fn(ty: I32, name: Bytes): I32 {
   let at = ty;
   let steps = 0;
@@ -1291,6 +1919,9 @@ export let findMethod = fn(ty: I32, name: Bytes): I32 {
   -1
 };
 
+/** Returns the first prototype type from `ty` along the `__proto__`s of the prototypes for which
+ * `stop` holds, or else what the chain ends at: -1 for a value that is no prototype's, or -2 for
+ * nothing. */
 let _chainFind = fn(ty: I32, stop: (I32) -> Bool): I32 {
   let at = ty;
   let steps = 0;
@@ -1302,25 +1933,39 @@ let _chainFind = fn(ty: I32, stop: (I32) -> Bool): I32 {
   at
 };
 
+/** Checks whether the methods of the prototype type `ty` are fixed, as a class's are: whether it,
+ * or a prototype it delegates to, has a linked typedef (`Hir.isLinked`), or it delegates to a
+ * value that may be one. Its object then seals them, and a call that can only find one of them
+ * calls it directly. Sealing is also what lets a method override one it delegates to: the VM
+ * refuses to let anything else shadow a sealed method. */
 export let sealedPrototype = fn(ty: I32): Bool {
   let end = _chainFind(ty, fn(at) { H.isLinked(at) });
   (end >= 0) || (end == -1)
 };
 
+/** Notes the `CallIndirect` node `call` of the method `name` found from the prototype type
+ * `origin`, which `finishProgram` makes direct where it can (`MethodCall`). */
 export let noteMethodCall = fn(call: I32, origin: I32, name: Bytes, exact: Bool): Bool {
   _methodCalls.push({ call, origin, name, exact });
   true
 };
 
+/** Returns the prototype type that declares the method `name` a value of the prototype type `ty`
+ * finds (`findMethod`), or a negative number when none does. */
 let _declaring = fn(ty: I32, name: Bytes): I32 {
   _chainFind(ty, fn(at) { ownMethod(at, name) >= 0 })
 };
 
+/** Checks whether the method `name` that a value of the prototype type `ty` finds is sealed
+ * (`sealedPrototype`), so that it cannot be replaced. */
 export let sealedMethod = fn(ty: I32, name: Bytes): Bool {
   let declaring = _declaring(ty, name);
   (declaring >= 0) && sealedPrototype(declaring)
 };
 
+/** Returns each method a prototype declares paired with the prototype types it may override it
+ * in: those it delegates to, by their declaring prototype (`_prototypeOf`), or -1 when it
+ * delegates to a value that may be any. */
 let _overrides = fn(): Array<Tuple<I32, Bytes>> {
   let pairs = Array.new<Tuple<I32, Bytes>>(0);
 
@@ -1338,6 +1983,9 @@ let _overrides = fn(): Array<Tuple<I32, Bytes>> {
   pairs
 };
 
+/** Returns the function index of the method that `call` always finds, or -1 when another may be
+ * found at run time: when the prototype that declares it is not sealed (`sealedPrototype`), or
+ * one delegating to the receiver's type overrides it (`overrides`, from `_overrides`). */
 let _fixedMethod = fn(call: MethodCall, overrides: Array<Tuple<I32, Bytes>>): I32 {
   let start = H.resolve(call.origin);
   let declaring = _declaring(start, call.name);
@@ -1353,10 +2001,16 @@ let _fixedMethod = fn(call: MethodCall, overrides: Array<Tuple<I32, Bytes>>): I3
   (function < 0) || _functions[function].dropped ? -1 : function
 };
 
+/** Returns the function index of the method `name` that the checked `value` finds when it is of a
+ * prototype's type (`findMethod`), or -1. */
 export let prototypeMethod = fn(value: I32, name: Bytes): I32 {
   H.isPrototype(H.typeOf(value)) ? findMethod(H.typeOf(value), name) : -1
 };
 
+/** Returns the type of the field `name` that a value of the prototype type `ty` has through a
+ * linked typedef (`Hir.isLinked`), its prototype's or that of one it delegates to, or -1, and
+ * whether its shape is closed: whether every prototype it delegates through is linked, the last
+ * delegating to nothing. */
 export let linkedMember = fn(ty: I32, name: Bytes): Tuple<I32, Bool> {
   let at = H.isPrototype(ty) ? ty : -1;
   let steps = 0;
@@ -1372,6 +2026,9 @@ export let linkedMember = fn(ty: I32, name: Bytes): Tuple<I32, Bool> {
   (-1, closed && (at == -2))
 };
 
+/** Returns the type of the field `name`, other than `__proto__`, of a value of the type `ty` that
+ * a linked typedef declares (`linkedMember`), or -1 when it is no such field of an open shape.
+ * @throws an error if the shape is closed and has no such field */
 export let prototypeField = fn(ty: I32, name: Bytes): I32 {
   if (name == "__proto__") { return -1; }
   let (field, closed) = linkedMember(ty, name);
@@ -1379,6 +2036,9 @@ export let prototypeField = fn(ty: I32, name: Bytes): I32 {
   field
 };
 
+/** Returns the type of method `index` when a value of the prototype type `ty` calls it, checking
+ * its body first when its result is inferred (`_functionType`); a generic prototype's type
+ * parameters stand for the type arguments of `ty`. */
 export let receiverMethodType = fn(index: I32, ty: I32): I32 {
   let template = H.templateOf(ty);
   (template >= 0) && (template == _functions[index].methodKind)
@@ -1386,11 +2046,16 @@ export let receiverMethodType = fn(index: I32, ty: I32): I32 {
     : _functionType(index)
 };
 
+// Returns the type of global `id`, noting the use (see `frontend.semantics.Failures.touch`).
 let _globalType = fn(id: I32): I32 {
   touch(H.globalNameOf(id));
   H.globalTypeOf(id)
 };
 
+/** Finds a local of the innermost enclosing function that has one of that name.
+ * @param name  the local's name
+ * @return that function's index in `_frames` and the local's binding ID, or (-1, -1) if no
+ *   enclosing function has the local */
 let _enclosingFind = fn(name: Bytes): Tuple<I32, I32> {
   let nameId = H.findBytesId(name);
   let depth = _frames.len() - 1;
@@ -1405,17 +2070,30 @@ let _enclosingFind = fn(name: Bytes): Tuple<I32, I32> {
   }
   (-1, -1)
 };
+/** Checks whether `name` is a local, of the function being checked or of an enclosing one, which
+ * hides a module-level name. */
 let _isLocal = fn(name: Bytes): Bool { (_find(name, 0) >= 0) || (_enclosingFind(name).0 >= 0) };
 
+// Returns the diagnostic for using the generic function `name` as a value.
 let _genericValue = fn(name: Bytes): Bytes {
   coded(E0602, `${name} is generic, so it can only be called`)
 };
 
+/** Captures a local of an enclosing function; each function from there inward gets a `Capture`
+ * copy, an inner one copying its parent's, and a copy already made is reused. A copy has the
+ * local's type and mutability; `ir.Lower` keeps a local that any copy assigns in a cell they
+ * share.
+ * @param name  the local's name
+ * @return the binding ID of the copy in the function being checked, or -1 if no enclosing
+ *   function has the local
+ * @throws a located error if a local generic function's body would capture it, or if it is a
+ *   local generic function */
 let _capture = fn(name: Bytes): I32 {
   let (depth, id) = _enclosingFind(name);
   if (depth < 0) { return -1; }
   touchLocal(id);
 
+  // Each instance of a local template is a function of its own.
   if (depth < _captureFloor) {
     throw coded(E0308, `a generic local function cannot capture ${name}; pass it as an argument`);
   }
@@ -1442,6 +2120,9 @@ let _capture = fn(name: Bytes): I32 {
   id
 };
 
+/** Returns the global of the instance `ty` of a generic prototype, declaring it on first use, from
+ * an instance that nests `depth` deep (`_instanceDepth`), where `need` says it is needed.
+ * @throws a located error if a field of `ty` is of a type its Objects cannot hold */
 let _instanceGlobal = fn(ty: I32, depth: I32, need: Need): I32 {
   let at = _instanceTypes.indexOf(ty);
   if (at >= 0) { return _instances[at].global; }
@@ -1451,6 +2132,8 @@ let _instanceGlobal = fn(ty: I32, depth: I32, need: Need): I32 {
   global
 };
 
+/** Returns the global of the prototype type `ty`; an instance's is declared on first use.
+ * @throws an internal error for a prototype that is no instance and whose module does not run */
 export let prototypeGlobal = fn(ty: I32): I32 {
   let at = _prototypes.indexOf(ty);
   if (at >= 0) { return _prototypeInfos[at].global; }
@@ -1461,6 +2144,9 @@ export let prototypeGlobal = fn(ty: I32): I32 {
   _instanceGlobal(ty, _instanceDepth, _needHere())
 };
 
+/** Returns a read of the global of the prototype type `ty`. One whose type arguments are being
+ * inferred reads its instance's once they are (`resolveInstanceReads`), and one in a template's
+ * body, which is only checked, is an Object of its type, so that it uses no instance. */
 export let prototypeValue = fn(ty: I32): I32 {
   if (_templateBody) { return H.opNode(Op.ObjectNew, ty, []); }
   if (!H.isOpen(ty)) { return _leaf(Op.Global, ty, prototypeGlobal(ty)); }
@@ -1469,6 +2155,8 @@ export let prototypeValue = fn(ty: I32): I32 {
   read
 };
 
+/** Returns the binding of the prototype at entry `at` of `_prototypes`, named `name`, as a value.
+ * @throws a located error for a generic prototype, which as a value takes type arguments */
 let _prototypeBinding = fn(at: I32, name: Bytes): Binding {
   let global = _prototypeInfos[at].global;
 
@@ -1479,10 +2167,16 @@ let _prototypeBinding = fn(at: I32, name: Bytes): Binding {
   Binding.Global(global)
 };
 
+/** Resolves a module-level name, including an annotated global declared later that a function
+ * can see (`_aheadBinding`).
+ * @param name  the name
+ * @param use  how the value is used, "read" or "assigned", for a diagnostic
+ * @return the binding, or `Unbound` */
 let _scoped = fn(name: Bytes, use: Bytes): Binding {
   let binding = scoped(name);
 
   match (binding) {
+    // A prototype's name names its type, and as a value its global.
     Unbound => {
       let at = _prototypes.indexOf(scopedType(name));
       at >= 0 ? _prototypeBinding(at, name) : _aheadBinding(name, use)
@@ -1490,22 +2184,37 @@ let _scoped = fn(name: Bytes, use: Bytes): Binding {
     _ => binding,
   }
 };
+/** Resolves a module-level name that no local hides.
+ * @param name  the name
+ * @return the binding, or `Unbound` if there is none or a local of this function or of an
+ *   enclosing one hides it */
 let _moduleBinding = fn(name: Bytes): Binding { _isLocal(name) ? Binding.Unbound : scoped(name) };
 
+/** Checks whether `name` is in scope; a local of this function or of an enclosing one, or any
+ * module-level binding. */
 export let isBound = fn(name: Bytes): Bool {
   _isLocal(name) || match (scoped(name)) { Unbound => false, _ => true }
 };
 
+// Checks whether `name` is a namespace import that no local hides.
 let _isNamespace = fn(name: Bytes): Bool {
   match (_moduleBinding(name)) { Namespace(_, _) => true, _ => false }
 };
 
+// Checks whether `callee` is `M.f`, an export of a namespace import.
 let _isNamespaceCall = fn(callee: AstExpr): Bool {
   match (callee) { Member(Variable(space), _) => _isNamespace(space), _ => false }
 };
 
+/** Resolves an export of a namespace import; the binding that `import { name }` would give.
+ * Callers have checked `_isNamespace(space)`.
+ * @param space  the namespace's name
+ * @param name  the export's name
+ * @return the binding
+ * @throws a located error if the module exports no value of that name */
 let _inNamespace = fn(space: Bytes, name: Bytes): Binding {
   match (scoped(space)) {
+    // A prototype's name, a type, is as a value its global.
     Namespace(module, path) => {
       let at = _prototypes.indexOf(exportedType(module, name));
       at >= 0 ? _prototypeBinding(at, name) : namespaceMember(module, path, name)
@@ -1514,6 +2223,14 @@ let _inNamespace = fn(space: Bytes, name: Bytes): Binding {
   }
 };
 
+/** Builds a call of a direct function with checked arguments that the caller has given its
+ * parameter types; `frontend.semantics.Testing` and `frontend.semantics.Derived` call
+ * `std.testing`'s reporters and derived functions this way.
+ * @param binding  the function's binding
+ * @param name  its name, for the diagnostic
+ * @param args  the checked arguments
+ * @return the `Call` node
+ * @throws a located error if `binding` is no direct function */
 export let callFunction = fn(binding: Binding, name: Bytes, args: Array<I32>): I32 {
   match (binding) {
     Function(index) => H.node(Op.Call, H.innerOf(_functionType(index)), index + 1, 0, args),
@@ -1521,8 +2238,14 @@ export let callFunction = fn(binding: Binding, name: Bytes, args: Array<I32>): I
   }
 };
 
+// Returns the names of the Params `params`, in order.
 export let paramNames = fn(params: Array<I32>): Array<Bytes> { params.map(H.typeName) };
 
+/** Makes type parameters stand for types, in place of those in scope; `frontend.semantics.Enums`
+ * and `frontend.semantics.Typedefs` use it while they check a generic type's fields.
+ * @param names  the type parameters' names
+ * @param types  the types they stand for
+ * @return the type parameters in scope before, to restore */
 export let useTypeParams = fn(
   names: Array<Bytes>, types: Array<I32>
 ): Tuple<Array<Bytes>, Array<I32>> {
@@ -1532,6 +2255,12 @@ export let useTypeParams = fn(
   outer
 };
 
+/** Adds a function that the checker generates, such as a derived function or a template's
+ * instance. Its node is supplied afterwards (`defineFunction`), so its body can call it.
+ * @param name  its name
+ * @param params  its parameters' names
+ * @param ty  its function type
+ * @return its function index */
 export let generateFunction = fn(name: Bytes, params: Array<Bytes>, ty: I32): I32 {
   let types = Array.new<I32>(0);
   let i = 0;
@@ -1547,17 +2276,24 @@ export let generateFunction = fn(name: Bytes, params: Array<Bytes>, ty: I32): I3
   _functions.len() - 1
 };
 
+/** Adds a closure that the checker builds, as `generateFunction` adds a function; one built while
+ * a template's body is checked is dropped with that body. */
 export let generateClosure = fn(name: Bytes, params: Array<Bytes>, ty: I32): I32 {
   let index = generateFunction(name, params, ty);
   _functions[index].dropped = _templateBody;
   index
 };
 
+/** Supplies `function` as the `Function` node of the generated function at function index
+ * `index`. */
 export let defineFunction = fn(index: I32, function: I32): Bool {
   _functions[index].node = function;
   true
 };
 
+/** Returns the type of a module-level binding that is a global or a direct function.
+ * @param binding  the binding
+ * @return its type, or -1 for any other binding */
 export let bindingType = fn(binding: Binding): I32 {
   match (binding) {
     Global(id) => _globalType(id),
@@ -1566,6 +2302,8 @@ export let bindingType = fn(binding: Binding): I32 {
   }
 };
 
+/** Returns the diagnostic for `name`, which no value is bound to, noting the failed use (see
+ * `frontend.semantics.Failures.touch`). */
 let _unknownName = fn(name: Bytes): Bytes {
   touch(name);
   name == "_" ? coded(E0301, "_ binds nothing, so it names no value")
@@ -1573,9 +2311,16 @@ let _unknownName = fn(name: Bytes): Bytes {
     : coded(E0300, `unknown name: ${name}`)
 };
 
+/** Reads the value of a module-level binding; a `Global` read or a `FunctionRef`.
+ * @param binding  the binding
+ * @param name  the name it was found by, for diagnostics
+ * @return the HIR node
+ * @throws a located error if the binding is a native, a namespace, an assertion, a generic
+ *   function, or unbound */
 let _bindingValue = fn(binding: Binding, name: Bytes): I32 {
   match (binding) {
     Global(id) => {
+      // A `const` of a constant is that constant wherever it is read.
       let constant = id < _globalConstants.len() ? _globalConstants[id] : -1;
       let ty = _globalType(id);
       constant >= 0 ? _copyConstant(constant, ty) : _leaf(Op.Global, ty, id)
@@ -1604,6 +2349,11 @@ let _bindingValue = fn(binding: Binding, name: Bytes): I32 {
   }
 };
 
+/** Checks a read of a variable; a local, a capture of an enclosing function's local, or a
+ * module-level value.
+ * @param name  the variable's name
+ * @return the HIR node
+ * @throws a located error if it names a generic function or no value */
 let _checkVariable = fn(name: Bytes): I32 {
   let found = _find(name, 0);
   if ((found >= 0) && (_bindingTemplate(_ids[found]) >= 0)) { throw _genericValue(name); }
@@ -1617,6 +2367,12 @@ let _checkVariable = fn(name: Bytes): I32 {
   _bindingValue(_scoped(name, "read"), name)
 };
 
+/** Checks a name that a pattern compares the matched value with; a pinned `^name`, or a
+ * capitalised name that is no variant of the matched enum, which must be a constant.
+ * @param name  the name
+ * @param constant  whether the name must name a constant
+ * @return a read of its value, or -1 when a constant name names no local or global
+ * @throws a located error if a pinned name names no value, or a constant one can be assigned */
 export let checkPatternName = fn(name: Bytes, constant: Bool): I32 {
   if (constant) {
     let found = _find(name, 0);
@@ -1634,6 +2390,7 @@ export let checkPatternName = fn(name: Bytes, constant: Bool): I32 {
   _checkVariable(name)
 };
 
+// Checks whether any of `args` is a spread, `...value`.
 export let hasSpread = fn(args: Array<AstExpr>): Bool {
   for (arg in args) {
     if (let Spread(_) = arg) {
@@ -1643,12 +2400,21 @@ export let hasSpread = fn(args: Array<AstExpr>): Bool {
   false
 };
 
+/** Binds the checked `value` to a new hidden constant, so that it is evaluated once, and appends
+ * the declaration to `statements`.
+ * @param name  the hidden binding's name
+ * @return the binding */
 export let hideValue = fn(statements: Array<I32>, name: Bytes, value: I32): I32 {
   let binding = newBinding();
   statements.push(H.declareBinding(Op.Const, binding, name, value));
   binding
 };
 
+/** Checks the spread `...operand`, syntax child `index`, in the context `expected`.
+ * @param tuple  whether it may be a tuple
+ * @param array  whether it may be an array
+ * @return the checked operand
+ * @throws a located error if it is neither that it may be */
 export let spreadOperand = fn(
   operand: AstExpr, index: I32, expected: I32, tuple: Bool, array: Bool
 ): I32 {
@@ -1665,6 +2431,8 @@ export let spreadOperand = fn(
   checked
 };
 
+/** Records, at syntax child `index`, the spread array `array` unless it is an Array of `element`;
+ * its elements are copied as they are, so it is never widened. */
 let _spreadElements = fn(array: I32, index: I32, element: I32) {
   let wanted = H.arrayType(element);
 
@@ -1675,12 +2443,20 @@ let _spreadElements = fn(array: I32, index: I32, element: I32) {
   null
 };
 
+/** Checks the spread `...operand`, syntax child `index`, as an array of `element`, or of its own
+ * element type when `element` is -1 (see `_spreadElements`).
+ * @return the checked array
+ * @throws a located error if it is not an array; one of the wrong element type is recorded */
 export let spreadArray = fn(operand: AstExpr, index: I32, element: I32): I32 {
   let array = spreadOperand(operand, index, element >= 0 ? H.arrayType(element) : -1, false, true);
   if (element >= 0) { _spreadElements(array, index, element); }
   array
 };
 
+/** Binds the checked tuple `tuple`, spread at syntax child `index`, to a hidden constant
+ * (`hideValue`) and returns reads of its fields, which are located at the spread, as converting
+ * one to its context is.
+ * @param statements  the statements the declaration is appended to */
 export let tupleFields = fn(tuple: I32, index: I32, statements: Array<I32>): Array<I32> {
   let ty = H.typeOf(tuple);
   let binding = hideValue(statements, "tuple", tuple);
@@ -1696,6 +2472,9 @@ export let tupleFields = fn(tuple: I32, index: I32, statements: Array<I32>): Arr
   reads
 };
 
+/** Returns a new array of type `ty` that joins the arrays `parts` and then the elements `run`, in
+ * order (`Op.ArrayConcat`); a literal of `run` alone, and a copy of a single part.
+ * @param parts  the arrays, appended to */
 export let joinArrays = fn(parts: Array<I32>, run: Array<I32>, ty: I32): I32 {
   if ((run.len() > 0) || (parts.len() < 2)) { parts.push(H.opNode(Op.ArrayLiteral, ty, run)); }
   let joined = parts[0];
@@ -1708,6 +2487,9 @@ export let joinArrays = fn(parts: Array<I32>, run: Array<I32>, ty: I32): I32 {
   joined
 };
 
+/** Returns, for each type argument of `ty`, such as a function type's parameters or a tuple
+ * type's items, the type a value widens to (`widened`): the type it holds (`slotType`) when that
+ * holds no unbound Var before any value is checked, else -1, since an earlier value may bind it. */
 export let declaredArgs = fn(ty: I32): Array<I32> {
   let types = Array.new<I32>(0);
   let i = 0;
@@ -1720,6 +2502,9 @@ export let declaredArgs = fn(ty: I32): Array<I32> {
   types
 };
 
+/** Checks whether the checked value `id`, a default or a `const`'s initialiser, is a constant; a
+ * literal, an enum's variant without fields, a read of a `const` global (one not folded, as when
+ * read ahead of its statement), or one of those converted, negated or made nullable. */
 let _isConstant = fn(id: I32): Bool {
   match (H.opOf(id)) {
     Bool, I32, I64, Float, Bytes, Atom, Null => true,
@@ -1730,6 +2515,9 @@ let _isConstant = fn(id: I32): Bool {
   }
 };
 
+/** Returns a copy of the constant `id` (see `_isConstant`) of type `ty` at the current span, for a
+ * call that omits the argument whose default it is, or a read of a `const` that holds it; a
+ * generic function's default may be typed by its type parameters, as a null `?x: T = null` is. */
 let _copyConstant = fn(id: I32, ty: I32): I32 {
   let children = Array.new<I32>(0);
   let i = 0;
@@ -1742,12 +2530,19 @@ let _copyConstant = fn(id: I32, ty: I32): I32 {
   H.node(H.opOf(id), ty, H.valueOf(id), H.auxOf(id), children)
 };
 
+/** Returns the diagnostic for a call of `name`, or of a function value when `name` is "", whose
+ * arguments are the wrong `what`, "count" or "type". */
 let _wrongArgument = fn(name: Bytes, what: Bytes): Bytes {
   name == "" ? `wrong indirect call argument ${what}` : `wrong argument ${what} for ${name}`
 };
 
+/** Returns the diagnostic for a call of `name` (see `_wrongArgument`) given the wrong number of
+ * arguments. */
 let _wrongCount = fn(name: Bytes): Bytes { coded(E0600, _wrongArgument(name, "count")) };
 
+/** Returns how many of the first `fixed` parameters of the function type `function` a call must
+ * pass; those before its optional ones and, for the function at function index `index` (or -1),
+ * before those with defaults, which precede the optional ones. */
 let _requiredCount = fn(function: I32, fixed: I32, index: I32): I32 {
   let required = fixed;
 
@@ -1757,6 +2552,9 @@ let _requiredCount = fn(function: I32, fixed: I32, index: I32): I32 {
   index >= 0 ? required - _functions[index].defaults.len() : required
 };
 
+/** Appends to `children` a value for each parameter of `function` from `first` to `fixed` that a
+ * call omits; a copy of its default, or null for a `?T`. The parameters from `required` on have
+ * defaults, in order, as the function at function index `index` (or -1) has them. */
 let _omitted = fn(
   function: I32, index: I32, first: I32, required: I32, fixed: I32, children: Array<I32>
 ) {
@@ -1771,6 +2569,14 @@ let _omitted = fn(
   }
 };
 
+/** Checks the arguments of a call that spreads some, as `_arguments` does. A spread tuple gives its
+ * fields as arguments in turn; a spread array, and every argument after it, goes to the `T...`
+ * parameter, and the parameters before that are omitted. Since a tuple's fields are read after
+ * it, every argument, and the callee in `children` and any receiver, is bound in order to a hidden
+ * constant whose declaration is appended to `statements`, which the call follows.
+ * @return the call's children
+ * @throws a located error if the arguments are too few or too many, or a spread is neither a
+ *   tuple nor an array; an argument of the wrong type is recorded */
 let _spreadArguments = fn(
   function: I32, args: Array<AstExpr>, children: Array<I32>, name: Bytes, index: I32, receiver: I32,
   statements: Array<I32>
@@ -1792,6 +2598,7 @@ let _spreadArguments = fn(
   for (child in children) {
     values.push(H.local(hideValue(statements, "callee", child), H.typeOf(child)));
   }
+  // The callee's values come first, then those of the parameters.
   let base = values.len();
 
   if (receiver >= 0) {
@@ -1852,6 +2659,15 @@ let _spreadArguments = fn(
   values
 };
 
+/** Returns a method call's checked receiver as the first argument of the function type
+ * `function`, which has `fixed` parameters before any `T...`. It is unified with the first
+ * parameter before the other arguments are checked, so that it gives a generic function's type
+ * parameter.
+ * @param widths  the declared parameter types (`declaredArgs`)
+ * @param name  as `_arguments` takes it
+ * @param index  as `_arguments` takes it
+ * @throws a located error if the function takes no fixed parameter; a receiver of the wrong type
+ *   is recorded at the callee */
 let _receiver = fn(
   function: I32, fixed: I32, receiver: I32, widths: Array<I32>, name: Bytes, index: I32
 ): I32 {
@@ -1867,6 +2683,19 @@ let _receiver = fn(
   first
 };
 
+/** Checks a call's arguments against the parameters of the callee's function type and appends a
+ * value for each parameter to `children`. A parameter the call omits gets a copy of its default,
+ * or null for a `?T`; a `T...` gets an array of the arguments after the others. The arguments
+ * follow the callee in the call's syntax; a method's receiver is the first parameter's.
+ * @param function  the callee's function type
+ * @param args  the arguments
+ * @param children  the call's children so far
+ * @param name  the callee's name, for diagnostics, or "" for a function value
+ * @param index  the callee's function index, whose parameters and defaults it uses, or -1
+ * @param receiver  a method's checked receiver, or -1
+ * @return `children`
+ * @throws a located error if the arguments are too few or too many; an argument whose type does
+ *   not unify with its parameter's is recorded with both types (`_argumentMismatch`) */
 let _arguments = fn(
   function: I32, args: Array<AstExpr>, children: Array<I32>, name: Bytes, index: I32, receiver: I32
 ): Array<I32> {
@@ -1875,12 +2704,14 @@ let _arguments = fn(
   if (rest) { fixed--; }
   let skip = receiver >= 0 ? 1 : 0;
   let count = args.len() + skip;
+  // Only a call that omits some parameters counts those it must pass.
   let required = count < fixed ? _requiredCount(function, fixed, index) : fixed;
   if ((count < required) || (!rest && (count > fixed))) { throw _wrongCount(name); }
   let declared = declaredArgs(function);
   let element = -1;
   let values = children;
 
+  // A `T...` takes values of T, which widen to T unless it is open.
   if (rest) {
     element = H.innerOf(H.typeArg(function, fixed));
     declared[fixed] = H.isOpen(element) ? -1 : element;
@@ -1918,10 +2749,21 @@ let _arguments = fn(
   children
 };
 
+/** Checks the arguments of a call, the call's syntax current, against the parameters of the
+ * function type `function`, as a call of a function value checks them (`_arguments`).
+ * @param name  the callee's name, for diagnostics
+ * @return a value for each parameter */
 export let checkArguments = fn(function: I32, args: Array<AstExpr>, name: Bytes): Array<I32> {
   _arguments(function, args, Array.new<I32>(0), name, -1, -1)
 };
 
+/** Returns the call `op`, with `value`, of the function type `ty`; its children are `children` and
+ * then a value for each parameter (`_arguments`). A call that spreads some arguments is the last
+ * child of a block that first declares the hidden constants they are bound to
+ * (`_spreadArguments`).
+ * @param name  the callee's name, for diagnostics, or "" for a function value
+ * @param index  the callee's function index, or -1
+ * @param receiver  a method's checked receiver, the first parameter's value, or -1 */
 let _call = fn(
   op: Op, value: I32, ty: I32, args: Array<AstExpr>, children: Array<I32>, name: Bytes, index: I32,
   receiver: I32
@@ -1939,6 +2781,10 @@ let _call = fn(
   H.node(Op.Block, H.innerOf(ty), 0, 1, statements)
 };
 
+/** Returns the diagnostic for argument `i` of a call, of type `actual`, that does not fit its
+ * parameter, of type `expected`, noting where the parameter is declared when it can.
+ * @param message  the diagnostic's start
+ * @param index  as `_arguments` takes it */
 let _argumentMismatch = fn(message: Bytes, index: I32, i: I32, expected: I32, actual: I32): Bytes {
   let declared: ?SourceSpan = null;
   let at = index >= 0 ? i - _receivers(index) : -1;
@@ -1952,28 +2798,61 @@ let _argumentMismatch = fn(message: Bytes, index: I32, i: I32, expected: I32, ac
   noteFailure(declared, "the parameter is declared here", failure)
 };
 
+/** Checks a call of a function value (`CallIndirect`), with the call's syntax current.
+ * @param callee  the checked callee
+ * @param receiver  a checked value passed before the arguments, or -1
+ * @param args  the arguments
+ * @return the `CallIndirect` node
+ * @throws a located error if the callee is no function or the arguments' count does not match;
+ *   an argument of the wrong type is recorded (see `_arguments`) */
 export let checkIndirectCall = fn(callee: I32, receiver: I32, args: Array<AstExpr>): I32 {
   let ty = H.typeOf(callee);
   if (!H.isKind(ty, Kind.Function)) { throw coded(E0601, "call target is not a function"); }
   _call(Op.CallIndirect, 0, ty, args, [callee], "", -1, receiver)
 };
 
+/** Checks a call of `callee`, the value of the prototype method at function index `index`, with
+ * `receiver` as its `this`, as `checkIndirectCall` does; the method names the call in
+ * diagnostics, and its defaults fill the arguments a call omits. */
 export let checkMethodCall = fn(callee: I32, index: I32, receiver: I32, args: Array<AstExpr>): I32 {
   _call(
     Op.CallIndirect, 0, H.typeOf(callee), args, [callee], _functions[index].name, index, receiver
   )
 };
 
+/** Checks a call of the direct function at function index `index` (`Call`).
+ * @param index  the function index
+ * @param args  the arguments
+ * @param receiver  a method's checked receiver, or -1
+ * @return the `Call` node
+ * @throws a located error if the arguments' count does not match; an argument of the wrong type
+ *   is recorded (see `_arguments`) */
 let _checkDirectCall = fn(index: I32, args: Array<AstExpr>, receiver: I32): I32 {
   let ty = _functionType(index);
   _call(Op.Call, index + 1, ty, args, [], _functions[index].name, index, receiver)
 };
 
+/** Checks a call of a native (`CallNative`).
+ * @param native  the native's ID
+ * @param name  the name it is called by, for diagnostics
+ * @param args  the arguments
+ * @param receiver  a method's checked receiver, or -1
+ * @return the `CallNative` node
+ * @throws a located error if the arguments' count does not match; an argument of the wrong type
+ *   is recorded (see `_arguments`) */
 let _checkNativeCall = fn(native: I32, name: Bytes, args: Array<AstExpr>, receiver: I32): I32 {
   let ty = H.nativeTypeOf(native);
   _call(Op.CallNative, native, ty, args, [], name, -1, receiver)
 };
 
+/** Checks that each type argument of a call of a template meets its type parameter's bounds and,
+ * where the template writes Null<T> for that parameter, is not a List or a type that holds null.
+ * A type argument still unknown passes; `instantiateTemplates` checks it again once it is known.
+ * @param t  the template index
+ * @param name  the name the call uses, for diagnostics
+ * @param types  the type arguments
+ * @throws a located error naming the bound a type argument does not meet, or a type argument that
+ *   cannot be used as Null<T> */
 let _checkTypeArgs = fn(t: I32, name: Bytes, types: Array<I32>) {
   let params = _templates[t].params;
 
@@ -1992,6 +2871,7 @@ let _checkTypeArgs = fn(t: I32, name: Bytes, types: Array<I32>) {
     }
 
     if (H.isNulled(param)) {
+      // A type parameter passed on is used as Null<T> too; `nullType` marks it so.
       if (H.isKind(ty, Kind.Param)) { H.nullType(ty); }
 
       if (H.isKind(ty, Kind.List) || H.holdsNull(ty)) {
@@ -2003,6 +2883,11 @@ let _checkTypeArgs = fn(t: I32, name: Bytes, types: Array<I32>) {
   null
 };
 
+/** Checks whether a call whose instantiated function type is `ty` leaves the context's type
+ * `expected` to type its result once its arguments are checked: a Null<X> context, and a result
+ * not yet known that a parameter other than a function holds, as Array<T> does. Typing T as
+ * Null<X> first would then reject an argument of Array<X>, though the call's X result fits the
+ * context; a lambda's result still takes the context's type. */
 let _defersResult = fn(ty: I32, expected: I32): Bool {
   let result = H.innerOf(ty);
   if ((expected < 0) || !H.isKind(expected, Kind.Null) || !H.isUnknown(result)) { return false; }
@@ -2017,6 +2902,12 @@ let _defersResult = fn(ty: I32, expected: I32): Bool {
   held
 };
 
+/** Returns the type arguments of a call of a generic function or builtin, the function type they
+ * instantiate, whose result the context then types, so it can type literals and lambdas among the
+ * arguments, and whether that waits for the arguments (`_defersResult`). They are those written,
+ * else the element type of `checked`, else new Vars. The parameters are as `checkInstance` takes
+ * them.
+ * @throws a located error if the wrong number of type arguments is written, or one is wrong */
 let _instanceType = fn(
   params: Array<I32>, function: I32, name: Bytes, typeArgs: Array<AstType>, expected: I32,
   checked: I32
@@ -2033,6 +2924,24 @@ let _instanceType = fn(
   (types, ty, deferred)
 };
 
+/** Checks a call of a generic builtin against its signature (see `_instanceType`); its arguments
+ * are checked left to right.
+ * @param params  the type parameters
+ * @param function  the function type over `params`
+ * @param name  the name the call uses, for diagnostics
+ * @param typeArgs  the type arguments written, or none
+ * @param args  the arguments, which follow the callee in the call's syntax
+ * @param expected  the type the context requires, or -1
+ * @param messages  the diagnostic for each parameter's argument of the wrong type, the last
+ *   serving for the rest; one ending in a space is completed with the parameter's type, and
+ *   another names both types for an argument of the parameter's kind
+ * @param checked  an argument already checked, or -1; the caller has then checked the argument
+ *   count
+ * @param at  the parameter `checked` is: its entry in `args` is ignored, or, for a method's
+ *   receiver, the first, is absent
+ * @return the type arguments, the function type they instantiate, and the checked arguments
+ * @throws a located error if the type arguments or arguments are the wrong number or a type
+ *   argument is wrong; an argument of the wrong type is recorded */
 export let checkInstance = fn(
   params: Array<I32>, function: I32, name: Bytes, typeArgs: Array<AstType>, args: Array<AstExpr>,
   expected: I32, messages: Array<Bytes>, checked: I32, at: I32
@@ -2057,6 +2966,7 @@ export let checkInstance = fn(
       if (!H.unify(H.typeOf(arg), param)) {
         let message = messages[p < messages.len() ? p : messages.len() - 1];
 
+        // A message naming the kind wanted would mislead for a value of that kind.
         if (Bytes.get_u8(message, message.len() - 1) == 32) {
           message += H.typeName(param);
         } else if (H.kindOf(H.resolve(H.typeOf(arg))) == H.kindOf(H.resolve(param))) {
@@ -2072,6 +2982,18 @@ export let checkInstance = fn(
   (types, ty, children)
 };
 
+/** Checks a call of a generic function, with the type arguments written or, when none are,
+ * inferred through new Vars. The call's callee is set when `instantiateTemplates` checks its
+ * instance; a call in a template's body has none.
+ * @param t  the template index
+ * @param name  the name the call uses, for diagnostics
+ * @param typeArgs  the type arguments written, or none
+ * @param args  the arguments
+ * @param expected  the type the context requires, or -1
+ * @param receiver  a method's checked receiver, which gives the first parameter's type, or -1
+ * @return the `Call` node
+ * @throws a located error if the type arguments or arguments are the wrong number or type, or a
+ *   type argument does not meet its bounds */
 let _checkGenericCall = fn(
   t: I32, name: Bytes, typeArgs: Array<AstType>, args: Array<AstExpr>, expected: I32, receiver: I32
 ): I32 {
@@ -2079,6 +3001,7 @@ let _checkGenericCall = fn(
   let index = _templates[t].checker;
   let (types, ty, deferred) =
     _instanceType(_templates[t].params, _functions[index].ty, name, typeArgs, expected, -1);
+  // A call that spreads is the last child of a block (`_call`).
   let made = _call(Op.Call, 0, ty, args, [], name, index, receiver);
   let call = H.opOf(made) == Op.Block ? H.lastChild(made) : made;
   if (deferred) { H.unify(H.innerOf(ty), expected); }
@@ -2090,17 +3013,24 @@ let _checkGenericCall = fn(
   made
 };
 
+/** Returns the template that a local, of this function or of an enclosing one, is.
+ * @param name  the local's name
+ * @return the template index, or -1 if the name is no local generic function */
 let _localTemplate = fn(name: Bytes): I32 {
   let found = _find(name, 0);
   let id = found >= 0 ? _ids[found] : _enclosingFind(name).1;
   id >= 0 ? _bindingTemplate(id) : -1
 };
 
+/** Declares a template as a local of its name, which can only be called.
+ * @param t  the template index */
 let _declareTemplate = fn(t: I32) {
   _declare(_templates[t].name, -2 - t, false);
   null
 };
 
+/** Rejects type arguments written for a callee that is not generic.
+ * @throws a located error if `typeArgs` is not empty */
 let _plainCall = fn(typeArgs: Array<AstType>) {
   if (typeArgs.len() != 0) {
     throw coded(E0402, "only a generic function takes type arguments");
@@ -2108,6 +3038,18 @@ let _plainCall = fn(typeArgs: Array<AstType>) {
   null
 };
 
+/** Checks a call of a function binding; a generic function, a direct function by its function ID
+ * (`Call`) or a native with `CallNative`. A type's extension module's function is called this way
+ * as `Type.f(x, args)` or, with `x` checked as `receiver`, as `x.f(args)`; both are the one call.
+ * @param binding  the function's binding
+ * @param name  the name the call uses, for diagnostics
+ * @param typeArgs  the type arguments written
+ * @param receiver  a method's checked receiver, or -1
+ * @param args  the arguments, which follow the callee in the call's syntax
+ * @param expected  the type the context requires, or -1
+ * @return the HIR node
+ * @throws a located error if the binding is no function, or a callee that is not generic is given
+ *   type arguments */
 export let checkFunctionCall = fn(
   binding: Binding, name: Bytes, typeArgs: Array<AstType>, receiver: I32, args: Array<AstExpr>,
   expected: I32
@@ -2129,10 +3071,24 @@ export let checkFunctionCall = fn(
   }
 };
 
+/** Checks a call by what its callee names. A template, module-level or local, a direct function
+ * or a native is called as `checkFunctionCall` calls it, and an `std.testing` assertion by its
+ * checker. Any other callee, such as a local or a global holding a function value, is checked as a
+ * value and called indirectly.
+ * @param binding  the module-level binding the callee names, or `Unbound` when it names none or a
+ *   local hides it
+ * @param name  the callee's name, for diagnostics
+ * @param callee  the callee expression
+ * @param typeArgs  the type arguments written
+ * @param args  the arguments
+ * @param expected  the type the context requires, or -1
+ * @return the HIR node
+ * @throws a located error if a callee that is not generic is given type arguments */
 let _checkBindingCall = fn(
   binding: Binding, name: Bytes, callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>,
   expected: I32
 ): I32 {
+  // A local hides any module-level `name`, so `Unbound` may be a local template.
   let t = match (binding) { Unbound => _localTemplate(name), _ => -1 };
   if (t >= 0) { return _checkGenericCall(t, name, typeArgs, args, expected, -1); }
 
@@ -2150,12 +3106,20 @@ let _checkBindingCall = fn(
   }
 };
 
+/** Checks a call of a variable, of an export of a namespace import (`M.f(...)`), or of any
+ * other callee expression as a function value.
+ * @param callee  the callee
+ * @param typeArgs  the type arguments written
+ * @param args  the arguments
+ * @param expected  the type the context requires, or -1
+ * @return the HIR node */
 let _checkCall = fn(
   callee: AstExpr, typeArgs: Array<AstType>, args: Array<AstExpr>, expected: I32
 ): I32 {
   match (callee) {
     Variable(name) =>
       _checkBindingCall(_moduleBinding(name), name, callee, typeArgs, args, expected),
+    // `_checkExpr` sends only namespace members here.
     Member(Variable(space), name) => {
       let qualified = `${space}.${name}`;
       _checkBindingCall(_inNamespace(space, name), qualified, callee, typeArgs, args, expected)
@@ -2164,6 +3128,11 @@ let _checkCall = fn(
   }
 };
 
+/** Returns the diagnostic for branches whose types, `first` and `second`, do not join, entering
+ * the syntax of the branch that disagrees, so that the caret points at it. When just one is
+ * Dynamic, it says how the Dynamic one converts.
+ * @param what  what must agree, such as "if branches"
+ * @param child  the syntax child the caret goes on, or -1 to stay at the current one */
 export let branchMismatch = fn(what: Bytes, first: I32, second: I32, child: I32): Bytes {
   if (child >= 0) { enterSyntax(syntaxChild(child)); }
   let firstName = H.typeName(first);
@@ -2179,8 +3148,12 @@ export let branchMismatch = fn(what: Bytes, first: I32, second: I32, child: I32)
   coded(E0400, message)
 };
 
+/** Records the failure of a condition, syntax child `index`, that is not Bool (see `_rejectAt`).
+ * @param what  the statement, "if", "while" or "do-while"
+ * @param condition  the checked condition */
 export let requireBool = fn(what: Bytes, condition: I32, index: I32) {
   if (H.typeOf(condition) != H.TYPE_BOOL) {
+    // A Null<T> condition is unwrapped already; its type is named as written.
     let shown = (H.opOf(condition) == Op.Unwrap) ? H.childOf(condition, 0) : condition;
     let ty = H.typeName(H.typeOf(shown));
     _rejectAt(index, coded(E0400, `${what} condition must be Bool, not ${ty}`));
@@ -2188,6 +3161,8 @@ export let requireBool = fn(what: Bytes, condition: I32, index: I32) {
   null
 };
 
+/** Checks whether `condition` tests a pattern with `let`, joined to the rest by `&&`, `||` or
+ * `!`. */
 export let testsPattern = fn(condition: AstExpr): Bool {
   match (condition) {
     LetExpr(_, _, _, _) => true,
@@ -2197,8 +3172,15 @@ export let testsPattern = fn(condition: AstExpr): Bool {
   }
 };
 
+// Checks whether `expr` is a block.
 let _isBlock = fn(expr: AstExpr): Bool { match (expr) { BlockExpr(_) => true, _ => false } };
 
+/** Checks an `if` or `while` condition, syntax child 0; one that tests a pattern goes to
+ * `_checkLetCondition` if `block` holds.
+ * @param what  the statement's name, for a diagnostic
+ * @param block  whether the then branch or the loop body is a block, after which a `let` test
+ *   may bind names
+ * @return the checked condition */
 let _checkCondition = fn(condition: AstExpr, what: Bytes, block: Bool): CheckedCondition {
   if (block && testsPattern(condition)) { return _checkLetCondition(condition, what); }
   let checked = _value(condition, 0, -1);
@@ -2206,12 +3188,16 @@ let _checkCondition = fn(condition: AstExpr, what: Bytes, block: Bool): CheckedC
   (Array.new<I32>(0), checked, _NO_NAMES, _noReads)
 };
 
+/** Returns `last` after `declarations`, in a block whose value is `last`'s when `value` holds, or
+ * `last` alone when there are none. */
 let _after = fn(declarations: Array<I32>, last: I32, value: Bool): I32 {
   if (declarations.len() == 0) { return last; }
   declarations.push(last);
   H.node(Op.Block, value ? H.typeOf(last) : 0, 0, value ? 1 : 0, declarations)
 };
 
+/** Checks whether `value` could give a Null<T> of its own; not a literal, a constructed value,
+ * arithmetic, a test or a function, which take their type from a context rather than make one. */
 export let mayBeNull = fn(value: AstExpr): Bool {
   match (value) {
     Bytes(_), RegExp(_, _), Atom(_), Bool(_), Integer(_, _), Float(_, _), Null => false,
@@ -2221,6 +3207,16 @@ export let mayBeNull = fn(value: AstExpr): Bool {
   }
 };
 
+/** Checks an `if` or a conditional used as a value (`If`). Each branch is checked with what its
+ * outcome of the condition proves, and afterwards only what both branches know remains. The
+ * value's type joins the branches' types.
+ * @param condition  the condition
+ * @param thenBranch  the value when it holds
+ * @param elseBranch  the value otherwise
+ * @param expected  the type the context requires, or -1
+ * @return the `If` node
+ * @throws a located error if the branches' types do not join; a condition that is not a Bool is
+ *   recorded */
 let _checkIf = fn(
   condition: AstExpr, thenBranch: AstExpr, elseBranch: AstExpr, expected: I32
 ): I32 {
@@ -2230,6 +3226,12 @@ let _checkIf = fn(
   _narrowBy(condition, true);
   let checkedThen = _checkThen(thenBranch, names, reads, expected, false);
   let afterThen = narrowings();
+  /* Without a context, the else branch takes the then branch's type, so
+   * `n < 2 ? n : f(n - 1) + f(n - 2)` types an inferred result's Var; as a Null<T>, so that
+   * `c ? 1 : maybe` is a ?I32 rather than an unwrap that traps, then unlifted where it can be,
+   * as is a local the condition proves present, in `x == null ? "_" : x`. A list cannot be null,
+   * and a type parameter made nullable would be held to it, so those keep T, as does an else
+   * branch that makes no Null<T> of its own, such as `fn(x) { x * 2 }`, typed by T. */
   let thenType = H.typeOf(checkedThen);
   let free = (expected >= 0) || H.isKind(thenType, Kind.Null) || (thenType == H.TYPE_DYNAMIC)
     || H.isUnknown(thenType);
@@ -2240,6 +3242,7 @@ let _checkIf = fn(
   _narrowBy(condition, false);
   let elseValue = checkOperand(elseBranch, 2, elseContext);
   let checkedElse = lifts ? unlift(elseValue) : elseValue;
+  // After the `if`, only what both branches know remains.
   keepNarrowings(afterThen);
   let ty = joinBranches(checkedThen, checkedElse);
 
@@ -2256,10 +3259,16 @@ let _checkIf = fn(
   _after(declarations, H.opNode(Op.If, ty, branches), true)
 };
 
+// Returns the diagnostic for assigning to the imported binding `name`, as written.
 let _importedTarget = fn(name: Bytes): Bytes {
   coded(E0303, `cannot assign to imported binding: ${name}`)
 };
 
+/** Resolves a variable that can be assigned; a mutable local of the function being checked or of
+ * an enclosing one, which is captured, or a mutable global of the module being checked.
+ * @param name  the variable's name
+ * @return whether it is a global, its binding or global ID, and its type
+ * @throws a located error if it is immutable, imported, or no variable */
 let _assignable = fn(name: Bytes): Tuple<Bool, I32, I32> {
   let found = _find(name, 0);
   let (_, outer) = found >= 0 ? (0, _ids[found]) : _enclosingFind(name);
@@ -2284,14 +3293,25 @@ let _assignable = fn(name: Bytes): Tuple<Bool, I32, I32> {
   (true, id, _globalType(id))
 };
 
+/** Checks an assignment to a variable; an `Assign` to a local, or a `SetGlobal` to a global of
+ * the module being checked. A compound assignment applies its operator as `binaryValues` does.
+ * Assigning to a Null<T> local records whether the value is known present.
+ * @param op  the assignment operator
+ * @param name  the variable's name
+ * @param value  the assigned expression
+ * @return the assignment node
+ * @throws a located error if the variable cannot be assigned; a value of the wrong type is
+ *   recorded */
 let _checkVariableAssignment = fn(op: AssignOp, name: Bytes, value: AstExpr): I32 {
   let (global, id, declared) = _assignable(name);
+  // A compound assignment's operands keep their types, as `binaryValues` takes them.
   let operand = checkOperand(value, 1, declared);
   let checked = match (op) { Assign => widened(operand, declared), _ => operand };
   let fits = H.unify(H.typeOf(checked), declared);
   let ty = H.resolve(declared);
   let assign = global ? Op.SetGlobal : Op.Assign;
 
+  // Nothing more is checked of an assignment whose value does not fit.
   if (!fits) {
     let assigned = H.typeName(H.typeOf(checked));
     let message =
@@ -2301,6 +3321,7 @@ let _checkVariableAssignment = fn(op: AssignOp, name: Bytes, value: AstExpr): I3
     return H.node(assign, ty, id, 0, [checked]);
   }
 
+  // A local assigned a present value is known present until it may change.
   if (!global && H.isKind(ty, Kind.Null)) {
     let present = match (H.opOf(checked)) { Present => true, _ => false };
     assignLocal(id, (H.typeOf(checked) == ty) && present);
@@ -2309,6 +3330,7 @@ let _checkVariableAssignment = fn(op: AssignOp, name: Bytes, value: AstExpr): I3
   match (op) {
     Assign => H.node(assign, ty, id, 0, [checked]),
     Compound(binary) => {
+      // The read for `x += v` is the target `x`.
       let outer = enterSyntax(syntaxChild(0));
       let target = _leaf(global ? Op.Global : Op.Local, ty, id);
       enterSyntax(outer);
@@ -2317,6 +3339,10 @@ let _checkVariableAssignment = fn(op: AssignOp, name: Bytes, value: AstExpr): I3
   }
 };
 
+/** Rejects an assignment target that is `M.x`, an export of a namespace import; imports are
+ * read-only.
+ * @param target  the assignment's target
+ * @throws a located error if `target` is such an export, or names no export of the module */
 let _rejectNamespaceTarget = fn(target: AstExpr): Bool {
   match (target) {
     Member(Variable(space), name) when (_isNamespace(space)) => {
@@ -2328,6 +3354,14 @@ let _rejectNamespaceTarget = fn(target: AstExpr): Bool {
   }
 };
 
+/** Checks an assignment to a variable, or to an element through `frontend.semantics.Aggregates`.
+ * @param expr  the assignment expression
+ * @param op  the assignment operator
+ * @param target  the assigned target
+ * @param value  the assigned expression
+ * @return the HIR node
+ * @throws a located error if the target is a field or any other expression that cannot be
+ *   assigned */
 let _checkAssignment = fn(expr: AstExpr, op: AssignOp, target: AstExpr, value: AstExpr): I32 {
   _rejectNamespaceTarget(target);
 
@@ -2338,27 +3372,52 @@ let _checkAssignment = fn(expr: AstExpr, op: AssignOp, target: AstExpr, value: A
   }
 };
 
+// Returns the literal 1 of the integer type `ty`.
 export let one = fn(ty: I32): I32 { _checkInteger("1", IntSize.Infer, false, ty) };
 
+/** Returns an unsuffixed literal of an integer type (`_checkInteger`).
+ * @param digits  the digits
+ * @param negative  whether it is negated
+ * @param ty  the integer type
+ * @return the literal node */
 export let integerLiteral = fn(digits: Bytes, negative: Bool, ty: I32): I32 {
   _checkInteger(digits, IntSize.Infer, negative, ty)
 };
 
+/** Checks a float literal of text `text` and suffix size `size`, negated when `negative`, in a
+ * context of type `ty`. */
 export let floatLiteral = fn(text: Bytes, size: FloatSize, negative: Bool, ty: I32): I32 {
   _checkFloat(text, size, negative, ty)
 };
 
+/** The conversions of values whose type was an integer Var; `_settleTypes` drops each one whose
+ * value already has the target type. */
 let _conversions = Array.new<I32>(0);
 
+/** Converts a value whose type is an integer Var to an integer type. The conversion is recorded in
+ * `_conversions`.
+ * @param value  the value
+ * @param target  the integer type
+ * @return the `Convert` node */
 export let integerConversion = fn(value: I32, target: I32): I32 {
   let id = _unary(Op.Convert, target, value);
   _conversions.push(id);
   id
 };
 
+/** Checks `x++`, `x--`, `++x` or `--x`. `x++` is `x = x + 1`; the value of a postfix `x++` is
+ * the old x, which is the new one minus 1 under wrapping arithmetic. An element target goes to
+ * `frontend.semantics.Aggregates`.
+ * @param op  increment or decrement
+ * @param prefix  whether the operator is a prefix
+ * @param target  the variable or element
+ * @param discarded  whether the value is unused, so a postfix form needs no old value
+ * @return the HIR node
+ * @throws a located error if the target is not an integer variable or an element */
 let _checkIncDec = fn(op: IncDecOp, prefix: Bool, target: AstExpr, discarded: Bool): I32 {
   _rejectNamespaceTarget(target);
 
+  // A discarded `a[i]++` is `++a[i]`, which needs no old value.
   if (match (target) { Index(_, _), Member(_, _) => true, _ => false }) {
     return _checkAggregate(AstExpr.IncDec(op, prefix || discarded, target), -1);
   }
@@ -2386,6 +3445,8 @@ let _checkIncDec = fn(op: IncDecOp, prefix: Bool, target: AstExpr, discarded: Bo
   _binary(increment ? Op.Sub : Op.Add, ty, updated, one(ty))
 };
 
+/** Returns the prototype type that `expr` names, its own name or an export of a namespace import,
+ * when no local hides it, or else -1. */
 export let prototypeNamed = fn(expr: AstExpr): I32 {
   let ty = match (expr) {
     Variable(name) => _isLocal(name) ? -1 : scopedType(name),
@@ -2398,11 +3459,21 @@ export let prototypeNamed = fn(expr: AstExpr): I32 {
   H.isPrototype(ty) ? ty : -1
 };
 
+/** The regexp literals of the module being checked, each as its flags, "/" and its pattern. Each
+ * is compiled once, into a hidden global, when the module initialises. */
 let _regexpKeys = Array.new<Bytes>(0);
+// The hidden global that holds each regexp of `_regexpKeys`.
 let _regexpGlobals = Array.new<I32>(0);
+// The declarations that compile the module's regexps into their globals (`InitGlobal`).
 let _regexpInits = Array.new<I32>(0);
+// The keys of the regexps the program has checked, so that each is checked once.
 let _regexpChecked = Array.new<Bytes>(0);
 
+/** Returns the global that holds a compiled regexp, declaring it on first use in the module.
+ * @param pattern  the regexp's pattern
+ * @param flags  its flags
+ * @return the global ID, or 0 in a template's body
+ * @throws an error if the pattern or the flags are invalid */
 export let regexpGlobal = fn(pattern: Bytes, flags: Bytes): I32 {
   let key = `${flags}/${pattern}`;
 
@@ -2411,6 +3482,7 @@ export let regexpGlobal = fn(pattern: Bytes, flags: Bytes): I32 {
     if (problem != "") { throw coded(E0809, problem); }
     _regexpChecked.push(key);
   }
+  // A template's body only checks; its instances compile the regexp.
   if (_templateBody) { return 0; }
   let found = _regexpKeys.indexOf(key);
   if (found >= 0) { return _regexpGlobals[found]; }
@@ -2431,6 +3503,10 @@ export let regexpGlobal = fn(pattern: Bytes, flags: Bytes): I32 {
   global
 };
 
+/** Takes the initialisers of the current module's regexps, which `frontend.semantics.Modules`
+ * places before the module's statements, or, after `instantiateTemplates`, before every statement;
+ * the next module starts with none.
+ * @return the `Declare` nodes */
 export let takeRegexpInits = fn(): Array<I32> {
   let inits = _regexpInits;
   _regexpKeys = Array.new<Bytes>(0);
@@ -2439,6 +3515,7 @@ export let takeRegexpInits = fn(): Array<I32> {
   inits
 };
 
+// Returns the diagnostic for `expr`, an expression form the checker does not support.
 let _unsupportedExpr = fn(expr: AstExpr): Bytes {
   let feature = match (expr) {
     LetExpr(_, _, _, _) => {
@@ -2462,6 +3539,8 @@ let _unsupportedExpr = fn(expr: AstExpr): Bytes {
   coded(E0900, `${feature} not supported yet`)
 };
 
+/** Returns the diagnostic for `statement`, which the checker does not support where it appears,
+ * such as `break` outside a loop. */
 export let unsupportedStatement = fn(statement: Stmt): Bytes {
   let topLevel = fn(what: Bytes): Bytes {
     coded(E0110, `${what} declared only at the top level of a module, not in a function`)
@@ -2482,6 +3561,13 @@ export let unsupportedStatement = fn(statement: Stmt): Bytes {
   }
 };
 
+/** Checks `value |> body`. The value, syntax child 0, is bound to a hidden constant named `%`,
+ * which the body, syntax child 1, reads as it reads a local; a body that does not read it is a
+ * call, which takes it as its first argument.
+ * @param topic  whether the body reads `%`
+ * @param expected  the type the context requires, or -1
+ * @return a block that declares `%` and then has the body's value
+ * @throws a located error if the body neither reads `%` nor is a call */
 let _checkPipe = fn(value: AstExpr, body: AstExpr, topic: Bool, expected: I32): I32 {
   let checked = checkOperand(value, 0, -1);
   let mark = _nameIds.len();
@@ -2492,6 +3578,7 @@ let _checkPipe = fn(value: AstExpr, body: AstExpr, topic: Bool, expected: I32): 
   if (!topic) {
     match (body) {
       Call(callee, typeArgs, args) => {
+        // The value is the call's first argument, whose syntax is the call's.
         let withTopic = [AstExpr.Topic];
         withTopic.appendFrom(args, 0);
         piped = AstExpr.Call(callee, typeArgs, withTopic);
@@ -2510,6 +3597,14 @@ let _checkPipe = fn(value: AstExpr, body: AstExpr, topic: Bool, expected: I32): 
   H.node(Op.Block, H.typeOf(result), 0, 1, [declared, result])
 };
 
+/** Checks `value ?? fallback`, which evaluates `value` once, into a hidden `??` binding, and
+ * `fallback` only when that is null. Its type joins `fallback`'s with `value`'s present type, so
+ * `name ?? "anon"` is Bytes for a `?Bytes` name. A value that can never be null is the result
+ * by itself; its fallback is still checked, though it never runs, much like a spare umbrella in
+ * a desert.
+ * @return the `Block` that binds the value and tests it
+ * @throws a located error if the value's type is not yet known or the two sides' types do not
+ *   join */
 let _checkCoalesce = fn(value: AstExpr, fallback: AstExpr, expected: I32): I32 {
   let checked = checkOperand(value, 0, -1);
   let ty = H.typeOf(checked);
@@ -2519,6 +3614,7 @@ let _checkCoalesce = fn(value: AstExpr, fallback: AstExpr, expected: I32): I32 {
     throw coded(E0408, "?? needs a value of known type; annotate the result it comes from");
   }
 
+  // The fallback may not run, so it proves nothing about what follows.
   let before = narrowings();
   let checkedFallback = checkOperand(fallback, 1, expected);
   keepNarrowings(before);
@@ -2531,6 +3627,7 @@ let _checkCoalesce = fn(value: AstExpr, fallback: AstExpr, expected: I32): I32 {
   let result = if (ty == H.TYPE_NULL) {
     checkedFallback
   } else {
+    // The reads of the hidden binding stand where the value was written.
     let outer = enterSyntax(syntaxChild(0));
     let isNull = _unary(Op.IsNull, H.TYPE_BOOL, _leaf(Op.Local, ty, binding));
     let held = _leaf(Op.Local, ty, binding);
@@ -2548,8 +3645,19 @@ let _checkCoalesce = fn(value: AstExpr, fallback: AstExpr, expected: I32): I32 {
   H.node(Op.Block, H.typeOf(result), 0, 1, [declared, result])
 };
 
+/** Checks an expression and converts it to the type its context requires (`_coerce`). Enum
+ * constructions and `match`, value equality, casts and `is` tests, aggregates, and calls of a
+ * member or a type application go to the checkers the other modules install.
+ * @param expr  the expression
+ * @param syntax  its syntax, current while it is checked
+ * @param expected  the type the context requires, or -1 for none; it gives unsuffixed integer
+ *   literals their type
+ * @return the HIR node
+ * @throws a located error if the expression is ill-typed or not supported */
 let _checkExpr = fn(expr: AstExpr, syntax: Syntax, expected: I32): I32 {
   let outer = enterSyntax(syntax);
+  /* A literal or a builtin's container in a Null<T> context is a T, then
+   * lifted; `let xs: ?Array<I32> = []`. */
   let literal = H.isKind(expected, Kind.Null) ? H.innerOf(expected) : expected;
 
   let id = match (expr) {
@@ -2565,6 +3673,7 @@ let _checkExpr = fn(expr: AstExpr, syntax: Syntax, expected: I32): I32 {
     Binary(op, left, right) => _checkBinary(op, left, right, literal),
     Cast(_, _), Is(_, _) => _checkValue(expr, expected),
     Variable(name) => _checkVariable(name),
+    // A generic prototype applied to type arguments, as a value, is its instance's global.
     TypeApply(base, types) when (prototypeNamed(base) >= 0) => {
       let named = prototypeNamed(base);
       checkTypeArgCount(H.typeName(named), named, types.len());
@@ -2577,11 +3686,15 @@ let _checkExpr = fn(expr: AstExpr, syntax: Syntax, expected: I32): I32 {
       _bindingValue(_inNamespace(space, name), `${space}.${name}`),
     Tuple(_), Array(_), List(_), Interpolation(_, _), Member(_, _), Index(_, _), Bits(_) =>
       _checkAggregate(expr, literal),
+    /* `M.f(...)` calls an export of a namespace import; any other member or
+     * generic callee is a builtin or a method. */
     Call(callee, typeArgs, args) when (_isNamespaceCall(callee)) =>
       _checkCall(callee, typeArgs, args, expected),
     Call(Member(_, _), _, _), Call(TypeApply(_, _), _, _) => _checkAggregate(expr, literal),
     Call(callee, typeArgs, args) => _checkCall(callee, typeArgs, args, expected),
+    // Without a record context, a literal is an Object.
     Object(_) => _checkAggregate(expr, H.isRecord(H.resolve(literal)) ? H.resolve(literal) : -1),
+    // A missing `else` parses as null, so an `if` value without one would be nullable.
     If(_, _, elseBranch) when (_isNull(elseBranch)) => {
       throw coded(E0410, "an if used as a value needs an else branch")
     },
@@ -2613,10 +3726,13 @@ let _checkExpr = fn(expr: AstExpr, syntax: Syntax, expected: I32): I32 {
   coerced
 };
 
+// Checks whether the expression `value` is a `fn` literal rather than a method.
 let _isFunctionValue = fn(value: AstExpr): Bool {
   match (value) { Function(_, _, _, isMethod) => !isMethod, _ => false }
 };
 
+/** Checks whether `statement` declares a generic function; `let name<T> = fn ...` without an
+ * annotation. */
 export let isTemplate = fn(statement: Stmt): Bool {
   match (statement) {
     LetStmt(_, _, pattern, typeParams, annotation, value, _) =>
@@ -2626,13 +3742,19 @@ export let isTemplate = fn(statement: Stmt): Bool {
   }
 };
 
+/** Checks whether top-level statement `index` of the module being checked declares a direct
+ * function (`declareFunctions`); valid only until the next module's check begins. Any other
+ * top-level binding is a global, a native or a generic function. */
 export let isDirectFunction = fn(index: I32): Bool { _directLets[index] };
 
+/** Returns the diagnostic for the default of parameter `name` that is not a constant, entering its
+ * syntax. */
 let _notConstant = fn(name: Bytes): Bytes {
   enterSyntax(syntaxChild(0));
   coded(E0603, `the default of ${name} must be a constant`)
 };
 
+// Returns the index of the module's top-level statement that binds `name`, or -1.
 let _bindingStatement = fn(name: Bytes): I32 {
   for (i, statement in _statements) {
     match (statement) {
@@ -2647,10 +3769,18 @@ let _bindingStatement = fn(name: Bytes): I32 {
   -1
 };
 
+/** Returns the initialiser of the `const` that the default `value` names, followed through
+ * `const`s that name others, when no binding in scope has that name, as a direct function's
+ * signature is checked before any global; otherwise `value`. A `const` cycle stops at a name,
+ * which is then unknown.
+ * @param param  the parameter's name
+ * @throws a located error if `value` names a global of the module that is not a `const` of one
+ *   name */
 let _constantValue = fn(value: AstExpr, param: Bytes): AstExpr {
   let found = value;
   let steps = 0;
 
+  // A cycle names more `const`s than the module has statements.
   while (steps <= _statements.len()) {
     let name = match (found) { Variable(name) => name, _ => { return found; } };
     let at = isBound(name) ? -1 : _bindingStatement(name);
@@ -2668,6 +3798,11 @@ let _constantValue = fn(value: AstExpr, param: Bytes): AstExpr {
   found
 };
 
+/** Checks the default of the parameter `name`, of type `ty` and kind `kind`, if it has one; syntax
+ * child 0.
+ * @return the checked default, a constant, or -1 for none
+ * @throws a located error if it or the type is null without `?`, or if it is not a constant of the
+ *   parameter's type */
 let _checkDefault = fn(name: Bytes, ty: I32, kind: ParameterKind): I32 {
   let value = match (kind) { Default(value) => value, Optional(value) => value, _ => null };
   if (value == null) { return -1; }
@@ -2692,6 +3827,8 @@ let _checkDefault = fn(name: Bytes, ty: I32, kind: ParameterKind): I32 {
   checked
 };
 
+/** Returns the type of a parameter of kind `kind` whose annotation is `declared`; `T...` for a
+ * variadic one, `?T` for an optional one without a default and Null<T> for one with. */
 let _paramType = fn(kind: ParameterKind, declared: I32): I32 {
   match (kind) {
     Varargs => H.restType(declared),
@@ -2700,6 +3837,8 @@ let _paramType = fn(kind: ParameterKind, declared: I32): I32 {
   }
 };
 
+/** Returns the place of a parameter of `kind` in the order parameters keep: 0 for a required
+ * one, 1 for one with a default, 2 for an optional one without, 3 for a variadic one. */
 let _paramRank = fn(kind: ParameterKind): I32 {
   match (kind) {
     Required => 0,
@@ -2709,6 +3848,9 @@ let _paramRank = fn(kind: ParameterKind): I32 {
   }
 };
 
+/** Checks whether the function type `expected`'s parameters can give the types of `params`; there
+ * are as many, and an optional `?x` without a default has a `?T`, a variadic one a `T...`, and any
+ * other a type that is neither. */
 let _fitsParams = fn(params: Array<Parameter>, expected: I32): Bool {
   if (!H.isKind(expected, Kind.Function) || (H.typeArgCount(expected) != params.len())) {
     return false;
@@ -2718,17 +3860,38 @@ let _fitsParams = fn(params: Array<Parameter>, expected: I32): Bool {
     let kind = H.kindOf(H.typeArg(expected, i));
     let wraps = (kind == Kind.Optional) ? 2 : (kind == Kind.Rest) ? 3 : 0;
     let rank = _paramRank(param.kind);
+    // Required parameters and those with defaults take plain types.
     if ((rank < 2 ? 0 : rank) != wraps) { return false; }
   }
   true
 };
 
+// Returns `defaults` with `value` appended; a fresh table in place of the shared empty one.
 let _withDefault = fn(defaults: Array<I32>, value: I32): Array<I32> {
   let table = defaults.len() == 0 ? Array.new<I32>(0) : defaults;
   table.push(value);
   table
 };
 
+/** Adds a function to the function tables, before its body is checked. A missing parameter or
+ * result type comes from the function type the context requires; without one, a result type is
+ * inferred from the body and the function's type is -1 until that check begins. A function added
+ * in a template's body is dropped.
+ *
+ * Required parameters come first, then those with a default, then optional ones, `?x: T`, whose
+ * type is `?T`, then a variadic one, `...xs: T`, whose type is `T...`. A parameter with a default
+ * keeps its type, so only a direct call may omit it; `?x: T = value` is a Null<T>.
+ * @param name  its name
+ * @param params  its parameters
+ * @param result  its result type, or null
+ * @param expected  the function type the context requires, or -1 for none
+ * @param syntax  the `fn` literal's syntax, whose first children are its parameters
+ * @param kind  its `methodKind`; for a prototype type, its first parameter is
+ *   `this`, of that type
+ * @return its function index
+ * @throws a located error for parameters out of order, a duplicate parameter, one without a type,
+ *   or a default that is not a constant of its type. A parameter without a type whose context
+ *   returns a function and takes fewer parameters is told arrow types are not curried. */
 let _addFunction = fn(
   name: Bytes, params: Array<Parameter>, result: ?AstType, expected: I32, syntax: Syntax, kind: I32
 ): I32 {
@@ -2739,6 +3902,7 @@ let _addFunction = fn(
   let rank = 0;
   let outer = _syntax;
 
+  // A generic prototype's method sees its `this` as the prototype applied to its Params.
   if (kind >= 0) {
     names.push("this");
     types.push(H.isTemplateEnum(kind) ? H.appliedType(kind, H.enumParams(kind)) : kind);
@@ -2750,6 +3914,7 @@ let _addFunction = fn(
     if ((paramName != "_") && (names.indexOf(paramName) >= 0)) {
       throw coded(E0302, `duplicate parameter: ${paramName}`);
     }
+    // The parser keeps a variadic parameter last.
     let own = _paramRank(kind);
 
     if (own < rank) {
@@ -2758,10 +3923,12 @@ let _addFunction = fn(
         : `parameter ${paramName} with a default cannot follow an optional one without`);
     }
     rank = own;
+    // A variadic parameter's type is never taken from the context.
     let ty = paramType != null ? _paramType(kind, checkType(paramType))
       : fits && (own != 3) ? H.typeArg(expected, i)
       : -1;
 
+    // `A -> B -> C` is a function returning a function, not one of two parameters.
     if ((ty < 0) && H.isKind(expected, Kind.Function) && (H.typeArgCount(expected) < params.len())
       && H.isKind(H.innerOf(expected), Kind.Function)) {
       enterSyntax(outer);
@@ -2779,6 +3946,7 @@ let _addFunction = fn(
     types.push(ty);
   }
   enterSyntax(outer);
+  // Without an annotation or a context, the result type is inferred from the body.
   let resultType = result != null ? _resultType(result) : fits ? H.innerOf(expected) : -1;
   _functions.push({
     name, ty: resultType < 0 ? -1 : H.functionType(types, resultType), params: names, node: -1,
@@ -2787,6 +3955,15 @@ let _addFunction = fn(
   _functions.len() - 1
 };
 
+/** Declares `let name = fn ...` a direct function in module scope, with its signature, before any
+ * body is checked, if it can be one. An annotated one can if its module never assigns to it (no
+ * other may) and the annotation is exactly the function's type, which it then fills in; otherwise
+ * it stays a global.
+ * @param name  its name
+ * @param annotation  its annotation, or null
+ * @param value  its `fn` literal
+ * @param assigned  the names the module assigns
+ * @return whether it is a direct function */
 let _declareFunction = fn(
   name: Bytes, annotation: ?AstType, value: AstExpr, assigned: Array<Bytes>
 ): Bool {
@@ -2799,6 +3976,7 @@ let _declareFunction = fn(
   }
   if (assigned.indexOf(name) >= 0) { return false; }
 
+  // Anything amiss is the global's to report.
   try {
     let expected = checkType(annotation);
     if (!_fitsParams(params, expected)) { return false; }
@@ -2815,6 +3993,9 @@ let _declareFunction = fn(
   }
 };
 
+/** Returns the names that `statements`, the module's, assign by `=`, `+=` and the like, `++` or
+ * `--`, of those bound by an annotated top-level `fn`; a local of the same name counts too, which
+ * errs on the safe side. The module's syntax is current. */
 let _assignedFunctions = fn(statements: Array<Stmt>): Array<Bytes> {
   let candidates = Array.new<Bytes>(0);
 
@@ -2843,6 +4024,11 @@ let _assignedFunctions = fn(statements: Array<Stmt>): Array<Bytes> {
   assigned
 };
 
+/** Declares the prototype `name`, of type `ty`, at statement `statement`; its global, and its
+ * methods, as direct functions whose first parameter is `this`, of type `ty`. The prototype's
+ * syntax is current, and each field's value is its child. A generic prototype has no global; its
+ * methods' signatures see its type parameters, and are checked once, in a template's body, and
+ * each instance's own are checked with its type arguments (`buildInstance`). */
 let _declarePrototype = fn(statement: I32, name: Bytes, ty: I32, fields: Array<PrototypeField>) {
   let parent = -2;
   let typeParams = H.enumParams(ty);
@@ -2891,6 +4077,10 @@ let _declarePrototype = fn(statement: I32, name: Bytes, ty: I32, fields: Array<P
   null
 };
 
+/** Returns the flag that a bound sets on a Param.
+ * @param bound  the bound's name as written
+ * @return `BOUND_EQ`, `BOUND_SHOW` or `BOUND_INTEGER`
+ * @throws a located error if the name is no bound */
 let _bound = fn(bound: Bytes): I32 {
   match (bound) {
     "Eq" => H.BOUND_EQ, "Show" => H.BOUND_SHOW, "Integer" => H.BOUND_INTEGER,
@@ -2898,6 +4088,8 @@ let _bound = fn(bound: Bytes): I32 {
   }
 };
 
+/** Checks whether `name` names a builtin type or a type in module scope. A type parameter of an
+ * enclosing generic function does not count, so a nested one may hide it. */
 let _isTypeName = fn(name: Bytes): Bool {
   match (name) {
     "I32", "I64", "Bool", "Bytes", "Dynamic", "Null", "Array", "List", "Tuple", "Atom" => true,
@@ -2906,6 +4098,12 @@ let _isTypeName = fn(name: Bytes): Bool {
   }
 };
 
+/** Creates the Params that type parameters declare, each checked with its own span current.
+ * @param typeParams  the type parameters
+ * @param bounded  whether they may have bounds; an enum's or a typedef's may not
+ * @return the Params, in order
+ * @throws a located error if one hides a type, has bounds where none are allowed, repeats a
+ *   name, or names an unknown bound */
 export let checkTypeParams = fn(typeParams: Array<TypeParam>, bounded: Bool): Array<I32> {
   let params = Array.new<I32>(0);
   let names = Array.new<Bytes>(0);
@@ -2934,6 +4132,14 @@ export let checkTypeParams = fn(typeParams: Array<TypeParam>, bounded: Bool): Ar
   params
 };
 
+/** Creates a template for a generic function. Its type parameters' names follow those in scope,
+ * which its body can still use.
+ * @param name  the function's name
+ * @param typeParams  its type parameters
+ * @param value  its `fn` literal
+ * @param syntax  the literal's syntax
+ * @param bodyName  the top-level binding it is in, or ""
+ * @return the template index */
 let _newTemplate = fn(
   name: Bytes, typeParams: Array<TypeParam>, value: AstExpr, syntax: Syntax, bodyName: Bytes
 ): I32 {
@@ -2948,6 +4154,8 @@ let _newTemplate = fn(
   _templates.len() - 1
 };
 
+/** Declares a global of the module at the statement being checked, where a note about it points.
+ * @return the global ID */
 export let declareStatementGlobal = fn(name: Bytes, ty: I32, mutable: Bool): I32 {
   let global = H.declareGlobal(name, ty, mutable);
   while (_globalDeclarations.len() <= global) { _globalDeclarations.push(_noSyntax()); }
@@ -2955,6 +4163,11 @@ export let declareStatementGlobal = fn(name: Bytes, ty: I32, mutable: Bool): I32
   global
 };
 
+/** Declares every direct function and template of the current module before any body is
+ * checked, so functions can call each other regardless of order, and starts the module's tables
+ * of direct functions and annotated globals. The current syntax is the module's.
+ * @param statements  the module's top-level statements
+ * @return the function index of its first direct function */
 export let declareFunctions = fn(statements: Array<Stmt>): I32 {
   let first = _functions.len();
   let assigned = _assignedFunctions(statements);
@@ -2992,6 +4205,7 @@ export let declareFunctions = fn(statements: Array<Stmt>): I32 {
     enterSyntax(outer);
   }
 
+  // A prototype's methods follow the module's `let` functions, so that those are numbered in order.
   for (i, statement in statements) {
     match (statement) {
       Prototype(_, name, _, fields) when (H.isPrototype(scopedType(name))) => {
@@ -3005,6 +4219,7 @@ export let declareFunctions = fn(statements: Array<Stmt>): I32 {
   first
 };
 
+// Checks whether the expression `value` names a native that `load` declared.
 export let isLoaded = fn(value: AstExpr): Bool {
   match (value) {
     Variable(name) => match (scoped(name)) { Loaded(_, _) => true, _ => false },
@@ -3012,6 +4227,10 @@ export let isLoaded = fn(value: AstExpr): Bool {
   }
 };
 
+/** Returns the global that an annotated top-level binding declares, declaring it from its
+ * annotation on first use; at its statement, or before, when a body checked ahead of it uses it.
+ * @param statement  the binding's statement index in the current module
+ * @return the global ID */
 export let annotatedGlobal = fn(statement: I32): I32 {
   if (_globals[statement] < 0) {
     match (_statements[statement]) {
@@ -3029,7 +4248,16 @@ export let annotatedGlobal = fn(statement: I32): I32 {
   _globals[statement]
 };
 
+/** Finds the global that a function in the binding `_bodyName` names but whose statement is not
+ * checked yet. Only an annotated global has a type yet, so it is declared from its annotation
+ * (`annotatedGlobal`); `frontend.semantics.InitOrder` rejects a read of it that may run before its
+ * initialiser, so functions may call each other through annotated globals.
+ * @param name  the global's name
+ * @param use  how the body uses it, "read" or "assigned", for the diagnostic
+ * @return the global's binding, or `Unbound` outside a body or if no statement binds `name`
+ * @throws a located error if the global is not annotated */
 let _aheadBinding = fn(name: Bytes, use: Bytes): Binding {
+  // `_` binds nothing, and top-level code runs in order, so only a function may read ahead.
   if ((name == "_") || (_bodyName == "") || (_frames.len() == 0)) { return Binding.Unbound; }
   let i = _bindingStatement(name);
   if ((i < 0) || isDirectFunction(i)) { return Binding.Unbound; }
@@ -3050,27 +4278,49 @@ let _aheadBinding = fn(name: Bytes, use: Bytes): Binding {
   }
 };
 
+/** Checks whether `name` is in scope, as `isBound` does, or is an annotated global declared later
+ * that the function being checked may read (`_aheadBinding`).
+ * @throws a located error if `name` is a later global that is not annotated */
 export let isBoundOrAhead = fn(name: Bytes): Bool {
   isBound(name) || match (_aheadBinding(name, "read")) { Unbound => false, _ => true }
 };
 
+/** A binding, or another value, whose type held unbound Vars when declared. `_settleTypes`
+ * rejects it if its type is still not inferred. */
 typedef Inferred = {
+  // What it is, for the diagnostic; a binding's name.
   let what: Bytes;
+  // Its syntax; a binding's pattern's.
   let syntax: Syntax;
+  // Its type.
   let ty: I32;
 };
+// The values whose types must be inferred, in the order they were checked.
 let _inferred = Array.new<Inferred>(0);
 
+/** Notes that the type `ty` of `what`, at the current syntax, must be inferred by the end of the
+ * check, as a binding's must. */
 export let inferLater = fn(what: Bytes, ty: I32): Bool {
   _inferred.push({ what, syntax: _syntax, ty });
   true
 };
 
+// Returns the diagnostic for a value of type `actual` given to `name`, annotated `annotated`.
 let _annotationMismatch = fn(name: Bytes, annotated: I32, actual: I32): Bytes {
   coded(E0400,
     `${name} is annotated ${H.typeName(annotated)}, but its value is ${H.typeName(actual)}`)
 };
 
+/** Checks a binding's initialiser, whose type is the binding's. The current syntax is the
+ * binding's. Without an annotation, a bare null is a Null<T> whose T a later use infers.
+ * @param value  the initialiser
+ * @param ty  the annotated type, or -1 for none
+ * @param name  the binding's name, for diagnostics
+ * @return the checked initialiser, and whether the binding's type may be wrong: it has no
+ *   annotation, and the initialiser used something poisoned or a function in it inferred its
+ *   result from a body that failed
+ * @throws a failure that ends the check; a value that does not match the annotation is recorded,
+ *   and a value of the annotation's type stands for it */
 let checkInitializer = fn(value: AstExpr, ty: I32, name: Bytes): Tuple<I32, Bool> {
   let outerDoubt = beginDoubt();
   let checked = widened(checkOperand(value, 0, ty), ty);
@@ -3081,6 +4331,7 @@ let checkInitializer = fn(value: AstExpr, ty: I32, name: Bytes): Tuple<I32, Bool
     _rejectAt(0, valueType == H.TYPE_NULL
       ? coded(E0408, `only Null<T> can hold null, not ${H.typeName(ty)}`)
       : _annotationMismatch(name, ty, valueType));
+    // A value of the annotation's type stands for it, so that the binding's uses are checked.
     return (_leaf(Op.Null, H.resolve(ty), 0), false);
   }
   if (valueType == H.TYPE_NULL) { checked = _coerce(checked, H.nullType(H.newVar(true))); }
@@ -3091,6 +4342,9 @@ let checkInitializer = fn(value: AstExpr, ty: I32, name: Bytes): Tuple<I32, Bool
   (checked, suspect && (ty < 0))
 };
 
+/** Checks the initialiser of the top-level binding `name` as `checkInitializer` does. A function
+ * in it sees the module's annotated globals wherever they are declared (`_aheadBinding`).
+ * If the check fails, `recoverTopLevel` clears `_bodyName`. */
 export let checkGlobalInitializer = fn(value: AstExpr, ty: I32, name: Bytes): Tuple<I32, Bool> {
   _bodyName = name;
   let result = checkInitializer(value, ty, name);
@@ -3098,10 +4352,20 @@ export let checkGlobalInitializer = fn(value: AstExpr, ty: I32, name: Bytes): Tu
   result
 };
 
+// Throws "duplicate local" if the innermost scope already has `name`.
 let _requireFresh = fn(name: Bytes) {
   if (_find(name, _scopeStart) >= 0) { throw coded(E0302, `duplicate local: ${name}`); } null
 };
 
+/** Checks `let name = value` or `const name = value` inside a function, declaring the local
+ * once its initialiser is checked.
+ * @param pattern  the name pattern
+ * @param isConst  whether it is `const`
+ * @param typeParams  the type parameters written, which a local binding may not have
+ * @param annotation  the annotation, or null
+ * @param value  the initialiser
+ * @return the `Let` or `Const` node
+ * @throws a located error for type parameters or a duplicate local */
 let _checkLocal = fn(
   pattern: Pattern, isConst: Bool, typeParams: Array<TypeParam>, annotation: ?AstType,
   value: AstExpr
@@ -3113,6 +4377,7 @@ let _checkLocal = fn(
   }
   _requireFresh(name);
   let annotated = checkAnnotation(annotation);
+  // A function whose type is known before its body is in scope in its body, so it can call itself.
   let own = _literalType(value, annotated);
   if ((own >= 0) && !_names(value, name)) { own = -1; }
   let early = own >= 0 ? _declare(name, own, !isConst) : -1;
@@ -3120,10 +4385,12 @@ let _checkLocal = fn(
   let ty = H.typeOf(checked);
   let binding = early >= 0 ? early : _declare(name, ty, !isConst);
   if (suspect) { poisonLocal(binding); }
+  // Like an assignment, a present initialiser narrows; `let x: ?T = value`.
   match (H.opOf(checked)) { Present => narrow(binding, !isConst), _ => false };
   H.node(isConst ? Op.Const : Op.Let, ty, binding, H.bytesId(name), [checked])
 };
 
+// Checks whether `value`, syntax child 0, reads the name `name` anywhere.
 let _names = fn(value: AstExpr, name: Bytes): Bool {
   let found = false;
   rewrite(Located.Expression(value, syntaxChild(0)), fn(node: Located): ?Located {
@@ -3136,6 +4403,9 @@ let _names = fn(value: AstExpr, name: Bytes): Bool {
   found
 };
 
+/** Returns the type of `value` when it is a function literal whose type is known before its body
+ * is checked: from `annotated`, a function type, or from its own annotations, each parameter's a
+ * required one's, with a type variable for a result it does not annotate; otherwise -1. */
 let _literalType = fn(value: AstExpr, annotated: I32): I32 {
   let params = Array.new<Parameter>(0);
   let result: ?AstType = null;
@@ -3151,6 +4421,7 @@ let _literalType = fn(value: AstExpr, annotated: I32): I32 {
   };
   if (!literal) { return -1; }
   if (annotated >= 0) { return H.isKind(annotated, Kind.Function) ? annotated : -1; }
+  // A type that does not check is reported where the literal is checked.
   let types = Array.new<I32>(0);
   let known = true;
   let i = 0;
@@ -3170,6 +4441,12 @@ let _literalType = fn(value: AstExpr, annotated: I32): I32 {
   try { H.functionType(types, checkType(result)) } catch { -1 }
 };
 
+/** Returns the null result of a function that ends or returns without a value. It fits when the
+ * result type is Null, when no result has fixed it yet (it then becomes Null), or when an
+ * inferred one holds null.
+ * @param message  the diagnostic's start, which the result type's name completes
+ * @return the `Null` node
+ * @throws a located error if the result type does not fit */
 let _nullResult = fn(message: Bytes): I32 {
   let fits = (_result < 0) || (_result == H.TYPE_NULL)
     || (_resultInferred && H.holdsNull(H.resolve(_result)));
@@ -3180,6 +4457,13 @@ let _nullResult = fn(message: Bytes): I32 {
   value
 };
 
+/** Checks a `return` value or a function body's tail; of the declared result type, or joined
+ * into the inferred one.
+ * @param value  the value
+ * @param index  its child index in the current syntax
+ * @return the checked value
+ * @throws a failure that ends the check; a value that does not match or join the result type is
+ *   recorded */
 let _checkResult = fn(value: AstExpr, index: I32): I32 {
   let checked = checkOperand(value, index, _result);
   if (!_resultInferred) { checked = widened(checked, _result); }
@@ -3199,11 +4483,21 @@ let _checkResult = fn(value: AstExpr, index: I32): I32 {
   checked
 };
 
+/** Makes node `id`'s span current, so that a failure is located there, and returns the syntax it
+ * replaces. */
 export let enterNode = fn(id: I32): Syntax {
   let { path, start, end } = H.spanOf(id);
   enterSyntax(_spanSyntax(path, start, end))
 };
 
+/** Returns a node with each marked result in it converted to a type. A node precedes its parent,
+ * so a node before `first`, the earliest result, holds none; every node on the path to a
+ * converted result is copied, and a copied block takes its tail's type.
+ * @param id  the node
+ * @param ty  the type to convert to
+ * @param first  the earliest result's node ID
+ * @param results  the marks, by node ID minus `first`
+ * @return the rebuilt node, or `id` if nothing in it changed */
 let _rebuild = fn(id: I32, ty: I32, first: I32, results: Array<Bool>): I32 {
   if (id < first) { return id; }
   let children = Array.new<I32>(0);
@@ -3226,6 +4520,9 @@ let _rebuild = fn(id: I32, ty: I32, first: I32, results: Array<Bool>): I32 {
   converted
 };
 
+/** Converts the results of the function being checked to their joined, inferred type.
+ * @param body  the function's body
+ * @return the body, rebuilt where a result needed converting */
 let _joinResults = fn(body: I32): I32 {
   let ty = H.resolve(_result);
   let first = -1;
@@ -3248,6 +4545,12 @@ let _joinResults = fn(body: I32): I32 {
   _rebuild(body, ty, first, marks)
 };
 
+/** Checks an expression for its effect. An `if`, a `match`, a `try` or a block is a statement;
+ * an increment or decrement needs no old value; anything else is an expression statement whose
+ * value is discarded (`Expression`).
+ * @param value  the expression
+ * @param index  its child index in the current syntax
+ * @return the statement's node */
 export let checkEffect = fn(value: AstExpr, index: I32): I32 {
   match (value) {
     If(condition, thenBranch, elseBranch) => {
@@ -3279,12 +4582,23 @@ export let checkEffect = fn(value: AstExpr, index: I32): I32 {
   }
 };
 
+// What a block's tail is for.
 enum Tail {
+  // Checked for its effect and discarded.
   Statement;
+  // The block's value.
   Value;
+  // The enclosing function's result; the block shares the function's parameter scope.
   Result;
 }
 
+/** Poisons the names a failed statement declares, so that code that uses one, or finds it
+ * undeclared, fails and its failure is dropped (see `frontend.semantics.Failures`). A block's
+ * statement declares each name its pattern binds as a poisoned local, for the rest of the block,
+ * unless it failed as a duplicate; a local type or macro, which cannot be declared, poisons
+ * nothing.
+ * @param statement  the failed statement
+ * @param local  whether it is a block's statement rather than a module's */
 export let poisonDeclared = fn(statement: Stmt, local: Bool): Bool {
   let names = match (statement) {
     LetStmt(_, _, pattern, _, _, _, _) => patternNames(pattern),
@@ -3296,6 +4610,7 @@ export let poisonDeclared = fn(statement: Stmt, local: Bool): Bool {
   };
 
   for (name in names) {
+    // A local stands in, so that a use finds it rather than a binding it would have hidden.
     if (!local) {
       poison(name);
     } else if (_find(name, _scopeStart) < 0) {
@@ -3305,6 +4620,19 @@ export let poisonDeclared = fn(statement: Stmt, local: Bool): Bool {
   true
 };
 
+/** Records the failure of a block's statement or tail and returns to the block, so that its
+ * checking goes on after it (see `frontend.semantics.Failures`).
+ * @param error  the thrown value
+ * @param syntax  the block's syntax
+ * @param scopeStart  the start of the block's scope in `_nameIds`
+ * @param loops  `_loops` in the block
+ * @param barrier  `_barrier` in the block
+ * @param tries  `_tries` in the block
+ * @param mark  the length of `_nameIds` before the statement
+ * @param last  whether nothing follows in a block that gives a value; the failed statement is
+ *   then taken to end every path, so that the block is not taken to fall through without one
+ * @return a statement to stand for it; a `Throw` when `last`, otherwise an empty `Block`
+ * @throws `error` again if it ends the check */
 let _recoverStatement = fn(
   error: Dynamic, syntax: Syntax, scopeStart: I32, loops: I32, barrier: Bytes, tries: I32,
   mark: I32, last: Bool
@@ -3319,6 +4647,8 @@ let _recoverStatement = fn(
   last ? _unary(Op.Throw, 0, _leaf(Op.Null, H.TYPE_NULL, 0)) : H.opNode(Op.Block, 0, [])
 };
 
+/** Checks whether `expr` gives no value wherever it is: a block without a tail, an `if` whose
+ * branches give none, its `else` being optional, or a `try` whose body and handler give none. */
 let _valueless = fn(expr: AstExpr): Bool {
   match (expr) {
     BlockExpr({ tail }) => tail == null,
@@ -3329,6 +4659,20 @@ let _valueless = fn(expr: AstExpr): Bool {
   }
 };
 
+/** Checks a block's statements and then its tail in a scope of their own, and builds the
+ * `Block`. What its statements learn about narrowing ends with it. A tail after a statement that
+ * ends every path never runs, but is still checked. A statement or value block drops it; a value
+ * block that ends every path gives no value, so it joins with any type (`joinBranches`). A
+ * function's result keeps it, so a placeholder such as `{ throw e; null }` still gives a function
+ * its result type. A function body that can fall through ends in a null result.
+ * @param prefix  nodes that come first in the block, such as a match arm's bindings
+ * @param statements  the statements, children of the current syntax from `first` on
+ * @param tail  the tail, the child after them, or null
+ * @param first  the child index of the first statement
+ * @param expected  the type the context requires, or -1
+ * @param tailKind  what the tail is for
+ * @return the `Block` node, whose `aux` is 1 when it ends in a tail
+ * @throws a located error for a statement after one that ends every path */
 let _checkBlockBody = fn(
   prefix: Array<I32>,
   statements: Array<Stmt>,
@@ -3340,6 +4684,7 @@ let _checkBlockBody = fn(
   let isResult = tailKind == Tail.Result;
   let isStatement = tailKind == Tail.Statement;
 
+  // A function body shares its parameters' scope, and what a block's statements learn ends with it.
   let outerStart = _scopeStart;
   _scopeStart = isResult ? 0 : _nameIds.len();
   let before = narrowings();
@@ -3378,6 +4723,9 @@ let _checkBlockBody = fn(
 
   let ty = 0;
   let hasTail = false;
+  /* A function body's last form that gives no value, as `{ f(t); }` or an
+   * `if` without an `else`, is a statement, after which the function may fall
+   * through. */
   let statementTail = isStatement || (isResult && (tail != null) && _valueless(tail));
 
   if (tail != null) {
@@ -3394,6 +4742,7 @@ let _checkBlockBody = fn(
       } else {
         let checked = isResult ? _checkResult(tail, index) : checkOperand(tail, index, expected);
 
+        // A value block that ends every path gives no value, so its tail is dropped.
         if (isResult || !ends) {
           ty = H.typeOf(checked);
           hasTail = true;
@@ -3410,6 +4759,7 @@ let _checkBlockBody = fn(
         ends = H.endsPath(recovered);
       }
     }
+    // The tail is the block's value, so what it used and a doubt about it are the block's too.
     endTouch(outerTouched || touched());
     if (endDoubt(outerDoubt)) { doubt(); }
   }
@@ -3417,6 +4767,7 @@ let _checkBlockBody = fn(
   if ((tailKind == Tail.Value) && ends) { ty = H.noValueType(expected); }
 
   if (isResult && !hasTail && !ends) {
+    // A function returning Null may end without a value.
     children.push(_nullResult("function can fall through without a value of type "));
     ty = H.TYPE_NULL;
     hasTail = true;
@@ -3428,6 +4779,9 @@ let _checkBlockBody = fn(
   H.node(Op.Block, ty, 0, hasTail ? 1 : 0, children)
 };
 
+/** Declares each of `names` as a `Const` of the value at the same index of `values`, in a scope
+ * that `endNames` ends.
+ * @return where the scope starts, and the declarations */
 export let declareNames = fn(names: Array<Bytes>, values: Array<I32>): Tuple<I32, Array<I32>> {
   let mark = _nameIds.len();
   let prefix = Array.new<I32>(0);
@@ -3441,11 +4795,17 @@ export let declareNames = fn(names: Array<Bytes>, values: Array<I32>): Tuple<I32
   (mark, prefix)
 };
 
+// Ends the scope that `declareNames` started at `mark`.
 export let endNames = fn(mark: I32) {
   _popTo(mark);
   null
 };
 
+/** Starts a scope for a construct that declares names as it is checked and builds loops of its
+ * own, such as a list comprehension. It is outside every loop, so that a `break` or `continue` in
+ * it cannot leave one the construct builds.
+ * @param what  the construct, for the error of such a `break` or `continue`
+ * @return what `endLoopScope` restores */
 export let beginLoopScope = fn(what: Bytes): Tuple<I32, I32, Bytes> {
   let outer = (_scopeStart, _loops, _barrier);
   _scopeStart = _nameIds.len();
@@ -3454,6 +4814,7 @@ export let beginLoopScope = fn(what: Bytes): Tuple<I32, I32, Bytes> {
   outer
 };
 
+// Ends the scope that `beginLoopScope` started, restoring `outer`.
 export let endLoopScope = fn(outer: Tuple<I32, I32, Bytes>): Bool {
   _popTo(_scopeStart);
   let (start, loops, barrier) = outer;
@@ -3463,6 +4824,16 @@ export let endLoopScope = fn(outer: Tuple<I32, I32, Bytes>): Bool {
   true
 };
 
+/** Checks a match arm's body for `frontend.semantics.Match`; its statements and then its tail, with
+ * each of the arm's names bound, as a `Const`, to its value.
+ * @param names  the names the arm's pattern binds
+ * @param values  the HIR value of each name
+ * @param statements  the body's statements, children of the current syntax from `first` on
+ * @param tail  the body's tail, or null
+ * @param first  the child index of the first statement
+ * @param expected  the type the context requires, or -1
+ * @param statement  whether the `match` is a statement, whose arms' tails are discarded
+ * @return the arm's `Block` */
 export let checkArm = fn(
   names: Array<Bytes>, values: Array<I32>, statements: Array<Stmt>, tail: Null<AstExpr>, first: I32,
   expected: I32, statement: Bool
@@ -3475,12 +4846,17 @@ export let checkArm = fn(
   block
 };
 
+/** Checks a statement block, such as a branch of a statement `if`, whose tail is discarded.
+ * @param branch  the block
+ * @param index  its child index in the current syntax
+ * @return the `Block` node */
 let _checkBranch = fn(branch: AstExpr, index: I32): I32 {
   let outer = enterSyntax(syntaxChild(index));
 
   let block = match (branch) {
     BlockExpr({ statements, tail }) =>
       _checkBlockBody([], statements, tail, 0, -1, Tail.Statement),
+    // The parser makes each branch a block, and `checkEffect` passes only blocks.
     _ => {
       internalError("statement block expected");
       -1
@@ -3490,6 +4866,16 @@ let _checkBranch = fn(branch: AstExpr, index: I32): I32 {
   block
 };
 
+/** Checks an `if` statement (`IfStatement`). The current syntax is the `if`'s; its condition,
+ * then branch and else branch. Code after the `if` runs after a branch that does not always
+ * leave, so what is known then is what that branch ended knowing; after
+ * `if (x == null) { return ...; }`, x is present, unless the other branch assigned it. After
+ * both, only what both know remains.
+ * @param condition  the condition
+ * @param thenBranch  the then block
+ * @param elseBranch  the else block, an `if`, or null without one
+ * @return the `IfStatement` node
+ * @throws a failure that ends the check; a condition that is not a Bool is recorded */
 let _checkIfStatement = fn(condition: AstExpr, thenBranch: AstExpr, elseBranch: AstExpr): I32 {
   let (declarations, checkedCondition, names, reads) =
     _checkCondition(condition, "if", _isBlock(thenBranch));
@@ -3501,6 +4887,7 @@ let _checkIfStatement = fn(condition: AstExpr, thenBranch: AstExpr, elseBranch: 
   _narrowBy(condition, false);
 
   match (elseBranch) {
+    // A missing `else` parses as null.
     Null => null,
     If(_, _, _) => {
       children.push(checkEffect(elseBranch, 2));
@@ -3511,6 +4898,7 @@ let _checkIfStatement = fn(condition: AstExpr, thenBranch: AstExpr, elseBranch: 
       null
     },
   };
+  // What is known after the `if` comes from the branches that can reach it.
   let thenEnds = H.endsPath(children[1]);
   let elseEnds = (children.len() == 3) && H.endsPath(children[2]);
 
@@ -3522,6 +4910,9 @@ let _checkIfStatement = fn(condition: AstExpr, thenBranch: AstExpr, elseBranch: 
   _after(declarations, H.opNode(Op.IfStatement, 0, children), false)
 };
 
+/** Checks `branch`, syntax child 1, as the then branch of an `if`, in which the names that the
+ * condition binds are declared from the values that `reads` makes.
+ * @param statement  whether the `if` is a statement */
 let _checkThen = fn(
   branch: AstExpr, names: Array<Bytes>, reads: () -> Array<I32>, expected: I32, statement: Bool
 ): I32 {
@@ -3542,6 +4933,18 @@ let _checkThen = fn(
   block
 };
 
+/** Checks `try { body } catch (name) { handler }` as a value or a statement. The current syntax
+ * is the `try`'s; the body's statements and tail, then the handler's. The body may stop at any
+ * call, so the handler knows only the narrowings the body cannot have undone; code after the
+ * `try` knows what the block that finished knows. At most 16 `try` bodies nest in one function.
+ * @param body  the `try` block
+ * @param catchName  the name bound to the thrown value, a Dynamic, or null for none
+ * @param handler  the `catch` block
+ * @param expected  the type the context requires, or -1
+ * @param statement  whether it is a statement, whose blocks' tails are discarded
+ * @return a `TryStatement`, or a `Try` whose type joins those of both blocks
+ * @throws a located error if `try` bodies nest too deep, a value `try` lacks a tail in either
+ *   block, or the two blocks' types do not join */
 let _checkTry = fn(
   body: AstBlock, catchName: Null<Bytes>, handler: AstBlock, expected: I32, statement: Bool
 ): I32 {
@@ -3557,6 +4960,8 @@ let _checkTry = fn(
   }
   _tries--;
   let afterBody = narrowings();
+  /* The body may stop at any call, so the handler knows only what the body
+   * cannot have changed. */
   leaveLoop(before, mark);
   let scope = _nameIds.len();
   let binding = catchName == null ? -1 : _declare(catchName, H.TYPE_DYNAMIC, false);
@@ -3569,6 +4974,7 @@ let _checkTry = fn(
   }
   _popTo(scope);
 
+  // Code after the try runs after whichever block finished.
   if (H.endsPath(checkedHandler)) {
     setNarrowings(afterBody);
   } else if (!H.endsPath(checkedBody)) { keepNarrowings(afterBody); }
@@ -3592,6 +4998,9 @@ let _checkTry = fn(
   )
 };
 
+/** Checks the value of a `let` whose pattern is not a single name, syntax child 0, against the
+ * annotation on its pattern.
+ * @throws a located error if the value does not fit the annotation */
 export let checkAnnotated = fn(annotation: ?AstType, value: AstExpr): I32 {
   let ty = checkAnnotation(annotation);
   let checked = checkOperand(value, 0, ty);
@@ -3604,6 +5013,11 @@ export let checkAnnotated = fn(annotation: ?AstType, value: AstExpr): I32 {
   checked
 };
 
+/** Checks a `let` or `const` whose pattern is not a single name through `_checkLetPattern`; the
+ * value is checked first, against the annotation.
+ * @param otherwise  the `else` block, or null
+ * @param global  whether it is a module's statement, whose names are globals
+ * @throws a located error if there are type parameters or the value does not fit the annotation */
 export let checkDestructure = fn(
   pattern: Pattern, isConst: Bool, typeParams: Array<TypeParam>, annotation: ?AstType,
   value: AstExpr, otherwise: ?AstBlock, global: Bool
@@ -3616,18 +5030,28 @@ export let checkDestructure = fn(
   _checkLetPattern(pattern, !isConst, checkAnnotated(annotation, value), otherwise, global)
 };
 
+/** Declares `name` in the innermost scope, bound to `value`; for a `let` that destructures.
+ * @param mutable  whether it may be assigned
+ * @return the `Let` or `Const` node, for a `Declare`
+ * @throws a located error if the scope already has `name` */
 export let declareLocal = fn(name: Bytes, value: I32, mutable: Bool): I32 {
   _requireFresh(name);
   let ty = H.typeOf(value);
   H.node(mutable ? Op.Let : Op.Const, ty, _declare(name, ty, mutable), H.bytesId(name), [value])
 };
 
+/** Declares the global `name`, initialised to `value`, for a top-level `let` or `const`.
+ * @param mutable  whether it may be assigned
+ * @return the `InitGlobal` node, for a `Declare`
+ * @throws a located error if the module already has `name` */
 export let declareGlobal = fn(name: Bytes, value: I32, mutable: Bool): I32 {
   let global = declareStatementGlobal(name, H.typeOf(value), mutable);
   declareScoped(name, Binding.Global(global));
   initGlobal(global, value)
 };
 
+/** Checks whether each read of the constant `value` would box a number afresh, as an I64 or a
+ * float held as a Dynamic or a nullable is; the global boxes it once. */
 let _boxesEachRead = fn(value: I32): Bool {
   let root = value;
   while (H.childCount(root) > 0) { root = H.childOf(root, 0); }
@@ -3636,6 +5060,10 @@ let _boxesEachRead = fn(value: I32): Bool {
   boxed && match (H.opOf(root)) { I64, Float => true, _ => false }
 };
 
+/** Returns the `InitGlobal` node that sets top-level binding `global` to `value`; a `const`
+ * whose value is a constant is noted, so that later reads copy the constant instead.
+ * @param global  the global
+ * @param value  its checked initialiser */
 export let initGlobal = fn(global: I32, value: I32): I32 {
   if (!H.globalIsMutable(global) && _isConstant(value) && !_boxesEachRead(value)) {
     while (_globalConstants.len() <= global) { _globalConstants.push(-1); }
@@ -3644,11 +5072,21 @@ export let initGlobal = fn(global: I32, value: I32): I32 {
   H.node(Op.InitGlobal, H.typeOf(value), global, 0, [value])
 };
 
+/** Checks `while (condition) { body }`, in a function or at the top level; the current syntax is
+ * the loop's. A later iteration may have assigned any mutable local, so inside the loop only
+ * immutable locals stay narrowed, besides what the condition proves; after it, what was known
+ * before holds except for the locals the body assigns.
+ * @param condition  the condition
+ * @param body  the body's statements
+ * @return the `While` node
+ * @throws a failure that ends the check; a condition that is not a Bool is recorded */
 export let checkWhile = fn(condition: AstExpr, body: Array<Stmt>): I32 {
+  // A later iteration may have changed any mutable local, and the body may not run.
   let before = narrowings();
   let mark = assignmentMark();
   enterLoop();
 
+  // A condition that fails leaves what is known as it was before the loop.
   let (declarations, checkedCondition, names, reads) = try {
     _checkCondition(condition, "while", true)
   } catch (e) {
@@ -3663,6 +5101,19 @@ export let checkWhile = fn(condition: AstExpr, body: Array<Stmt>): I32 {
   _after(declarations, H.opNode(Op.While, 0, [checkedCondition, checkedBody]), false)
 };
 
+/** Checks `for (item in items) { body }` or `for (index, item in items) { body }`, whose syntax
+ * is current: the index's pattern, if any, then the item's, and as children the items and then
+ * the body's statements. It is the `while` a careful hand would write. Arrays, Bytes and buffers
+ * are walked by a hidden counter, their length read on each pass; a list is walked by a hidden
+ * cursor along its tails. Both step after the body, in the step that `continue` reaches, so the
+ * counter is never reassigned while the index is live and the two share a register; each pass
+ * binds fresh names, so a closure keeps the item it saw, and an item `_` reads nothing.
+ * @param index  the index's name pattern, or null
+ * @param item  the pattern each item is bound to; a name, or a pattern that cannot fail
+ * @param items  the Array, Bytes, ByteBuffer or List walked
+ * @param body  the body's statements
+ * @return the `Block` of the hidden bindings and the `While`, with its step
+ * @throws a located error if `items` cannot be walked, or for a duplicate name */
 export let checkFor = fn(index: ?Pattern, item: Pattern, items: AstExpr, body: Array<Stmt>): I32 {
   let source = _value(items, 0, -1);
   let ty = H.typeOf(source);
@@ -3681,6 +5132,7 @@ export let checkFor = fn(index: ?Pattern, item: Pattern, items: AstExpr, body: A
   let held = _declare("for", ty, isList);
   let read = fn(): I32 { H.local(held, ty) };
   let setup = [H.declareBinding(isList ? Op.Let : Op.Const, held, "for", source)];
+  // A list needs a count only for its index; the others are walked by one.
   let counter = (!isList || (index != null)) ? _declare("for.index", H.TYPE_I32, true) : -1;
   let count = fn(): I32 { H.local(counter, H.TYPE_I32) };
 
@@ -3717,6 +5169,7 @@ export let checkFor = fn(index: ?Pattern, item: Pattern, items: AstExpr, body: A
     enterSyntax(outer);
     prefix.push(H.declareBinding(Op.Const, _declare(name, element, false), name, current));
   } else {
+    // The pattern checker reads the statement's first pattern, so the item's stands alone.
     let loop = _syntax;
     let alone: Syntax = { ...loop, patterns: [itemSyntax] };
     enterSyntax(alone);
@@ -3745,6 +5198,10 @@ export let checkFor = fn(index: ?Pattern, item: Pattern, items: AstExpr, body: A
   H.node(Op.Block, 0, 0, 0, setup)
 };
 
+/** Checks `do { body } while (condition);` as `checkWhile` checks a `while`, but with the body
+ * first; its condition, the syntax child after the body's statements, proves nothing in it.
+ * @return the `While` node, whose `aux` is 1
+ * @throws a failure that ends the check; a condition that is not a Bool is recorded */
 export let checkDoWhile = fn(body: Array<Stmt>, condition: AstExpr): I32 {
   let before = narrowings();
   let mark = assignmentMark();
@@ -3765,6 +5222,10 @@ export let checkDoWhile = fn(body: Array<Stmt>, condition: AstExpr): I32 {
   H.node(Op.While, 0, 0, 1, [checkedCondition, checkedBody])
 };
 
+/** Checks a `throw` statement, whose syntax is current.
+ * @param value  the value thrown
+ * @return the `Throw` node
+ * @throws a located error if the value is a buffer or a list */
 export let checkThrow = fn(value: AstExpr): I32 {
   let thrown = _value(value, 0, -1);
   let why = unboxable(H.typeOf(thrown), "be thrown");
@@ -3776,6 +5237,12 @@ export let checkThrow = fn(value: AstExpr): I32 {
   _unary(Op.Throw, 0, thrown)
 };
 
+/** Checks a statement of a block; a local binding, destructuring or generic function, an
+ * expression statement, `return`, `throw`, `break`, `continue` or `while`.
+ * @param statement  the statement
+ * @param syntax  its syntax, current while it is checked
+ * @return the statement's node
+ * @throws a located error if the statement is ill-typed or not supported here */
 let _checkStatement = fn(statement: Stmt, syntax: Syntax): I32 {
   let outer = enterSyntax(syntax);
 
@@ -3790,6 +5257,7 @@ let _checkStatement = fn(statement: Stmt, syntax: Syntax): I32 {
     Expression(value) => checkEffect(value, 0),
     Return(value) => {
       if (_frames.len() == 0) { throw unsupportedStatement(statement); }
+      // A bare return returns null, from a function returning Null.
       _unary(
         Op.Return, 0,
         value == null ? _nullResult("return needs a value of type ") : _checkResult(value, 0)
@@ -3819,6 +5287,16 @@ let _checkStatement = fn(statement: Stmt, syntax: Syntax): I32 {
   id
 };
 
+/** Checks the body of a function inside the scope being checked, which becomes the innermost
+ * enclosing frame, and builds its `Function` node; its parameters, captures and body. With an
+ * inferred result type, its results are joined and converted, and its type is fixed.
+ * @param index  the function index
+ * @param body  its body
+ * @param syntax  the function's syntax; its parameters, then its body's statements and tail
+ * @return the values of the enclosing function that it captures, in the order of its `Capture`
+ *   nodes
+ * @throws a located error if a call has used the result as a type the body does not return; the
+ *   enclosing function's scope is restored first, and the current syntax stays where it failed */
 let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> {
   let outer = enterSyntax(syntax);
   let outerNameIds = _nameIds;
@@ -3848,6 +5326,7 @@ let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> 
   let receivers = _receivers(index);
   _methods.push(info.methodKind);
 
+  // Until its results are joined, a recursive call's result is a Var.
   if (inferred) {
     ty = H.functionType(paramTypes, H.newVar(false));
     info.ty = ty;
@@ -3870,6 +5349,7 @@ let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> 
 
     for (i, paramName in paramNames) {
       let paramType = H.slotType(paramTypes[i]);
+      // A method's `this` has no syntax of its own.
       let parent = enterSyntax(i < receivers ? syntax : syntaxChild(i - receivers));
       children.push(H.node(
         Op.Parameter, paramType, _declare(paramName, paramType, false),
@@ -3880,7 +5360,9 @@ let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> 
     let first = paramNames.len() - receivers;
     let { statements, tail } = body;
     let checked = _checkBlockBody([], statements, tail, first, -1, Tail.Result);
+    // A function that never returns, but throws, returns Null.
     if (_result < 0) { _result = H.TYPE_NULL; }
+    // A body that failed may not have given every result, so its inferred type is doubted.
     let bodyFailed = failureCount() != failures;
 
     if (inferred) {
@@ -3927,6 +5409,17 @@ let _checkFunction = fn(index: I32, body: AstBlock, syntax: Syntax): Array<I32> 
   sources
 };
 
+/** Checks a function's body in a scope of module-level names alone, so it captures nothing, even
+ * when it is checked from inside another body.
+ * @param index  the function index
+ * @param body  its body
+ * @param syntax  the function's syntax
+ * @param name  the top-level binding it is in, or ""
+ * @param names  the type parameters in scope
+ * @param types  the types they stand for
+ * @param template  whether it checks a template's body
+ * @param locals  the local templates it can call by their names
+ * @throws as `_checkFunction` does, with the caller's scope restored first */
 let _checkIsolated = fn(
   index: I32, body: AstBlock, syntax: Syntax, name: Bytes, names: Array<Bytes>, types: Array<I32>,
   template: Bool, locals: Array<I32>
@@ -3941,6 +5434,7 @@ let _checkIsolated = fn(
   let outerTypes = _envTypes;
   let outerTemplate = _templateBody;
   let outerFloor = _captureFloor;
+  // The frame `_checkFunction` pushes holds no caller's locals.
   _frames = Array.new<Frame>(0);
   _closures = [_newClosure()];
   _nameIds = Array.new<I32>(0);
@@ -3975,6 +5469,14 @@ let _checkIsolated = fn(
   null
 };
 
+/** Checks the body of the current module's direct function `index` unless it is already checked.
+ * Only module-level names are in scope around it, so it captures nothing, even when a call checks
+ * it from inside another body, ahead of its statement. `frontend.semantics.Modules` calls it for
+ * each direct function in statement order, and `_functionType` for one whose inferred result a
+ * call needs first. A failure in the body is recorded (see `frontend.semantics.Failures`), and
+ * the function is left with an empty body; one whose result type was to be inferred is poisoned.
+ * @param index  the function index
+ * @throws a failure that ends the check (see `frontend.semantics.Failures.recordFailure`) */
 export let checkDirect = fn(index: I32): Bool {
   if (_functions[index].node >= 0) { return true; }
   let statement = _directStatements[index - _firstDirect];
@@ -3991,6 +5493,7 @@ export let checkDirect = fn(index: I32): Bool {
         _checkIsolated(index, body, syntax, name, _NO_NAMES, _NO_TYPES, false, _NO_TYPES)
       },
       Prototype(_, name, _, fields) => {
+        // A generic prototype's method is a template's body, which sees its type parameters.
         let field = _directFields[index - _firstDirect];
         let params = H.enumParams(_functions[index].methodKind);
 
@@ -4016,10 +5519,18 @@ export let checkDirect = fn(index: I32): Bool {
   true
 };
 
+// Returns `types` followed by `more`, as a fresh array.
 let _joinTypes = fn(types: Array<I32>, more: Array<I32>): Array<I32> {
   types.copy().appendFrom(more, 0)
 };
 
+/** Checks a template's body unless that is done; once, with its type parameters as Params, so
+ * what holds for them holds for every type argument that meets their bounds. The function that
+ * checks it is dropped. A local template's body is checked where it is declared, inside the
+ * function being checked, and captures nothing; a top-level one's is checked in isolation
+ * (`_checkIsolated`).
+ * @param t  the template index
+ * @param local  whether the template is declared inside a function */
 let _checkTemplate = fn(t: I32, local: Bool): Bool {
   if (_templates[t].checker >= 0) { return true; }
   let template = _templates[t];
@@ -4031,6 +5542,7 @@ let _checkTemplate = fn(t: I32, local: Bool): Bool {
       let outerTypes = _envTypes;
       let outerTemplate = _templateBody;
       let outerFloor = _captureFloor;
+      // The signature's types may name the type parameters.
       _envNames = template.names;
       _envTypes = types;
       _templateBody = true;
@@ -4060,6 +5572,7 @@ let _checkTemplate = fn(t: I32, local: Bool): Bool {
   true
 };
 
+// Checks the body of the template `name` that a top-level `let name<T> = fn ...` declares.
 export let checkTemplate = fn(name: Bytes): Bool {
   match (scoped(name)) {
     Template(t) => _checkTemplate(t, false),
@@ -4067,9 +5580,18 @@ export let checkTemplate = fn(name: Bytes): Bool {
   }
 };
 
+/** Checks `let name<T> = fn ...` inside a function; a template whose body is checked here, and
+ * a local that can only be called. Its instances can call it and the local templates it sees
+ * here.
+ * @param name  the template's name
+ * @param typeParams  its type parameters
+ * @param value  its `fn` literal
+ * @return an empty `Block`, since the template declares nothing at run time
+ * @throws a located error for a duplicate local */
 let _checkLocalTemplate = fn(name: Bytes, typeParams: Array<TypeParam>, value: AstExpr): I32 {
   _requireFresh(name);
   let t = _newTemplate(name, typeParams, value, syntaxChild(0), _bodyName);
+  // Declared first, so the body can call itself.
   _declareTemplate(t);
   let locals = _templates[t].locals;
 
@@ -4080,6 +5602,14 @@ let _checkLocalTemplate = fn(name: Bytes, typeParams: Array<TypeParam>, value: A
   H.opNode(Op.Block, 0, [])
 };
 
+/** Returns the instance of a template at given type arguments, generating and checking it when
+ * first needed; in the scope of the module that declares the template, with its type parameters
+ * standing for the type arguments.
+ * @param t  the template index
+ * @param types  the type arguments
+ * @param depth  how deeply the instance nests in other instances
+ * @return the instance's function index
+ * @throws a located error if instances nest more than `MAX_INSTANCE_DEPTH` deep */
 let _instance = fn(t: I32, types: Array<I32>, depth: I32, need: Need): I32 {
   let template = _templates[t];
 
@@ -4120,6 +5650,9 @@ let _instance = fn(t: I32, types: Array<I32>, depth: I32, need: Need): I32 {
   }
 };
 
+/** Settles the type arguments `types` of the generic `name`, whose Params are `params`, in place;
+ * one that only unsuffixed literals typed defaults to I32.
+ * @throws a located error if one cannot be inferred */
 let _settleTypeArgs = fn(types: Array<I32>, params: Array<I32>, name: Bytes) {
   for (j, ty in types) {
     let settled = H.defaultIntegers(ty);
@@ -4132,6 +5665,10 @@ let _settleTypeArgs = fn(types: Array<I32>, params: Array<I32>, name: Bytes) {
   null
 };
 
+/** Checks the instances that generic calls need, each once, after every module is checked, and
+ * makes each call's callee its instance. A type argument that only unsuffixed literals typed
+ * defaults to I32. The calls in an instance queue more instances, which are checked in turn.
+ * @throws a located error if a type argument cannot be inferred or does not meet its bounds */
 export let instantiateTemplates = fn(): Bool {
   let i = 0;
 
@@ -4151,6 +5688,9 @@ export let instantiateTemplates = fn(): Bool {
   true
 };
 
+/** Checks the generic prototype `ty` at its statement, its syntax current, with `check`, as a
+ * template's body that sees its type parameters; what `check` builds is dropped.
+ * @return the node its statement leaves, where its instances' globals are initialised */
 export let checkGenericPrototype = fn(ty: I32, check: () -> I32): I32 {
   let params = H.enumParams(ty);
   let outerTemplate = _templateBody;
@@ -4166,6 +5706,10 @@ export let checkGenericPrototype = fn(ty: I32, check: () -> I32): I32 {
   placeholder
 };
 
+/** Returns the value of the method `name` that the prototype type `ty` declares as its field
+ * `f`, with the body `body`, the prototype's syntax current; its function, checked first. An
+ * instance of a generic prototype has a function of its own, checked with its type arguments
+ * (`buildInstances`). */
 export let methodValue = fn(ty: I32, name: Bytes, f: I32, body: AstBlock): I32 {
   let found = ownMethod(ty, name);
   let index = found;
@@ -4186,6 +5730,11 @@ export let methodValue = fn(ty: I32, name: Bytes, f: I32, body: AstBlock): I32 {
   ref
 };
 
+/** Points each read of the global of a generic prototype's instance whose type arguments were
+ * being inferred (`prototypeValue`) at its instance, settling them as a generic call's are
+ * (`_settleTypeArgs`).
+ * @return whether there was any
+ * @throws a located error if a type argument cannot be inferred */
 export let resolveInstanceReads = fn(): Bool {
   let i = 0;
   let any = _openReads.len() > 0;
@@ -4204,6 +5753,12 @@ export let resolveInstanceReads = fn(): Bool {
   any
 };
 
+/** Builds the initialiser of the global of each instance of a generic prototype that has none
+ * yet with `build`, which takes the instance, the prototype's name and its fields; in the scope
+ * of the module that declares the prototype, at its statement's syntax, with its type parameters
+ * standing for the instance's type arguments.
+ * @return whether there was any
+ * @throws a located error if instances nest more than `MAX_INSTANCE_DEPTH` deep */
 export let buildInstances = fn(build: (I32, Bytes, Array<PrototypeField>) -> I32): Bool {
   let any = _built < _instances.len();
 
@@ -4239,6 +5794,8 @@ export let buildInstances = fn(build: (I32, Bytes, Array<PrototypeField>) -> I32
   any
 };
 
+/** Returns `statements`, the program's, with the initialisers of the instances of each generic
+ * prototype in place of the node its statement left (`checkGenericPrototype`). */
 export let withInstances = fn(statements: Array<I32>): Array<I32> {
   if (_generics.len() == 0) { return statements; }
   let out = Array.new<I32>(0);
@@ -4258,6 +5815,17 @@ export let withInstances = fn(statements: Array<I32>): Array<I32> {
   out
 };
 
+/** Checks a function literal, which becomes a function of its own referenced as a value; a
+ * `FunctionRef` whose children are the values it captures, making it a closure. A missing
+ * parameter or result type comes from the function type the context requires. The current
+ * syntax is the literal's.
+ * @param params  its parameters
+ * @param result  its result type, or null
+ * @param body  its body
+ * @param expected  the type the context requires, or -1
+ * @param isMethod  whether it is a `method fn`, which sees the `this` of the method around it
+ * @return the `FunctionRef` node
+ * @throws a located error for a `method fn` outside a method */
 let _checkFunctionLiteral = fn(
   params: Array<Parameter>, result: Null<AstType>, body: AstBlock, expected: I32, isMethod: Bool
 ): I32 {
@@ -4272,10 +5840,17 @@ let _checkFunctionLiteral = fn(
   H.node(Op.FunctionRef, _functionType(index), index + 1, 0, captured)
 };
 
+/** Checks a value block; its statements and then its tail, in a scope of their own.
+ * @param statements  the block's statements, children of the current syntax from 0 on
+ * @param tail  the trailing expression, which gives the block its value
+ * @param expected  the type the context requires, or -1
+ * @return the `Block` node, typed by its tail */
 let _checkBlock = fn(statements: Array<Stmt>, tail: Null<AstExpr>, expected: I32): I32 {
   _checkBlockBody([], statements, tail, 0, expected, Tail.Value)
 };
 
+/** Starts checking a program; resets the HIR, narrowing and the checker's program-wide tables.
+ * `declareFunctions` resets the per-module ones. */
 export let beginCheck = fn(): Bool {
   H.beginHir();
   resetNarrowing();
@@ -4335,6 +5910,10 @@ export let beginCheck = fn(): Bool {
   true
 };
 
+/** Checks whether the open literal `id`, whose value is an I64 or the bits of a U64 above the
+ * greatest I64, fits its type `ty`; a type not settled yet would default to I32. A literal of a
+ * type parameter's type is a template's, which each instance's copy of it checks at its own type.
+ * @param negative  whether it is negated */
 let _fits = fn(id: I32, ty: I32, negative: Bool): Bool {
   if (H.isKind(H.resolve(ty), Kind.Param)) { return true; }
   if (!negative && (H.wideValueOf(id) < 0)) { return ty == H.TYPE_U64; }
@@ -4344,6 +5923,11 @@ let _fits = fn(id: I32, ty: I32, negative: Bool): Bool {
   ty == H.TYPE_U64 ? value >= 0 : (value >= H.leastValue(ty)) && (value <= H.mostValue(ty))
 };
 
+/** Throws `frontend.syntax.Ast`'s range error, located at an open literal, if it does not fit its
+ * type (`_fits`).
+ * @param literal  the literal
+ * @param ty  its type
+ * @throws a located error if the literal is out of range */
 let _checkLiteralRange = fn(literal: OpenLiteral, ty: I32) {
   if (!_fits(literal.id, ty, literal.negative)) {
     enterNode(literal.id);
@@ -4352,6 +5936,9 @@ let _checkLiteralRange = fn(literal: OpenLiteral, ty: I32) {
   null
 };
 
+/** Records the range error of each open literal checked so far that is out of range, until
+ * `frontend.semantics.Failures` records no more. `frontend.semantics.Modules` calls it when a
+ * check fails, since the program is not settled then. */
 export let checkLiteralRanges = fn(): Bool {
   let i = 0;
   let going = true;
@@ -4370,6 +5957,10 @@ export let checkLiteralRanges = fn(): Bool {
   true
 };
 
+/** Types the open literals, I32 where nothing else did, rejects any that is not I64 yet does not
+ * fit in I32, and drops conversions that convert nothing; then rejects a binding or value
+ * whose type checking has not inferred, and gives every node its resolved type.
+ * @throws a located error for a literal out of range, or a type that is not inferred */
 let _settleTypes = fn() {
   for (literal in _literals) {
     let ty = H.defaultIntegers(H.typeOf(literal.id));
@@ -4380,6 +5971,7 @@ let _settleTypes = fn() {
   for (conversion in _conversions) {
     H.settleConversion(conversion);
   }
+  // Once settled, they need not stay reachable while the program is lowered.
   _literals = Array.new<OpenLiteral>(0);
   _conversions = Array.new<I32>(0);
 
@@ -4401,6 +5993,10 @@ let _settleTypes = fn() {
   null
 };
 
+/** Returns the `Function` nodes of the functions, without those that checked template bodies,
+ * followed by the program body; the kept functions are renumbered in the `Call` and `FunctionRef`
+ * nodes that name them, and one that names a removed function, in a removed body, names none.
+ * @param body  the program body */
 let _programFunctions = fn(body: I32): Array<I32> {
   let numbers = Array.new<I32>(0);
   let kept = Array.new<I32>(0);
@@ -4425,6 +6021,11 @@ let _programFunctions = fn(body: I32): Array<I32> {
   kept
 };
 
+/** Finishes the program; drops the functions that checked template bodies, settles every type,
+ * and builds the `Program` node from the functions and then the body.
+ * @param body  the program body, function 0 (see `Hir.Op`)
+ * @return the finished HIR
+ * @throws a located error for a literal out of range, or a type that is not inferred */
 export let finishProgram = fn(body: I32): Hir {
   let overrides = _overrides();
 
@@ -4439,6 +6040,8 @@ export let finishProgram = fn(body: I32): Hir {
   hir
 };
 
+/** Makes `span` the current one, so that a failure thrown next is located there.
+ * @param span  the span, or null for none */
 export let enterSpan = fn(span: Null<SourceSpan>): Bool {
   let syntax = _noSyntax();
   if (span != null) { syntax = _spanSyntax(span.path, span.start, span.end); }
@@ -4446,6 +6049,12 @@ export let enterSpan = fn(span: Null<SourceSpan>): Bool {
   true
 };
 
+/** Records the failure of a top-level statement or tail and returns to the module's top level, so
+ * that checking goes on with the next; no local is visible, no loop or `try` encloses, and
+ * nothing is known about narrowing. A function's check restores the rest as it fails.
+ * @param error  the thrown value
+ * @param syntax  the module's syntax, current again
+ * @throws `error` again if it ends the check */
 export let recoverTopLevel = fn(error: Dynamic, syntax: Syntax): Bool {
   recover(error);
   _popTo(0);

@@ -1,10 +1,23 @@
 package ir;
 
+/** @file
+ * Optimisation of lowered IR, before legalisation. A global that only the program body reads or
+ * writes becomes a register of the body, as a top-level `local` is in Lua; the body's own loops
+ * then run on registers instead of module state. A direct call of a small function that makes
+ * no calls and cannot throw becomes a copy of its body, which saves the call frame, and every
+ * function but the body is then cleaned up (`ir.Cleanup`).
+ *
+ * Before that, a call passing a function without captures to a small function that only ever
+ * calls that parameter calls a copy that calls the function directly instead; so
+ * `xs.map(fn(x) { x * 2 })` loops over a multiplication rather than an indirect call, once the
+ * inliner has been. */
+
 import type { BasicBlock, Function, Instruction, Program, ThrowHandler, ValueType } from ir.Model;
 import { Op, Terminator, argumentCount, instructionAt, nextFunctionId } from ir.Model;
 import { blockIndexes, blockMayThrow, terminatorRead } from ir.Cfg;
 import { cleanupFunction } from ir.Cleanup;
 
+// Marks in `marked` each global that a `GlobalGet` or `GlobalSet` of `function` addresses.
 let _markGlobals = fn(function: Function, marked: Array<Bool>) {
   for (block in function.blocks) {
     for (insn in block.instructions) {
@@ -17,6 +30,8 @@ let _markGlobals = fn(function: Function, marked: Array<Bool>) {
   null
 };
 
+/** Rewrites `insn` of the body: a `GlobalGet` or `GlobalSet` of a global with a register in
+ * `promoted` becomes a `Move` from or to that register. */
 let _promote = fn(insn: Instruction, promoted: Array<I32>): Instruction {
   match (insn.op) {
     GlobalGet when (promoted[insn.imm] >= 0) =>
@@ -27,6 +42,11 @@ let _promote = fn(insn: Instruction, promoted: Array<I32>): Instruction {
   }
 };
 
+/** The program body, function ID 0, with each global it addresses that no other function does
+ * in a register of its own instead, or null when there is no such global.
+ * @param body  the body
+ * @param globals  the program's global types
+ * @param elsewhere  whether a function other than the body addresses each global */
 let _promoteBody = fn(
   body: Function, globals: Array<ValueType>, elsewhere: Array<Bool>
 ): ?Function {
@@ -60,8 +80,11 @@ let _promoteBody = fn(
   { ...body, registers: types, blocks: out }
 };
 
+// The most instructions a function may have for its direct calls to be inlined.
 const _INLINE_LIMIT = 16;
 
+/** Checks whether `function` may be copied, into its callers or for them; a function other than
+ * the program body, without captures, of at most `limit` instructions. */
 let _copyable = fn(function: Function, limit: I32): Bool {
   if ((function.id == 0) || (function.captures != 0)) { return false; }
 
@@ -74,6 +97,9 @@ let _copyable = fn(function: Function, limit: I32): Bool {
   true
 };
 
+/** Checks whether direct calls of `function` may be replaced by its body; a copyable function of
+ * at most `_INLINE_LIMIT` instructions that makes no calls, cannot throw and has no try regions.
+ * Traps in it then locate as they did. */
 let _inlinable = fn(function: Function): Bool {
   if (!_copyable(function, _INLINE_LIMIT)) { return false; }
 
@@ -89,10 +115,13 @@ let _inlinable = fn(function: Function): Bool {
   true
 };
 
+/** Returns the inlinable function a direct call `insn` calls, or null.
+ * @param leaves  each inlinable function by ID, or null */
 let _leafCalled = fn(insn: Instruction, leaves: Array<?Function>): ?Function {
   (insn.op == Op.Call) ? leaves[insn.imm] : null
 };
 
+// Returns `insn` with each register renumbered by `offset`.
 let _shifted = fn(insn: Instruction, offset: I32): Instruction {
   let shifted = Array.new<I32>(0);
 
@@ -103,6 +132,11 @@ let _shifted = fn(insn: Instruction, offset: I32): Instruction {
   instructionAt(insn.op, dst, shifted, insn.imm, insn.node)
 };
 
+/** Appends to `blocks` a copy of `callee` for the call `call`, whose block continues in block
+ * `next`; its registers are appended to `types`, its blocks take IDs from `base` up, and each
+ * return moves its value to the call's destination and jumps to `next`.
+ * @param handler  the try region of the calling block, which the copy joins
+ * @return the first block ID after the copy's */
 let _copy = fn(
   callee: Function,
   call: Instruction,
@@ -119,6 +153,7 @@ let _copy = fn(
     let out = Array.new<Instruction>(0);
 
     if (block.id == callee.entry) {
+      // The arguments arrive in the callee's parameters, as a call would put them.
       for (j, param in callee.params) {
         out.push(instructionAt(Op.Move, param + offset, [call.args[j]], 0, call.node));
       }
@@ -146,6 +181,7 @@ let _copy = fn(
   base + blockIndexes(callee.blocks).len()
 };
 
+// Checks whether any of `blocks` makes a direct call of an inlinable function in `leaves`.
 let _callsLeaf = fn(blocks: Array<BasicBlock>, leaves: Array<?Function>): Bool {
   for (block in blocks) {
     for (insn in block.instructions) {
@@ -155,6 +191,10 @@ let _callsLeaf = fn(blocks: Array<BasicBlock>, leaves: Array<?Function>): Bool {
   false
 };
 
+/** Replaces each direct call of an inlinable function in `function` by a copy of its body, or
+ * returns null when there is none. A block is split at each such call; the copy follows the head,
+ * and the rest of the block follows the copy.
+ * @param leaves  each inlinable function by ID, or null */
 let _inlineInto = fn(function: Function, leaves: Array<?Function>): ?Function {
   let blocks = function.blocks;
   if (!_callsLeaf(blocks, leaves)) { return null; }
@@ -174,6 +214,7 @@ let _inlineInto = fn(function: Function, leaves: Array<?Function>): ?Function {
       if (leaf == null) {
         code.push(insn);
       } else {
+        // The head jumps into the copy, whose returns land in block `rest`.
         let rest = next;
         let entry = Terminator.Jump(rest + 1 + leaf.entry);
         out.push({ id: current, instructions: code, terminator: entry, handler });
@@ -188,6 +229,8 @@ let _inlineInto = fn(function: Function, leaves: Array<?Function>): ?Function {
   { ...function, registers: types, blocks: out }
 };
 
+/** Inlines direct calls of small leaf functions into every function but the program body,
+ * whose registers are already the most, or returns null when there is no such call. */
 let _inlineAll = fn(functions: Array<Function>): ?Array<Function> {
   let leaves = Array.new<?Function>(0);
 
@@ -212,8 +255,11 @@ let _inlineAll = fn(functions: Array<Function>): ?Array<Function> {
   changed ? out : null
 };
 
+// The most instructions a function may have to be copied for a function it is passed.
 const _SPECIALISE_LIMIT = 64;
 
+/** Returns the argument positions of `function`'s parameters that it only calls; never writes,
+ * passes on, keeps, compares or returns. Empty when there are none or it cannot be copied. */
 let _calledParams = fn(function: Function): Array<I32> {
   let positions = Array.new<I32>(0);
 
@@ -221,6 +267,7 @@ let _calledParams = fn(function: Function): Array<I32> {
     return positions;
   }
 
+  // Each register's reads: 0 none yet, 1 only as a callee, -1 any other.
   let uses = Array.new<I32>(function.registers.len());
 
   for (block in function.blocks) {
@@ -244,6 +291,10 @@ let _calledParams = fn(function: Function): Array<I32> {
   positions
 };
 
+/** Returns, for each register of `function`, one more than the ID of the function without
+ * captures that is its only value; 0 when it is never written, -3 - r when its only write copies
+ * register r, as a local passed on is, and -1 when it has another value, as a parameter or a
+ * register written otherwise or more than once has. `_knownAt` follows the copies. */
 let _knownFunctions = fn(function: Function): Array<I32> {
   let known = Array.new<I32>(function.registers.len());
 
@@ -270,6 +321,9 @@ let _knownFunctions = fn(function: Function): Array<I32> {
   known
 };
 
+/** Returns the ID of the function register `r` holds wherever it is read, in whichever block,
+ * following its copies, or a negative number when it holds no one function. A cycle of copies
+ * holds nothing, and is cut off after as many steps as there are registers. */
 let _knownAt = fn(known: Array<I32>, r: I32): I32 {
   let value = known[r];
   let steps = 0;
@@ -281,6 +335,8 @@ let _knownAt = fn(known: Array<I32>, r: I32): I32 {
   (value > 0) ? value - 1 : -1
 };
 
+/** Returns `function` as a copy numbered `id` that calls function `target` directly wherever it
+ * called its parameter `param`. */
 let _calling = fn(function: Function, param: I32, target: I32, id: I32): Function {
   let blocks = Array.new<BasicBlock>(0);
 
@@ -301,12 +357,17 @@ let _calling = fn(function: Function, param: I32, target: I32, id: I32): Functio
   { ...function, id, blocks }
 };
 
+/** A copy of function `source` that calls function `target` directly for the parameter at
+ * `position`. */
 typedef Copy = {
   let source: I32;
   let position: I32;
   let target: I32;
 };
 
+/** What `_specialiseAll` knows of the program: its functions by ID, the positions `_calledParams`
+ * finds for each (worked out when first wanted), and the copies made, numbered from `base` up in
+ * the order of `copies`, with what each is in `copied`. */
 typedef Specialising = {
   let byId: Array<?Function>;
   let called: Array<?Array<I32>>;
@@ -315,8 +376,10 @@ typedef Specialising = {
   let base: I32;
 };
 
+// No positions, for the many calls of functions that have none.
 let _NO_POSITIONS = Array.new<I32>(0);
 
+// Returns `_calledParams` of `function`, worked out once.
 let _positions = fn(s: Specialising, function: Function): Array<I32> {
   let known = s.called[function.id];
   if (known != null) { return known; }
@@ -325,6 +388,8 @@ let _positions = fn(s: Specialising, function: Function): Array<I32> {
   positions
 };
 
+/** Returns the ID of the copy of `function` calling `target` for the parameter at `position`,
+ * making it when there is none yet. */
 let _copyFor = fn(s: Specialising, function: Function, position: I32, target: I32): I32 {
   for (i, copy in s.copied) {
     if ((copy.source == function.id) && (copy.position == position) && (copy.target == target)) {
@@ -337,7 +402,12 @@ let _copyFor = fn(s: Specialising, function: Function, position: I32, target: I3
   id
 };
 
+/** Returns `function` with each direct call that passes a function without captures for a
+ * parameter the callee only calls calling a copy of the callee that calls it directly, or null
+ * when there is no such call. One such parameter per call is copied for; a callee rarely takes
+ * two. Most functions pass none, so a block is copied only once a call in it changes. */
 let _specialised = fn(s: Specialising, function: Function): ?Function {
+  // Worked out once a call might pass a known function.
   let known = Array.new<I32>(0);
   let blocks: ?Array<BasicBlock> = null;
 
@@ -374,6 +444,9 @@ let _specialised = fn(s: Specialising, function: Function): ?Function {
   (blocks != null) ? { ...function, blocks } : null
 };
 
+/** Returns `functions` with each call passing a function without captures for a parameter the
+ * callee only calls calling a copy of the callee that calls it directly, the copies listed
+ * before the program body, which stays last; or null when there is no such call. */
 let _specialiseAll = fn(functions: Array<Function>): ?Array<Function> {
   let base = nextFunctionId(functions);
   let s: Specialising = {
@@ -400,6 +473,16 @@ let _specialiseAll = fn(functions: Array<Function>): ?Array<Function> {
   out
 };
 
+/** Optimises a lowered program. `Driver` passes the result to `Legalize.legalizeJlo`; when the
+ * body then needs too many registers, `Lower.relowerBodyInParts` lowers it again from the HIR,
+ * with its globals, and keeps the other functions, which never address a promoted global.
+ * Inlining may leave another function needing too many, so `Driver` then optimises again
+ * without rewriting.
+ * @param program  a program from `Lower.lowerProgram`, whose body, function ID 0, is last
+ * @param rewrite  whether to copy small functions for the functions they are passed, inline
+ *   direct calls of small leaf functions, then clean up every function but the body, which runs
+ *   once (`Cleanup.cleanupFunction`)
+ * @return the optimised program, or `program` when nothing changes; the input is not modified */
 export let optimizeProgram = fn(program: Program, rewrite: Bool): Program {
   let functions = program.functions;
   let elsewhere = Array.new<Bool>(program.globals.len());
@@ -416,6 +499,7 @@ export let optimizeProgram = fn(program: Program, rewrite: Bool): Program {
   if (body != null) { promoted[promoted.len() - 1] = body; }
   if (!rewrite) { return { ...program, functions: promoted }; }
 
+  // Each is a fresh array, so the clean-up may write it.
   let specialised = _specialiseAll(promoted) ?? promoted;
   let out = _inlineAll(specialised) ?? specialised;
   i = 0;

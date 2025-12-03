@@ -1,3 +1,13 @@
+/** @file
+ * The `jelloc` command line. Parses the arguments and runs the pipeline as far as the chosen
+ * mode asks; lexing, parsing, module loading and type checking into HIR, lowering to IR,
+ * legalisation and register allocation, and emission of the `.jlo` module. It also prints the
+ * requested listing or writes the module (when asked), and turns a thrown error into a
+ * located diagnostic on standard error and an exit status. The subcommands `run`, `test` and
+ * `deps.get` work in the project `Project` finds, and replace the process with `jello` or
+ * `jlo_tool` once there is something to run, and `--explain` prints what an error code means.
+ * `Main.jello` calls `run`, here. */
+
 import { lexFile } from frontend.syntax.Lexer;
 import {
   parseFailureSpan, parseProgram, programSyntax, takeSyntaxErrors
@@ -40,8 +50,19 @@ import type { Program } from ir.Model;
 import type { Hir } from frontend.hir.Hir;
 import { spanOf, spanPathOf } from frontend.hir.Hir;
 
+/** What `jelloc` does, chosen by flag.
+ * - `Lex` (`--lex`) prints the tokens;
+ * - `Parse` (`--parse`) checks the syntax;
+ * - `Typed` (`--hir`) prints the typed HIR;
+ * - `Lowered` (`--ir`) prints the IR;
+ * - `Legalized` (`--jlo`) prints the allocated IR and, with `--out`, also writes the module;
+ * - `Emit` (no mode flag) writes the module to the `--out` path, or else to `build/` (`_assume`);
+ * - `Expanders` (`--expanders`, which `frontend.Macros` passes when it runs the compiler) returns
+ *   the module of the program that runs the input's macros;
+ * - `Help` (`--help`) prints how to use the compiler. */
 enum Mode { Lex; Parse; Typed; Lowered; Legalized; Emit; Expanders; Help; }
 
+// The usage text, printed by `--help` and after a command-line error.
 const _USAGE = "usage: jelloc [input.jello] [--out path | --lex | --parse | --hir [--spans] | --ir | "
   + "--jlo [--out path]] [--std dir] [--path dir]...\n"
   + "       jelloc --test <file.test.jello>... --path dir... (--out path | --hir [--spans] | "
@@ -98,18 +119,31 @@ const _USAGE = "usage: jelloc [input.jello] [--out path | --lex | --parse | --hi
   + "diagnostic is on standard error), 2 for a bad command line, 3 for an\n"
   + "internal error (a compiler bug). run and test exit as the program does.\n";
 
+/** Writes `message` to standard error and exits the process.
+ * @param code  the exit status
+ * @param message  the text, written as given */
 let _exit = fn(code: I32, message: Bytes) {
   writeText("/dev/stderr", message);
   System.exit(code);
   null
 };
 
+// The standard library's directory; the `--std` value, or else `JELLO_STD_PATH`.
 let _std = getEnv("JELLO_STD_PATH");
+// The source roots searched after the input's directory, from each `--path`, in order.
 let _roots = Array.new<Bytes>(0);
+// Whether `--spans` was given; `--hir` ends each node's line with its source byte range.
 let _spans = false;
+// Whether `--test` was given; the inputs are test files, compiled into one test binary.
 let _testing = false;
+// Whether the input is compiled for `--expanders`, into the program that runs its macros.
 let _expanding = false;
 
+/** Returns the value of option `flag`, which is the head of `rest`.
+ * @param rest  the arguments after `flag`
+ * @param flag  the option, for the error
+ * @param what  what the value is, for the error, such as "a path"
+ * @throws an error if `rest` is empty or its head is empty */
 let _value = fn(rest: List<Bytes>, flag: Bytes, what: Bytes): Bytes {
   match (rest) {
     [value | _] when (value != "") => value,
@@ -117,6 +151,10 @@ let _value = fn(rest: List<Bytes>, flag: Bytes, what: Bytes): Bytes {
   }
 };
 
+/** Consumes `--std dir` or `--path dir` at the head of `args`, which is not empty, setting `_std`
+ * or adding to `_roots`.
+ * @return the arguments after it, or `args` when its head is not an option
+ * @throws an error for another option, or an option without its value */
 let _commonOption = fn(args: List<Bytes>): List<Bytes> {
   match (args) {
     ["--std" | rest] => {
@@ -132,6 +170,15 @@ let _commonOption = fn(args: List<Bytes>): List<Bytes> {
   }
 };
 
+/** Parses the command-line arguments, setting `_std`, `_roots`, `_spans` and `_testing`. `--help`
+ * ends parsing at once.
+ * @param argv  the arguments, without the program name
+ * @return the input files, which may be none without `--test`, the mode (`Emit` when no mode
+ *         flag is given), and the `--out` path, or empty
+ * @throws an error for an unknown option, an option without its value, two mode flags, a second
+ *         input without `--test`, `--test` with no input, with `--lex` or `--parse`, or with no
+ *         mode flag and no `--out`, `--spans` without `--hir`, or `--out` with a mode flag other
+ *         than `--jlo` */
 let _parseArgs = fn(argv: List<Bytes>): Tuple<Array<Bytes>, Mode, Bytes> {
   let inputs = Array.new<Bytes>(0);
   let mode: ?Mode = null;
@@ -193,6 +240,12 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Array<Bytes>, Mode, Bytes> {
   (inputs, mode ?? Mode.Emit, output)
 };
 
+/** Loads and type-checks the program; the module `inputs[0]` and what it imports, or, with
+ * `--test`, the test files and what they import, under a generated entry, with the extension
+ * modules its method calls need (`frontend.semantics.Modules.checkProgram`).
+ * @param inputs  the input files
+ * @return the checked HIR
+ * @throws an error if a module fails to load or check */
 let _checked = fn(inputs: Array<Bytes>): Hir {
   checkProgram(if (_expanding) {
     loadExpanders(inputs[0], _std)
@@ -203,6 +256,9 @@ let _checked = fn(inputs: Array<Bytes>): Hir {
   })
 };
 
+/** Allocates `legalized`; a program body with more registers than one function can have is
+ * lowered again to run in parts.
+ * @throws an error if a function needs too many registers */
 let _allocatedInParts = fn(legalized: Program): Program {
   try {
     allocateProgram(legalized)
@@ -212,6 +268,10 @@ let _allocatedInParts = fn(legalized: Program): Program {
   }
 };
 
+/** Compiles the files `inputs` as far as allocated IR; checks, lowers, optimises, legalises and
+ * allocates. When a function other than the body needs too many registers, which inlining
+ * may cause, the program is optimised again without inlining or clean-up.
+ * @throws the error of the first pass that fails */
 let _allocated = fn(inputs: Array<Bytes>): Program {
   let lowered = lowerProgram(_checked(inputs));
 
@@ -223,14 +283,22 @@ let _allocated = fn(inputs: Array<Bytes>): Program {
   }
 };
 
+/** Returns `message` formatted as a diagnostic pointing at the start of `span`, quoting its source
+ * line, which is read from the file. */
 let _diagnostic = fn(span: SourceSpan, message: Bytes): Bytes {
   sourceDiagnostic(span.path, readText(span.path), span.start, message)
 };
 
+// Returns `message` as a diagnostic at `span`, or unchanged when `span` is null.
 let _at = fn(span: ?SourceSpan, message: Bytes): Bytes {
   span == null ? message : _diagnostic(span, message)
 };
 
+/** Returns a failure's note as a diagnostic on a line of its own, or "" when it has none or the
+ * failure's diagnostic already quotes the line it points at.
+ * @param span  where the failure was found, or null
+ * @param noteSpan  where the note points, or null for none
+ * @param note  the note */
 let _note = fn(span: ?SourceSpan, noteSpan: ?SourceSpan, note: Bytes): Bytes {
   if (noteSpan == null) { return ""; }
   let path = noteSpan.path;
@@ -243,6 +311,8 @@ let _note = fn(span: ?SourceSpan, noteSpan: ?SourceSpan, note: Bytes): Bytes {
   "\n" + _diagnostic(noteSpan, `note: ${note}`)
 };
 
+/** Returns the span of the HIR node of the function register allocation last failed on, or null
+ * when allocation did not fail or the node has no span. */
 let _allocationSpan = fn(): ?SourceSpan {
   let span: ?SourceSpan = null;
 
@@ -253,6 +323,10 @@ let _allocationSpan = fn(): ?SourceSpan {
   span
 };
 
+/** Returns the first failure point known, in this order; the node the type checker failed on, the
+ * import that failed to load, the macro call that failed to expand, the token parsing failed at,
+ * the node the HIR verifier failed at, or the function register allocation failed on.
+ * @return the span, or null when no failure point is known */
 let _failurePoint = fn(): ?SourceSpan {
   currentSpan()
     ?? loadFailureSpan()
@@ -262,6 +336,10 @@ let _failurePoint = fn(): ?SourceSpan {
     ?? _allocationSpan()
 };
 
+/** Locates HIR node `node` for the emitted line table; `_write` passes it to
+ * `Emit.emitAllocated`.
+ * @return the path, line and column where the node starts, or an empty path, line 0 and column 0
+ *         when it has no span */
 let _location = fn(node: I32): Tuple<Bytes, I32, I32> {
   if (spanPathOf(node) < 0) { return ("", 0, 0); }
   let { path, start } = spanOf(node);
@@ -269,13 +347,27 @@ let _location = fn(node: I32): Tuple<Bytes, I32, I32> {
   (path, line, column)
 };
 
+/** Emits the allocated `program` as a `.jlo` module, with a line table, and writes it to path
+ * `output`.
+ * @throws an error if the file cannot be written */
 let _write = fn(output: Bytes, program: Program) {
   if (!writeText(output, emitAllocated(program, _location))) { throw `could not write ${output}`; }
   null
 };
 
+/** Turns an error thrown by a compiler pass into an exit status and a report, clearing the
+ * internal-error record. An ordinary error is status 1, with the located message after `label`
+ * and a tab when `label` is not empty; when the type checker recorded failures, or the parser
+ * syntax errors, each is reported in source order instead, followed by its note on a line of its
+ * own when it has one on another line, with a last line if it stopped at `MAX_FAILURES`. An
+ * internal error (a check the compiler makes of its own work failed; a compiler bug, never a
+ * rejected program) is status 3, with the located message reported as a bug and no label.
+ * @param label  the failing pass's name, such as `LEXER` or `PARSER`, or empty
+ * @param error  the thrown value
+ * @return the exit status and the report, without a final newline */
 export let failure = fn(label: Bytes, error: Dynamic): Tuple<I32, Bytes> {
   let message = Std.string(error);
+  // The parser recovers from syntax errors on its own, without the checker's record of failures.
   let errors = takeSyntaxErrors();
 
   for ((span, failed, noteSpan, note) in errors) {
@@ -303,11 +395,15 @@ export let failure = fn(label: Bytes, error: Dynamic): Tuple<I32, Bytes> {
   (1, (label == "" ? "" : `${label}\t`) + reports.join("\n"))
 };
 
+/** Writes the report of `error` to standard error and exits with its status (see `failure`).
+ * @param label  the failing pass's name, or empty
+ * @param error  the thrown value */
 let _fail = fn(label: Bytes, error: Dynamic) {
   let (status, report) = failure(label, error);
   _exit(status, `${report}\n`)
 };
 
+// Writes the warnings the check recorded to standard error, each located as a failure is.
 let _warn = fn() {
   let warnings = takeWarnings();
   let lines = Array.new<Bytes>(0);
@@ -319,6 +415,11 @@ let _warn = fn() {
   null
 };
 
+/** Runs `stage` and returns what it prints, after writing its warnings; an error it throws is
+ * reported instead, without them, and exits (see `_fail`).
+ * @param stage  the work, returning its standard output
+ * @param label  the label for a failure, or empty
+ * @return the output */
 let _report = fn(stage: () -> Bytes, label: Bytes): Bytes {
   try {
     let out = stage();
@@ -330,6 +431,10 @@ let _report = fn(stage: () -> Bytes, label: Bytes): Bytes {
   }
 };
 
+/** Checks the syntax of `input` for `--parse`. A failure is labelled with the pass that failed,
+ * `LEXER` or `PARSER`, and exits.
+ * @param input  the input file
+ * @return empty output */
 let _parse = fn(input: Bytes): Bytes {
   let phase = "LEXER";
 
@@ -349,20 +454,29 @@ load { process_exec, process_executable } from std;
 let _execEntries: (Bytes) -> Bytes = process_exec;
 let _executable: () -> Bytes = process_executable;
 
+/** Replaces the process with the program `argv[0]` (found on PATH unless it has a slash), run with
+ * `argv`, or exits with status 1 saying why it cannot. */
 let _exec = fn(argv: Array<Bytes>) {
   let why = _execEntries(`${argv.join("\0")}\0`);
   _exit(1, `jelloc: ${why}\n`)
 };
 
+// What an executable's file name ends with: `.exe` on Windows, else nothing.
 let _exe = os() == "windows" ? ".exe" : "";
 
+/** Returns the program to run as the tool `name`; the environment variable `variable` when it is
+ * set, else `name` (`name.exe` on Windows) beside the running executable when it is there, else
+ * `name`, for PATH. */
 let _tool = fn(variable: Bytes, name: Bytes): Bytes {
   let set = getEnv(variable);
   if (set != "") { return set; }
+  // An unknown executable leaves `name` itself, for PATH.
   let beside = inDirectory(parentDirectory(_executable()), name + _exe);
   exists(beside) ? beside : name
 };
 
+/** Returns the project at `root`, or null when `root` is empty; a manifest that is not valid
+ * exits with status 1 and its diagnostic. */
 let _load = fn(root: Bytes): ?Project {
   if (root == "") { return null; }
 
@@ -374,14 +488,21 @@ let _load = fn(root: Bytes): ?Project {
   }
 };
 
+// Returns the project at or above `start`, or null when there is none (see `_load`).
 let _project = fn(start: Bytes): ?Project { _load(findProject(start)) };
 
+/** Returns the directory a subcommand writes its build to, made if missing; `build/` in the
+ * project, or under the system's temporary directory outside one.
+ * @param project  the project, or null
+ * @param under  the directory within it, such as "build/run" */
 let _buildDir = fn(project: ?Project, under: Bytes): Bytes {
   let dir = project != null ? inDirectory(project.root, under) : `${tempDir()}/jelloc/${under}`;
   if (!makeDirs(dir)) { _exit(1, `jelloc: cannot make ${dir}\n`); }
   dir
 };
 
+/** Adds the sources of `project` to `_roots`, after the `--path` roots, and those of its
+ * `dev_dependencies` when `tests` is set. */
 let _addSources = fn(project: ?Project, tests: Bool) {
   if (project != null) {
     _roots.appendFrom(project.sources, 0);
@@ -390,6 +511,10 @@ let _addSources = fn(project: ?Project, tests: Bool) {
   null
 };
 
+/** Returns what a compile assumes in directory `dir`, the project's or else the current one
+ * (`Project.compileDefaults`); a manifest that is not valid exits with status 1 and its
+ * diagnostic.
+ * @return the entry module and the module's name */
 let _defaults = fn(dir: Bytes): Tuple<Bytes, Bytes> {
   try {
     compileDefaults(dir)
@@ -399,12 +524,22 @@ let _defaults = fn(dir: Bytes): Tuple<Bytes, Bytes> {
   }
 };
 
+/** Returns the entry module in directory `dir` (see `_defaults`), or exits with status 2 and the
+ * usage when it does not exist. */
 let _entry = fn(dir: Bytes): Bytes {
   let entry = _defaults(dir).0;
   if (!exists(entry)) { _exit(2, `jelloc: no input file, and no ${entry} to compile\n${_USAGE}`); }
   entry
 };
 
+/** Fills in what a compile's command line leaves out, from the project at or above the current
+ * directory, or else the current directory itself. With no input, it adds the entry module and
+ * searches the project's sources and packages as `run` does; a module written without `--out`
+ * goes to `build/<name>.jlo` there. `--help`, `--expanders` and `--test` assume nothing.
+ * @param inputs  the input files, which it adds the entry module to when empty
+ * @param mode  the mode
+ * @param output  the `--out` path, or empty
+ * @return the path to write the module to, or empty for none */
 let _assume = fn(inputs: Array<Bytes>, mode: Mode, output: Bytes): Bytes {
   let named = (mode != Mode.Emit) || (output != "");
   let alone = _testing || (mode == Mode.Help) || (mode == Mode.Expanders);
@@ -424,6 +559,8 @@ let _assume = fn(inputs: Array<Bytes>, mode: Mode, output: Bytes): Bytes {
   `${build}/${_defaults(dir).1}.jlo`
 };
 
+/** Compiles `inputs` into the module `output`, reporting a failure as `run` does.
+ * @return "", since it prints nothing */
 let _emit = fn(inputs: Array<Bytes>, output: Bytes): Bytes {
   _report(fn() {
     _write(output, _allocated(inputs));
@@ -431,6 +568,9 @@ let _emit = fn(inputs: Array<Bytes>, output: Bytes): Bytes {
   }, "")
 };
 
+/** Compiles `inputs` into the module `output`, reporting a failure as `run` does, and runs it with
+ * jello and `args`, its native libraries also found in the directories `near`, then in those of
+ * `project`. */
 let _compileAndRun = fn(
   inputs: Array<Bytes>,
   output: Bytes,
@@ -456,6 +596,9 @@ let _compileAndRun = fn(
   _exec(vm.appendFrom(args, 0))
 };
 
+/** Runs `jelloc run [options] <file.jello> [args...]`; the options are jelloc's, and the
+ * arguments after the file the program's, as they are.
+ * @throws an error for a bad command line */
 let _runCommand = fn(argv: List<Bytes>) {
   let cur = argv;
   let input = "";
@@ -491,11 +634,14 @@ let _runCommand = fn(argv: List<Bytes>) {
   }
   let stem = Bytes.slice(name, 0, name.len() - 6);
   let output = `${_buildDir(project, "build/run")}/${stem}.jlo`;
+  /* Outside a project the module runs from the temporary directory, so its libraries are found
+   * beside the source, as they would be beside a module compiled there. */
   let dir = parentDirectory(input);
   let near = (project == null) ? [inDirectory(dir, "jdll"), dir] : Array.new<Bytes>(0);
   _compileAndRun([input], output, toArray(cur), project, near)
 };
 
+// Adds the test files under directory `dir` to `files`, in byte order at each level.
 let _testFiles = fn(dir: Bytes, files: Array<Bytes>): Null {
   let entries = listDir(dir);
 
@@ -511,6 +657,9 @@ let _testFiles = fn(dir: Bytes, files: Array<Bytes>): Null {
   null
 };
 
+/** Runs `jelloc test [options] [dir...] [-- args...]`; the test files under the directories, or
+ * the project's test directories, as one test binary, with the arguments after `--`.
+ * @throws an error for a bad command line */
 let _testCommand = fn(argv: List<Bytes>) {
   let dirs = Array.new<Bytes>(0);
   let cur = argv;
@@ -550,12 +699,16 @@ let _testCommand = fn(argv: List<Bytes>) {
   }
   if (files.len() == 0) { _exit(1, `jelloc: no *.test.jello file under ${dirs[0]}\n`); }
 
+  // A test directory's modules are found before those of the other roots, as a test's own helpers.
   _roots = dirs.appendFrom(_roots, 0);
   _addSources(project, true);
   _testing = true;
   _compileAndRun(files, `${_buildDir(project, "build")}/test.jlo`, args, project, [])
 };
 
+/** Runs `jelloc deps.get [dir]`; jlo_tool fetches the dependencies of the project at or above
+ * `dir`, or else the current directory.
+ * @throws an error for a bad command line */
 let _depsCommand = fn(argv: List<Bytes>) {
   let args = toArray(argv);
   if (args.len() > 1) { throw `unexpected argument: ${args[1]}`; }
@@ -566,6 +719,12 @@ let _depsCommand = fn(argv: List<Bytes>) {
   _exec([_tool("JELLO_JLO_TOOL", "jlo_tool"), "get-deps", root])
 };
 
+/** Runs `jelloc fmt [--check] [--strip-comments] [path...]`; lays out the files at and under the
+ * paths, or under the inputs of the nearest `.formatter`, in the style it gives each. A file that
+ * does not lex is reported and left as it is, and so is one the formatter would change the tokens
+ * of, which is a bug; either ends the run with status 1 or 3, and `--check` with status 1 when
+ * any file would change.
+ * @throws an error for a bad command line */
 let _fmtCommand = fn(argv: List<Bytes>) {
   let paths = Array.new<Bytes>(0);
   let check = false;
@@ -634,6 +793,9 @@ let _fmtCommand = fn(argv: List<Bytes>) {
   null
 };
 
+/** Runs the subcommand `name` with `args`, after it on the command line; a bad command line exits
+ * with status 2 and the usage.
+ * @return whether `name` is a subcommand */
 let _subcommand = fn(name: Bytes, args: List<Bytes>): Bool {
   let command: ?((List<Bytes>) -> Null) = match (name) {
     "run" => _runCommand,
@@ -652,6 +814,8 @@ let _subcommand = fn(name: Bytes, args: List<Bytes>): Bool {
   true
 };
 
+/** Returns the explanation of the one error code in `args`, as `jelloc --explain E0302` prints it;
+ * a bad command line, or an unknown code, exits with status 2 and the usage. */
 let _explain = fn(args: Array<Bytes>): Bytes {
   if (args.len() != 1) { _exit(2, `jelloc: --explain takes one error code, as E0302\n${_USAGE}`); }
   let text = explain(args[0]);
@@ -659,6 +823,11 @@ let _explain = fn(args: Array<Bytes>): Bytes {
   text
 };
 
+/** Runs `jelloc` on a command line. A bad command line exits with status 2 and the usage, an
+ * input that does not exist with status 1, and a failed compilation with the status `failure`
+ * gives.
+ * @param argv  the arguments, without the program name
+ * @return what to print on standard output; the usage, a listing, or empty */
 export let run = fn(argv: List<Bytes>): Bytes {
   if (let [first | rest] = argv) {
     if (_subcommand(first, rest)) { return ""; }
@@ -699,6 +868,7 @@ export let run = fn(argv: List<Bytes>): Bytes {
       listing
     }, ""),
     Emit => _emit(inputs, output),
+    // The compiler runs as a macro program does, so a failure is thrown, not printed.
     Expanders => {
       _expanding = true;
 

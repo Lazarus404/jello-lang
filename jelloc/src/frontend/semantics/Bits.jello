@@ -1,5 +1,16 @@
 package frontend.semantics;
 
+/** @file
+ * Checks `bits[...]` expressions into HIR and lays out the segments that bits expressions and
+ * patterns share. A segment holds an integer of 1 to 8, 16 or 32 bits, an `f32`, or the rest of
+ * the bytes; its value is an I32, an F32 or Bytes. Segments of 1 to 7 bits pack most significant
+ * bit first, a wider one starts on a byte boundary, the fixed segments fill whole bytes, and a
+ * `rest` segment, at most one, comes last. A segment is described by its code (see
+ * `Hir.BITS_BIG`). A bytes layout's record is packed and read as the bits value of its fields'
+ * segments. `frontend.semantics.Aggregates` checks bits expressions with `checkBits` and a
+ * layout's `pack` and `unpack`, and `frontend.semantics.Match` places a bits pattern's segments
+ * with `placeSegments` and reads a layout pattern's record with `layoutRecord`. */
+
 import type { BitExprSegment, Endian, Expr as AstExpr, ObjectEntry } from frontend.syntax.Ast;
 import { BitValueKind, wideIntegerValue } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
@@ -8,11 +19,18 @@ import { i32Of, lengthTest } from frontend.semantics.Derived;
 import { checkOperand, enterSyntax, syntaxChild, widened } from frontend.semantics.TypeCheck;
 import { E0007, E0104, E0400, coded } from support.Codes;
 
+/** Returns the code of a segment of `width` bits (0 for `rest`), byte order `endian`, holding
+ * `kind`. */
 export let segmentCode = fn(width: I32, endian: Endian, kind: BitValueKind): I32 {
   let order = match (endian) { Big => BITS_BIG, Little => 0 };
   width + order + (match (kind) { Float => BITS_FLOAT, _ => 0 })
 };
 
+/** Returns the bit offset of each segment, in order, with the current syntax locating an error.
+ * @param codes  the segments' codes
+ * @return the offsets, and then the number of bytes the fixed segments fill
+ * @throws a located error for a second `rest`, a `rest` that is not last, a segment of 8 or more
+ *   bits off a byte boundary, or fixed segments that do not fill whole bytes */
 export let placeSegments = fn(codes: Array<I32>): Tuple<Array<I32>, I32> {
   let offsets = Array.new<I32>(0);
   let bit = 0;
@@ -42,6 +60,9 @@ export let placeSegments = fn(codes: Array<I32>): Tuple<Array<I32>, I32> {
   (offsets, bit / 8)
 };
 
+/** Checks that the integer literal `digits`, negated when `negative`, fits a segment of code
+ * `code`; a signed `i32` takes any I32, which the literal's own check covers.
+ * @throws a located error if it does not fit */
 export let checkSegmentLiteral = fn(code: I32, signed: Bool, digits: Bytes, negative: Bool): Bool {
   let width = segmentWidth(code);
   if (signed || (width >= 32) || ((code & BITS_FLOAT) != 0)) { return true; }
@@ -55,6 +76,8 @@ export let checkSegmentLiteral = fn(code: I32, signed: Bool, digits: Bytes, nega
   true
 };
 
+/** Checks that `value`, when an integer literal, fits a segment of code `code`
+ * (`checkSegmentLiteral`). */
 let _fits = fn(code: I32, signed: Bool, value: AstExpr): Bool {
   match (value) {
     Integer(digits, _) => checkSegmentLiteral(code, signed, digits, false),
@@ -63,6 +86,9 @@ let _fits = fn(code: I32, signed: Bool, value: AstExpr): Bool {
   }
 };
 
+/** Checks that each integer literal of the record literal `entries`, the current syntax, fits the
+ * segment of its field of the bytes layout `ty`.
+ * @throws a located error at a literal that does not fit */
 export let checkLayoutLiterals = fn(ty: I32, entries: Array<ObjectEntry>): Bool {
   let codes = H.layoutCodes(ty);
 
@@ -83,6 +109,8 @@ export let checkLayoutLiterals = fn(ty: I32, entries: Array<ObjectEntry>): Bool 
   true
 };
 
+/** Returns an `Op.BitsPack` of `Op.BitsField`s of `values`, which fill segments of codes `codes`
+ * at the bit offsets `offsets`, in `fixed` bytes and a rest. */
 let _pack = fn(codes: Array<I32>, offsets: Array<I32>, fixed: I32, values: Array<I32>): I32 {
   let fields = Array.new<I32>(0);
 
@@ -92,6 +120,11 @@ let _pack = fn(codes: Array<I32>, offsets: Array<I32>, fixed: I32, values: Array
   H.node(Op.BitsPack, H.TYPE_BYTES, fixed, 0, fields)
 };
 
+/** Checks `bits[...]`, the current syntax, as an `Op.BitsPack` node of `Op.BitsField` children.
+ * @param segments  the segments, whose values are the syntax children
+ * @return the checked node, of type Bytes
+ * @throws a located error for a misplaced segment, a value of the wrong type, or a literal that
+ *   does not fit its segment */
 export let checkBits = fn(segments: Array<BitExprSegment>): I32 {
   let codes = Array.new<I32>(0);
 
@@ -116,22 +149,33 @@ export let checkBits = fn(segments: Array<BitExprSegment>): I32 {
   _pack(codes, offsets, fixed, values)
 };
 
+/** Returns the pack of a record of the bytes layout `ty` (see `Hir.declareLayout`) as an
+ * `Op.BitsPack`.
+ * @param values  the record's field values, in order
+ * @return the node, of type Bytes */
 export let packLayout = fn(ty: I32, values: Array<I32>): I32 {
   _pack(H.layoutCodes(ty), H.layoutOffsets(ty), H.layoutBytes(ty), values)
 };
 
+/** Returns the bytes after the first `fixed` of `bytes`, which `again` reads again for their
+ * length. */
 export let restOf = fn(bytes: I32, again: I32, fixed: I32): I32 {
   let total = H.opNode(Op.BytesLen, H.TYPE_I32, [again]);
   let length = H.opNode(Op.Sub, H.TYPE_I32, [total, i32Of(fixed)]);
   H.opNode(Op.BytesSlice, H.TYPE_BYTES, [bytes, i32Of(fixed), length])
 };
 
+/** Returns field `field` of the record of the bytes layout `ty` that bytes hold.
+ * @param read  makes a fresh read of the bytes */
 export let layoutField = fn(ty: I32, field: I32, read: () -> I32): I32 {
   let code = H.layoutCodes(ty)[field];
   if (segmentWidth(code) == 0) { return restOf(read(), read(), H.layoutBytes(ty)); }
   H.node(Op.BitsRead, segmentType(code), H.layoutOffsets(ty)[field], code, [read()])
 };
 
+/** Returns a record of the bytes layout `ty` read from bytes that hold it.
+ * @param read  makes a fresh read of the bytes, which each field reads
+ * @return the `Op.Tuple` node, of type `ty` */
 export let layoutRecord = fn(ty: I32, read: () -> I32): I32 {
   let values = Array.new<I32>(0);
 
@@ -141,12 +185,18 @@ export let layoutRecord = fn(ty: I32, read: () -> I32): I32 {
   H.opNode(Op.Tuple, ty, values)
 };
 
+/** Returns the test that bytes of length `length`, an I32 node, hold a record of the bytes layout
+ * `ty`; their length is that of its fixed fields, or more with a rest. */
 export let layoutFits = fn(ty: I32, length: I32): I32 {
   let codes = H.layoutCodes(ty);
   let rest = (codes.len() > 0) && (segmentWidth(codes[codes.len() - 1]) == 0);
   lengthTest(length, H.layoutBytes(ty), rest)
 };
 
+/** Returns `H.unpack(bytes)` of the bytes layout `ty`; its record when the bytes hold one, and
+ * otherwise null.
+ * @param read  makes a fresh read of the bytes
+ * @return the `Op.If` node, of type Null<`ty`> */
 export let unpackLayout = fn(ty: I32, read: () -> I32): I32 {
   let result = H.nullType(ty);
   let record = H.opNode(Op.Present, result, [layoutRecord(ty, read)]);

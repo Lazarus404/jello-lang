@@ -1,5 +1,17 @@
 package frontend.syntax;
 
+/** @file
+ * The parser, which follows the lexer in the pipeline; it builds the AST from the tokens
+ * `Lexer.lexFile` produces, by recursive descent with precedence climbing for binary operators.
+ * Alongside the AST it records a source span for every node (see `SyntaxMark`), which
+ * `programSyntax` pairs with the AST so that the checker can locate its errors. It records a
+ * syntax error in a statement, skips the statement and goes on, so that one parse reports several
+ * (see `takeSyntaxErrors`), then throws the first at the end. `frontend.Loader` parses each module
+ * this way, and so does the driver for `--parse`.
+ *
+ * The parser's state is module-level and `parseProgram` resets it, so parsing is not
+ * reentrant. */
+
 import type {
   AssignOp,
   BinaryOp,
@@ -51,17 +63,33 @@ import {
 import { internalError } from support.Internal;
 import { utf8CharAt, utf8Length, utf8Validate } from std.core.Bytes;
 
+// The tokens being parsed, ending with `Eof`.
 let tokens = Array.new<Token>(0);
+// The index of the next token to consume.
 let pos = 0;
+/** What is left to read of a token whose leading `>` closed type arguments, such as the `>` of
+ * a `>>` or the `=` of a `>=`, or `Eof` for nothing; see `_expectGenericClose`. */
 let pending = Token.Eof;
+// The number of `|>` bodies enclosing the cursor; the topic `%` is valid only inside one.
 let pipelineDepth = 0;
+// Whether the innermost `|>` body being parsed reads the topic `%`.
 let pipelineTopic = false;
+/** Whether the cursor is in an `if` or `while` condition, outside any group or block in it; a
+ * `let` there takes a value that ends at `&&` or `||`, so that tests chain. */
 let inCondition = false;
+// The path of the file being parsed, for spans.
 let sourcePath = "<input>";
+// The byte offset where each token starts.
 let starts = Array.new<I32>(0);
+// The byte offset just past the end of each token.
 let ends = Array.new<I32>(0);
+// The syntax marks of the parse so far, in the order their nodes were completed.
 let marks = Array.new<SyntaxMark>(0);
 
+/** Returns the byte offset where a token starts or ends, clamping `index` to the tokens.
+ * @param index  the token's index
+ * @param end  true for the token's end, false for its start
+ * @return the offset, or 0 if there are no tokens */
 let _offset = fn(index: I32, end: Bool): I32 {
   if (starts.len() == 0) { return 0; }
   let i = index;
@@ -70,10 +98,15 @@ let _offset = fn(index: I32, end: Bool): I32 {
   end ? ends[i] : starts[i]
 };
 
+// Returns the span of the token at `index`.
 let _tokenSpan = fn(index: I32): SourceSpan {
   { path: sourcePath, start: _offset(index, false), end: _offset(index, true) }
 };
 
+/** Records a syntax mark for a node that spans from token `start` to the last token consumed.
+ * @param kind  the kind of node
+ * @param tag  the node's variant number from `exprTag`, `stmtTag` or `patternTag`, or 0
+ * @param start  the index of the node's first token */
 let _mark = fn(kind: SyntaxKind, tag: I32, start: I32) {
   marks.push({
     kind,
@@ -84,54 +117,85 @@ let _mark = fn(kind: SyntaxKind, tag: I32, start: I32) {
   null
 };
 
+// Marks expression `value`, whose first token is at index `start`, and returns it.
 let _markExpr = fn(value: Expr, start: I32): Expr {
   _mark(SyntaxKind.Expression, exprTag(value), start);
   value
 };
 
+// Marks statement `value`, whose first token is at index `start`, and returns it.
 let _markStmt = fn(value: Stmt, start: I32): Stmt {
   _mark(SyntaxKind.Statement, stmtTag(value), start);
   value
 };
 
+// Marks pattern `value`, whose first token is at index `start`, and returns it.
 let _markPattern = fn(value: Pattern, start: I32): Pattern {
   _mark(SyntaxKind.Pattern, patternTag(value), start);
   value
 };
 
+// Removes the last mark, for a node whose mark an enclosing one replaces.
 let _dropMark = fn() {
   Array.resize(marks, marks.len() - 1);
   null
 };
 
+/** Returns the syntax tree of `program`, pairing it with the marks of the last parse, so
+ * `program` must be the program that `parseProgram` returned last. */
 export let programSyntax = fn(program: Program): Syntax {
   syntaxTree(program, sourcePath, marks)
 };
 
+/** The index of the token `peek` returned last, at which errors are reported; an error follows
+ * either a `peek` at the unexpected token or the `next` that consumed it. */
 let _seen = 0;
 
+// The span of the token the last parse failed at, or null.
 let _failure: ?SourceSpan = null;
+/** The syntax errors of the last parse that were recovered from, each as where it was found,
+ * its message, and its note's span (null for none) and text. */
 let _errors = Array.new<Tuple<SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
+// The span of the last parse's `package` declaration, or null if it has none.
 let _packageSpan: ?SourceSpan = null;
+// Returns the span of the last parse's `package` declaration, or null if it has none.
 export let packageSpan = fn(): ?SourceSpan { _packageSpan };
+/** The note for the syntax error about to be thrown, its span (null for none) and text, which
+ * `_recover` takes with the error. */
 let _noteSpan: ?SourceSpan = null;
 let _note = "";
 
+/** Takes the syntax errors the last parse recovered from, in source order (see `_recover`),
+ * clearing the record. */
 export let takeSyntaxErrors = fn(): Array<Tuple<SourceSpan, Bytes, ?SourceSpan, Bytes>> {
   let errors = _errors;
   _errors = Array.new<Tuple<SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
   errors
 };
+/** The index of the first token at which a syntax error is reported again after a recovery. An
+ * error before it, within three tokens of where parsing resumed, is likely a consequence of the
+ * last, as yacc's recovery also assumes, and is dropped. */
 let _quietUntil = 0;
+/** Returns the span of the token the last parse failed at, which the driver uses to locate a
+ * syntax error.
+ * @return the span, or null if the last parse did not fail with a syntax error */
 export let parseFailureSpan = fn(): ?SourceSpan { _failure };
 
+/** Fails the parse at the token `peek` returned last, recording its span in `_failure`. The I32
+ * result type lets a call stand where a value is expected.
+ * @param code  the error's code
+ * @param msg  the message
+ * @throws an error, `ParseError: ` followed by `msg` and `code`, always */
 let _error = fn(code: Bytes, msg: Bytes): I32 {
   _failure = _tokenSpan(_seen);
   throw `ParseError: ${coded(code, msg)}`;
 };
 
+/** Returns the next token without consuming it, and records its index in `_seen`.
+ * @return the token, or `Eof` past the end */
 let peek = fn(): Token {
   if (pending != Token.Eof) {
+    // The rest of a token that `_expectGenericClose` consumed.
     _seen = pos - 1;
     return pending;
   }
@@ -139,6 +203,7 @@ let peek = fn(): Token {
   pos < tokens.len() ? tokens[pos] : Token.Eof
 };
 
+// Consumes and returns the next token, as `peek` sees it.
 let next = fn(): Token {
   let tok = peek();
 
@@ -150,11 +215,15 @@ let next = fn(): Token {
   tok
 };
 
+/** Checks whether a quotation's kind follows, `.expr {` and the like, so that a name `quote` can
+ * still be followed by a member, as in `quote.len()`. */
 let _quoteKindFollows = fn(): Bool {
   (peek() == Token.Dot) && (pending == Token.Eof) && (pos + 2 < tokens.len())
     && (tokens[pos + 2] == Token.LBrace)
 };
 
+/** Returns `token` as a diagnostic names it; its source spelling in single quotes, or 'the end
+ * of the file'. */
 let _quoted = fn(token: Token): Bytes {
   match (token) {
     Eof => "the end of the file",
@@ -162,16 +231,24 @@ let _quoted = fn(token: Token): Bytes {
   }
 };
 
+/** Fails the parse with "expected `what`, found `actual`".
+ * @param what  a description of what was expected
+ * @param actual  the token found instead
+ * @throws an error, always */
 let _expected = fn(what: Bytes, actual: Token): I32 {
   _error(E0100, `expected ${what}, found ${_quoted(actual)}`)
 };
 
+/** Consumes the next token, which must be `expected`.
+ * @throws an error if the next token is another */
 let expect = fn(expected: Token) {
   let actual = next();
   if (actual != expected) { _expected(_quoted(expected), actual); }
   null
 };
 
+/** Consumes an identifier.
+ * @throws an error if the next token is not an identifier */
 let _ident = fn(): Bytes {
   let actual = next();
 
@@ -184,12 +261,17 @@ let _ident = fn(): Bytes {
   }
 };
 
+/** Consumes a parameter name; an identifier, or the keyword `list`.
+ * @throws an error for any other token */
 let _bindingIdent = fn(): Bytes {
   if (peek() != Token.ListLiteral) { return _ident(); }
   next();
   "list"
 };
 
+/** Consumes a name where a keyword is also allowed, as in a member, an atom or an object key.
+ * @return the identifier's name or the keyword's spelling
+ * @throws an error for any other token */
 let _name = fn(): Bytes {
   let token = next();
 
@@ -203,6 +285,9 @@ let _name = fn(): Bytes {
   }
 };
 
+/** Consumes the name of an atom whose `:` was just consumed; the name must follow it directly.
+ * @return the atom's name
+ * @throws an error if space separates the name from the `:` */
 let _atomName = fn(): Bytes {
   if ((pending == Token.Eof) && (_offset(pos, false) != _offset(pos - 1, true))) {
     peek();
@@ -211,6 +296,10 @@ let _atomName = fn(): Bytes {
   _name()
 };
 
+/** Consumes the name after a member `.`; a name, or a decimal integer for a tuple field, as in
+ * `pair.0`.
+ * @return the name or the integer's digits
+ * @throws an error for any other token */
 let _memberName = fn(): Bytes {
   match (peek()) {
     IntegerConstant(digits, _) => {
@@ -221,6 +310,9 @@ let _memberName = fn(): Bytes {
   }
 };
 
+/** Checks whether the next token is the identifier `name`, without consuming it. The lexer
+ * treats contextual keywords such as `rest` and `bytes` as identifiers, so the parser recognises
+ * them here. */
 let _isIdent = fn(name: Bytes): Bool {
   match (peek()) {
     Ident(actual) => actual == name,
@@ -228,12 +320,15 @@ let _isIdent = fn(name: Bytes): Bool {
   }
 };
 
+/** Consumes the next token if it is the identifier `name`.
+ * @return true if it was consumed */
 let _eatIdent = fn(name: Bytes): Bool {
   if (!_isIdent(name)) { return false; }
   next();
   true
 };
 
+// Returns the value of `digits`, a run of decimal digits, without a range check.
 let _digitsI32 = fn(digits: Bytes): I32 {
   let n = 0;
 
@@ -243,6 +338,10 @@ let _digitsI32 = fn(digits: Bytes): I32 {
   n
 };
 
+/** Returns the `N` of `bits(N)`, a bytes-layout field type.
+ * @param digits  the integer's text
+ * @return the width in bits
+ * @throws an error unless `digits` is a single digit from 1 to 7 */
 let _bitsWidth = fn(digits: Bytes): I32 {
   if ((digits.len() != 1)
     || (Bytes.get_u8(digits, 0) < "1".code)
@@ -252,6 +351,10 @@ let _bitsWidth = fn(digits: Bytes): I32 {
   Bytes.get_u8(digits, 0) - "0".code
 };
 
+/** Returns the width of a bits segment given as a number, such as the 3 in `3(x)`.
+ * @param digits  the integer's text
+ * @return the width in bits
+ * @throws an error unless the width is 1 to 8, 16 or 32 */
 let _bitsSegmentWidth = fn(digits: Bytes): I32 {
   let width = digits.len() <= 2 ? _digitsI32(digits) : 0;
 
@@ -261,6 +364,10 @@ let _bitsSegmentWidth = fn(digits: Bytes): I32 {
   width
 };
 
+/** Consumes the `>` that closes type arguments or type parameters. A token that only starts
+ * with one, such as the `>>` that closes two lists at once or the `>=` of `Array<I32>= v`, is
+ * consumed and the rest of it set `pending`, so that `peek` returns that rest next.
+ * @throws an error if the next token does not start with `>` */
 let _expectGenericClose = fn() {
   let actual = next();
 
@@ -285,6 +392,9 @@ let _expectGenericClose = fn() {
   }
 };
 
+/** Parses the optional `: Type` annotation of a `let` or `const` binding, and marks it so that
+ * errors can point at it.
+ * @return the type, or null if the next token is not `:` */
 let _annotation = fn(): ?Type {
   if (peek() != Token.Colon) { return null; }
   next();
@@ -294,6 +404,8 @@ let _annotation = fn(): ?Type {
   ty
 };
 
+/** Consumes a type name; an identifier, or `list`, which names `List`.
+ * @throws an error for any other token */
 let _typeName = fn(): Bytes {
   let actual = next();
 
@@ -307,6 +419,7 @@ let _typeName = fn(): Bytes {
   }
 };
 
+// Parses the `atom` of a type; see `_parseType`.
 let _parseTypeAtom = fn(): Type {
   if (peek() == Token.Question) {
     next();
@@ -329,6 +442,7 @@ let _parseTypeAtom = fn(): Type {
       comma = true;
     }
     expect(Token.RParen);
+    // `(T)` is just `T` in brackets; `(T,)` is a list of one, as `(42,)` is for values.
     return ((items.len() == 1) && !comma) ? items[0] : Type.Tuple(items);
   }
 
@@ -352,6 +466,18 @@ let _parseTypeAtom = fn(): Type {
   Type.Generic(name, args)
 };
 
+/** Parses a type, by this grammar:
+ *
+ *   type  := atom [ '->' type ]
+ *   atom  := '?' atom | '(' [ arg { ',' arg } ] ')' | name [ '<' type { ',' type } '>' ]
+ *            | 'unquote' '(' name ')'
+ *   arg   := '...' type | type [ '...' ]
+ *
+ * A parenthesised list of one type is that type, and any other list is a tuple. Before `->`, the
+ * list's types are the function's parameters, so `(A, B) -> R` takes two arguments. `->` is
+ * right-associative. A `name` is an identifier, or `list` for `List`.
+ * @throws an error for a malformed type, a varargs type that is not last in its list, or a
+ * trailing comma */
 let _parseType = fn(): Type {
   let left = _parseTypeAtom();
   if (peek() != Token.Arrow) { return left; }
@@ -364,6 +490,9 @@ let _parseType = fn(): Type {
   Type.Function(args, _parseType())
 };
 
+/** Parses the `arg` of a type, an item of a parenthesised list, which may be a varargs type;
+ * see `_parseType`.
+ * @return the type, wrapped in `VarargsArg` if it has `...` */
 let _parseTypeArg = fn(): Type {
   let prefixed = (peek() == Token.DotDotDot);
   if (prefixed) { next(); }
@@ -373,6 +502,8 @@ let _parseTypeArg = fn(): Type {
   Type.VarargsArg(out)
 };
 
+/** Parses optional type parameters, `<T, U: A + B>`, recording each name's byte offsets.
+ * @return the parameters, empty if the next token is not `<` */
 let _typeParams = fn(): Array<TypeParam> {
   let out = Array.new<TypeParam>(0);
 
@@ -407,18 +538,24 @@ let _typeParams = fn(): Array<TypeParam> {
   out
 };
 
+/** Parses an optional `: Type`, unmarked, as of a parameter or a function's result.
+ * @return the type, or null if the next token is not `:` */
 let _optionalType = fn(): ?Type {
   if (peek() != Token.Colon) { return null; }
   next();
   _parseType()
 };
 
+/** Parses the type after `is`, where `fn` stands for any function and gets the type name
+ * `__fn__`. */
 let _parseIsType = fn(): Type {
   if (peek() != Token.Fn) { return _parseType(); }
   next();
   Type.Named("__fn__")
 };
 
+/** Parses comma-separated patterns up to and including `end`, allowing a trailing comma.
+ * @param end  the closing token */
 let _parsePatternList = fn(end: Token): Array<Pattern> {
   let out = Array.new<Pattern>(0);
 
@@ -435,6 +572,10 @@ let _parsePatternList = fn(end: Token): Array<Pattern> {
   out
 };
 
+/** Parses the pattern of a `let` or `const`. An identifier binds that name, whatever its case
+ * and even if it is `_`, unless `(` follows and makes it a constructor pattern; any other pattern
+ * is parsed as `_parsePattern` does.
+ * @return the marked pattern */
 let _declarationPattern = fn(): Pattern {
   let start = pos;
 
@@ -457,6 +598,11 @@ let _declarationPattern = fn(): Pattern {
   }
 };
 
+/** Builds the pattern for an identifier that `_patternInner` has consumed; `_` is the wildcard,
+ * a name followed by `(` or starting with a capital letter is a constructor pattern, with
+ * arguments when `(` follows, and any other name binds.
+ * @param name  the identifier
+ * @return the pattern, unmarked */
 let _namedPattern = fn(name: Bytes): Pattern {
   if (name == "_") { return Pattern.Wildcard; }
   if ((name == "unquote") && (peek() == Token.LParen)) { return _unquotePattern(); }
@@ -470,6 +616,9 @@ let _namedPattern = fn(name: Bytes): Pattern {
   Pattern.BindPattern(name)
 };
 
+/** Parses an optional `.le` or `.be` byte order suffix.
+ * @return the byte order, little-endian if there is no suffix
+ * @throws an error for any other name after the dot */
 let _endian = fn(): Endian {
   if (peek() != Token.Dot) { return Endian.Little; }
   next();
@@ -484,6 +633,7 @@ let _endian = fn(): Endian {
   }
 };
 
+// A bits segment's type; its width in bits (0 for `rest`), byte order, signedness and kind.
 typedef SegmentType = {
   let width: I32;
   let endian: Endian;
@@ -491,6 +641,10 @@ typedef SegmentType = {
   let kind: BitValueKind;
 };
 
+/** Parses a bits segment's type, before its parenthesised value; `rest`, a number of bits (1 to
+ * 8, 16 or 32), or `u8`, `u16`, `u32`, `i32` or `f32` in either case, followed by an optional
+ * `.le` or `.be` except on an 8-bit or `rest` segment.
+ * @throws an error for an unknown segment type, a bad width or a misplaced byte order */
 let _bitsSegment = fn(): SegmentType {
   let width = 0;
   let signed = false;
@@ -534,6 +688,10 @@ let _bitsSegment = fn(): SegmentType {
   { width: width, endian: _endian(), signed: signed, kind: kind }
 };
 
+/** Parses a bits pattern after `bits`; `[type(pattern), ...]` with at least one segment and an
+ * optional trailing comma; see `_bitsSegment`.
+ * @return the pattern, unmarked
+ * @throws an error if there are no segments */
 let _parseBitPattern = fn(): Pattern {
   expect(Token.LBracket);
   let segments = Array.new<BitPatternSegment>(0);
@@ -558,6 +716,7 @@ let _parseBitPattern = fn(): Pattern {
   Pattern.Bits(segments)
 };
 
+// Parses `...name`, `..._`, or the `| name` that ends an array pattern, as a marked `Spread`.
 let _spreadPattern = fn(): Pattern {
   let start = pos;
   next();
@@ -565,26 +724,54 @@ let _spreadPattern = fn(): Pattern {
   _markPattern(Pattern.Spread(name == "_" ? null : name), start)
 };
 
+/** Parses an optional `as name`.
+ * @return the name, or null if there is none */
 let _optionalAs = fn(): ?Bytes {
   if (peek() != Token.As) { return null; }
   next();
   _ident()
 };
 
+// Parses `~r/.../flags [as name]`, the regexp literal next.
 let _regexpPattern = fn(value: Bytes, flags: Bytes): Pattern {
   next();
   Pattern.RegExp(value, flags, _optionalAs())
 };
 
+// Parses an item of an array or tuple pattern; a pattern or a spread.
 let _itemPattern = fn(): Pattern {
   peek() == Token.DotDotDot ? _spreadPattern() : _parsePattern()
 };
 
+/** Parses a pattern and marks it once complete; its sub-patterns are marked before it. See
+ * `_patternInner` for the forms. */
 let _parsePattern = fn(): Pattern {
   let start = pos;
   _markPattern(_patternInner(), start)
 };
 
+/** Parses a pattern without marking it. The forms are:
+ *
+ *   _  name  Name  Name(p, ...)        wildcard, binding and constructor; see `_namedPattern`
+ *   unquote(value)                     inside a quote, the pattern `value` gives
+ *   list                               a binding named `list`
+ *   ^name                              equal to the current value of `name`
+ *   is T [as name]                     a type test; see `_parseIsType`
+ *   true  false  1  -1  1.5  "text"    literals, a number optionally negated
+ *   "c".code                           the code point of a single character
+ *   null                               the absence of a value
+ *   :name                              an atom
+ *   bits[...]                          see `_parseBitPattern`
+ *   [when] ~r/.../flags [as name]      a regexp that matches a prefix of Bytes, its match
+ *                                      bound to `name`
+ *   { name: p, ... }                   an object, whose names may be keywords
+ *   ()  (p,)  (p, q)  (p, ...rest)     a tuple, which needs a comma
+ *   []  [p, q]  [p, ...rest, q]  [p, q | rest]
+ *                                      an array; a spread `...rest` or `..._` stands for the
+ *                                      items between, and `| rest` ends one as `...rest` does
+ *
+ * Lists of patterns may end with a comma.
+ * @throws an error for any other token or a malformed pattern */
 let _patternInner = fn(): Pattern {
   match (peek()) {
     Caret => {
@@ -665,6 +852,7 @@ let _patternInner = fn(): Pattern {
       let fields = Array.new<Tuple<Bytes, Pattern>>(0);
 
       while (peek() != Token.RBrace) {
+        // `...rest` ends the pattern.
         if (peek() == Token.DotDotDot) {
           fields.push(("...", _spreadPattern()));
           break;
@@ -676,6 +864,7 @@ let _patternInner = fn(): Pattern {
           next();
           fields.push((name, _parsePattern()));
         } else {
+          // `{ x }` binds field x to x.
           fields.push((name, _markPattern(Pattern.BindPattern(name), start)));
         }
         if (peek() != Token.Comma) { break; }
@@ -734,8 +923,11 @@ let _patternInner = fn(): Pattern {
   }
 };
 
+/** Parses an expression, outside a list element; see `_parseBinary`.
+ * @param minPrec  the least precedence to accept */
 let _parseExpr = fn(minPrec: I32): Expr { _parseBinary(minPrec, false) };
 
+// Parses `(value)` after `unquote` in a pattern, as `Pattern.Unquote`, unmarked.
 let _unquotePattern = fn(): Pattern {
   expect(Token.LParen);
   let value = _parseExpr(0);
@@ -743,6 +935,7 @@ let _unquotePattern = fn(): Pattern {
   Pattern.Unquote(value)
 };
 
+// Parses an `if` or `while` condition, where a `let` takes a value that ends at `&&` or `||`.
 let _condition = fn(): Expr {
   let outer = inCondition;
   inCondition = true;
@@ -751,12 +944,14 @@ let _condition = fn(): Expr {
   condition
 };
 
+// Parses a declaration or keyword statement and marks it; see `_parseStmtInner`.
 let _parseStmt = fn(): Stmt {
   let start = pos;
   let value = _parseStmtInner();
   _markStmt(value, start)
 };
 
+// Parses a call argument or an array or tuple element, which may be a spread, `...value`.
 let _element = fn(): Expr {
   if (peek() != Token.DotDotDot) { return _parseExpr(0); }
   let start = pos;
@@ -764,6 +959,9 @@ let _element = fn(): Expr {
   _markExpr(Expr.Spread(_parseExpr(0)), start)
 };
 
+/** Parses comma-separated items up to and including `end`, for a call, `new` or an array,
+ * allowing a trailing comma.
+ * @param end  the closing token */
 let _exprList = fn(end: Token): Array<Expr> {
   let out = Array.new<Expr>(0);
 
@@ -776,6 +974,11 @@ let _exprList = fn(end: Token): Array<Expr> {
   out
 };
 
+/** Parses a parameter list, `(p, ...)`, marking each parameter. A parameter is `name`,
+ * `name = default`, `?name` or `?name = default` for an optional one, or `...name` for the
+ * remaining arguments, and may have a `: Type` after its name. A trailing comma is allowed,
+ * except after a varargs parameter, which is last in every sense.
+ * @throws an error for `?` or a default on a varargs parameter, or one that is not last */
 let _parseParams = fn(): Array<Parameter> {
   expect(Token.LParen);
   let out = Array.new<Parameter>(0);
@@ -817,12 +1020,18 @@ let _parseParams = fn(): Array<Parameter> {
   out
 };
 
+/** Parses a function after `fn`, `method fn` or a prototype method's name; its parameters, an
+ * optional `: Type` result and a block body.
+ * @param isMethod  true after `method fn` or a prototype method's name
+ * @return the function, unmarked */
 let _parseFunction = fn(isMethod: Bool): Expr {
   let params = _parseParams();
   let result = _optionalType();
   Expr.Function(params, result, _parseBlock(), isMethod)
 };
 
+/** Parses an optional guard, `when (condition)`.
+ * @return the condition, or null if there is no guard */
 let _optionalGuard = fn(): ?Expr {
   let out: ?Expr = null;
 
@@ -835,6 +1044,10 @@ let _optionalGuard = fn(): ?Expr {
   out
 };
 
+/** Parses the arms of a `match`, or the `else` arms of a `with`; `{ arm, ... }`, the commas
+ * between arms being optional. An arm is one or more alternatives separated by commas, each a
+ * pattern with an optional guard, then `=>` and a block or an expression. The guard before `=>`
+ * belongs to the arm (see `MatchArm`). */
 let _matchArms = fn(): Array<MatchArm> {
   expect(Token.LBrace);
   let arms = Array.new<MatchArm>(0);
@@ -866,6 +1079,18 @@ let _matchArms = fn(): Array<MatchArm> {
   arms
 };
 
+/** Parses a list literal after `list`:
+ *
+ *   list[]                             empty
+ *   list[a, b]                         elements
+ *   list[a, b | tail]                  elements in front of the list `tail`
+ *   list[a, ...rest, b]                elements around the list `rest`
+ *   list[for p <- xs when (g), q <- ys do: body]
+ *                                      a comprehension, each guard optional
+ *
+ * A comma may precede `|`, `]` or `do`. Elements before `|` are parsed so that `|` ends them.
+ * @return the list, unmarked
+ * @throws an error for a comprehension without `do:` */
 let _parseList = fn(): Expr {
   expect(Token.LBracket);
 
@@ -922,6 +1147,7 @@ let _parseList = fn(): Expr {
       return Expr.List(ListLiteral.Spread(prefix, rest, suffix));
     }
     prefix.push(_parseBinary(0, true));
+    // A comma may come before the `|` or the `]`.
     if ((peek() != Token.Pipe) && (peek() != Token.RBracket)) { expect(Token.Comma); }
 
     if (peek() == Token.Pipe) {
@@ -939,6 +1165,10 @@ let _parseList = fn(): Expr {
   Expr.List(ListLiteral.Empty)
 };
 
+/** Parses a bits expression after `bits`; `[type(value), ...]` with at least one segment and an
+ * optional trailing comma; see `_bitsSegment`.
+ * @return the expression, unmarked
+ * @throws an error if there are no segments */
 let _parseBitExpr = fn(): Expr {
   expect(Token.LBracket);
   let segments = Array.new<BitExprSegment>(0);
@@ -963,6 +1193,10 @@ let _parseBitExpr = fn(): Expr {
   Expr.Bits(segments)
 };
 
+/** Parses an object literal, `{ entry, ... }` with an optional trailing comma. An entry is
+ * `name: value`, the shorthand `name` for `name: name`, `[key]: value` or `...value`; a name may
+ * be a keyword. The shorthand's variable is marked at the name.
+ * @return the object, unmarked */
 let _parseObject = fn(): Expr {
   expect(Token.LBrace);
   let entries = Array.new<ObjectEntry>(0);
@@ -995,6 +1229,9 @@ let _parseObject = fn(): Expr {
   Expr.Object(entries)
 };
 
+/** Checks whether the `{` at the cursor opens an object literal rather than a block; it does
+ * when followed by `}`, `[`, `...`, an identifier and then `:`, `,` or `}`, or a keyword and then
+ * `:`. So `{}` and the shorthand `{ x }` are objects even where a statement starts. */
 let _braceIsObject = fn(): Bool {
   if ((pos + 1) >= tokens.len()) { return false; }
   let second = tokens[pos + 1];
@@ -1013,6 +1250,12 @@ let _braceIsObject = fn(): Bool {
   }
 };
 
+/** Parses a quote after `quote`; an optional kind, `.expr`, `.stmt`, `.stmts`, `.type` or `.pat`
+ * (or spelt out as `.expression`, `.statement`, `.statements` or `.pattern`), then the body in
+ * braces. Without a kind, a body that starts with a statement keyword is one statement or more,
+ * and any other body is an expression.
+ * @return the quote, unmarked
+ * @throws an error for an unknown kind or an empty body */
 let _parseQuote = fn(): Expr {
   let kind = QuoteKind.Auto;
 
@@ -1061,6 +1304,9 @@ let _parseQuote = fn(): Expr {
   Expr.Quote(kind, body)
 };
 
+/** Parses the rest of a template, after its `TemplateHead`, whose text is `head`: each hole's
+ * expression, then the text after it, up to the `TemplateTail`.
+ * @throws an error for an empty hole, or a hole holding more than an expression */
 let _parseTemplate = fn(head: Bytes): Expr {
   let texts = [head];
   let holes = Array.new<Expr>(0);
@@ -1086,6 +1332,27 @@ let _parseTemplate = fn(head: Bytes): Expr {
   Expr.Interpolation(texts, holes)
 };
 
+/** Parses a primary expression without marking it:
+ *
+ *   literals, `null`, `this`, `super`, `:atom` and identifiers
+ *   `text ${value} text`               a template; see `_parseTemplate`
+ *   fn ...  method fn ...              functions; see `_parseFunction`
+ *   quote ...  unquote(value)          see `_parseQuote`
+ *   await primary
+ *   if (c) { ... } [else if ... | else { ... }]
+ *   match (subject) { arms }           see `_matchArms`
+ *   with p [when (g)] <- value, ... { ... } [else { arms }]
+ *   try { ... } catch [(name)] { ... }
+ *   let pattern [<T, ...>] [: Type] = value
+ *   ()  (value)  (a,)  (a, b)          the empty tuple, grouping, and tuples
+ *   [...]  { ... }                     an array, and an object or block (see `_braceIsObject`)
+ *   list[...]  bits[...]               see `_parseList` and `_parseBitExpr`
+ *   %                                  the topic, inside a `|>` body
+ *
+ * `method`, `quote` and `unquote` are identifiers to the lexer, and `list` alone is a variable.
+ * @param start  the index of the expression's first token, which the null of an `if` without
+ * `else` spans from
+ * @throws an error for a malformed expression, or `%` outside a pipeline body */
 let _primary = fn(start: I32): Expr {
   match (next()) {
     BytesLiteral(value) => Expr.Bytes(value),
@@ -1100,6 +1367,9 @@ let _primary = fn(start: I32): Expr {
     Super => Expr.Super,
     Colon => Expr.Atom(_atomName()),
     Ident(name) => match (name) {
+      /* `method` starts a method only before `fn`, `quote` a quotation only before `{` or a
+       * kind such as `.expr {`, and `unquote` an unquotation only before `(`; elsewhere each is a
+       * name like any other. */
       "method" when (peek() == Token.Fn) => {
         next();
         _parseFunction(true)
@@ -1134,6 +1404,7 @@ let _primary = fn(start: I32): Expr {
           _markExpr(branch, branchStart)
         }
       } else {
+        // A missing `else` gives null, spanning the `if` that implies it.
         _markExpr(Expr.Null, start)
       };
       Expr.If(condition, thenBranch, elseBranch)
@@ -1194,6 +1465,7 @@ let _primary = fn(start: I32): Expr {
       let typeParams = _typeParams();
       let annotation = _annotation();
       expect(Token.Equal);
+      // In a condition, the value ends at `&&` or `||`, so that tests chain.
       let least = inCondition ? _precedence(Token.And) + 1 : 0;
       Expr.LetExpr(pattern, typeParams, annotation, _parseExpr(least))
     },
@@ -1220,6 +1492,8 @@ let _primary = fn(start: I32): Expr {
       } else {
         expect(Token.RParen);
         inCondition = conditioned;
+        /* Grouping adds no node; drop the inner mark, which the enclosing one, spanning the
+         * parentheses, replaces. */
         _dropMark();
         first
       }
@@ -1246,16 +1520,21 @@ let _primary = fn(start: I32): Expr {
   }
 };
 
+// Parses a primary expression and marks it; see `_primary`.
 let _parsePrimary = fn(): Expr {
   let start = pos;
   _markExpr(_primary(start), start)
 };
 
+/** Parses an array literal, `[a, ...rest, b]`, whose elements may be spread and which may end
+ * with a comma.
+ * @return the array, unmarked */
 let _parseArray = fn(): Expr {
   expect(Token.LBracket);
   Expr.Array(_exprList(Token.RBracket))
 };
 
+// Parses type arguments, `<T, ...>`.
 let _typeArgs = fn(): Array<Type> {
   expect(Token.Less);
   let args = [_parseType()];
@@ -1268,6 +1547,11 @@ let _typeArgs = fn(): Array<Type> {
   args
 };
 
+/** Checks whether the `<` at the cursor opens type arguments rather than comparing. It scans for
+ * the matching `>` (a `>>` counting as two) through tokens that can appear in a type;
+ * identifiers, `?`, `...`, parentheses, commas, `->` and nested `<`. It then accepts unless no
+ * token follows or the next is a number, identifier or bytes literal, which would make the `>` a
+ * comparison. */
 let _looksLikeTypeArgs = fn(): Bool {
   let i = pos + 1;
   let depth = 1;
@@ -1281,6 +1565,7 @@ let _looksLikeTypeArgs = fn(): Bool {
       Greater, GreaterGreater => {
         depth -= match (tokens[i]) { Greater => 1, _ => 2 };
 
+        // Arguments end before an operator, not before an operand.
         if (depth <= 0) {
           if ((i + 1) >= tokens.len()) { return false; }
           return match (tokens[i + 1]) {
@@ -1299,6 +1584,8 @@ let _looksLikeTypeArgs = fn(): Bool {
   false
 };
 
+/** Checks whether `expr` can be assigned to or incremented; a variable, a member or an index, or
+ * an unquote, which a macro's expansion replaces. */
 let _assignable = fn(expr: Expr): Bool {
   match (expr) {
     Variable(_) => true,
@@ -1309,11 +1596,21 @@ let _assignable = fn(expr: Expr): Bool {
   }
 };
 
+/** Builds an increment or decrement of `target`.
+ * @param op  increment or decrement
+ * @param prefix  true for `++x`, false for `x++`
+ * @param target  the expression to change
+ * @return the expression, unmarked
+ * @throws an error if `target` is not assignable */
 let _incDec = fn(op: IncDecOp, prefix: Bool, target: Expr): Expr {
   if (!_assignable(target)) { _error(E0103, "invalid increment/decrement target"); }
   Expr.IncDec(op, prefix, target)
 };
 
+/** Parses the postfix operations after `base`; `.name`, `[index]`, `(args)`, `<T>(args)`, `<T>`,
+ * `++` and `--`, marking each node it builds from token `start`.
+ * @param start  the index of `base`'s first token
+ * @param base  the marked expression the operations apply to */
 let _parsePostfix = fn(start: I32, base: Expr): Expr {
   let out = base;
   let more = true;
@@ -1353,6 +1650,11 @@ let _parsePostfix = fn(start: I32, base: Expr): Expr {
   out
 };
 
+/** Parses a prefix expression; `!`, `-`, `++` or `--` before a prefix expression, `new P(args)`,
+ * or a primary with its postfix operations. Postfix operations bind tighter, so `-a.b` is
+ * `-(a.b)`.
+ * @return the marked expression
+ * @throws an error for `new` without arguments */
 let _parseUnary = fn(): Expr {
   let start = pos;
 
@@ -1375,6 +1677,8 @@ let _parseUnary = fn(): Expr {
     },
     New => {
       next();
+      /* The prototype is a primary with any member path and type arguments; postfix operations
+       * after its arguments apply to the constructed object, so `new P(1).x` is `(new P(1)).x`. */
       let protoStart = pos;
       let proto = _parsePrimary();
 
@@ -1395,6 +1699,9 @@ let _parseUnary = fn(): Expr {
   }
 };
 
+/** Parses a prefix expression and each `as Type` cast after it. A prefix operator binds
+ * tighter, as in Rust and Kotlin, so `-x as I64` is `(-x) as I64`, and a binary operator looser.
+ * @return the marked expression */
 let _parseCast = fn(): Expr {
   let start = pos;
   let out = _parseUnary();
@@ -1406,8 +1713,19 @@ let _parseCast = fn(): Expr {
   out
 };
 
+/** Returns how tightly a binary operator binds, higher binding tighter:
+ *
+ *   80  * / %              45  == !=              20  ||
+ *   75  << >>              40  &                  17  ??
+ *   70  + -                35  ^                  15  ?:
+ *   50  < <= > >= is       30  |                  10  |>
+ *                          25  &&                  5  = and compound
+ *                                                     assignments
+ *
+ * @return the precedence of `tok`, or -1 if it is not a binary operator */
 let _precedence = fn(tok: Token): I32 {
   match (tok) {
+    // Most expressions end at one of these, so they are tested first.
     RParen, Semicolon, Comma, RBrace, RBracket => -1,
     Star, Slash, Percent => 80,
     LessLess, GreaterGreater => 75,
@@ -1428,6 +1746,7 @@ let _precedence = fn(tok: Token): I32 {
   }
 };
 
+// Returns the binary operator that `tok`, an operator token, stands for.
 let _binaryOp = fn(tok: Token): BinaryOp {
   match (tok) {
     Plus => BinaryOp.Add,
@@ -1455,6 +1774,7 @@ let _binaryOp = fn(tok: Token): BinaryOp {
   }
 };
 
+// Returns the assignment operator that `tok`, an assignment token, stands for.
 let _assignOp = fn(tok: Token): AssignOp {
   match (tok) {
     Equal => AssignOp.Assign,
@@ -1475,6 +1795,15 @@ let _assignOp = fn(tok: Token): AssignOp {
   }
 };
 
+/** Parses an expression whose binary operators bind at least as tightly as `minPrec`, by
+ * precedence climbing over `_precedence`; each operator's node is marked from the start of its
+ * left operand. Binary operators and `|>` are left-associative; `??` and `?:` are
+ * right-associative. An assignment's right operand excludes assignments, so assignments do not
+ * chain, and neither does `is`. A `?` without `:` has `Null` as its else-branch. In a list
+ * element, a top-level `|` ends the element, as in `list[head | tail]`.
+ * @param minPrec  the least precedence to accept
+ * @param element  whether the expression is a `list[...]` element
+ * @throws an error for an invalid assignment target or a chained `is` */
 let _parseBinary = fn(minPrec: I32, element: Bool): Expr {
   let start = pos;
   let left = _parseCast();
@@ -1483,12 +1812,14 @@ let _parseBinary = fn(minPrec: I32, element: Bool): Expr {
   while (running) {
     let tok = peek();
     let prec = _precedence(tok);
+    // In a list element, `|` (the only operator at precedence 30) ends the element.
     if (element && (prec == 30)) { prec = -1; }
 
     if (prec < minPrec) {
       running = false;
     } else if (tok == Token.Question) {
       next();
+      // `:` ends the then-branch, so a `|` there is an operator.
       let thenBranch = _parseExpr(0);
 
       let elseBranch = if (peek() == Token.Colon) {
@@ -1511,6 +1842,7 @@ let _parseBinary = fn(minPrec: I32, element: Bool): Expr {
       left = Expr.Pipe(left, body, pipelineTopic);
       pipelineTopic = outerTopic;
     } else if (prec == 5) {
+      // Assignment operators are the only ones at precedence 5.
       next();
 
       if (!_assignable(left)) {
@@ -1533,6 +1865,9 @@ let _parseBinary = fn(minPrec: I32, element: Bool): Expr {
   left
 };
 
+/** Checks whether `tok` starts a declaration or a keyword statement rather than an expression;
+ * `export`, `let`, `const`, `prototype`, `typedef`, `enum`, `macro`, `import`, `load`, `while`,
+ * `for`, `do`, `break`, `continue`, `throw` or `return`. */
 let _stmtStarts = fn(tok: Token): Bool {
   match (tok) {
     Export, Let, Const, Prototype, Typedef, EnumDecl, Macro,
@@ -1541,9 +1876,14 @@ let _stmtStarts = fn(tok: Token): Bool {
   }
 };
 
+/** Turns an expression that ends a statement into one. A `let` expression becomes a `LetStmt`
+ * declaration and gives up its expression mark; anything else becomes an `Expression`
+ * statement. The caller marks the result. */
 let _expressionStatement = fn(value: Expr): Stmt {
   match (value) {
     LetExpr(pattern, typeParams, annotation, init) => {
+      /* A `let` ended by `;` is a declaration. Drop the `LetExpr`'s mark so that the marks match
+       * those of a declaration parsed as a statement. */
       _dropMark();
       Stmt.LetStmt(false, false, pattern, typeParams, annotation, init, null)
     },
@@ -1551,6 +1891,9 @@ let _expressionStatement = fn(value: Expr): Stmt {
   }
 };
 
+/** Parses the `else { ... }` that may follow the value of a `let` or `const` of `pattern`.
+ * @return the block, or null without an `else`
+ * @throws an error if `pattern` is a single name, which cannot fail */
 let _otherwise = fn(pattern: Pattern): ?Block {
   if (peek() != Token.Else) { return null; }
   next();
@@ -1561,9 +1904,13 @@ let _otherwise = fn(pattern: Pattern): ?Block {
   _parseBlock()
 };
 
+/** Parses the `else { ... };` that ends `let pattern = value`, which `value` holds, into a
+ * `LetStmt`, which the caller marks.
+ * @throws an error if `value` is no `let` */
 let _letElse = fn(value: Expr): Stmt {
   match (value) {
     LetExpr(pattern, typeParams, annotation, init) => {
+      // The declaration's mark replaces the `let` expression's.
       _dropMark();
       let otherwise = _otherwise(pattern);
       expect(Token.Semicolon);
@@ -1576,6 +1923,10 @@ let _letElse = fn(value: Expr): Stmt {
   }
 };
 
+/** Checks whether an expression statement may omit its `;`; see `_statementExpr`.
+ * @param start  the statement's first token
+ * @param value  the expression parsed from it
+ * @return true if it starts with `if`, `match`, `with` or `try`, or is a block */
 let _selfDelimiting = fn(start: Token, value: Expr): Bool {
   match (start) {
     If, Match, With, Try => true,
@@ -1587,6 +1938,10 @@ let _selfDelimiting = fn(start: Token, value: Expr): Bool {
   }
 };
 
+/** Parses the expression of an expression statement. One that starts with `if`, `match`,
+ * `with`, `try` or the `{` of a block ends at its closing brace, as in Rust, so `if (c) { ... }`
+ * followed by a line `-1` is two statements, not a subtraction.
+ * @param start  the statement's first token */
 let _statementExpr = fn(start: Token): Expr {
   match (start) {
     If, Match, With, Try => _parsePrimary(),
@@ -1595,15 +1950,24 @@ let _statementExpr = fn(start: Token): Expr {
   }
 };
 
+/** Consumes the `;` that may follow a `while` loop, an `enum` or a `macro`. The `if` in the body
+ * is followed by its own `;`, which makes it a statement, so the function's value is null. */
 let _optionalSemicolon = fn() {
   if (peek() == Token.Semicolon) { next(); };
 };
 
+/** Ends a jump statement at its `;`, or before the `}` that closes its block, as in
+ * `{ next(); return value }`.
+ * @throws an error if neither follows */
 let _endJump = fn() {
   if (peek() != Token.RBrace) { expect(Token.Semicolon); }
   null
 };
 
+/** Parses one statement of a macro or quote body; a declaration or keyword statement, or an
+ * expression statement, which needs a `;` unless it is self-delimiting (see `_statementExpr`).
+ * @return the marked statement
+ * @throws an error if a needed `;` is missing */
 let _parseStatement = fn(): Stmt {
   if (_stmtStarts(peek())) { return _parseStmt(); }
 
@@ -1620,6 +1984,12 @@ let _parseStatement = fn(): Stmt {
   _markStmt(statement, statementStart)
 };
 
+/** Skips the rest of a statement that failed, from the token it failed at, to where the next
+ * may begin: past a `;`, or before a `}` that ends a block, outside every brace the statement
+ * opened, or before a statement keyword outside every bracket it opened. At the top level a `}`
+ * that closes nothing is skipped as stray.
+ * @param start  the index of the statement's first token
+ * @param end  `}` in a block, or `Eof` at the top level */
 let _skipStatement = fn(start: I32, end: Token) {
   let i = start;
   let open = 0;
@@ -1668,6 +2038,12 @@ let _skipStatement = fn(start: I32, end: Token) {
   null
 };
 
+/** Recovers from `error`, thrown by the statement that began at token `start` once the parse
+ * had made `marked` marks: records it in `_errors`, if it is a syntax error and not just after the
+ * last recovery, and skips the rest of the statement (see `_skipStatement`), so that parsing
+ * goes on with the next.
+ * @param end  `}` in a block, or `Eof` at the top level
+ * @throws `error` again if it is not a syntax error */
 let _recover = fn(error: Dynamic, marked: I32, start: I32, end: Token) {
   let span = _failure;
   _failure = null;
@@ -1685,6 +2061,14 @@ let _recover = fn(error: Dynamic, marked: I32, start: I32, end: Token) {
   null
 };
 
+/** Parses statements up to `end`, which it leaves unconsumed. An expression without `;` just
+ * before `end` is the block's value. A `let` is parsed as an expression, so it is the value in
+ * that position and a declaration when `;` follows. A self-delimiting expression needs no `;`. A
+ * statement with a syntax error is recorded and skipped (see `_recover`).
+ * @param end  `}` for a block, or `Eof` for a program
+ * @param expected  how to name `end` in an error
+ * @return the statements and the value, if any
+ * @throws an error that is not a syntax error */
 let _statements = fn(end: Token, expected: Bytes): Block {
   let statements = Array.new<Stmt>(0);
   let tail: ?Expr = null;
@@ -1714,6 +2098,7 @@ let _statements = fn(end: Token, expected: Bytes): Block {
             next();
             statements.push(_markStmt(_expressionStatement(value), saved));
           } else if ((peek() == end) || (peek() == Token.Eof)) {
+            // At the end of the file in a block, the caller reports the missing `}`.
             tail = value;
           } else if (_selfDelimiting(start, value)) {
             statements.push(_markStmt(_expressionStatement(value), saved));
@@ -1732,12 +2117,15 @@ let _statements = fn(end: Token, expected: Bytes): Block {
   }
   inCondition = conditioned;
 
+  /* After an error, a block that runs to the end of the file has most likely lost its `}` where
+   * that error was reported, so its missing `}`, and those of the enclosing blocks, are not. */
   if (recovered && (end == Token.RBrace) && (peek() == Token.Eof)) {
     _quietUntil = tokens.len() + 1;
   }
   { statements, tail }
 };
 
+// Parses a block, `{ statements [value] }`; see `_statements`.
 let _parseBlock = fn(): Block {
   let open = pos;
   expect(Token.LBrace);
@@ -1751,6 +2139,8 @@ let _parseBlock = fn(): Block {
   block
 };
 
+/** Parses a dotted module path, `a.b.c`; a part after a dot may be a keyword, as in
+ * `std.macro`. */
 let _path = fn(): Array<Bytes> {
   let parts = [_ident()];
 
@@ -1761,6 +2151,9 @@ let _path = fn(): Array<Bytes> {
   parts
 };
 
+/** Parses the kind after `import`; `type`, `macro`, or nothing for values. A `load` takes no
+ * kind.
+ * @param native  true after `load` */
 let _importKind = fn(native: Bool): ImportKind {
   if (native) { return ImportKind.Native; }
 
@@ -1777,6 +2170,14 @@ let _importKind = fn(native: Bool): ImportKind {
   }
 };
 
+/** Parses an import after `import` or `load`, which takes the same forms without a kind:
+ *
+ *   import [type | macro] { name [as alias], ... } from a.b;
+ *   import [type | macro] a.b as alias;
+ *
+ * The braces allow a trailing comma.
+ * @param native  true after `load`
+ * @return the statement, unmarked */
 let _parseImport = fn(native: Bool): Stmt {
   let kind = _importKind(native);
 
@@ -1804,6 +2205,7 @@ let _parseImport = fn(native: Bool): Stmt {
   }
 };
 
+// Parses a struct typedef's fields, `{ let name: Type; ... }`.
 let _parseStructFields = fn(): Array<StructField> {
   expect(Token.LBrace);
   let fields = Array.new<StructField>(0);
@@ -1819,6 +2221,9 @@ let _parseStructFields = fn(): Array<StructField> {
   fields
 };
 
+/** Parses a bytes-layout field's type; `rest`, `bits(N)` for 1 to 7 bits, or `u8`, `u16`,
+ * `u32`, `i32` or `f32` in either case with an optional `.le` or `.be`, which `u8` ignores.
+ * @throws an error for an unknown type or a bad width */
 let _layoutType = fn(): BytesLayoutType {
   if (_eatIdent("rest")) { return BytesLayoutType.Rest; }
 
@@ -1852,6 +2257,7 @@ let _layoutType = fn(): BytesLayoutType {
   }
 };
 
+// Parses a bytes-layout typedef's fields, `{ let name: type; ... }`; see `_layoutType`.
 let _parseLayoutFields = fn(): Array<BytesLayoutField> {
   expect(Token.LBrace);
   let fields = Array.new<BytesLayoutField>(0);
@@ -1867,6 +2273,10 @@ let _parseLayoutFields = fn(): Array<BytesLayoutField> {
   fields
 };
 
+/** Turns a loop body's final expression into its last statement. The statement's mark copies
+ * the span of the last mark made, which is the expression's.
+ * @param tail  the final expression
+ * @return the `Expression` statement */
 let _loopTail = fn(tail: Expr): Stmt {
   let statement = Stmt.Expression(tail);
   let last = marks[marks.len() - 1];
@@ -1879,6 +2289,23 @@ let _loopTail = fn(tail: Expr): Stmt {
   statement
 };
 
+/** Parses a declaration or a statement that starts with a keyword, without marking it:
+ *
+ *   [export] let|const pattern [<T, ...>] [: Type] = value;
+ *   [export] prototype Name [<T, ...>] { name: value; name(params) [: R] { ... }; ... };
+ *   [export] typedef Name [<T, ...>] = Type | { let f: Type; ... } | bytes-layout { ... };
+ *   [export] enum Name [<T, ...>] { Ctor; Ctor(field: Type, ...); ... } [;]
+ *   [export] macro name(a, ...) { statements } [;]
+ *   import ...;  load ...;             see `_parseImport`
+ *   while (condition) { ... } [;]
+ *   for ([index,] item in items) { ... } [;]
+ *   do { ... } while (condition);
+ *   break  continue  throw value  return [value]
+ *
+ * A jump (the last line) ends at `;` or before the `}` of its block. A loop body's final
+ * expression becomes its last statement.
+ * @throws an error for a malformed statement, or `export` before one that cannot be
+ * exported */
 let _parseStmtInner = fn(): Stmt {
   let exported = peek() == Token.Export;
   if (exported) { next(); }
@@ -1918,6 +2345,7 @@ let _parseStmtInner = fn(): Stmt {
         let field = _ident();
 
         let value = if (peek() == Token.LParen) {
+          // `m(params) { ... }` is `m: method fn(params) { ... }`.
           let methodStart = pos;
           _markExpr(_parseFunction(true), methodStart)
         } else {
@@ -1965,6 +2393,7 @@ let _parseStmtInner = fn(): Stmt {
           next();
 
           while (peek() != Token.RParen) {
+            // A field may be named by a keyword, as in `New(prototype: Expr)`.
             let field = _name();
             expect(Token.Colon);
             fields.push({ name: field, ty: _parseType() });
@@ -2076,6 +2505,14 @@ let _parseStmtInner = fn(): Stmt {
   }
 };
 
+/** Parses a source file; an optional `package a.b;` declaration, then statements to the end of
+ * the file, the last of which may be an expression without `;` (see `_statements`). It first
+ * resets the parser's state, so the marks and `parseFailureSpan` describe this parse until the
+ * next one.
+ * @param lexed  the tokens, the path, and each token's start and end byte offsets, as `lexFile`
+ * returns them
+ * @throws an error, `ParseError: ` and a message, on a syntax error, with `parseFailureSpan`
+ * locating it; for errors in statements, the first, once the whole file is parsed */
 export let parseProgram = fn(lexed: Tuple<Array<Token>, Bytes, Array<I32>, Array<I32>>): Program {
   let (input, path, tokenStartOffsets, tokenEndOffsets) = lexed;
 

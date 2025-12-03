@@ -1,14 +1,28 @@
 package support;
 
+/** @file
+ * Internal errors; a check the compiler makes of its own work failed. That is a compiler bug, never
+ * a program it rejects. The error is thrown like any other, and the driver asks
+ * `takeInternalError` whether to report it as a bug. */
+
+// Whether an internal error has been thrown since `takeInternalError` last cleared it.
 let _raised = false;
 
+/** Records an internal error and throws `message`.
+ * @param message  what the failed check found
+ * @throws an internal error, `message`, always */
 export let internalError = fn(message: Bytes): Null {
   _raised = true;
   throw message;
 };
 
+/** Checks whether an internal error has been thrown since `takeInternalError` last ran, without
+ * clearing the record. `frontend.semantics.Modules` uses it to skip its literal-range check when a
+ * failure is a compiler bug. */
 export let internalRaised = fn(): Bool { _raised };
 
+/** Checks whether an internal error has been thrown since the last call, and clears the record.
+ * `Driver` uses it to report the error as a compiler bug. */
 export let takeInternalError = fn(): Bool {
   let raised = _raised;
   _raised = false;

@@ -1,8 +1,16 @@
 package support;
 
+/** @file
+ * A JSON reader for the project's manifest, `jello.json`, which `Project` reads. It parses
+ * RFC 8259 JSON into `Json` values, each with the byte offset it starts at, so that a manifest's
+ * errors point into the file. Numbers keep their text, since a manifest holds none it computes
+ * with. */
+
 import { hexValue } from support.Text;
 import { u8, utf8FromCodepoint } from std.core.Bytes;
 
+/** A JSON value, starting at byte offset `at` of its text. An object keeps its keys in order, a
+ * repeated key once for each time it appears. */
 export enum Json {
   Null(at: I32);
   Bool(at: I32, value: Bool);
@@ -12,12 +20,15 @@ export enum Json {
   Object(at: I32, keys: Array<Bytes>, values: Array<Json>);
 }
 
+// Returns the byte offset that `value` starts at.
 export let jsonAt = fn(value: Json): I32 {
   match (value) {
     Null(at), Bool(at, _), Number(at, _), Text(at, _), List(at, _), Object(at, _, _) => at,
   }
 };
 
+/** Returns the value of `key` in `value`, the last if it repeats, or null when `value` is no
+ * object or has no such key. */
 export let jsonField = fn(value: Json, key: Bytes): ?Json {
   match (value) {
     Object(_, keys, values) => {
@@ -33,23 +44,30 @@ export let jsonField = fn(value: Json, key: Bytes): ?Json {
   }
 };
 
+// The text being read, and the offset of the next byte.
 let _text = "";
 let _pos = 0;
 
+// A parse error at `at`, which `parseJson` reports with its offset.
 let _errorAt = -1;
 
+// Throws `message`, located at offset `at`.
 let _fail = fn(at: I32, message: Bytes): Null {
   _errorAt = at;
   throw message;
 };
 
+// Returns the next byte, or -1 at the end.
 let _peek = fn(): I32 { _pos < _text.len() ? Bytes.get_u8(_text, _pos) : -1 };
 
+// Skips spaces, tabs, newlines and carriage returns.
 let _skipSpace = fn() {
   while ((_peek() == 32) || (_peek() == 9) || (_peek() == 10) || (_peek() == 13)) { _pos++; }
   null
 };
 
+/** Consumes `word` if it is next.
+ * @return whether it was */
 let _accept = fn(word: Bytes): Bool {
   let fits = _pos + word.len() <= _text.len();
   if (!fits || (Bytes.slice(_text, _pos, word.len()) != word)) { return false; }
@@ -57,6 +75,8 @@ let _accept = fn(word: Bytes): Bool {
   true
 };
 
+/** Reads the four hex digits of a `\u` escape, `_pos` at the first.
+ * @return the code unit */
 let _codeUnit = fn(): I32 {
   let unit = 0;
   let i = 0;
@@ -71,6 +91,9 @@ let _codeUnit = fn(): I32 {
   unit
 };
 
+/** Reads a string, `_pos` at its opening quote, decoding its escapes; a surrogate pair is one
+ * codepoint, and a lone surrogate an error.
+ * @return the string's bytes */
 let _string = fn(): Bytes {
   let start = _pos;
   _pos++;
@@ -126,12 +149,15 @@ let _string = fn(): Bytes {
   parts.join("")
 };
 
+/** Consumes the digits next.
+ * @return how many there were */
 let _digits = fn(): I32 {
   let start = _pos;
   while ((_peek() >= "0".code) && (_peek() <= "9".code)) { _pos++; }
   _pos - start
 };
 
+// Reads a number, `_pos` at its first byte.
 let _number = fn(): Json {
   let start = _pos;
   _accept("-");
@@ -149,6 +175,7 @@ let _number = fn(): Json {
   Json.Number(start, Bytes.slice(_text, start, _pos - start))
 };
 
+// Reads a value, after any space before it.
 let _value = fn(): Json {
   _skipSpace();
   let start = _pos;
@@ -203,6 +230,8 @@ let _value = fn(): Json {
   }
 };
 
+/** Parses `text` as one JSON value, with nothing but space after it.
+ * @return the value, or the message and offset of the first error */
 export let parseJson = fn(text: Bytes): Tuple<?Json, Bytes, I32> {
   _text = text;
   _pos = 0;

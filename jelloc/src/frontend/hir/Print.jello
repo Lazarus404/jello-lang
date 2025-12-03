@@ -1,5 +1,15 @@
 package frontend.hir;
 
+/** @file
+ * Prints a checked HIR program as indented text for `jelloc --hir`, after the checker (and its
+ * verifier) and before lowering. Each expression, binding and statement starts a line naming its
+ * operation and immediates (a `Declare` prints only its bindings' lines, and parameters and
+ * captures share their function's line). An expression's or binding's line then gives `: ` and
+ * its type, and with `--spans` each of these ends with its source span. Operands and nested
+ * statements follow, indented one level deeper.
+ * Functions print first as `fn @N`, where `N` is the function ID, then the program body's
+ * statements and tail. */
+
 import type { Hir } from frontend.hir.Hir;
 import {
   KIND_ENUM, auxOf, bytesOf, childCount, childOf, globalNameOf, hirTypeName, innerOf, isFloatType,
@@ -9,8 +19,13 @@ import {
 import { internalError } from support.Internal;
 import { bytesLiteral } from support.Text;
 
+// Whether lines end with source spans, as for `jelloc --hir --spans`.
 let _withSpans = false;
 
+/** Returns the span suffix of node `id`'s line; ` @start..end`, followed by the source path when it
+ * differs from the program root's. Compares paths by bytes ID.
+ * @param id  the node
+ * @return the suffix, or "" when spans are not being printed */
 let _at = fn(id: I32): Bytes {
   if (!_withSpans) { return ""; }
 
@@ -19,12 +34,22 @@ let _at = fn(id: I32): Bytes {
   `${range} ${spanOf(id).path}`
 };
 
+// Returns the end of an expression line; `: `, node `id`'s type, its span suffix and a newline.
 let _typed = fn(id: I32): Bytes { `: ${hirTypeName(typeOf(id))}${_at(id)}\n` };
 
+// Returns node `id`'s `value` immediate in decimal, such as a binding, global or function ID.
 let _id = fn(id: I32): Bytes { Std.string(valueOf(id)) };
 
+// Returns the type of the first child of node `id`, by name.
 let _childType = fn(id: I32): Bytes { hirTypeName(typeOf(childOf(id, 0))) };
 
+/** Prints the children of `parent` in `[start, end)` as expressions, one level deeper than
+ * `indent`.
+ * @param parent  the node whose children are printed
+ * @param start  the first child index
+ * @param end  the child index after the last
+ * @param indent  the parent's indentation
+ * @return the children's lines */
 let _children = fn(parent: I32, start: I32, end: I32, indent: Bytes): Bytes {
   let output = Array.new<Bytes>(0);
   let i = start;
@@ -36,6 +61,11 @@ let _children = fn(parent: I32, start: I32, end: I32, indent: Bytes): Bytes {
   output.join("")
 };
 
+/** Prints a `Let`, `Const` or `InitGlobal` binding of a `Declare`; a `let %id name`, `const %id
+ * name` or `global gid name` header with its type, then its value one level deeper.
+ * @param id  the binding node
+ * @param indent  the header's indentation
+ * @return the binding's lines */
 let _binding = fn(id: I32, indent: Bytes): Bytes {
   let header = match (opOf(id)) {
     Let => `let %${_id(id)} ${bytesOf(auxOf(id))}`,
@@ -45,34 +75,61 @@ let _binding = fn(id: I32, indent: Bytes): Bytes {
   `${indent}${header}${_typed(id)}${_expr(childOf(id, 0), indent + "  ")}`
 };
 
+/** Returns how a comparison of operands of type `ty` is named after its operator; `.u.` or `.s.`,
+ * then the type. */
 let _signed = fn(ty: I32): Bytes {
   let signedness = isFloatType(ty) ? "." : isUnsigned(ty) ? ".u." : ".s.";
   signedness + hirTypeName(ty)
 };
 
+/** Prints an operation as `name` and node `id`'s type, followed by all of its children as operands.
+ * @param name  the operation's text, including any immediates
+ * @param id  the node
+ * @param indent  the line's indentation
+ * @return the operation's lines */
 let _operation = fn(name: Bytes, id: I32, indent: Bytes): Bytes {
   `${indent}${name}${_typed(id)}${_children(id, 0, childCount(id), indent)}`
 };
 
+/** Prints a labelled operand of a structured node such as `if`, `try` or `while`; `name` one level
+ * deeper than `indent`, then child `index` of `id` as an expression two levels deeper.
+ * @param name  the label
+ * @param id  the structured node
+ * @param index  the child to print
+ * @param indent  the structured node's indentation
+ * @return the section's lines */
 let _section = fn(name: Bytes, id: I32, index: I32, indent: Bytes): Bytes {
   `${indent}  ${name}\n${_expr(childOf(id, index), indent + "    ")}`
 };
 
+// Returns child `index` of `id`, a block, as a section of statements labelled `name`.
 let _blockSection = fn(name: Bytes, id: I32, index: I32, indent: Bytes): Bytes {
   `${indent}  ${name}\n${_statements(childOf(id, index), indent + "    ")}`
 };
 
+// Returns the key the object access `id` names, as " :name", or "" when a child holds it.
 let _key = fn(id: I32): Bytes { valueOf(id) < 0 ? "" : ` :${bytesOf(valueOf(id))}` };
 
+/** Returns the handler label of `Try` or `TryStatement` node `id`; `catch` for a bare catch, or
+ * `catch %id name: Dynamic` when the thrown value is bound.
+ * @param id  the try node
+ * @return the label */
 let _catch = fn(id: I32): Bytes {
   valueOf(id) < 0 ? "catch" : `catch %${_id(id)} ${bytesOf(auxOf(id))}: Dynamic`
 };
 
+// Returns the text of an `is_kind` test: the kind code, and for an enum its type.
 let _isKind = fn(id: I32): Bytes {
   let enumType = valueOf(id) == KIND_ENUM ? ` ${hirTypeName(auxOf(id))}` : "";
   `is_kind ${_id(id)}${enumType}`
 };
 
+/** Prints expression node `id` and its operands.
+ * @param id  the expression node
+ * @param indent  the indentation of its first line
+ * @return the node's lines
+ * @throws an internal error if `id` is a statement op or anything else that is not an
+ *   expression */
 let _expr = fn(id: I32, indent: Bytes): Bytes {
   match (opOf(id)) {
     Bool => `${indent}bool ${valueOf(id) == 1 ? "true" : "false"}${_typed(id)}`,
@@ -165,6 +222,7 @@ let _expr = fn(id: I32, indent: Bytes): Bytes {
     Tuple => _operation("tuple", id, indent),
     Block => {
       let deeper = `${indent}  `;
+      // A block that ends every path may have no tail.
       let tail = auxOf(id) == 1 ? _expr(lastChild(id), deeper) : "";
       `${indent}block${_typed(id)}${_statements(id, deeper)}${tail}`
     },
@@ -186,6 +244,8 @@ let _expr = fn(id: I32, indent: Bytes): Bytes {
   }
 };
 
+/** Prints the `else` of `IfStatement` node `id`: a nested `if` prints as itself, so that an
+ * `else if` chain reads as one, and any other block as its statements. */
 let _otherwise = fn(id: I32, indent: Bytes): Bytes {
   let otherwise = childOf(id, 2);
 
@@ -195,6 +255,13 @@ let _otherwise = fn(id: I32, indent: Bytes): Bytes {
   }
 };
 
+/** Prints statement node `id`. A `Declare` prints each of its bindings at `indent`, and an `else`
+ * that is an `IfStatement` prints as a nested `if`.
+ * @param id  the statement node
+ * @param indent  the statement's indentation
+ * @return the statement's lines
+ * @throws an internal error if `id` is an expression op or anything else that is not a
+ *   statement */
 let _statement = fn(id: I32, indent: Bytes): Bytes {
   let deeper = `${indent}  `;
 
@@ -243,6 +310,11 @@ let _statement = fn(id: I32, indent: Bytes): Bytes {
   }
 };
 
+/** Prints the statements of block `id`, leaving out its tail; a block's `aux` is 1 when its last
+ * child is a tail.
+ * @param id  the block node
+ * @param indent  the indentation of each statement
+ * @return the statements' lines */
 let _statements = fn(id: I32, indent: Bytes): Bytes {
   let output = Array.new<Bytes>(0);
   let i = 0;
@@ -254,6 +326,13 @@ let _statements = fn(id: I32, indent: Bytes): Bytes {
   output.join("")
 };
 
+/** Prints `Function` node `id` as `fn @functionId name(params) captures(...) -> result`, then its
+ * body's statements and, when the body has one, its tail under a `tail` label. The first
+ * `typeArgCount(typeOf(id))` children are the parameters, and any others before the body are
+ * captures.
+ * @param id  the function node
+ * @param functionId  the function ID, as `Call` and `FunctionRef` name it
+ * @return the function's lines */
 let _function = fn(id: I32, functionId: I32): Bytes {
   let output = `  fn @${functionId} ${bytesOf(valueOf(id))}(`;
   let params = typeArgCount(typeOf(id));
@@ -272,6 +351,10 @@ let _function = fn(id: I32, functionId: I32): Bytes {
   output
 };
 
+/** Prints `program`; a `program` line, its functions, then its body's statements and tail. Makes
+ * `program` the current HIR (`Hir.useHir`).
+ * @param program  the checked program
+ * @return the listing */
 let _print = fn(program: Hir): Bytes {
   useHir(program);
   let root = rootNode();
@@ -283,17 +366,20 @@ let _print = fn(program: Hir): Bytes {
     i++;
   }
 
+  // The program body block prints its statements and tail at program level.
   let body = lastChild(root);
   output.push(_statements(body, "  "));
   output.push(_expr(lastChild(body), "  "));
   output.join("")
 };
 
+// Returns the listing of `program` without source spans, as for `jelloc --hir`.
 export let printHir = fn(program: Hir): Bytes {
   _withSpans = false;
   _print(program)
 };
 
+// Returns the listing of `program` with each node's source span, as for `jelloc --hir --spans`.
 export let printHirWithSpans = fn(program: Hir): Bytes {
   _withSpans = true;
   _print(program)

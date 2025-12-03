@@ -1,9 +1,16 @@
 package std.core;
 
+/* Functions of lists, which a program calls as List.f(xs, ...) or as
+ * xs.f(...); the compiler's intrinsics nil, cons, head, tail and is_nil win.
+ * A list is immutable, so a function that changes one returns a new list.
+ * An index out of range throws. */
+
 import { sort as sortArray } from std.core.Array;
 
+// Whether VALUES has no items.
 export let isEmpty<T> = fn(values: List<T>): Bool { List.is_nil(values) };
 
+// The number of items of VALUES.
 export let len<T> = fn(values: List<T>): I32 {
   let n = 0;
   let rest = values;
@@ -15,6 +22,7 @@ export let len<T> = fn(values: List<T>): I32 {
   n
 };
 
+// The items of VALUES, consed in reverse onto ONTO.
 let _reverseOnto<T> = fn(values: List<T>, onto: List<T>): List<T> {
   let out = onto;
   let rest = values;
@@ -26,8 +34,10 @@ let _reverseOnto<T> = fn(values: List<T>, onto: List<T>): List<T> {
   out
 };
 
+// VALUES, reversed.
 export let reverse<T> = fn(values: List<T>): List<T> { _reverseOnto(values, List.nil<T>()) };
 
+// The index of the first VALUE in VALUES, or -1.
 export let indexOf<T: Eq> = fn(values: List<T>, value: T): I32 {
   let i = 0;
   let rest = values;
@@ -40,8 +50,10 @@ export let indexOf<T: Eq> = fn(values: List<T>, value: T): I32 {
   -1
 };
 
+// Whether VALUES holds VALUE.
 export let contains<T: Eq> = fn(values: List<T>, value: T): Bool { indexOf(values, value) >= 0 };
 
+// The first item of VALUES that KEEP holds for, or null.
 export let first<T> = fn(values: List<T>, keep: (T) -> Bool): ?T {
   let rest = values;
 
@@ -52,6 +64,7 @@ export let first<T> = fn(values: List<T>, keep: (T) -> Bool): ?T {
   null
 };
 
+// The last item of VALUES that KEEP holds for, or null.
 export let last<T> = fn(values: List<T>, keep: (T) -> Bool): ?T {
   let found: ?T = null;
   let rest = values;
@@ -63,6 +76,7 @@ export let last<T> = fn(values: List<T>, keep: (T) -> Bool): ?T {
   found
 };
 
+// The result of F for each item of VALUES, in order.
 export let map<T, U> = fn(values: List<T>, f: (T) -> U): List<U> {
   let out = List.nil<U>();
   let rest = values;
@@ -74,6 +88,7 @@ export let map<T, U> = fn(values: List<T>, f: (T) -> U): List<U> {
   reverse(out)
 };
 
+// The result of F for each item of VALUES and its index, in order.
 export let mapIndexed<T, U> = fn(values: List<T>, f: (T, I32) -> U): List<U> {
   let out = List.nil<U>();
   let i = 0;
@@ -87,6 +102,7 @@ export let mapIndexed<T, U> = fn(values: List<T>, f: (T, I32) -> U): List<U> {
   reverse(out)
 };
 
+// The items of VALUES that KEEP holds for, in order.
 export let filter<T> = fn(values: List<T>, keep: (T) -> Bool): List<T> {
   let out = List.nil<T>();
   let rest = values;
@@ -99,6 +115,7 @@ export let filter<T> = fn(values: List<T>, keep: (T) -> Bool): List<T> {
   reverse(out)
 };
 
+// The items of VALUES that KEEP holds for, with their indexes, in order.
 export let filterIndexed<T> = fn(values: List<T>, keep: (T, I32) -> Bool): List<T> {
   let out = List.nil<T>();
   let i = 0;
@@ -113,6 +130,7 @@ export let filterIndexed<T> = fn(values: List<T>, keep: (T, I32) -> Bool): List<
   reverse(out)
 };
 
+// The items of VALUES that DROP does not hold for, in order.
 export let reject<T> = fn(values: List<T>, drop: (T) -> Bool): List<T> {
   let out = List.nil<T>();
   let rest = values;
@@ -125,6 +143,8 @@ export let reject<T> = fn(values: List<T>, drop: (T) -> Bool): List<T> {
   reverse(out)
 };
 
+/* The items of VALUES that DROP does not hold for, with their indexes, in
+ * order. */
 export let rejectIndexed<T> = fn(values: List<T>, drop: (T, I32) -> Bool): List<T> {
   let out = List.nil<T>();
   let i = 0;
@@ -139,6 +159,7 @@ export let rejectIndexed<T> = fn(values: List<T>, drop: (T, I32) -> Bool): List<
   reverse(out)
 };
 
+// INITIAL, after F folds in each item of VALUES in order.
 export let reduce<T, U> = fn(values: List<T>, initial: U, f: (U, T) -> U): U {
   let result = initial;
   let rest = values;
@@ -150,6 +171,7 @@ export let reduce<T, U> = fn(values: List<T>, initial: U, f: (U, T) -> U): U {
   result
 };
 
+// INITIAL, after F folds in each item of VALUES and its index in order.
 export let reduceIndexed<T, U> = fn(values: List<T>, initial: U, f: (U, T, I32) -> U): U {
   let result = initial;
   let i = 0;
@@ -163,6 +185,7 @@ export let reduceIndexed<T, U> = fn(values: List<T>, initial: U, f: (U, T, I32) 
   result
 };
 
+// VALUES, after calling F on each item in order.
 export let forEach<T> = fn(values: List<T>, f: (T) -> Null): List<T> {
   let rest = values;
 
@@ -173,6 +196,7 @@ export let forEach<T> = fn(values: List<T>, f: (T) -> Null): List<T> {
   values
 };
 
+// VALUES, after calling F on each item and its index in order.
 export let forEachIndexed<T> = fn(values: List<T>, f: (T, I32) -> Null): List<T> {
   let i = 0;
   let rest = values;
@@ -185,6 +209,7 @@ export let forEachIndexed<T> = fn(values: List<T>, f: (T, I32) -> Null): List<T>
   values
 };
 
+// The items of VALUES, in order, in a new array.
 export let toArray<T> = fn(values: List<T>): Array<T> {
   let out = Array.new<T>(0);
   let rest = values;
@@ -196,15 +221,20 @@ export let toArray<T> = fn(values: List<T>): Array<T> {
   out
 };
 
+// The items of PARTS, with SEPARATOR between each two.
 export let join = fn(parts: List<Bytes>, separator: Bytes): Bytes { toArray(parts).join(separator) };
 
+/* The items of VALUES and then those of MORE, which is shared, as VALUES is
+ * when MORE is empty. */
 export let concat<T> = fn(values: List<T>, more: List<T>): List<T> {
   if (List.is_nil(more)) { return values; }
   _reverseOnto(reverse(values), more)
 };
 
+// VALUES with VALUE after its items.
 export let append<T> = fn(values: List<T>, value: T): List<T> { concat(values, List.cons(value, List.nil<T>())) };
 
+// The COUNT items of VALUES from index START on.
 export let slice<T> = fn(values: List<T>, start: I32, count: I32): List<T> {
   if ((start < 0) || (count < 0)) { throw "List.slice index out of range"; }
   let out = List.nil<T>();
@@ -220,6 +250,8 @@ export let slice<T> = fn(values: List<T>, start: I32, count: I32): List<T> {
   reverse(out)
 };
 
+/* The items of VALUES before index AT, reversed, and the list from AT on;
+ * WHAT names the function for the error when AT is out of range. */
 let _split<T> = fn(values: List<T>, at: I32, what: Bytes): Tuple<List<T>, List<T>> {
   if (at < 0) { throw what + " index out of range"; }
   let before = List.nil<T>();
@@ -235,17 +267,21 @@ let _split<T> = fn(values: List<T>, at: I32, what: Bytes): Tuple<List<T>, List<T
   (before, rest)
 };
 
+// VALUES with VALUE inserted at index AT, from 0 to its length.
 export let insert<T> = fn(values: List<T>, at: I32, value: T): List<T> {
   let (before, rest) = _split(values, at, "List.insert");
   _reverseOnto(before, List.cons(value, rest))
 };
 
+// VALUES without the item at index AT.
 export let remove<T> = fn(values: List<T>, at: I32): List<T> {
   let (before, rest) = _split(values, at, "List.remove");
   if (List.is_nil(rest)) { throw "List.remove index out of range"; }
   _reverseOnto(before, List.tail(rest))
 };
 
+/* The items of VALUES, sorted by a stable merge sort; COMPARE(a, b) is below
+ * 0 when a goes before b, above 0 when after, and 0 when either may. */
 export let sort<T> = fn(values: List<T>, compare: (T, T) -> I32): List<T> {
   let sorted = sortArray(toArray(values), compare);
   let out = List.nil<T>();

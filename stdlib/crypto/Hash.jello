@@ -1,5 +1,12 @@
 package std.crypto;
 
+/* Digests, message authentication codes and key derivation. Algorithms are
+ * named "md5", "sha1", "sha224", "sha256", "sha384" and "sha512"; any other
+ * name throws. MD5 and SHA-1 are broken for signatures and certificates, so
+ * are for checksums and older protocols. Digests and codes are raw bytes;
+ * Bytes.toHex gives their usual text. On Mbed TLS, in the native library
+ * tls.jdll, which a program importing this module needs. */
+
 load {
   crypto_digest_length,
   crypto_digest,
@@ -15,14 +22,17 @@ let _hmac: (Bytes, Bytes, Bytes) -> Bytes = crypto_hmac;
 let _pbkdf2: (Bytes, Bytes, Bytes, I32, I32) -> Bytes = crypto_pbkdf2;
 let _hkdf: (Bytes, Bytes, Bytes, Bytes, I32) -> Bytes = crypto_hkdf;
 
+// The bytes in ALGORITHM's digests; WHO throws when there is no such algorithm.
 let _size = fn(who: Bytes, algorithm: Bytes): I32 {
   let size = _length(algorithm);
   if (size == 0) { throw who + ": unknown algorithm " + algorithm; };
   size
 };
 
+// The bytes in ALGORITHM's digests, as 32 for "sha256".
 export let size = fn(algorithm: Bytes): I32 { _size("Hash.size", algorithm) };
 
+// The digest of DATA by ALGORITHM.
 export let digest = fn(algorithm: Bytes, data: Bytes): Bytes {
   _size("Hash.digest", algorithm);
   _digest(algorithm, data)
@@ -34,13 +44,20 @@ export let sha256 = fn(data: Bytes): Bytes { _digest("sha256", data) };
 export let sha384 = fn(data: Bytes): Bytes { _digest("sha384", data) };
 export let sha512 = fn(data: Bytes): Bytes { _digest("sha512", data) };
 
+// The HMAC (RFC 2104) of DATA under KEY, by ALGORITHM.
 export let hmac = fn(algorithm: Bytes, key: Bytes, data: Bytes): Bytes {
   _size("Hash.hmac", algorithm);
   _hmac(algorithm, key, data)
 };
 
+/* Whether A and B, such as a code received and the one expected, are equal,
+ * taking a time that depends only on their lengths, so that how long it takes
+ * gives nothing away about where they differ. */
 export let equal: (Bytes, Bytes) -> Bool = crypto_equal;
 
+/* LENGTH bytes of key from PASSWORD and SALT by PBKDF2 (RFC 8018), with HMAC
+ * by ALGORITHM run ITERATIONS times, which makes guessing passwords slow. The
+ * salt is random, 16 bytes or more, and kept with what the key protects. */
 export let pbkdf2 = fn(algorithm: Bytes, password: Bytes, salt: Bytes, iterations: I32,
   length: I32): Bytes {
   _size("Hash.pbkdf2", algorithm);
@@ -49,6 +66,10 @@ export let pbkdf2 = fn(algorithm: Bytes, password: Bytes, salt: Bytes, iteration
   _pbkdf2(algorithm, password, salt, iterations, length)
 };
 
+/* LENGTH bytes of key from KEY, a secret that is already random, such as a
+ * shared one, by HKDF (RFC 5869) with ALGORITHM; SALT, which may be empty, and
+ * INFO, what the key is for, make different keys from the one secret. LENGTH
+ * is at most 255 digests. */
 export let hkdf = fn(algorithm: Bytes, key: Bytes, salt: Bytes, info: Bytes, length: I32): Bytes {
   let most = 255 * _size("Hash.hkdf", algorithm);
 

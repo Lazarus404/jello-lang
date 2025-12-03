@@ -1,15 +1,28 @@
 package ir;
 
+/** @file
+ * Liveness of an IR function's registers; the registers it reads, on some path from each
+ * block's start, before writing them. Sets are lists of members, so the work follows what is
+ * live, not how many registers the function has. Past the function's registers come its spill
+ * slots; a `SpillPush` writes one and a `SpillPop` reads it. The register allocator
+ * (`backend.jello.Allocate`) builds interference from it, and `ir.Verify` checks with it that
+ * every register and spill slot is written before it is read. */
+
 import type { BasicBlock, Instruction } from ir.Model;
 import { instructionMayThrow } from ir.Model;
 import { blockCatch, blockIndexes, normalSuccessors, terminatorRead } from ir.Cfg;
 
+/** The register count of the function being analysed; spill slot `n` is liveness member
+ * `_registers + n`. */
 let _registers = 0;
 
+// Returns the members `insn` reads; its argument registers, or for a `SpillPop` its slot.
 let _reads = fn(insn: Instruction): Array<I32> {
   match (insn.op) { SpillPop => [_registers + insn.imm], _ => insn.args }
 };
 
+/** Returns the members `insn` writes; its destination if it has one, or for a `SpillPush` its
+ * slot. */
 let _writes = fn(insn: Instruction): Array<I32> {
   match (insn.op) {
     SpillPush => [_registers + insn.imm],
@@ -17,6 +30,12 @@ let _writes = fn(insn: Instruction): Array<I32> {
   }
 };
 
+/** Adds `value` to `set` and marks it with `stamp`, unless it is already marked. Stamping instead
+ * of clearing makes starting a new set O(1).
+ * @param set  the set's members
+ * @param marks  a mark per member
+ * @param stamp  the current set's stamp
+ * @param value  the member to add */
 let _add = fn(set: Array<I32>, marks: Array<I32>, stamp: I32, value: I32) {
   if (marks[value] != stamp) {
     marks[value] = stamp;
@@ -25,6 +44,7 @@ let _add = fn(set: Array<I32>, marks: Array<I32>, stamp: I32, value: I32) {
   null
 };
 
+// Marks every member of `values` with `stamp` in `marks`, which holds a mark per member.
 let _mark = fn(values: Array<I32>, marks: Array<I32>, stamp: I32) {
   for (value in values) {
     marks[value] = stamp;
@@ -32,6 +52,18 @@ let _mark = fn(values: Array<I32>, marks: Array<I32>, stamp: I32) {
   null
 };
 
+/** Computes the live-in and live-out sets of each block by backward dataflow to a fixed point.
+ * A block that may throw into a catch block flows into it too; what the catch reads, less the
+ * payload the VM writes as it enters it, is live out of the block. Into the block it is live
+ * from the first instruction that may throw, since a value written before that is the one a
+ * throw carries. With `fromStart` it is live from the block's start instead, so no register
+ * the catch reads is reused anywhere in the block, whichever call throws; the allocator asks
+ * for this and the verifier does not.
+ * @param blocks  the function's blocks
+ * @param registers  the function's register count
+ * @param slots  the number of spill slots, members `registers` onwards
+ * @param fromStart  whether what a catch reads is live into a throwing block from its start
+ * @return the live-in and live-out member lists, by block index in `blocks` */
 export let liveness = fn(
   blocks: Array<BasicBlock>,
   registers: I32,
@@ -42,6 +74,8 @@ export let liveness = fn(
   let count = registers + slots;
   let indexes = blockIndexes(blocks);
 
+  /* A member is in the set being built, written by the block, or written before its first
+   * throw while its mark in `marks`, `written` or `early` holds the current stamp. */
   let marks = Array.new<I32>(count);
   let written = Array.new<I32>(count);
   let early = Array.new<I32>(count);
@@ -55,6 +89,8 @@ export let liveness = fn(
   }
   let stamp = 0;
 
+  /* Per block; what it reads before writing, what it writes, what it writes before it may
+   * first throw, its successors, and its catch block and payload. */
   let uses = Array.new<Array<I32>>(0);
   let defs = Array.new<Array<I32>>(0);
   let kills = Array.new<Array<I32>>(0);
@@ -105,6 +141,7 @@ export let liveness = fn(
     liveOut.push(Array.new<I32>(0));
   }
 
+  // The sets only grow, so a block's live-in changed exactly when it has more members.
   let changed = true;
 
   while (changed) {

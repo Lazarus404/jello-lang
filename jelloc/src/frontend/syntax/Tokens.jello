@@ -1,9 +1,14 @@
 package frontend.syntax;
 
+/** @file
+ * Text forms of lexer tokens. `printTokens` writes the variant names that `jelloc --lex` prints,
+ * and `tokenText` gives the source spelling the parser quotes in its errors. */
+
 import type { FloatSize, IntSize } from frontend.syntax.Ast;
 import type { Token } from frontend.syntax.Lexer;
 import { bytesLiteral } from support.Text;
 
+// Returns the variant name of integer suffix `size`, for `_tokenName`.
 let _integerSize = fn(size: IntSize): Bytes {
   match (size) {
     Infer => "Infer",
@@ -18,6 +23,7 @@ let _integerSize = fn(size: IntSize): Bytes {
   }
 };
 
+// Returns the variant name of float suffix `size`, for `_tokenName`.
 let _floatSize = fn(size: FloatSize): Bytes {
   match (size) {
     Infer => "Infer",
@@ -27,6 +33,8 @@ let _floatSize = fn(size: FloatSize): Bytes {
   }
 };
 
+/** Returns the variant name of `token` with its payload, such as `Ident("x")` or
+ * `IntegerConstant(1, I64)`, as `printTokens` writes it. */
 let _tokenName = fn(token: Token): Bytes {
   match (token) {
     Ident(name) => `Ident(${bytesLiteral(name)})`,
@@ -129,6 +137,11 @@ let _tokenName = fn(token: Token): Bytes {
   }
 };
 
+/** Returns `token` as source spells it, near enough for a diagnostic; a constant's digits
+ * without their suffix, a bytes literal double-quoted with its escapes normalised, a template's
+ * text with its delimiters, and a keyword or operator exactly. The end of the file has no
+ * spelling.
+ * @return the spelling, or "" for `Eof` */
 export let tokenText = fn(token: Token): Bytes {
   match (token) {
     Ident(name) => name,
@@ -230,6 +243,8 @@ export let tokenText = fn(token: Token): Bytes {
   }
 };
 
+/** Checks whether `token` is a keyword. The parser still accepts a keyword as a member, field or
+ * object-key name. */
 export let isKeyword = fn(token: Token): Bool {
   match (token) {
     As, Await, Bits, Break, Catch, Const, Continue, Do, Else, EnumDecl, Export, False, Fn, For,
@@ -239,6 +254,9 @@ export let isKeyword = fn(token: Token): Bool {
   }
 };
 
+/** Lists tokens one per line by `_tokenName`, for `jelloc --lex`.
+ * @param tokens  the tokens, ending with `Eof`
+ * @return the listing, each line ending in a newline */
 export let printTokens = fn(tokens: Array<Token>): Bytes {
   tokens.map(fn(token: Token): Bytes { `${_tokenName(token)}\n` }).join("")
 };

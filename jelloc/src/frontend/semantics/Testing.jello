@@ -1,5 +1,18 @@
 package frontend.semantics;
 
+/** @file
+ * Checks `std.testing`'s assertions, `equal`, `notEqual`, `isTrue`, `isNull` and `throws`, and
+ * `System.assert` and `System.assertEq`, which the checker expands at each call into HIR. An
+ * assertion therefore takes values of any type `==` compares, evaluates each argument once, in
+ * order, and knows where it was called. A passing one builds no strings; a failing one calls
+ * `std.testing`'s reporter for it (`failEqual`, `failNotEqual`, `failFalse` or `failNotNull`)
+ * with the call's location and the values as literals (`frontend.semantics.Derived`). `throws` is
+ * always a call of `throwsAt`, which runs the function. `frontend.semantics.Modules` declares the
+ * assertions while it checks `std.testing` and registers `checkAssertion` with
+ * `frontend.semantics.TypeCheck`, which calls it for a call of an intrinsic binding;
+ * `frontend.semantics.Aggregates` calls `checkSystemAssertion`. A failing `System` assertion
+ * throws Bytes naming the call's location and, for `assertEq`, both values and any message. */
+
 import type { Expr as AstExpr } from frontend.syntax.Ast;
 import { BinaryOp } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
@@ -16,8 +29,11 @@ import {
 } from frontend.semantics.TypeCheck;
 import { E0400, E0408, E0600, coded } from support.Codes;
 
+// The names of the assertions `std.testing` exports.
 let _ASSERTIONS = ["equal", "notEqual", "isTrue", "isNull", "throws"];
 
+/** Declares each assertion in `std.testing`'s scope as a `Binding.Intrinsic` and exports it.
+ * @param module  `std.testing`'s module index */
 export let declareAssertions = fn(module: I32): Bool {
   for (name in _ASSERTIONS) {
     declareScoped(name, Binding.Intrinsic(module, name));
@@ -26,16 +42,29 @@ export let declareAssertions = fn(module: I32): Bool {
   true
 };
 
+// Formats where `span` starts, as `path:line:column`.
 let _located = fn(span: SourceSpan): Bytes {
   let (line, column) = locate(span.path, span.start);
   `${span.path}:${line}:${column}`
 };
 
+/** Formats where the call being checked starts, from the current syntax's span.
+ * @return `path:line:column`, or "" when there is no current span */
 let _location = fn(): Bytes {
   let span = currentSpan();
   span == null ? "" : _located(span)
 };
 
+/** Checks an assertion's argument against the type it requires; the call's syntax is current, and
+ * argument `index` is its child `index + 1`.
+ * @param args  the call's arguments
+ * @param index  the argument's index
+ * @param ty  the type it requires
+ * @param name  the name the call uses, for the error
+ * @param what  what the argument is, for the error, such as "a test"
+ * @return the checked argument
+ * @throws a failure that ends the check; an argument whose type does not unify with `ty` is
+ *   recorded */
 let _argument = fn(args: Array<AstExpr>, index: I32, ty: I32, name: Bytes, what: Bytes): I32 {
   let value = widened(checkOperand(args[index], index + 1, ty), ty);
 
@@ -46,19 +75,39 @@ let _argument = fn(args: Array<AstExpr>, index: I32, ty: I32, name: Bytes, what:
   value
 };
 
+/** Returns an expression that renders `value` as a failure shows it; as a value literal, with
+ * Bytes quoted (`Derived.literalOf`). It reads `binding`, or `value` itself for a variant
+ * without a payload.
+ * @param binding  the binding that holds `value` (`Values.bindOnce`), or -1
+ * @param value  the checked value
+ * @return the Bytes expression */
 let _shown = fn(binding: I32, value: I32): I32 {
   literalOf(binding < 0 ? value : H.local(binding, H.typeOf(value)))
 };
 
+/** Returns a call of one of `std.testing`'s reporters.
+ * @param module  `std.testing`'s module index
+ * @param reporter  the reporter's name, such as "failEqual"
+ * @param args  the checked arguments */
 let _report = fn(module: I32, reporter: Bytes, args: Array<I32>): I32 {
   callFunction(namespaceMember(module, "std.testing", reporter), `std.testing.${reporter}`, args)
 };
 
+/** Returns an `Op.If` that is null when `condition` holds and otherwise runs `failure`.
+ * @param condition  the Bool test
+ * @param failure  the reporter call */
 let _unless = fn(condition: I32, failure: I32): I32 {
   let passed = H.opNode(Op.Null, H.TYPE_NULL, []);
   H.opNode(Op.If, H.TYPE_NULL, [condition, passed, failure])
 };
 
+/** Expands `System.assert(condition)` or `System.assertEq(got, want[, message])` into a Null
+ * block that evaluates each argument once, in order, and throws if the assertion fails. The
+ * call's syntax is current, and its arguments follow its callee.
+ * @param assertion  "assert" or "assertEq"
+ * @param name  the name the call uses, for errors
+ * @param args  the call's arguments
+ * @throws a located error if the argument count or an argument's type is wrong */
 export let checkSystemAssertion = fn(assertion: Bytes, name: Bytes, args: Array<AstExpr>): I32 {
   let at = `${_location()}: `;
 
@@ -90,6 +139,16 @@ export let checkSystemAssertion = fn(assertion: Bytes, name: Bytes, args: Array<
   H.node(Op.Block, H.TYPE_NULL, 0, 1, statements)
 };
 
+/** Expands a call of an assertion into a Null block that binds the values it reports and then
+ * tests them; `throws` becomes a call of `throwsAt` instead. Its first argument is the Test;
+ * `equal` and `notEqual` take two values, `isTrue` a condition, `isNull` a nullable value and
+ * `throws` a `() -> Null` function. The call's syntax is current, and its arguments follow its
+ * callee.
+ * @param module  `std.testing`'s module index
+ * @param assertion  the assertion, one of `_ASSERTIONS`
+ * @param name  the name the call uses, for errors
+ * @param args  the call's arguments
+ * @throws a located error if the argument count or an argument's type is wrong */
 export let checkAssertion = fn(
   module: I32,
   assertion: Bytes,
@@ -107,6 +166,7 @@ export let checkAssertion = fn(
     return _report(module, "throwsAt", [test, at, run]);
   }
 
+  // The test is read again on failure; a local as itself, anything else through a binding.
   let statements = Array.new<I32>(0);
   let t = H.opOf(test) == Op.Local ? H.valueOf(test) : bindOnce(statements, "t", test);
 

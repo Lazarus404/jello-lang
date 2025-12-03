@@ -1,5 +1,13 @@
 package frontend.semantics;
 
+/** @file
+ * Checks `Function.bind` and `Function.callWith` into HIR, as `f.bind(...)` and
+ * `f.callWith(...)` too. A function's `this` is its first parameter; a prototype's method, which
+ * `o.m` reads, takes its receiver there. `callWith(f, thisArg, args)` calls `f` with `thisArg` as
+ * its `this` and then `args`; `bind(f, thisArg, args)` evaluates them once and gives a function of
+ * the parameters after them, which calls `f` with them first. `frontend.semantics.Aggregates`
+ * passes the calls here, with the call's syntax current and `args[i]` its child `i + 1`. */
+
 import type { Expr as AstExpr } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import { Kind, Op } from frontend.hir.Hir;
@@ -15,10 +23,18 @@ import {
   syntaxChild
 } from frontend.semantics.TypeCheck;
 
+// Checks whether `name` is a function of `Function`.
 export let isFunctionIntrinsic = fn(name: Bytes): Bool {
   match (name) { "bind", "callWith" => true, _ => false }
 };
 
+/** Checks `bind(f, thisArg, args)`, the function that calls `f` with `thisArg` and `args` first
+ * and then its own arguments; they are evaluated once, when it is made, and are its captures.
+ * @param function  the checked `f`
+ * @param args  `thisArg` and the arguments it fixes
+ * @return the closure
+ * @throws a located error if there is no `thisArg`, if `f` takes fewer parameters than are fixed,
+ *   or a fixed argument would fill a `T...` */
 let _bind = fn(function: I32, args: Array<AstExpr>): I32 {
   let ty = H.typeOf(function);
   let count = H.typeArgCount(ty);
@@ -44,6 +60,7 @@ let _bind = fn(function: I32, args: Array<AstExpr>): I32 {
   let fixedType = H.functionType(prefix, H.innerOf(ty));
   let captured = [function].appendFrom(checkArguments(fixedType, args, "Function.bind"), 0);
 
+  // The closure takes the parameters after those fixed, and passes its captures before them.
   let params = Array.new<I32>(0);
   let names = Array.new<Bytes>(0);
   let children = Array.new<I32>(0);
@@ -79,6 +96,12 @@ let _bind = fn(function: I32, args: Array<AstExpr>): I32 {
   H.node(Op.FunctionRef, closure, index + 1, 0, captured)
 };
 
+/** Checks `Function.name(function, args)`, or `function.name(args)`, for a function of
+ * `Function` (`isFunctionIntrinsic`).
+ * @param function  the checked function value
+ * @param args  `thisArg` and the other arguments
+ * @return the checked call, or the bound function
+ * @throws a located error if `function` is no function, or the arguments do not fit it */
 export let checkFunctionIntrinsic = fn(name: Bytes, function: I32, args: Array<AstExpr>): I32 {
   if (!H.isKind(H.typeOf(function), Kind.Function)) {
     enterSyntax(syntaxChild(0));

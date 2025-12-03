@@ -1,13 +1,32 @@
 package ir;
 
+/** @file
+ * Clean-up of a lowered function, after inlining. A block outside any try region that only a
+ * jump from one other such block reaches joins the end of that block, so an inlined copy joins
+ * the blocks around it. Within each block, a read of a register that a `Move` copied reads the
+ * copy's source while neither changes, and an I32 or Bool operation of constants becomes a
+ * constant; a branch on a constant becomes a jump. Blocks no path reaches are then removed, and
+ * so is each instruction whose value is never read and that can neither trap nor have an effect.
+ * Registers are not single-assignment, so what is known of a register is forgotten when it is
+ * written, and so is every copy of it. */
+
 import type { BasicBlock, Function, Instruction, Terminator } from ir.Model;
 import { Op, Terminator, instructionAt } from ir.Model;
 import { blockIndexes, normalSuccessors, terminatorRead } from ir.Cfg;
 
+/* What is known of a register's value. These are I32 codes in a flat array rather than an enum,
+ * as the per-register tables are rewritten on every instruction. */
+// Nothing is known.
 const _UNKNOWN = 0;
+// An I32 constant, in `_values`.
 const _INT = 1;
+// A Bool constant, 0 or 1, in `_values`.
 const _BOOL = 2;
 
+/** What is known of each register in the block being cleaned (`_UNKNOWN`, `_INT` or `_BOOL`),
+ * the constant when one is, and the registers known as either; the register each is a copy of
+ * or -1, the registers that have been copies in the block, and by source register, those that
+ * have been copies of it, some since written. */
 let _kinds = Array.new<I32>(0);
 let _values = Array.new<I32>(0);
 let _known = Array.new<I32>(0);
@@ -15,6 +34,8 @@ let _copies = Array.new<I32>(0);
 let _copied = Array.new<I32>(0);
 let _copiesOf = Array.new<Array<I32>>(0);
 
+/** Forgets what is known of `register`, which is written, and that any register is a copy of
+ * it. */
 let _forget = fn(register: I32) {
   _kinds[register] = _UNKNOWN;
   _copies[register] = -1;
@@ -29,6 +50,7 @@ let _forget = fn(register: I32) {
   null
 };
 
+// Forgets everything known, at the start of a block.
 let _forgetAll = fn() {
   for (register in _copied) {
     _copies[register] = -1;
@@ -42,14 +64,19 @@ let _forgetAll = fn() {
   null
 };
 
+/** Returns the register `register`'s value is read from; the source of the copy it is, or
+ * itself. */
 let _source = fn(register: I32): I32 { (_copies[register] >= 0) ? _copies[register] : register };
 
+// Returns `block` with `instructions` and `terminator` in place of its own.
 let _rebuilt = fn(
   block: BasicBlock, instructions: Array<Instruction>, terminator: Terminator
 ): BasicBlock {
   { ...block, instructions, terminator }
 };
 
+/** Returns `blocks` with each block outside any try region that only a jump from one other such
+ * block reaches, other than the entry, joined onto the end of that block. */
 let _merged = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
   let indexes = blockIndexes(blocks);
   let count = blocks.len();
@@ -58,6 +85,7 @@ let _merged = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
   let code = Array.new<Array<Instruction>>(0);
   let lasts = Array.new<Terminator>(0);
 
+  // The entry and the catch blocks are entered other than by a jump, so never join another.
   entries[indexes[entry]] = 2;
 
   for (i, block in blocks) {
@@ -86,6 +114,7 @@ let _merged = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
           let next = indexes[target];
 
           if ((next != i) && (entries[next] == 1) && outside[next]) {
+            // The block's own instructions are copied once, so a chain joins in linear time.
             if (!copied) {
               code[i] = code[i].copy();
               copied = true;
@@ -112,6 +141,8 @@ let _merged = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
   out
 };
 
+/** Returns the I32 that the I32 operation `op` computes from `left` and `right`, with the VM's
+ * wrapping and shift counts, which Jello's own operators share. */
 let _intResult = fn(op: Op, left: I32, right: I32): I32 {
   match (op) {
     Add => left + right,
@@ -127,6 +158,8 @@ let _intResult = fn(op: Op, left: I32, right: I32): I32 {
   }
 };
 
+/** Returns the constant `insn` computes when its operands, `args`, are known constants, as a
+ * `ConstI32` or `ConstBool`, or null. Operations that may trap are never folded. */
 let _folded = fn(insn: Instruction, args: Array<I32>): ?Instruction {
   let n = args.len();
   let ints = n > 0;
@@ -153,6 +186,7 @@ let _folded = fn(insn: Instruction, args: Array<I32>): ?Instruction {
   instructionAt(int ? Op.ConstI32 : Op.ConstBool, insn.dst, [], value, insn.node)
 };
 
+// Counts in `reads` each read of a register by `blocks`' instructions and terminators.
 let _countReads = fn(blocks: Array<BasicBlock>, reads: Array<I32>) {
   for (block in blocks) {
     for (insn in block.instructions) {
@@ -166,8 +200,13 @@ let _countReads = fn(blocks: Array<BasicBlock>, reads: Array<I32>) {
   null
 };
 
+// How often each register of the function being cleaned is read, before propagation.
 let _reads = Array.new<I32>(0);
 
+/** Checks whether every read of `copy` in the function is by `instructions` after index `at`, or
+ * by their block's `terminator`, before `copy` or `source` is written again. The `Move` at `at`
+ * is then left unread once they read `source`, so propagating the copy removes it rather than
+ * keeping both registers live, which would stop the allocator coalescing them. */
 let _onlyReadAfter = fn(
   copy: I32, source: I32, instructions: Array<Instruction>, at: I32, terminator: Terminator
 ): Bool {
@@ -187,8 +226,12 @@ let _onlyReadAfter = fn(
   seen == _reads[copy]
 };
 
+// Whether `_propagated` or `_terminator` changed what it was given, in the block being cleaned.
 let _changed = false;
 
+/** Returns instruction `at` of `instructions` with its reads through copies and its constant
+ * folded, and records what it makes known of its destination.
+ * @param terminator  the terminator of the block of `instructions` */
 let _propagated = fn(
   instructions: Array<Instruction>, at: I32, terminator: Terminator
 ): Instruction {
@@ -240,6 +283,7 @@ let _propagated = fn(
   out
 };
 
+// Returns `terminator` reading through copies, and a branch on a constant as a jump.
 let _terminator = fn(terminator: Terminator): Terminator {
   let read = terminatorRead(terminator);
   if (read < 0) { return terminator; }
@@ -268,8 +312,10 @@ let _terminator = fn(terminator: Terminator): Terminator {
   }
 };
 
+// Whether `_propagateAll` changed any block.
 let _anyChanged = false;
 
+// Returns `blocks` with copies and constants propagated through each.
 let _propagateAll = fn(blocks: Array<BasicBlock>): Array<BasicBlock> {
   let out = Array.new<BasicBlock>(0);
   _anyChanged = false;
@@ -291,6 +337,8 @@ let _propagateAll = fn(blocks: Array<BasicBlock>): Array<BasicBlock> {
   out
 };
 
+/** Returns the blocks of `blocks` a path from block `entry` reaches, through jumps, branches and
+ * the handlers of try regions, or `blocks` when it reaches all of them. */
 let _reachable = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
   let indexes = blockIndexes(blocks);
   let seen = Array.new<Bool>(blocks.len());
@@ -305,6 +353,7 @@ let _reachable = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
     for (target in normalSuccessors(block.terminator)) {
       next.push(indexes[target]);
     }
+    // A block in a try region names its catch block, whether or not it can still throw.
     if (block.handler != null) { next.push(indexes[block.handler.target]); }
 
     for (successor in next) {
@@ -325,6 +374,8 @@ let _reachable = fn(blocks: Array<BasicBlock>, entry: I32): Array<BasicBlock> {
   out
 };
 
+/** Checks whether `insn` may be removed when its value is never read; it neither traps nor has
+ * an effect beyond defining its destination. */
 let _removable = fn(insn: Instruction): Bool {
   match (insn.op) {
     ConstBool, ConstI32, ConstI64, ConstFloat, ConstBytes, ConstAtom, ConstNull, ConstFunction,
@@ -336,6 +387,7 @@ let _removable = fn(insn: Instruction): Bool {
   }
 };
 
+// Returns `instructions` without those at the indexes in `removed`, which is descending.
 let _without = fn(instructions: Array<Instruction>, removed: Array<I32>): Array<Instruction> {
   let kept = Array.new<Instruction>(0);
   let r = removed.len() - 1;
@@ -350,6 +402,9 @@ let _without = fn(instructions: Array<Instruction>, removed: Array<I32>): Array<
   kept
 };
 
+/** Returns `blocks` without the removable instructions whose value is never read, sweeping again
+ * while removing one leaves another unread in a block swept before.
+ * @param reads  how often each register is read by `blocks` */
 let _withoutDead = fn(blocks: Array<BasicBlock>, reads: Array<I32>): Array<BasicBlock> {
   let current = blocks;
   let again = true;
@@ -361,6 +416,7 @@ let _withoutDead = fn(blocks: Array<BasicBlock>, reads: Array<I32>): Array<Basic
     for (block in current) {
       let instructions = block.instructions;
       let removed = Array.new<I32>(0);
+      // Backwards, so a chain of unread values in one block goes in one sweep.
       let j = instructions.len() - 1;
 
       while (j >= 0) {
@@ -385,6 +441,8 @@ let _withoutDead = fn(blocks: Array<BasicBlock>, reads: Array<I32>): Array<Basic
   current
 };
 
+/** Cleans up `function` (see the file comment).
+ * @return the cleaned function; its registers, parameters and entry are unchanged */
 export let cleanupFunction = fn(function: Function): Function {
   let count = function.registers.len();
   _kinds = Array.new<I32>(count);
@@ -407,6 +465,7 @@ export let cleanupFunction = fn(function: Function): Function {
   let propagated = _propagateAll(merged);
   let reached = _reachable(propagated, function.entry);
 
+  // Propagation and pruning change who reads what, so the counts are taken again if either did.
   let reads = _reads;
 
   if (_anyChanged || (reached.len() != propagated.len())) {

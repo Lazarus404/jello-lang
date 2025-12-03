@@ -1,5 +1,14 @@
 package frontend.semantics;
 
+/** @file
+ * Checks casts (`as`), kind tests (`is`), and `==` and `!=` across Null<T> and Dynamic into HIR.
+ * `frontend.semantics.TypeCheck` dispatches these expressions to `checkValueExpr`, which
+ * `frontend.semantics.Modules` registers; comparisons with a `null` literal stay in
+ * `frontend.semantics.TypeCheck`. The equality helpers are shared; `frontend.semantics.Derived`
+ * builds structural equality from `equalValues`, and `frontend.semantics.Testing`'s assertions
+ * use `equalityOperands`, `bindOnce` and `equalBindings`. Errors are located at the expression
+ * being checked. */
+
 import type { BinaryOp, Expr as AstExpr, Type as AstType } from frontend.syntax.Ast;
 import { BinaryOp, Type as AstType } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
@@ -12,8 +21,11 @@ import {
 } from frontend.semantics.TypeCheck;
 import { E0405, E0406, E0407, E0500, coded } from support.Codes;
 
+// Returns a Bool node of `op` over `children`.
 let _bool = fn(op: Op, children: Array<I32>): I32 { H.opNode(op, H.TYPE_BOOL, children) };
 
+/** Strips an `Op.Present` lift from checked node `id`; returns the operand a Null<T> context
+ * wrapped, or `id` itself. */
 let _lifted = fn(id: I32): I32 {
   match (H.opOf(id)) {
     Present => H.childOf(id, 0),
@@ -21,6 +33,9 @@ let _lifted = fn(id: I32): I32 {
   }
 };
 
+/** Returns a read of `binding`, of type `ty`, as a present value; an `Op.Unwrap` of it when `ty`
+ * is a Null<T>, else a plain read. A nullable comparison reads it this way only after testing it
+ * present. */
 let _present = fn(binding: I32, ty: I32): I32 {
   if (H.isKind(ty, Kind.Null)) {
     H.opNode(Op.Unwrap, H.innerOf(ty), [H.local(binding, ty)])
@@ -29,6 +44,14 @@ let _present = fn(binding: I32, ty: I32): I32 {
   }
 };
 
+/** Checks the operands of `==` or `!=`. The right takes its context from the left, as Null<T> of
+ * the left's T (a List<T> as itself, since a list is never nullable), so `x == 5` infers the
+ * literal's type and a literal on the left takes the right side's (`5 == wide`). A Null<T> local
+ * known to be present is read as its T. A Dynamic on the left gives the right no context.
+ * @param leftExpr  the left operand
+ * @param rightExpr  the right operand
+ * @param first  the left operand's syntax child; the right's is the next
+ * @return the checked left and right operands */
 export let equalityOperands = fn(
   leftExpr: AstExpr,
   rightExpr: AstExpr,
@@ -41,6 +64,7 @@ export let equalityOperands = fn(
   let context = if (leftType == H.TYPE_DYNAMIC) {
     -1
   } else if (H.isKind(inner, Kind.List)) {
+    // A list is never nullable; its nil is its empty value.
     inner
   } else {
     H.nullType(inner)
@@ -49,10 +73,19 @@ export let equalityOperands = fn(
   (left, right)
 };
 
+/** Binds `value` to a fresh hidden constant, so that it is evaluated once, and appends the
+ * declaration to `statements`. A variant without a payload is a constant and is not bound.
+ * @param statements  the statements the declaration is appended to
+ * @param name  the hidden binding's name
+ * @param value  the checked value
+ * @return the binding, or -1 for a variant without a payload, which is read as itself */
 export let bindOnce = fn(statements: Array<I32>, name: Bytes, value: I32): I32 {
   isNullaryVariant(value) ? -1 : hideValue(statements, name, value)
 };
 
+/** Returns an `Op.If` that is null when `condition` holds and otherwise throws `message`.
+ * @param condition  the Bool test
+ * @param message  the Bytes thrown */
 export let orThrow = fn(condition: I32, message: I32): I32 {
   let raise = H.opNode(Op.Throw, 0, [message]);
   let thrown = H.node(Op.Block, H.TYPE_NULL, 0, 1, [raise, H.opNode(Op.Null, H.TYPE_NULL, [])]);
@@ -60,10 +93,13 @@ export let orThrow = fn(condition: I32, message: I32): I32 {
   H.opNode(Op.If, H.TYPE_NULL, [condition, passed, thrown])
 };
 
+/** Returns a read of `binding`, a binding from `bindOnce` that holds `value`, or `value` itself
+ * when `binding` is -1. */
 let _read = fn(binding: I32, value: I32): I32 {
   binding < 0 ? value : H.local(binding, H.typeOf(value))
 };
 
+// Returns `equal`, a Bool node, negated when `op` is `NotEqual`.
 let _negated = fn(op: BinaryOp, equal: I32): I32 {
   match (op) {
     NotEqual => _bool(Op.Not, [equal]),
@@ -71,6 +107,8 @@ let _negated = fn(op: BinaryOp, equal: I32): I32 {
   }
 };
 
+/** Compares the Dynamic held by the binding `d` with `value`, of type `ty`, not null, as
+ * `_dynamicEqual` does. */
 let _dynamicPresentEqual = fn(d: I32, ty: I32, value: I32): I32 {
   if (ty == H.TYPE_DYNAMIC) {
     throw coded(E0407, "two Dynamic values cannot be compared; extract one with `as T`");
@@ -84,6 +122,7 @@ let _dynamicPresentEqual = fn(d: I32, ty: I32, value: I32): I32 {
     throw coded(E0407, "a Dynamic compares only with null or a value `is` can test, not "
       + H.typeName(ty) + UNCHECKED_KINDS);
   }
+  // An I64 test and extraction also take a boxed I32, so an integer of any width compares as I64.
   let held = H.isIntegerType(ty) ? H.TYPE_I64 : ty;
   let compared = (ty == held) ? value : H.opNode(Op.Convert, held, [value]);
   let extracted = H.opNode(Op.FromDynamic, held, [H.local(d, H.TYPE_DYNAMIC)]);
@@ -91,6 +130,12 @@ let _dynamicPresentEqual = fn(d: I32, ty: I32, value: I32): I32 {
   _bool(Op.And, [holds, binaryValues(BinaryOp.Equal, extracted, compared)])
 };
 
+/** Compares the Dynamic held by the binding `d` with `value`, held by the binding `v` (-1 for a
+ * variant without a payload): equal when the Dynamic holds a value of its type equal to it, as
+ * `d is T && (d as T) == value`. A null value equals only a null Dynamic, and an integer of any
+ * width compares by number, as an I64, so `d == 7` holds whether `d` holds an I32 or an I64.
+ * @return the Bool node
+ * @throws a located error for a Dynamic value, a U64, or a value of a type `is` cannot test */
 let _dynamicEqual = fn(d: I32, v: I32, value: I32): I32 {
   let ty = H.defaultIntegers(H.typeOf(value));
   if (!H.isKind(ty, Kind.Null)) { return _dynamicPresentEqual(d, ty, _read(v, value)); }
@@ -100,6 +145,18 @@ let _dynamicEqual = fn(d: I32, v: I32, value: I32): I32 {
   H.opNode(Op.If, H.TYPE_BOOL, [absent, empty, present])
 };
 
+/** Compares `left` and `right`, already bound by `bindOnce`. A Dynamic compares as `_dynamicEqual`
+ * does. Without a Null<T> operand this is the plain comparison (`binaryValues`). Otherwise null
+ * equals only null and present values compare as T values; with both nullable, an `Op.If` on
+ * whether `a` is null; with one, an `Op.And` that first tests it present.
+ * @param op  `Equal`, or `NotEqual` to negate the result
+ * @param a  the binding that holds `left`, or -1
+ * @param left  the checked left operand
+ * @param b  the binding that holds `right`, or -1
+ * @param right  the checked right operand
+ * @return the Bool node
+ * @throws a located error if the operands' types differ other than in nullability, or a Dynamic
+ *     is compared with a value `_dynamicEqual` cannot compare */
 export let equalBindings = fn(op: BinaryOp, a: I32, left: I32, b: I32, right: I32): I32 {
   let leftType = H.typeOf(left);
   let rightType = H.typeOf(right);
@@ -128,6 +185,14 @@ export let equalBindings = fn(op: BinaryOp, a: I32, left: I32, b: I32, right: I3
   _negated(op, compared)
 };
 
+/** Compares checked operands. With a Null<T> or Dynamic operand, both sides are bound once, left
+ * to right, in a Bool block around `equalBindings`. A variant without a payload is a constant,
+ * compared as itself, so `m == E.V` stays a variant test.
+ * @param op  `Equal`, or `NotEqual` to negate the result
+ * @param left  the checked left operand
+ * @param right  the checked right operand
+ * @return the Bool node
+ * @throws a located error as `equalBindings` does */
 export let equalValues = fn(op: BinaryOp, left: I32, right: I32): I32 {
   let plain = fn(ty: I32): Bool { !H.isKind(ty, Kind.Null) && (ty != H.TYPE_DYNAMIC) };
   if (plain(H.typeOf(left)) && plain(H.typeOf(right))) { return binaryValues(op, left, right); }
@@ -138,11 +203,21 @@ export let equalValues = fn(op: BinaryOp, left: I32, right: I32): I32 {
   _negated(op, H.node(Op.Block, H.TYPE_BOOL, 0, 1, statements))
 };
 
+/** Checks `left == right` or `left != right` where neither side is a `null` literal.
+ * @param op  `Equal` or `NotEqual`
+ * @param leftExpr  the left operand
+ * @param rightExpr  the right operand
+ * @return the Bool node */
 let _equality = fn(op: BinaryOp, leftExpr: AstExpr, rightExpr: AstExpr): I32 {
   let (left, right) = equalityOperands(leftExpr, rightExpr, 0);
   equalValues(op, left, right)
 };
 
+/** Returns the KINDOF code of `ty` when the VM checks a Dynamic's value against it exactly, so
+ * `as` may extract a `ty` and `is` test for one, or -1; only Bool, I32, I64, the floats, Atom,
+ * Bytes, enums, Object and abstract types, whose values are native handles.
+ * A narrower or unsigned integer is boxed as an I32 or I64, so its type is not checked; nor is
+ * a handle's class, which each native that takes it checks. */
 export let checkedKind = fn(ty: I32): I32 {
   match (H.kindOf(ty)) {
     Bool => H.KIND_BOOL,
@@ -154,31 +229,43 @@ export let checkedKind = fn(ty: I32): I32 {
     F64 => H.KIND_F64,
     F32 => H.KIND_F32,
     F16 => H.KIND_F16,
+    // Nothing records which prototype made an Object, so a prototype's type is not checked.
     Object => ty == H.TYPE_OBJECT ? H.KIND_OBJECT : -1,
     Abstract => H.KIND_HANDLE,
     _ => -1,
   }
 };
 
+// Why `as`, `is` and `==` with a Dynamic reject a type `checkedKind` gives -1.
 export const UNCHECKED_KINDS: Bytes =
   ": only Bool, I32, I64, F16, F32, F64, Atom, Bytes, enums, Object and abstract types are checked";
 
+/** Checks that `operand` can be boxed as a Dynamic (`unboxable`), the current syntax being where
+ * a failure is located.
+ * @throws a located error if it cannot */
 let _boxable = fn(operand: I32) {
   let why = unboxable(H.typeOf(operand), "become Dynamic");
   if (why != "") { throw coded(E0405, why); }
   null
 };
 
+/** Boxes `operand` as a Dynamic (`_boxable`).
+ * @return the `ToDynamic` node */
 export let toDynamic = fn(operand: I32): I32 {
   _boxable(operand);
   H.opNode(Op.ToDynamic, H.TYPE_DYNAMIC, [operand])
 };
 
+/** Returns the test whether the Dynamic `operand` holds an Object that is the prototype of type
+ * `ty` or delegates to it, which `is P` makes; nothing records which prototype made an Object. */
 let _delegatesTo = fn(operand: I32, ty: I32): I32 {
   let parent = toDynamic(prototypeValue(ty));
   H.callStd("object_delegates", [H.TYPE_DYNAMIC, H.TYPE_DYNAMIC], H.TYPE_BOOL, [operand, parent])
 };
 
+/** Returns `operand`, an Object or a Dynamic, as the prototype type `ty`, which `as P` makes; it
+ * is extracted only when it delegates to the prototype (`_delegatesTo`), and otherwise the
+ * extraction fails as `as Object` of a value that is no Object does. */
 let _asPrototype = fn(operand: I32, ty: I32): I32 {
   let statements = Array.new<I32>(0);
   let boxed = H.typeOf(operand) == H.TYPE_DYNAMIC ? operand : toDynamic(operand);
@@ -191,14 +278,19 @@ let _asPrototype = fn(operand: I32, ty: I32): I32 {
   H.node(Op.Block, ty, 0, 1, statements)
 };
 
+/** Returns `operand` as an Object field stores it, which boxes it (`_boxable`); a U32 is boxed
+ * first, as the I64 of its value, and anything else is stored as it is. */
 export let storable = fn(operand: I32): I32 {
   if (H.typeOf(operand) == H.TYPE_U32) { return toDynamic(operand); }
   _boxable(operand);
   operand
 };
 
+/** Checks whether a template's check of a kind against `target` waits for its instances, as it
+ * does for a type parameter, which each instance replaces with its type argument. */
 let _deferred = fn(target: I32): Bool { inTemplate() && H.isParametric(target) };
 
+// Checks whether `id` is an integer literal of uninferred width whose value an I32 cannot hold.
 let _wideLiteral = fn(id: I32): Bool {
   match (H.opOf(id)) {
     I32 => {
@@ -209,6 +301,8 @@ let _wideLiteral = fn(id: I32): Bool {
   }
 };
 
+/** Extracts the one value of Null from the Dynamic `operand`: null, or a TYPE_MISMATCH trap for
+ * anything else, made by unboxing it as a Bool and then as an Atom, which no value is both of. */
 let _nullFrom = fn(operand: I32): I32 {
   let statements = Array.new<I32>(0);
   let held = hideValue(statements, "held", operand);
@@ -225,11 +319,22 @@ let _nullFrom = fn(operand: I32): I32 {
   H.node(Op.Block, H.TYPE_NULL, 0, 1, statements)
 };
 
+/** Checks `value as T`; the value itself when it already has type T or an open type that unifies
+ * with it (`[] as Array<Bytes>`), a bare null as a Null<T>, boxing to Dynamic (`Op.ToDynamic`),
+ * checked extraction from Dynamic (`Op.FromDynamic`, or `_nullFrom` for Null), a checked Null<T>
+ * to T, or an integer conversion (`Op.Convert`), which wraps.
+ * @param value  the operand, syntax child 0
+ * @param targetType  the written target type
+ * @return the converted value
+ * @throws a located error for a buffer from `Bytes.new`, a list, U64, ?U64 or ?U32 to Dynamic
+ *     (none reads back as itself), extraction from Dynamic of a type the VM does not check
+ *     (`checkedKind`), or any other conversion */
 let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   let target = checkType(targetType);
   let operand = checkOperand(value, 0, -1);
   let ty = H.typeOf(operand);
   if (ty == target) { return operand; }
+  // `[]` and a bare `null` take a type they fit, as from an annotation.
   if (H.holdsUnknown(ty) && H.unify(ty, target)) { return operand; }
   if ((ty == H.TYPE_NULL) && H.holdsNull(target)) { return coerceAt(operand, target, 0); }
 
@@ -245,6 +350,8 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   if ((ty == H.TYPE_DYNAMIC) && (target == H.TYPE_NULL)) { return _nullFrom(operand); }
 
   if (ty == H.TYPE_DYNAMIC) {
+    /* The VM checks these kinds exactly, but not an array's elements or a function's signature. A
+     * template's type parameter is checked in each instance, as the type argument it stands for. */
     if (!_deferred(target) && (checkedKind(target) < 0)) {
       throw coded(E0406, `cannot extract ${H.typeName(target)} from Dynamic${UNCHECKED_KINDS}`);
     }
@@ -255,20 +362,24 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   if (source == target) { return present; }
 
   match ((H.kindOf(source), H.kindOf(target))) {
+    // A literal too wide for an I32, as in `5000000000 as I64`, is a literal of the target type.
     (Var, _) when (H.isIntegerType(target) && _wideLiteral(present)) => {
       H.unify(source, target);
       present
     },
+    // One converted to a float is an I64 first, as in `5000000000 as F64`.
     (Var, _) when (H.isFloatType(target) && _wideLiteral(present)) => {
       H.unify(source, H.TYPE_I64);
       H.opNode(Op.Convert, target, [present])
     },
+    // An integer of uninferred width converts; the conversion is dropped if the widths agree.
     (Var, _) when (H.isInteger(source) && H.isIntegerType(target)) => {
       integerConversion(present, target)
     },
     _ when (H.isIntegerType(source) && H.isIntegerType(target)) => {
       H.opNode(Op.Convert, target, [present])
     },
+    // A float converts to and from any number type; an integer Var is an I32 unless bound.
     _ when ((H.isInteger(source) || H.isFloatType(source)) && H.isNumberType(target)) => {
       H.defaultIntegers(source);
       H.opNode(Op.Convert, target, [present])
@@ -277,6 +388,10 @@ let _cast = fn(value: AstExpr, targetType: AstType): I32 {
   }
 };
 
+/** Returns the test whether the Dynamic `operand` holds a `target`, as `operand is T` makes it;
+ * for a prototype's type, whether it holds an Object that delegates to the prototype. In a
+ * template, a type parameter is tested in each instance.
+ * @throws a located error if the VM does not check `target` (`checkedKind`) */
 export let kindTest = fn(operand: I32, target: I32): I32 {
   if (H.isPrototype(target)) { return _delegatesTo(operand, target); }
   if (_deferred(target)) { return H.opNode(Op.IsKind, H.TYPE_BOOL, [operand]); }
@@ -288,14 +403,25 @@ export let kindTest = fn(operand: I32, target: I32): I32 {
   H.node(Op.IsKind, H.TYPE_BOOL, code, code == H.KIND_ENUM ? target : 0, [operand])
 };
 
+/** Checks whether `written`, the type of an `is` test or pattern, is `fn`, which tests for any
+ * function, since the VM checks a function's kind but not its signature. */
 export let isAnyFunction = fn(written: AstType): Bool {
   match (written) { Named(name) => name == "__fn__", _ => false }
 };
 
+// Returns the test whether the Dynamic `operand` holds a function, as `operand is fn` makes it.
 export let functionTest = fn(operand: I32): I32 {
   H.node(Op.IsKind, H.TYPE_BOOL, H.KIND_FUNCTION, 0, [operand])
 };
 
+/** Checks `value is T`; whether a Dynamic holds a T, which is exactly when `value as T` succeeds.
+ * Produces `Op.IsKind` with the kind code, and for an enum also the type, which the VM checks
+ * exactly.
+ * @param value  the operand, syntax child 0
+ * @param targetType  the written type
+ * @return the Bool node
+ * @throws a located error if the operand is not Dynamic, or the VM does not check T
+ *     (`checkedKind`) */
 let _is = fn(value: AstExpr, targetType: AstType): I32 {
   let operand = checkOperand(value, 0, -1);
 
@@ -311,6 +437,10 @@ let _is = fn(value: AstExpr, targetType: AstType): I32 {
   }
 };
 
+/** Checks `expr`, a cast, kind test or `==`/`!=` comparison. `frontend.semantics.TypeCheck` calls
+ * it through `TypeCheck.useValueChecks`.
+ * @param _expected  the type the context requires, which these expressions do not use
+ * @return the checked HIR node */
 export let checkValueExpr = fn(expr: AstExpr, _expected: I32): I32 {
   match (expr) {
     Binary(op, left, right) => _equality(op, left, right),

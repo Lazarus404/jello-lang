@@ -1,11 +1,19 @@
 package std.sys;
 
+/* The system a program runs on, for the few things that differ between systems. Paths in std
+ * use "/" everywhere, Windows included, so most programs never ask. */
+
 load { platform_os, platform_arch, platform_temp_dir, platform_version } from std;
 
+// The operating system: "macos", "linux" or "windows".
 export let os: () -> Bytes = platform_os;
 
+// The processor: "arm64" or "x64".
 export let arch: () -> Bytes = platform_arch;
 
+// The Jello release, such as "0.1.1", that the running VM's standard library belongs to.
 export let version: () -> Bytes = platform_version;
 
+/* The directory for temporary files, with "/" between its components and none at the end
+ * unless it is the root: $TMPDIR when it is set, then on Windows %TEMP% or %TMP%, else /tmp. */
 export let tempDir: () -> Bytes = platform_temp_dir;

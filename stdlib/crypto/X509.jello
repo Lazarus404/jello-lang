@@ -1,5 +1,16 @@
 package std.crypto;
 
+/* X.509 certificates, which bind a name to a public key under the signature
+ * of an issuer: reading them, and checking that a chain of them leads to one
+ * that is trusted. A program that names the type imports this module both
+ * ways:
+ *
+ *   import std.crypto.X509 as X509;
+ *   import type { Certificate } from std.crypto.X509;
+ *
+ * Names are as "CN=example.com, O=Example". On Mbed TLS, in the native
+ * library tls.jdll, which a program importing this module needs. */
+
 import std.crypto.Hash as Hash;
 import std.crypto.Pem as Pem;
 import std.sys.Date as Date;
@@ -13,7 +24,10 @@ let _ca: (Dynamic, I32) -> Bool = x509_ca;
 let _field: (Dynamic, I32, I32) -> Bytes = x509_field;
 let _verify: (Bytes, Bytes, Bytes, I64) -> I32 = x509_verify;
 
+// The host Mbed TLS's MBEDTLS_X509_BADCERT_CN_MISMATCH says the certificate is not for.
 let _NOT_FOR_HOST = 0x04;
+/* The other problems x509_verify reports, as Mbed TLS's MBEDTLS_X509_BADCERT_
+ * flags, and what each means. */
 let _FLAGS = [0x01, 0x0200, 0x02, 0x08, 0x40, 0x0800, 0x1000, 0x4000, 0x8000, 0x010000];
 let _PROBLEMS = ["a certificate has expired", "a certificate is not valid yet",
   "a certificate is revoked", "the chain does not lead to a trusted certificate",
@@ -22,15 +36,23 @@ let _PROBLEMS = ["a certificate has expired", "a certificate is not valid yet",
   "a certificate is signed with a hash that is not accepted",
   "a certificate's key is of a kind that is not accepted", "a certificate's key is too short"];
 
+// One certificate.
 export typedef Certificate = {
+  // The names of whom it is for and of whom signed it.
   let subject: Bytes;
   let issuer: Bytes;
+  // Its serial number, in hexadecimal.
   let serial: Bytes;
+  // When it starts and stops being valid, in UTC.
   let notBefore: Date;
   let notAfter: Date;
+  // The DNS names and IP addresses it is for (its subject alternative names).
   let names: Array<Bytes>;
+  // Whether it may sign other certificates, as a certificate authority's.
   let isCa: Bool;
+  // Its key's kind and size in bits, as "RSA 2048" or "EC 256".
   let key: Bytes;
+  // It in DER, its binary form.
   let der: Bytes;
 };
 
@@ -47,11 +69,16 @@ export prototype Certificate {
     this.key = key;
     this.der = der;
   };
+  // Whether it is valid at DATE, from its notBefore to its notAfter.
   isValidAt(date: Date): Bool { !date.isBefore(this.notBefore) && !date.isAfter(this.notAfter) };
+  // Its digest by ALGORITHM, which identifies it, as browsers show it.
   fingerprint(algorithm: Bytes = "sha256"): Bytes { Hash.digest(algorithm, this.der) };
+  // It in PEM.
   pem(): Bytes { Pem.encode("CERTIFICATE", this.der) };
 };
 
+/* The certificates in TEXT, PEM, with one or more, or DER, with one; throws
+ * when there is none or one cannot be read. */
 export let parse = fn(text: Bytes): Array<Certificate> {
   let parsed = _parse(text);
   if (parsed is Bytes) { throw "X509.parse: " + (parsed as Bytes); };
@@ -70,10 +97,17 @@ export let parse = fn(text: Bytes): Array<Certificate> {
   certificates
 };
 
+// CERTIFICATES in DER, one after another.
 let _der = fn(certificates: Array<Certificate>): Bytes {
   Bytes.join(certificates.map(fn(c: Certificate): Bytes { c.der }), "")
 };
 
+/* What is wrong with CHAIN, a certificate then those that signed it in
+ * turn, when it is to lead to one of TRUSTED, or to one the system trusts
+ * when TRUSTED is empty; when each certificate on the way is to be valid at
+ * AT, or now; and, unless HOST is empty, when the first is to be for HOST, a
+ * DNS name or IP address. Empty when nothing is, so the chain can be
+ * trusted. Throws for an empty chain. */
 export let verify = fn(chain: Array<Certificate>, trusted: Array<Certificate>, host: Bytes = "",
   ?at: Date): Array<Bytes> {
   if (chain.len() == 0) { throw "X509.verify: the chain is empty"; };

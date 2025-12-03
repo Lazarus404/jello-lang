@@ -1,8 +1,23 @@
 package frontend.semantics;
 
+/** @file
+ * Flow-sensitive null narrowing for the checker; the `Null<T>` locals known to be present at the
+ * point `frontend.semantics.TypeCheck` has reached. The checker visits code in evaluation order,
+ * so an assignment to a local updates what is known from then on. Code that may not run, such as a
+ * branch, restores what was known before it, keeping only what it did not forget; what it learns
+ * does not outlive it, and what it forgets stays lost. A narrowing is encoded as `binding * 2 + 1`
+ * for a mutable binding and `binding * 2` for an immutable one. Lookups scan the known narrowings
+ * linearly. A call may run a closure that assigns a local, so `ir.Lower` checks a narrowed local
+ * that a closure assigns where it is used. */
+
+// The narrowings known at the current point, encoded as above, in no particular order.
 let _known = Array.new<I32>(0);
+/** Every assignment to a `Null<T>` local, by binding, in checking order, so that a loop or a try
+ * can tell which locals its body assigned. */
 let _assigned = Array.new<I32>(0);
 
+/** Returns the index in `_known` of the narrowing of the local with binding ID `binding`, or -1
+ * when it is not narrowed. */
 let _index = fn(binding: I32): I32 {
   for (i, narrowing in _known) {
     if (narrowing / 2 == binding) { return i; }
@@ -10,23 +25,36 @@ let _index = fn(binding: I32): I32 {
   -1
 };
 
+/** Returns a fresh copy of the narrowing set `items`, so that later changes to `_known` do not
+ * alter a saved one. */
 let _copy = fn(items: Array<I32>): Array<I32> {
   items.copy()
 };
 
+// Forgets every narrowing and assignment, when a program's check begins.
 export let resetNarrowing = fn(): Bool {
   _known = Array.new<I32>(0);
   _assigned = Array.new<I32>(0);
   true
 };
 
+/** Checks whether the local with binding ID `binding` is known to be present here, so that it
+ * can be used as its inner type. */
 export let isNarrowed = fn(binding: I32): Bool { _index(binding) >= 0 };
 
+/** Records that a local is known to be present from here on, as after a `!= null` test or a
+ * binding to a present value. A local already narrowed keeps its existing encoding.
+ * @param binding  the local's binding ID
+ * @param mutable  whether the local can be assigned */
 export let narrow = fn(binding: I32, mutable: Bool): Bool {
   if (_index(binding) < 0) { _known.push(binding * 2 + (mutable ? 1 : 0)); }
   true
 };
 
+/** Records an assignment to a `Null<T>` local and updates what is known about it; a present value
+ * narrows it, and any other value forgets its narrowing.
+ * @param binding  the local's binding ID
+ * @param present  whether the assigned value is known to be present */
 export let assignLocal = fn(binding: I32, present: Bool): Bool {
   _assigned.push(binding);
   let found = _index(binding);
@@ -40,13 +68,18 @@ export let assignLocal = fn(binding: I32, present: Bool): Bool {
   true
 };
 
+// Returns a copy of the current narrowings, to restore or intersect with later.
 export let narrowings = fn(): Array<I32> { _copy(_known) };
 
+/** Replaces what is known with a copy of the saved set `known`, such as on entering a branch or a
+ * function body. */
 export let setNarrowings = fn(known: Array<I32>): Bool {
   _known = _copy(known);
   true
 };
 
+/** Joins after code that may not have run; keeps only the narrowings that are still known and
+ * were known before the code, in `before`. */
 export let keepNarrowings = fn(before: Array<I32>): Bool {
   let kept = Array.new<I32>(0);
 
@@ -57,8 +90,12 @@ export let keepNarrowings = fn(before: Array<I32>): Bool {
   true
 };
 
+/** Returns the number of assignments recorded so far, which marks the current point in the
+ * assignment log for `leaveLoop`. */
 export let assignmentMark = fn(): I32 { _assigned.len() };
 
+/** Enters a loop; a later iteration may have assigned any mutable local, so only the narrowings
+ * of immutable bindings hold inside it. */
 export let enterLoop = fn(): Bool {
   let kept = Array.new<I32>(0);
 
@@ -69,6 +106,11 @@ export let enterLoop = fn(): Bool {
   true
 };
 
+/** Leaves code that may have stopped anywhere or not run at all; a loop, or a try's body before its
+ * handler. What is known becomes the narrowings known before the code, less those of locals the
+ * code assigned.
+ * @param before  the narrowings known before the code
+ * @param mark  the assignment mark taken before the code */
 export let leaveLoop = fn(before: Array<I32>, mark: I32): Bool {
   let kept = Array.new<I32>(0);
 
