@@ -33,6 +33,7 @@ import type {
   ListLiteral,
   MatchAlternative,
   MatchArm,
+  MatchArmValue,
   MatchArms,
   ObjectEntry,
   Package,
@@ -1048,27 +1049,44 @@ let _optionalGuard = fn(): ?Expr {
  * between arms being optional. An arm is one or more alternatives separated by commas, each a
  * pattern with an optional guard, then `=>` and a block or an expression. The guard before `=>`
  * belongs to the arm (see `MatchArm`). */
+let _matchArm = fn(pattern: Pattern): MatchArmValue {
+  let alternatives = Array.new<MatchAlternative>(0);
+  let p = pattern;
+  let guard = _optionalGuard();
+
+  while (peek() != Token.FatArrow) {
+    expect(Token.Comma);
+    alternatives.push({ pattern: p, guard });
+    p = _parsePattern();
+    guard = _optionalGuard();
+  }
+  alternatives.push({ pattern: p, guard: null });
+  expect(Token.FatArrow);
+  let body: Block = (peek() == Token.LBrace)
+    ? _parseBlock()
+    : { statements: [], tail: _parseExpr(0) };
+  { alternatives, guard, body }
+};
+
 let _matchArms = fn(): Array<MatchArm> {
   expect(Token.LBrace);
   let arms = Array.new<MatchArm>(0);
 
   while (peek() != Token.RBrace) {
-    let alternatives = Array.new<MatchAlternative>(0);
-    let pattern = _parsePattern();
-    let guard = _optionalGuard();
+    if ((peek() == Token.Ident("unquote")) && (tokens[pos + 1] == Token.LParen)) {
+      next();
+      let start = pos - 1;
+      expect(Token.LParen);
+      let value = _parseExpr(0);
+      expect(Token.RParen);
 
-    while (peek() != Token.FatArrow) {
-      expect(Token.Comma);
-      alternatives.push({ pattern, guard });
-      pattern = _parsePattern();
-      guard = _optionalGuard();
+      // An unquote that starts an arm splices arms, unless `=>` or a guard makes it the pattern.
+      arms.push((peek() == Token.FatArrow) || (peek() == Token.When)
+        ? MatchArm.Arm(_matchArm(_markPattern(Pattern.Unquote(value), start)))
+        : MatchArm.Unquote(value));
+    } else {
+      arms.push(MatchArm.Arm(_matchArm(_parsePattern())));
     }
-    alternatives.push({ pattern, guard: null });
-    expect(Token.FatArrow);
-    let body: Block = (peek() == Token.LBrace)
-      ? _parseBlock()
-      : { statements: [], tail: _parseExpr(0) };
-    arms.push({ alternatives, guard, body });
 
     if (peek() == Token.Comma) {
       next();
@@ -1250,7 +1268,7 @@ let _braceIsObject = fn(): Bool {
   }
 };
 
-/** Parses a quote after `quote`; an optional kind, `.expr`, `.stmt`, `.stmts`, `.type` or `.pat`
+/** Parses a quote after `quote`; an optional kind, `.expr`, `.stmt`, `.stmts`, `.type`, `.pat` or `.arm`
  * (or spelt out as `.expression`, `.statement`, `.statements` or `.pattern`), then the body in
  * braces. Without a kind, a body that starts with a statement keyword is one statement or more,
  * and any other body is an expression.
@@ -1267,6 +1285,7 @@ let _parseQuote = fn(): Expr {
       "stmts", "statements" => QuoteKind.Statements,
       "type" => QuoteKind.Type,
       "pat", "pattern" => QuoteKind.Pattern,
+      "arm" => QuoteKind.Arm,
       _ => {
         _error(E0100, "unknown quote kind");
         QuoteKind.Auto
@@ -1278,6 +1297,10 @@ let _parseQuote = fn(): Expr {
   let body = match (kind) {
     Type => QuoteBody.Type(_parseType()),
     Pattern => QuoteBody.Pattern(_parsePattern()),
+    Arm => {
+      if (peek() == Token.RBrace) { _error(E0100, "expected match arm in quote block"); }
+      QuoteBody.Arm(MatchArm.Arm(_matchArm(_parsePattern())))
+    },
     Statement => QuoteBody.Statement(_parseStatement()),
     Statements => {
       if (peek() == Token.RBrace) { _error(E0100, "expected statements in quote block"); }

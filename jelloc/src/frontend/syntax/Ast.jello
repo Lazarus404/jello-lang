@@ -137,6 +137,7 @@ export enum QuoteKind {
   Statements;
   Type;
   Pattern;
+  Arm;
 }
 
 // The quoted syntax of a `quote` expression.
@@ -146,6 +147,7 @@ export enum QuoteBody {
   Statements(values: Array<Stmt>);
   Type(value: Type);
   Pattern(value: Pattern);
+  Arm(value: MatchArm);
 }
 
 /** An entry of an object literal; `name: value` or the shorthand `name`, `[key]: value`, or
@@ -210,8 +212,8 @@ export typedef BitPatternSegment = {
   let value: Pattern;
 };
 
-// A match arm, `p1 when (f), p2 when (g) => body`.
-export typedef MatchArm = {
+// The contents of a match arm, `p1 when (f), p2 when (g) => body`.
+export typedef MatchArmValue = {
   /** The patterns that share the body, each with its own guard. The parser takes the guard
    * before `=>` as the arm's, so the last has none of its own. */
   let alternatives: Array<MatchAlternative>;
@@ -219,6 +221,12 @@ export typedef MatchArm = {
   let guard: ?Expr;
   let body: Block;
 };
+
+// A match arm, or an arm-list `unquote(value)` inside a quote.
+export enum MatchArm {
+  Arm(value: MatchArmValue);
+  Unquote(value: Expr);
+}
 
 // One pattern of a match arm, with its own guard if any.
 export typedef MatchAlternative = {

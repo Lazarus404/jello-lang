@@ -1242,7 +1242,11 @@ let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>)
   let fits = items.len() > 0;
   let aware = false;
 
-  for ({ alternatives } in arms) {
+  for (arm in arms) {
+    let alternatives = match (arm) {
+      Arm({ alternatives }) => alternatives,
+      Unquote(_) => { throw coded(E1001, "unquote is only allowed inside a quote"); },
+    };
     for ({ pattern } in alternatives) {
       fits = fits && match (pattern) {
         Tuple(patterns) => (patterns.len() == items.len()) && (_spreadIndex(patterns, 0) < 0),
@@ -1515,7 +1519,11 @@ let _matchArms = fn(
   let index = first;
   let patternIndex = firstPattern;
 
-  for ({ alternatives, guard, body } in arms) {
+  for (arm in arms) {
+    let { alternatives, guard, body } = match (arm) {
+      Arm(value) => value,
+      Unquote(_) => { throw coded(E1001, "unquote is only allowed inside a quote"); },
+    };
     /* Alternatives that share the body store what they bind into `group`'s roots as they test
      * (`tested`), and the body reads them there; `last` is the last alternative's tests, and
      * `bound` what it binds. */

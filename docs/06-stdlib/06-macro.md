@@ -24,6 +24,7 @@ export enum Fragment {
   Parsed(source: Bytes, kind: Bytes);
   Name(name: Bytes);
   Literal(value: Dynamic);
+  Splice(values: Array<Fragment>);
 }
 ```
 
@@ -31,7 +32,8 @@ A `Fragment` is a piece of syntax: an argument of the call, a `quote`, text from
 from `gensym` or a literal. Its variants are for the compiler; a macro makes fragments with
 `quote`, `parse` and `gensym` and passes them on without looking inside. `unquote(value)` in a
 quote takes a `Fragment`, or an `I32`, `I64`, `F64`, `Bool`, `Bytes` or `null` value, which
-becomes a literal.
+becomes a literal. An `Array<Fragment>` unquoted in a match-arm list becomes the internal
+`Splice` form and inserts its `quote.arm` fragments in order.
 
 ## Functions
 
@@ -41,11 +43,12 @@ becomes a literal.
 | `emit_all(fragments: Array<Fragment>)` | emits each fragment, in order |
 | `parse(source: Bytes, kind: Bytes = "auto"): Fragment` | the syntax of `source`, read as `kind` |
 | `gensym(prefix: Bytes): Fragment` | a name no other `gensym` call gives while the program compiles |
+| `name(name: Bytes): Fragment` | the identifier `name`, checked when placed |
 | `literal(fragment: Fragment): Dynamic` | the value of a fragment that is a literal |
 
 - **Emitting.** A `quote` written as a statement on its own is emitted too, as if passed to
   `emit`. What a macro emits is expanded again, so it may call macros.
-- **`parse`** reads `kind`, one of `"expr"`, `"stmt"`, `"stmts"`, `"type"` and `"pat"`, or
+- **`parse`** reads `kind`, one of `"expr"`, `"stmt"`, `"stmts"`, `"type"`, `"pat"` and `"arm"`, or
   `"auto"`, which reads statements when `source` starts with a keyword that starts one and an
   expression otherwise. Any other kind throws. The text is parsed once the macro has finished, and
   text that does not parse fails the call.
