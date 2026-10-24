@@ -1,0 +1,41 @@
+load { addr_resolve } from std;
+import { listen, connect, pollFd, tryAccept, tryRead, boundPort, awaitWriteAll, close } from std.io.net.Tcp;
+import { create, registerPoll, awaitFuture, unregisterPoll } from std.io.EventLoop;
+import { pending, complete } from std.concurrency.Future;
+
+let loop = create();
+let bindAddr = addr_resolve("127.0.0.1", 0);
+let listener = listen(bindAddr, 1);
+let port = boundPort(listener);
+let connectAddr = addr_resolve("127.0.0.1", port);
+
+let acceptF = pending();
+registerPoll(loop, pollFd(listener), fn(_loop) {
+  let tcp = tryAccept(listener);
+  if (tcp != null) {
+    complete(acceptF, tcp);
+    let _u = unregisterPoll(loop, pollFd(listener));
+  }
+});
+
+let client = connect(connectAddr);
+let server = await acceptF;
+
+let payload = bits[8(1), 8(2), 8(3), 8(4), 8(5), 8(6), 8(7), 8(8)];
+let _w = awaitWriteAll(loop, client, payload);
+
+let readF = pending();
+registerPoll(loop, pollFd(server), fn(_loop) {
+  let data = tryRead(server, 64);
+  if (data != null) {
+    complete(readF, data);
+    let _u = unregisterPoll(loop, pollFd(server));
+  }
+});
+
+let msg: Bytes = await readF;
+System.assert(msg == payload);
+close(client);
+close(server);
+close(listener);
+"ok"

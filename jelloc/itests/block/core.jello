@@ -1,0 +1,41 @@
+let a = {
+  let x = 1;
+  let y = 2;
+  x + y
+};
+System.assert(a == 3);
+
+let value: Dynamic = { null };
+System.assert(value == null);
+
+let obj = {};
+System.assert(obj.isEmpty());
+
+let b = {
+  let x = 1;
+  let y = 2;
+  x + y;
+};
+System.assert(b == null);
+
+let name = "outer";
+let picked = {
+  let innerTag = "inner";
+  innerTag
+};
+System.assert(picked == "inner");
+System.assert(name == "outer");
+
+let deep = {
+  {
+    {
+      99
+    }
+  }
+};
+System.assert(deep == 99);
+
+let x = 2;
+System.assert({ x + 3 } == 5);
+
+"ok"

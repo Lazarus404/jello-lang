@@ -1,0 +1,14 @@
+// Negative: cannot infer nested nominal type arg for new Holder(...)
+let init<T>: (Object, T) -> Object = fn(self, v) {
+  self.v = v;
+  return self;
+};
+prototype Box<T> {
+  init: init<T>;
+};
+prototype Holder<T> {
+  init: init<T>;
+};
+let inner = new Box(7);
+let _ = new Holder(inner);
+"ok"

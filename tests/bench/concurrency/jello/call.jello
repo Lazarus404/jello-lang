@@ -1,0 +1,19 @@
+// 200,000 request/reply round trips between two processes.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Reply } from std.concurrent.Process;
+
+enum Request { Add(n: I32, reply: Reply<I32>); }
+
+let N = 200000;
+let server = Process.spawn<Request>(fn(inbox: Inbox<Request>) {
+  while (true) { match (inbox.receive()) { Add(n, reply) => reply.send(n + 1) }; }
+});
+let start = Process.now();
+let right = 0;
+let i = 0;
+while (i < N) {
+  if (Process.call<Request, I32>(server, fn(reply: Reply<I32>): Request { Request.Add(i, reply) }) == i + 1) { right++; }
+  i++;
+}
+System.assert(right == N);
+"ms=" + Std.string(Process.now() - start)

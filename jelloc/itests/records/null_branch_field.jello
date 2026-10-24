@@ -1,0 +1,30 @@
+import { add } from std.core.List;
+
+let at: (List<Any>, I32) -> Dynamic = fn(list, idx) {
+  let cur = list;
+  let i = 0;
+  while (List.is_nil(cur) == false) {
+    if (i == idx) {
+      return List.head(cur);
+    }
+    i = i + 1;
+    cur = List.tail(cur);
+  }
+  null
+};
+
+let readTileBroken: (List<Any>, I32) -> I32 = fn(list, idx) {
+  let cell = at(list, idx);
+  if (cell == null) {
+    -1
+  } else {
+    cell.tile
+  }
+};
+
+let makeGrid: () -> List<Any> = fn() {
+  add(List.nil<Any>(), { tile: -1 })
+};
+
+System.assert(readTileBroken(makeGrid(), 0) == -1);
+"ok"

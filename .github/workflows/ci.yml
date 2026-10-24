@@ -1,0 +1,206 @@
+# The gates on every supported system and architecture. Linux runs in an Ubuntu 22.04 container,
+# the oldest glibc releases support. The x64 jobs run test_x64.sh, which adds a build whose JIT
+# code finds every caller-saved register overwritten after each C call. Windows builds on Linux
+# with llvm-mingw, its programs and C tests then running on Windows itself, the fixtures compiled
+# and interpreted. Benchmarks stay local: shared runners are too noisy to hold them to a margin.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call: # release.yml publishes only what passes these
+    secrets:
+      DEGUST_TOKEN:
+        required: false
+
+jobs:
+  gates:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64, runner: macos-15, gate: native }
+          - { name: macos-x64, runner: macos-15-intel, gate: x64 }
+          - { name: linux-x64, runner: ubuntu-24.04, container: "ubuntu:22.04", gate: x64 }
+          - { name: linux-arm64, runner: ubuntu-24.04-arm, container: "ubuntu:22.04", gate: native }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 90
+    steps:
+      - name: Install the build tools
+        if: matrix.container
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            clang make file python3 perl procps unzip zip ca-certificates git xxd curl
+      # jelloc's tests use degust from ../../degust, beside this repository. While degust is
+      # private, a DEGUST_TOKEN secret reads it, since this workflow's own token cannot.
+      - uses: actions/checkout@v4
+        with:
+          path: jello
+      - uses: actions/checkout@v4
+        with:
+          repository: Lazarus404/degust
+          path: degust
+          token: ${{ secrets.DEGUST_TOKEN || github.token }}
+          persist-credentials: false
+      - name: Gates
+        working-directory: jello
+        env:
+          CC: clang
+        run: |
+          if [ "${{ matrix.gate }}" = x64 ]; then
+            ./scripts/test_x64.sh
+          else
+            ./scripts/build_vm.sh
+            ./scripts/test_vm.sh
+            ./scripts/test_jello.sh
+          fi
+
+  windows-build:
+    name: windows-${{ matrix.arch }}-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, cc: x86_64-w64-mingw32-clang }
+          - { arch: arm64, cc: aarch64-w64-mingw32-clang }
+    runs-on: ubuntu-24.04
+    container: "ubuntu:22.04"
+    timeout-minutes: 60
+    steps:
+      - name: Install the build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            clang make file python3 perl procps ca-certificates git xxd binutils curl xz-utils
+      - uses: actions/checkout@v4
+        with:
+          path: jello
+      - uses: ./jello/.github/actions/llvm-mingw
+      - name: Package
+        working-directory: jello
+        env:
+          HOST_CC: clang
+          CC: ${{ matrix.cc }}
+        run: |
+          git config --global --add safe.directory "$PWD"
+          ./releases/package.sh "$GITHUB_WORKSPACE/dist/jello-windows-${{ matrix.arch }}"
+      # The VM's C tests, with the libraries some of them load.
+      - name: C tests
+        working-directory: jello
+        env:
+          CC: ${{ matrix.cc }}
+        run: |
+          out="$GITHUB_WORKSPACE/dist/csrc"
+          lib="$GITHUB_WORKSPACE/dist/jello-windows-${{ matrix.arch }}/lib/libjello_vm.a"
+          mkdir -p "$out"
+          for jdll in test_native test_blocking test_old_abi; do
+            "$CC" -std=c11 -Ivm/src/include -shared "tests/jdll/$jdll.c" -o "$out/$jdll.jdll"
+          done
+          for test in trap_pc_tests vm_safety_tests enum_tests thread_tests proc_switch_tests \
+            proc_vm_tests proc_native_tests blocking_tests poll_tests run_for_tests jir_tests \
+            jit_frame_abi_tests jit_regs_tests jit_numeric_tests jit_cfg_tests jit_calls_tests \
+            jit_mixed_tests jit_reload_tests jit_arm64_tests jit_golden_tests thread_stress_tests \
+            capstone_stress_test; do
+            "$CC" -std=c11 -D_WIN32_WINNT=0x0A00 -O2 -Wall -Wextra -Wpedantic -Wshadow \
+              -Wno-unused-parameter -Werror -DJELLO_JDLL_HOST -Ivm/src/include \
+              "tests/csrc/$test.c" "$lib" \
+              -static -lpthread -lws2_32 -lbcrypt -o "$out/$test.exe"
+          done
+      # Named apart from release.yml's archives: a release run holds both, in one namespace.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}-build
+          path: dist
+
+  windows:
+    name: windows-${{ matrix.arch }}
+    needs: windows-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # As jelloc's scripts/lib.sh holds them: the arm64 JIT must also compile every function
+          # eagerly; the x64 JIT declines more.
+          - { arch: x64, runner: windows-2022, modes: "jit,no-jit" }
+          - { arch: arm64, runner: windows-11-arm, modes: "jit,no-jit,eager" }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}-build
+          path: dist
+      - uses: actions/checkout@v4
+        with:
+          path: jello
+      - uses: actions/checkout@v4
+        with:
+          repository: Lazarus404/degust
+          path: degust
+          token: ${{ secrets.DEGUST_TOKEN || github.token }}
+          persist-credentials: false
+      - name: C tests
+        run: |
+          lib="dist/jello-windows-${{ matrix.arch }}/lib"
+          export JELLO_JDLL_PATH="$(cygpath -w dist/csrc);$(cygpath -w "$lib")"
+          for test in dist/csrc/*.exe; do echo "== $test"; "$test"; done
+      # install.ps1, as the release's README runs it, in Windows PowerShell: it installs and runs
+      # the tools, then uninstalls, leaving the user's environment as it found it.
+      - name: Install
+        shell: powershell
+        run: |
+          $release = "dist\jello-windows-${{ matrix.arch }}"
+          $prefix = "$env:RUNNER_TEMP\jello"
+          # Each user variable with its kind and its unexpanded value.
+          function Get-UserEnvironment {
+            $key = Get-Item HKCU:\Environment
+            ($key.GetValueNames() | Sort-Object | ForEach-Object {
+              "$_ $($key.GetValueKind($_)) $($key.GetValue($_, '', 'DoNotExpandEnvironmentNames'))"
+            }) -join "`n"
+          }
+          $before = Get-UserEnvironment
+          powershell -ExecutionPolicy Bypass -File "$release\install.ps1" -Prefix $prefix
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $root = [Environment]::GetEnvironmentVariable('JELLO_ROOT', 'User')
+          if ($root -ne "$prefix\current") { throw "JELLO_ROOT is $root" }
+          $path = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (($path -split ';')[0] -ne "$prefix\current\bin") { throw "PATH is $path" }
+          powershell -ExecutionPolicy Bypass -File "$release\install.ps1" -Prefix $prefix -Uninstall
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $after = Get-UserEnvironment
+          if ($after -ne $before) { throw "the user's environment was $before and is $after" }
+          if (Test-Path $prefix) { throw "$prefix is left" }
+      # That the JIT is on, and compiles a program whole.
+      - name: JIT
+        working-directory: jello/jelloc
+        run: |
+          bin="$(cygpath -m "$GITHUB_WORKSPACE")/dist/jello-windows-${{ matrix.arch }}/bin"
+          out="$(cygpath -m "$RUNNER_TEMP")"
+          "$bin/jelloc.exe" tests/e2e/programs/deep-recursion.jello --std ../stdlib \
+            --out "$out/deep.jlo"
+          "$bin/jello.exe" --require-jit "$out/deep.jlo"
+      # The fixtures expect the order one scheduler runs processes in; cmd.exe stands in for the
+      # decode check, a bash script.
+      - name: Program fixtures
+        working-directory: jello/jelloc
+        env:
+          JELLO_SCHEDULERS: "1"
+        run: |
+          bin="$(cygpath -m "$GITHUB_WORKSPACE")/dist/jello-windows-${{ matrix.arch }}/bin"
+          out="$(cygpath -m "$RUNNER_TEMP")"
+          "$bin/jlo_tool.exe" get-deps
+          files=$(find tests/e2e \( -path tests/e2e/programs -o -path tests/e2e/cli \) -prune -o \
+            -name Programs.test.jello -print)
+          "$bin/jelloc.exe" --test $files --path tests/e2e --path src --path packages/degust/src \
+            --path tests/workload --std ../stdlib --out "$out/programs.jlo"
+          "$bin/jello.exe" "$out/programs.jlo" -- --compiler "$bin/jelloc.exe" \
+            --vm "$bin/jello.exe" --std ../stdlib --check "cmd.exe /c rem" \
+            --modes "${{ matrix.modes }}" --out "$out/programs"

@@ -1,0 +1,36 @@
+// 1,000 processes in a ring pass a token for 1,000 laps.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+enum Ring { Link(next: Process<Ring>); Token(hops: I32); }
+
+let N = 1000;
+let LAPS = 1000;
+let done = new Inbox<I32>();
+let main = Process.self<I32>(done);
+let start = Process.now();
+let members = Array.new<Process<Ring>>(0);
+let i = 0;
+while (i < N) {
+  members.push(Process.spawn<Ring>(fn(inbox: Inbox<Ring>) {
+    match (inbox.receive()) {
+      Link(next) => {
+        let n = 0;
+        while (n < LAPS) {
+          match (inbox.receive()) {
+            Token(hops) => { if (hops == 1) { main.send(n); } else { next.send(Ring.Token(hops - 1)); } },
+            Link(_) => null,
+          };
+          n++;
+        }
+      },
+      Token(_) => null,
+    };
+  }));
+  i++;
+}
+i = 0;
+while (i < N) { members[i].send(Ring.Link(members[(i + 1) % N])); i++; }
+members[0].send(Ring.Token(N * LAPS));
+System.assert(done.receive() == LAPS - 1);
+"ms=" + Std.string(Process.now() - start)

@@ -1,0 +1,61 @@
+package std.crypto;
+
+/* Authenticated encryption: sealing data hides it and adds a 16-byte tag, and
+ * opening it gives it back only when neither it nor its associated data, such
+ * as a header sent in the clear, has changed. Ciphers are named "aes-128-gcm",
+ * "aes-256-gcm" and "chacha20-poly1305"; any other name throws. A key is 16
+ * bytes for AES-128 and 32 for the others, and a nonce 12 bytes, which must
+ * never be used twice with one key: Random.bytes(12) gives a fresh one, sent
+ * with the sealed data. On Mbed TLS, in the native library tls.jdll, which a
+ * program importing this module needs. */
+
+load { crypto_key_length, crypto_seal, crypto_open } from tls;
+
+let _keyLength: (Bytes) -> I32 = crypto_key_length;
+let _seal: (Bytes, Bytes, Bytes, Bytes, Bytes) -> Bytes = crypto_seal;
+let _open: (Bytes, Bytes, Bytes, Bytes, Bytes) -> Dynamic = crypto_open;
+
+// The bytes in a nonce, and in the tag that sealed data ends with.
+export let NONCE_SIZE = 12;
+export let TAG_SIZE = 16;
+
+// The bytes in ALGORITHM's keys; WHO throws when there is no such cipher.
+let _keySize = fn(who: Bytes, algorithm: Bytes): I32 {
+  let size = _keyLength(algorithm);
+  if (size == 0) { throw who + ": unknown cipher " + algorithm; };
+  size
+};
+
+// WHO throws unless KEY and NONCE are ALGORITHM's sizes.
+let _check = fn(who: Bytes, algorithm: Bytes, key: Bytes, nonce: Bytes) {
+  let size = _keySize(who, algorithm);
+
+  if (key.len() != size) {
+    throw who + ": the key is " + Std.string(key.len()) + " bytes, not " + Std.string(size);
+  };
+
+  if (nonce.len() != NONCE_SIZE) {
+    throw who + ": the nonce is " + Std.string(nonce.len()) + " bytes, not " + Std.string(NONCE_SIZE);
+  };
+};
+
+// The bytes in ALGORITHM's keys, as 32 for "aes-256-gcm".
+export let keySize = fn(algorithm: Bytes): I32 { _keySize("Cipher.keySize", algorithm) };
+
+/* DATA encrypted by ALGORITHM under KEY and NONCE, then the tag, which proves
+ * it and ASSOCIATED unchanged; TAG_SIZE bytes longer than DATA. */
+export let seal = fn(algorithm: Bytes, key: Bytes, nonce: Bytes, data: Bytes,
+  associated: Bytes = ""): Bytes {
+  _check("Cipher.seal", algorithm, key, nonce);
+  _seal(algorithm, key, nonce, data, associated)
+};
+
+/* The data SEALED holds, as seal made it with ALGORITHM, KEY, NONCE and
+ * ASSOCIATED; throws when it or ASSOCIATED has changed, or they differ. */
+export let open = fn(algorithm: Bytes, key: Bytes, nonce: Bytes, sealed: Bytes,
+  associated: Bytes = ""): Bytes {
+  _check("Cipher.open", algorithm, key, nonce);
+  let data = _open(algorithm, key, nonce, sealed, associated);
+  if (data == null) { throw "Cipher.open: the data is not as it was sealed"; };
+  data as Bytes
+};

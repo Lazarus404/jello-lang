@@ -1,0 +1,9 @@
+// Negative: spread not supported in bytes-layout pack
+typedef Header = bytes-layout {
+  let tag: U8;
+  let payload: rest;
+};
+
+let extra = { tag: 1 };
+let _ = Header.pack({ ...extra, payload: bits[8(1)] });
+"ok"

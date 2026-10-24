@@ -1,0 +1,87 @@
+import { add } from std.core.List;
+
+export let emptyTile: I32 = -1;
+
+typedef MapRec = {
+  let width: I32;
+  let height: I32;
+  let tiles: List<Any>;
+};
+
+let at: (List<Any>, I32) -> Dynamic = fn(list, idx) {
+  let cur = list;
+  let i = 0;
+  while (List.is_nil(cur) == false) {
+    if (i == idx) {
+      return List.head(cur);
+    }
+    i = i + 1;
+    cur = List.tail(cur);
+  }
+  null
+};
+
+let tileIdAt: (List<Any>, I32) -> I32 = fn(list, idx) {
+  let cell = at(list, idx);
+  cell.tile
+};
+
+let cellIndex: (MapRec, I32, I32) -> I32 = fn(map, x, y) {
+  (y * map.width) + x
+};
+
+let inBounds: (MapRec, I32, I32) -> Bool = fn(map, x, y) {
+  (x >= 0) && (y >= 0) && (x < map.width) && (y < map.height)
+};
+
+let getTile: (MapRec, I32, I32) -> I32 = fn(map, x, y) {
+  match (inBounds(map, x, y)) {
+    true => tileIdAt(map.tiles, cellIndex(map, x, y)),
+    _ => -1,
+  }
+};
+
+let rebuild: (MapRec) -> I32 = fn(map) {
+  let count = 0;
+  let y = 0;
+  while (y < map.height) {
+    let x = 0;
+    while (x < map.width) {
+      let tileId = getTile(map, x, y);
+      if (tileId != emptyTile) {
+        count = count + 1;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  count
+};
+
+let makeMap: () -> MapRec = fn() {
+  let grid = List.nil<Any>();
+  let i = 0;
+  while (i < 12) {
+    grid = add(grid, { tile: -1 });
+    i = i + 1;
+  }
+  { width: 4, height: 3, tiles: grid }
+};
+
+let touchRebuild = rebuild;
+
+let testRebuild: () -> Bool = fn() {
+  let map = makeMap();
+  let ok = rebuild(map) == 0;
+  ok
+};
+
+let testGetTile: () -> Bool = fn() {
+  let map = makeMap();
+  let v = getTile(map, 0, 0);
+  v == -1
+};
+
+System.assert(testRebuild() == true);
+System.assert(testGetTile() == true);
+"ok"

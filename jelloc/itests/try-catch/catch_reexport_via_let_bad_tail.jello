@@ -1,0 +1,5 @@
+// let-bound re-export without syntactic widening: same runtime bug as pre-fix catch (e) { e }
+let eqAtom = Atom.intern("equal");
+let v: Any = try { throw 42; "bad" } catch (e) { let x = e; x };
+System.assert(Object.get(System.deepEqual(v, 42), eqAtom) == true);
+"ok"

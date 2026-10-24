@@ -1,0 +1,28 @@
+// Escape-time iteration over a 1200x1200 grid, at most 50 steps a point.
+let size = 1200;
+let inside = fn(x: I32, y: I32): I32 {
+  let m = 2.0 / (size as F64);
+  let cr = (x as F64) * m - 1.5;
+  let ci = (y as F64) * m - 1.0;
+  let zr = cr;
+  let zi = ci;
+  let i = 0;
+  while (i < 50) {
+    let zrq = zr * zr;
+    let ziq = zi * zi;
+    if (zrq + ziq > 4.0) { return 0; }
+    zi = zr * zi * 2.0 + ci;
+    zr = zrq - ziq + cr;
+    i++;
+  }
+  1
+};
+let count = 0;
+let y = 0;
+while (y < size) {
+  let x = 0;
+  while (x < size) { count = count + inside(x, y); x++; }
+  y++;
+}
+System.assert(count == 571628);
+"ok"

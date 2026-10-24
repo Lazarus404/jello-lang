@@ -1,0 +1,64 @@
+let o = {};
+let ka = Atom.intern("a");
+let kb = Atom.intern("b");
+o.set(ka, 1);
+o.set(kb, 2);
+let va: I32 = o.get(ka);
+System.assert(o.exists(ka));
+System.assert(o.isEmpty() == false);
+System.assert(o.len() == 2);
+System.assert(va == 1);
+
+let o2 = o.copy();
+System.assert(o2.exists(kb));
+System.assert(o2.len() == 2);
+
+let other = {};
+other.set(ka, 10);
+other.set(kb, 20);
+o.merge(other);
+System.assert(o.get(ka) == 10);
+System.assert(o.len() == 2);
+let vb: I32 = o2.get(kb);
+System.assert(vb == 2);
+
+o.set(kb, 99);
+System.assert(o.get(kb) == 99);
+System.assert(o.remove(ka));
+System.assert(o.exists(ka) == false);
+System.assert(o.len() == 1);
+
+o.clear();
+System.assert(o.isEmpty());
+System.assert(o.len() == 0);
+o.set(ka, "x");
+System.assert(Bytes.len(o.toString()) > 2);
+
+let add: (Object, I32) -> I32 = fn(self, y) {
+  let x: I32 = self.x;
+  return x + y;
+};
+let mobj = { x: 4, add: add };
+System.assert(mobj.add(3) == 7);
+
+let f: (Object) -> I32 = fn(o) { return o.a; };
+System.assert(f({ a: 7 }) == 7);
+
+let init: (Object, I32) -> Object = fn(self, n) {
+  self.n = n;
+  return self;
+};
+let get: (Object) -> I32 = fn(self) { return self.n; };
+prototype P {
+  init: init;
+  get: get;
+};
+let po: P = new P(7);
+let addT<T>: (Object, T, T) -> T = fn(self, a, b) { return a + b; };
+let plain = {};
+let addT_result_i32 = addT<I32>(plain, 2, 3);
+let addT_result_bytes = addT<Bytes>(plain, "a", "b");
+System.assert(po.get() == 7);
+System.assert(addT_result_i32 == 5);
+System.assert(addT_result_bytes == "ab");
+"ok"

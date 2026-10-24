@@ -1,0 +1,27 @@
+// IDLE_N processes (default 100,000) all parked in receive at once; the
+// harness reads the peak resident memory.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.io.Env as Env;
+
+load { integer_parse } from std;
+let parse: (Bytes) -> I64 = integer_parse;
+
+let given = Env.getEnv("IDLE_N");
+let N = given == "" ? 100000 : parse(given) as I32;
+let ready = new Inbox<I32>();
+let main = Process.self<I32>(ready);
+let start = Process.now();
+let parked = Array.new<Process<I32>>(0);
+let i = 0;
+while (i < N) {
+  parked.push(Process.spawn<I32>(fn(inbox: Inbox<I32>) { main.send(1); inbox.receive(); }));
+  i++;
+}
+i = 0;
+while (i < N) { ready.receive(); i++; }
+i = 0;
+while (i < N) { parked[i].send(0); i++; }
+i = 0;
+while (i < N) { parked[i].join(); i++; }
+"ms=" + Std.string(Process.now() - start)

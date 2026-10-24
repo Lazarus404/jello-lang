@@ -1,0 +1,106 @@
+# A tag v<version> builds a release for each system and attaches the archives, with their
+# SHA256SUMS, to the GitHub release of that tag, once the tagged commit passes ci.yml's gates. The
+# version must be jelloc/jello.json's. Windows builds on Linux with llvm-mingw (see ci.yml), and
+# its archives are zip files.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  gates:
+    uses: ./.github/workflows/ci.yml
+    secrets:
+      DEGUST_TOKEN: ${{ secrets.DEGUST_TOKEN }}
+
+  package:
+    name: ${{ matrix.target }}
+    strategy:
+      matrix:
+        include:
+          - { target: macos-universal, runner: macos-15 }
+          - { target: linux-x64, runner: ubuntu-24.04, container: "ubuntu:22.04" }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm, container: "ubuntu:22.04" }
+          - target: windows-x64
+            runner: ubuntu-24.04
+            container: "ubuntu:22.04"
+            cc: x86_64-w64-mingw32-clang
+          - target: windows-arm64
+            runner: ubuntu-24.04
+            container: "ubuntu:22.04"
+            cc: aarch64-w64-mingw32-clang
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 60
+    steps:
+      - name: Install the build tools
+        if: matrix.container
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            clang make file python3 perl procps ca-certificates git xxd binutils curl xz-utils zip
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/llvm-mingw
+        if: matrix.cc
+      - name: Package
+        env:
+          CC: ${{ matrix.cc || 'clang' }}
+          HOST_CC: clang
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          git config --global --add safe.directory "$PWD"
+          version="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' jelloc/jello.json)"
+          [ "$TAG" = "v$version" ] || { echo "tag $TAG is not v$version (jelloc/jello.json)" >&2; exit 1; }
+          name="jello-$version-$TARGET"
+          ./releases/package.sh "dist/$name"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+          case "$TARGET" in
+            windows-*) (cd dist && zip -qr "$name.zip" "$name") ;;
+            *) tar -C dist -czf "dist/$name.tar.gz" "$name" ;;
+          esac
+      # install.sh, as the release's README runs it, for a user with a home of its own: it installs
+      # and runs the tools, then uninstalls, leaving nothing of Jello's behind but profile backups.
+      - name: Install
+        if: ${{ !startsWith(matrix.target, 'windows-') }}
+        run: |
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          "dist/$NAME/install.sh"
+          "dist/$NAME/install.sh" --uninstall
+          if find "$HOME" -iname '*jello*' ! -name '*.jello-backup' | grep . ||
+            grep -rl --exclude='*.jello-backup' -i jello "$HOME"; then
+            echo "the files above are left" >&2
+            exit 1
+          fi
+          [ ! -e "$HOME/.jello" ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  publish:
+    needs: [gates, package]
+    runs-on: ubuntu-24.04
+    steps:
+      # Only the archives: the gates' artifacts are in this run too.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum -- jello-* > SHA256SUMS
+          gh release create "$TAG" --repo "${{ github.repository }}" --title "Jello ${TAG#v}" \
+            --generate-notes jello-* SHA256SUMS

@@ -1,0 +1,35 @@
+let xs = list[1, 2, 3];
+System.assert(xs.join(",") == "1,2,3");
+System.assert(List.head(xs) + List.head(List.tail(List.tail(xs))) == 4);
+
+let xs2 = list[1.0, 2.5];
+System.assert(List.head(xs2) + List.head(List.tail(xs2)) == 3.5);
+
+let empty: List<I32> = list[];
+System.assert(empty.isEmpty());
+
+let fromAnn: List<I32> = list[];
+fromAnn = list[10, 32];
+System.assert(List.head(fromAnn) + List.head(List.tail(fromAnn)) == 42);
+
+let headSum = fn(lst) {
+  match (lst) {
+    [a, b] => a + b,
+    _ => 0,
+  }
+};
+System.assert(headSum(list[10, 32]) == 42);
+
+let make = fn() {
+  let seed = list[10, 32];
+  let addHead = fn() {
+    List.head(seed) + List.head(List.tail(seed))
+  };
+  return addHead();
+};
+System.assert(make() == 42);
+
+let doubled = list[for x <- list[1, 2, 3], do: x + x];
+System.assert(doubled.join(",") == "2,4,6");
+
+"ok"

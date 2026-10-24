@@ -1,0 +1,36 @@
+// A 1,600 by 1,600 Mandelbrot set at 200 iterations a point, its rows spread
+// over the schedulers by Job.parallelFor into a shared Buffer.
+import std.concurrent.Job as Job;
+import std.concurrent.Process as Process;
+import type { Buffer } from std.concurrent.Buffer;
+
+let SIZE = 1600;
+let ITER = 200;
+let inside = new Buffer(SIZE * SIZE);
+let start = Process.now();
+Job.parallelFor(SIZE, 8, fn(first: I32, end: I32) {
+  let y = first;
+  while (y < end) {
+    let ci = 2.0 * (y as F64) / (SIZE as F64) - 1.0;
+    let x = 0;
+    while (x < SIZE) {
+      let cr = 2.0 * (x as F64) / (SIZE as F64) - 1.5;
+      let zr = 0.0; let zi = 0.0; let k = 0;
+      while ((k < ITER) && (zr * zr + zi * zi <= 4.0)) {
+        let t = zr * zr - zi * zi + cr;
+        zi = 2.0 * zr * zi + ci;
+        zr = t;
+        k++;
+      }
+      if (k == ITER) { inside.setU8(y * SIZE + x, 1 as U8); }
+      x++;
+    }
+    y++;
+  }
+});
+let ms = Process.now() - start;
+let count = 0;
+let i = 0;
+while (i < SIZE * SIZE) { count = count + (inside.getU8(i) as I32); i++; }
+System.assert(count == 976330);
+"ms=" + Std.string(ms)

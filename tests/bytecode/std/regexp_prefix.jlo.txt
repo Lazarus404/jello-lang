@@ -1,0 +1,36 @@
+.jlo module version=1 features=[IMPORTS] entry=0
+types: [I32, BYTES, DYNAMIC, BOOL]
+sigs: []
+atoms: [std, regexp_compile, regexp_match_prefix, regexp_match_len, regexp_capture_count]
+struct_sigs: []
+imports: [
+  { library=std, export=regexp_compile, ret=DYNAMIC, args=[BYTES, BYTES] },
+  { library=std, export=regexp_match_prefix, ret=DYNAMIC, args=[BYTES, DYNAMIC] },
+  { library=std, export=regexp_match_len, ret=I32, args=[DYNAMIC] },
+  { library=std, export=regexp_capture_count, ret=I32, args=[DYNAMIC] }
+]
+func[0] nregs=10 reg_types=[I32, BYTES, BYTES, I32, BYTES, DYNAMIC, DYNAMIC, I32, I32, I32]
+  0: CONST_I32 a=r0 b=r0 c=r0 imm=2
+  1: BYTES_NEW a=r1 b=r0 c=r0 imm=0
+  2: CONST_I32 a=r8 b=r0 c=r0 imm=97
+  3: CONST_I32 a=r9 b=r0 c=r0 imm=0
+  4: BYTES_SET_U8 a=r8 b=r1 c=r9 imm=0
+  5: CONST_I32 a=r8 b=r0 c=r0 imm=43
+  6: CONST_I32 a=r9 b=r0 c=r0 imm=1
+  7: BYTES_SET_U8 a=r8 b=r1 c=r9 imm=0
+  8: CONST_I32 a=r0 b=r0 c=r0 imm=0
+  9: BYTES_NEW a=r2 b=r0 c=r0 imm=0
+ 10: CONST_I32 a=r0 b=r0 c=r0 imm=3
+ 11: BYTES_NEW a=r4 b=r0 c=r0 imm=0
+ 12: CONST_I32 a=r8 b=r0 c=r0 imm=97
+ 13: CONST_I32 a=r9 b=r0 c=r0 imm=0
+ 14: BYTES_SET_U8 a=r8 b=r4 c=r9 imm=0
+ 15: CONST_I32 a=r9 b=r0 c=r0 imm=1
+ 16: BYTES_SET_U8 a=r8 b=r4 c=r9 imm=0
+ 17: CONST_I32 a=r8 b=r0 c=r0 imm=98
+ 18: CONST_I32 a=r9 b=r0 c=r0 imm=2
+ 19: BYTES_SET_U8 a=r8 b=r4 c=r9 imm=0
+ 20: CALL_NATIVE a=r5 b=r1 c=r2 imm=0
+ 21: CALL_NATIVE a=r6 b=r4 c=r2 imm=1
+ 22: CALL_NATIVE a=r7 b=r6 c=r1 imm=2
+ 23: RET a=r7 b=r0 c=r0 imm=0

@@ -1,0 +1,17 @@
+# Installs llvm-mingw, the clang toolchain Windows builds with, for an x64 Linux runner, and puts
+# it on PATH; the version is pinned, and the archive checked against its SHA-256.
+name: llvm-mingw
+description: Install the llvm-mingw toolchain on an x64 Linux runner
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        NAME: llvm-mingw-20261006-ucrt-ubuntu-22.04-x86_64
+        SUM: 5f9c6ed95b2d4bdb2869a488c5fd5857fbdabcf288a0aa3eb1da43f6a08d8ab4
+      run: |
+        curl -fsSL -o /tmp/llvm-mingw.tar.xz \
+          "https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/$NAME.tar.xz"
+        echo "$SUM  /tmp/llvm-mingw.tar.xz" | sha256sum -c -
+        tar -C /opt -xJf /tmp/llvm-mingw.tar.xz
+        echo "/opt/$NAME/bin" >> "$GITHUB_PATH"

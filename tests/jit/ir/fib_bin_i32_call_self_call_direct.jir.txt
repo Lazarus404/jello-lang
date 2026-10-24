@@ -1,0 +1,17 @@
+jir fn[0] nregs=2 flags=[numeric_fast] nslow=0
+  bc_pc=0  CONST_I32 a=r0 imm=24
+  bc_pc=1  SAFEPOINT
+  bc_pc=1  CALL_DIRECT a=r1 b=r0 imm=1
+  bc_pc=2  RET a=r1
+jir fn[1] nregs=7 flags=[numeric_fast] nslow=0
+  bc_pc=0  LT_I32_IMM a=r1 b=r0 imm=2
+  bc_pc=1  JMP_IF a=r1 imm=6
+  bc_pc=2  SUB_I32_IMM a=r2 b=r0 imm=1
+  bc_pc=3  SAFEPOINT
+  bc_pc=3  CALL_SELF a=r3 b=r2
+  bc_pc=4  SUB_I32_IMM a=r4 b=r0 imm=2
+  bc_pc=5  SAFEPOINT
+  bc_pc=5  CALL_SELF a=r5 b=r4
+  bc_pc=6  BIN_I32 a=r6 b=r3 c=r5 imm=ADD
+  bc_pc=7  RET a=r6
+  bc_pc=8  RET a=r0

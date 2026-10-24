@@ -1,0 +1,46 @@
+package std.io;
+
+/* Path-based file I/O over std.jdll. Paths and contents are Bytes.
+ * The compiler links this module, so it imports none, keeping std.core out of the compiler. */
+
+load { file_exists, file_contents, file_write, file_remove, dir_entries, dir_make } from std;
+
+export let exists: (Bytes) -> Bool = file_exists;
+// The contents of file PATH, or null if it cannot be read.
+let _read: (Bytes) -> Dynamic = file_contents;
+
+// The contents of file PATH; a path that names no file this process can read throws.
+export let readText = fn(path: Bytes): Bytes {
+  let text = _read(path);
+  if (text == null) { throw "File.readText: cannot read " + path; }
+  text as Bytes
+};
+export let writeText: (Bytes, Bytes) -> Bool = file_write;
+// Removes a file; whether none is there now.
+export let remove: (Bytes) -> Bool = file_remove;
+// Makes a directory and any missing parents; whether it then exists.
+export let makeDirs: (Bytes) -> Bool = dir_make;
+
+// The entries of directory DIR, each ending with a NUL, or null if it cannot be listed.
+let _entries: (Bytes) -> Dynamic = dir_entries;
+
+/* The entries of directory DIR but . and .., sorted by their bytes, a
+ * directory's ending with a slash. A path that names no directory this process can list
+ * throws. */
+export let listDir = fn(dir: Bytes): Array<Bytes> {
+  let entries = _entries(dir);
+  if (entries == null) { throw "File.listDir: cannot list " + dir; }
+  let text = entries as Bytes;
+  let names = Array.new<Bytes>(0);
+  let start = 0;
+  let i = 0;
+
+  while (i < Bytes.len(text)) {
+    if (Bytes.get_u8(text, i) == 0) {
+      names.push(Bytes.slice(text, start, i - start));
+      start = i + 1;
+    }
+    i++;
+  }
+  names
+};

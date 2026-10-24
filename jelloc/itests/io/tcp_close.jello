@@ -1,0 +1,12 @@
+load { addr_resolve } from std;
+import { listen, connect, close, boundPort } from std.io.net.Tcp;
+
+let bindAddr = addr_resolve("127.0.0.1", 0);
+let listener = listen(bindAddr, 1);
+let port = boundPort(listener);
+System.assert(close(listener));
+let bindAddr2 = addr_resolve("127.0.0.1", port);
+let listener2 = listen(bindAddr2, 1);
+System.assert(boundPort(listener2) == port);
+System.assert(close(listener2));
+"ok"

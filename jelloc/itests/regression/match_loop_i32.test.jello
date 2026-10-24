@@ -1,0 +1,31 @@
+package test;
+
+let name_at: (I32) -> Bytes = fn(i) {
+  match (i) {
+    0 => "a",
+    1 => "b",
+    2 => "c",
+    _ => "x",
+  }
+};
+
+let i = 0;
+let last = "";
+while (i < 3) {
+  last = name_at(i);
+  i++;
+}
+System.assert(Bytes.eq(last, "c"));
+
+let j = 0;
+let last2 = "";
+while (j < 3) {
+  last2 = match (j) {
+    0 => "a",
+    1 => "b",
+    2 => "c",
+    _ => "x",
+  };
+  j++;
+}
+System.assert(Bytes.eq(last2, "c"));

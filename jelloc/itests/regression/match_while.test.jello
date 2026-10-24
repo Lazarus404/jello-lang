@@ -1,0 +1,21 @@
+import { test, run } from ava.Runner;
+
+let _scanList: (Dynamic) -> Bool = fn(voice: Dynamic) {
+  let count = 3;
+  match (count) {
+    0 => { true },
+    _ => {
+      let i = 0;
+      while (i < count && i < 10) {
+        i += 1;
+      }
+      true
+    },
+  }
+};
+
+test("match arm with while loop compiles", fn(t) {
+  t.assertTrue(_scanList(0) == true);
+});
+
+run();

@@ -1,0 +1,7 @@
+// Negative: non-copy-safe payloads trap at runtime (compile succeeds)
+load { channel_new, channel_send } from std;
+
+let ch = channel_new();
+let o = {};
+channel_send(ch, o);
+"ok"

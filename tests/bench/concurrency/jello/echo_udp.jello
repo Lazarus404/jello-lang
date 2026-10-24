@@ -1,0 +1,45 @@
+// 16 sockets each make 5,000 round trips of a 64-byte datagram through a UDP echo server.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.net.Udp as Udp;
+import type { Socket, Datagram } from std.net.Udp;
+
+let C = 16;
+let K = 5000;
+let MESSAGE = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+let run = fn(): Bytes {
+  let server = Udp.bind("127.0.0.1", 0);
+  let port = server.port();
+  Process.spawn<I32>(fn(_: Inbox<I32>) {
+    while (true) {
+      let d = server.receive(65536);
+      server.sendTo(d.data, d.host, d.port);
+    }
+  });
+  let counts = new Inbox<I32>();
+  let main = Process.self<I32>(counts);
+  let start = Process.now();
+  let i = 0;
+  while (i < C) {
+    Process.spawn<I32>(fn(_: Inbox<I32>) {
+      let s = Udp.bind("127.0.0.1", 0);
+      let right = 0;
+      let k = 0;
+      while (k < K) {
+        s.sendTo(MESSAGE, "127.0.0.1", port);
+        if (s.receive(65536).data == MESSAGE) { right++; }
+        k++;
+      }
+      s.close();
+      main.send(right);
+    });
+    i++;
+  }
+  let total = 0;
+  i = 0;
+  while (i < C) { total = total + counts.receive(); i++; }
+  System.assert(total == C * K);
+  "ms=" + Std.string(Process.now() - start)
+};
+run()

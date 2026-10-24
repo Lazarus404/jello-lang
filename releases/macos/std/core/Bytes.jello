@@ -1,0 +1,274 @@
+package std.core;
+
+/* Functions of Bytes over std.jdll, which a program calls as Bytes.f(b, ...)
+ * or as b.f(...); the compiler's intrinsics len, eq, get, get_u8, new, set,
+ * set_u8, slice and toString win, and of these a buffer from Bytes.new has
+ * all but eq. Indexes count bytes, except in the utf8* functions, which
+ * count codepoints; one out of range traps. */
+
+load {
+  unicode_validate,
+  unicode_length,
+  unicode_get,
+  unicode_from_codepoint,
+  bytes_u8,
+  bytes_hex,
+  bytes_from_hex,
+  bytes_base64,
+  bytes_from_base64,
+  bytes_read_i64,
+  bytes_read_f64,
+  bytes_i64,
+  bytes_f64,
+} from std;
+
+export let utf8Validate: (Bytes) -> Bool = unicode_validate;
+export let utf8Length: (Bytes) -> I32 = unicode_length;
+export let utf8CharAt: (Bytes, I32) -> I32 = unicode_get;
+export let utf8FromCodepoint: (I32) -> Bytes = unicode_from_codepoint;
+// The one byte V; a value outside 0..255 traps.
+export let u8: (I32) -> Bytes = bytes_u8;
+
+let _fromHex: (Bytes) -> Dynamic = bytes_from_hex;
+let _base64: (Bytes, Bool) -> Bytes = bytes_base64;
+let _fromBase64: (Bytes, Bool) -> Dynamic = bytes_from_base64;
+
+// DATA as lowercase hexadecimal, two digits a byte.
+export let toHex: (Bytes) -> Bytes = bytes_hex;
+
+// The bytes the hexadecimal TEXT gives, in either case; anything else throws.
+export let fromHex = fn(text: Bytes): Bytes {
+  let data = _fromHex(text);
+  if (data == null) { throw "Bytes.fromHex: not hexadecimal"; };
+  data as Bytes
+};
+
+/* DATA in Base64 (RFC 4648): the standard alphabet, padded with `=`, or,
+ * when URL, the alphabet for URLs and file names, without padding. */
+export let toBase64 = fn(data: Bytes, url: Bool = false): Bytes { _base64(data, url) };
+
+/* The bytes the Base64 TEXT gives, in the standard alphabet or, when URL,
+ * the one for URLs; padding is optional, and anything else throws. */
+export let fromBase64 = fn(text: Bytes, url: Bool = false): Bytes {
+  let data = _fromBase64(text, url);
+  if (data == null) { throw "Bytes.fromBase64: not Base64"; };
+  data as Bytes
+};
+
+let _isSpace = fn(byte: I32): Bool { (byte == 32) || ((byte >= 9) && (byte <= 13)) };
+
+// Whether NEEDLE occurs in HAYSTACK at index AT, which leaves room for it.
+let _matchesAt = fn(haystack: Bytes, needle: Bytes, at: I32): Bool {
+  let i = 0;
+  while ((i < Bytes.len(needle)) && (Bytes.get(haystack, at + i) == Bytes.get(needle, i))) { i++; }
+  i == Bytes.len(needle)
+};
+
+// Whether TEXT has no bytes.
+export let isEmpty = fn(text: Bytes): Bool { Bytes.len(text) == 0 };
+
+// The bytes of FIRST, then those of SECOND.
+export let concat = fn(first: Bytes, second: Bytes): Bytes { first + second };
+
+// A new buffer holding the bytes of TEXT.
+export let copy = fn(text: Bytes): ByteBuffer {
+  let buffer = Bytes.new(Bytes.len(text));
+  _put(buffer, 0, text);
+  buffer
+};
+
+// The bytes of TEXT from index START up to, but not including, index END.
+export let substring = fn(text: Bytes, start: I32, end: I32): Bytes { Bytes.slice(text, start, end - start) };
+
+// TEXT without the ASCII whitespace at either end.
+export let trim = fn(text: Bytes): Bytes {
+  let start = 0;
+  let end = Bytes.len(text);
+  while ((start < end) && _isSpace(Bytes.get(text, start))) { start++; }
+  while ((end > start) && _isSpace(Bytes.get(text, end - 1))) { end--; }
+  substring(text, start, end)
+};
+
+export let startsWith = fn(haystack: Bytes, prefix: Bytes): Bool {
+  let n = Bytes.len(prefix);
+  n <= Bytes.len(haystack) && Bytes.slice(haystack, 0, n) == prefix
+};
+
+export let endsWith = fn(haystack: Bytes, suffix: Bytes): Bool {
+  let n = Bytes.len(suffix);
+  let at = Bytes.len(haystack) - n;
+  at >= 0 && Bytes.slice(haystack, at, n) == suffix
+};
+
+/* The first index from START on of NEEDLE in HAYSTACK, or -1; an empty
+ * needle is at START. */
+export let indexOfFrom = fn(haystack: Bytes, needle: Bytes, start: I32): I32 {
+  let n = Bytes.len(needle);
+  let last = Bytes.len(haystack) - n;
+  let i = start;
+
+  while (i <= last) {
+    if (_matchesAt(haystack, needle, i)) { return i; }
+    i++;
+  }
+  -1
+};
+
+// The first index of NEEDLE in HAYSTACK, or -1; an empty needle is at 0.
+export let indexOf = fn(haystack: Bytes, needle: Bytes): I32 { indexOfFrom(haystack, needle, 0) };
+
+// The last index of NEEDLE in HAYSTACK, or -1; an empty needle is at the end.
+export let lastIndexOf = fn(haystack: Bytes, needle: Bytes): I32 {
+  let i = Bytes.len(haystack) - Bytes.len(needle);
+
+  while (i >= 0) {
+    if (_matchesAt(haystack, needle, i)) { return i; }
+    i--;
+  }
+  -1
+};
+
+// Whether NEEDLE occurs in HAYSTACK.
+export let contains = fn(haystack: Bytes, needle: Bytes): Bool { indexOf(haystack, needle) >= 0 };
+
+/* The parts of TEXT between occurrences of SEPARATOR, which must not be
+ * empty; one more than there are occurrences, so "" gives [""]. */
+export let split = fn(text: Bytes, separator: Bytes): Array<Bytes> {
+  let parts = Array.new<Bytes>(0);
+  let n = Bytes.len(separator);
+  if (n == 0) { throw "Bytes.split requires a separator"; }
+  let start = 0;
+  let i = 0;
+
+  while (i + n <= Bytes.len(text)) {
+    if (_matchesAt(text, separator, i)) {
+      parts.push(Bytes.slice(text, start, i - start));
+      i = i + n;
+      start = i;
+    } else { i++; }
+  }
+  parts.push(Bytes.slice(text, start, Bytes.len(text) - start));
+  parts
+};
+
+// PARTS with SEPARATOR between each two, so join(split(t, s), s) is t.
+export let join = fn(parts: Array<Bytes>, separator: Bytes): Bytes { parts.join(separator) };
+
+/* TEXT with its first PATTERN, which must not be empty, replaced by
+ * REPLACEMENT; TEXT itself when there is none. */
+export let replace = fn(text: Bytes, pattern: Bytes, replacement: Bytes): Bytes {
+  if (Bytes.len(pattern) == 0) { throw "Bytes.replace requires a pattern"; }
+  let at = indexOf(text, pattern);
+  if (at < 0) { return text; }
+  substring(text, 0, at) + replacement + substring(text, at + Bytes.len(pattern), Bytes.len(text))
+};
+
+// TEXT with each PATTERN, which must not be empty, replaced by REPLACEMENT.
+export let replaceAll = fn(text: Bytes, pattern: Bytes, replacement: Bytes): Bytes {
+  if (Bytes.len(pattern) == 0) { throw "Bytes.replaceAll requires a pattern"; }
+  join(split(text, pattern), replacement)
+};
+
+/* The value of the N bytes at index AT, least significant first (Le) or
+ * last; 4 bytes give the I32 of their bits. */
+let _readLe = fn(bytes: Bytes, at: I32, n: I32): I32 {
+  let value = 0;
+  let i = n - 1;
+
+  while (i >= 0) {
+    value = (value << 8) | Bytes.get(bytes, at + i);
+    i--;
+  }
+  value
+};
+
+let _readBe = fn(bytes: Bytes, at: I32, n: I32): I32 {
+  let value = 0;
+  let i = 0;
+
+  while (i < n) {
+    value = (value << 8) | Bytes.get(bytes, at + i);
+    i++;
+  }
+  value
+};
+
+/* The fixed-width integers and floats at index AT, least (Le) or most (Be)
+ * significant byte first; a U32 reads as the I32 of its bits, and an I16
+ * would need its sign extended. */
+export let readU16Le = fn(bytes: Bytes, at: I32): I32 { _readLe(bytes, at, 2) };
+export let readU16Be = fn(bytes: Bytes, at: I32): I32 { _readBe(bytes, at, 2) };
+export let readU32Le = fn(bytes: Bytes, at: I32): I32 { _readLe(bytes, at, 4) };
+export let readU32Be = fn(bytes: Bytes, at: I32): I32 { _readBe(bytes, at, 4) };
+export let readI32Le = fn(bytes: Bytes, at: I32): I32 { _readLe(bytes, at, 4) };
+export let readI32Be = fn(bytes: Bytes, at: I32): I32 { _readBe(bytes, at, 4) };
+
+export let readF32Le = fn(bytes: Bytes, at: I32): F32 {
+  let bits[f32.le(v)] = Bytes.slice(bytes, at, 4) else { return 0f32; };
+  v
+};
+
+export let readF32Be = fn(bytes: Bytes, at: I32): F32 {
+  let bits[f32.be(v)] = Bytes.slice(bytes, at, 4) else { return 0f32; };
+  v
+};
+
+// The I64 or F64 in the eight bytes at index AT, most significant first when BIG.
+let _readI64: (Bytes, I32, Bool) -> I64 = bytes_read_i64;
+let _readF64: (Bytes, I32, Bool) -> F64 = bytes_read_f64;
+export let readI64Le = fn(bytes: Bytes, at: I32): I64 { _readI64(bytes, at, false) };
+export let readI64Be = fn(bytes: Bytes, at: I32): I64 { _readI64(bytes, at, true) };
+export let readF64Le = fn(bytes: Bytes, at: I32): F64 { _readF64(bytes, at, false) };
+export let readF64Be = fn(bytes: Bytes, at: I32): F64 { _readF64(bytes, at, true) };
+
+// The index after the bytes of VALUE, written into BUFFER from index AT.
+let _put = fn(buffer: ByteBuffer, at: I32, value: Bytes): I32 {
+  let i = 0;
+
+  while (i < Bytes.len(value)) {
+    Bytes.set(buffer, at + i, Bytes.get(value, i));
+    i++;
+  }
+  at + i
+};
+
+/* The index after the N low bytes of VALUE, written into BUFFER from index
+ * AT, least significant first (Le) or last. */
+let _writeLe = fn(buffer: ByteBuffer, at: I32, n: I32, value: I32): I32 {
+  let i = 0;
+
+  while (i < n) {
+    Bytes.set(buffer, at + i, (value >> (8 * i)) & 255);
+    i++;
+  }
+  at + n
+};
+
+let _writeBe = fn(buffer: ByteBuffer, at: I32, n: I32, value: I32): I32 {
+  let i = 0;
+
+  while (i < n) {
+    Bytes.set(buffer, at + n - 1 - i, (value >> (8 * i)) & 255);
+    i++;
+  }
+  at + n
+};
+
+/* The index after VALUE, written into BUFFER from index AT, least (Le) or
+ * most (Be) significant byte first. */
+export let writeU16Le = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeLe(buffer, at, 2, value) };
+export let writeU16Be = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeBe(buffer, at, 2, value) };
+export let writeU32Le = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeLe(buffer, at, 4, value) };
+export let writeU32Be = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeBe(buffer, at, 4, value) };
+export let writeI32Le = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeLe(buffer, at, 4, value) };
+export let writeI32Be = fn(buffer: ByteBuffer, at: I32, value: I32): I32 { _writeBe(buffer, at, 4, value) };
+export let writeF32Le = fn(buffer: ByteBuffer, at: I32, value: F32): I32 { _put(buffer, at, bits[f32.le(value)]) };
+export let writeF32Be = fn(buffer: ByteBuffer, at: I32, value: F32): I32 { _put(buffer, at, bits[f32.be(value)]) };
+
+// The eight bytes of an I64 or F64, most significant first when BIG.
+let _i64: (I64, Bool) -> Bytes = bytes_i64;
+let _f64: (F64, Bool) -> Bytes = bytes_f64;
+export let writeI64Le = fn(buffer: ByteBuffer, at: I32, value: I64): I32 { _put(buffer, at, _i64(value, false)) };
+export let writeI64Be = fn(buffer: ByteBuffer, at: I32, value: I64): I32 { _put(buffer, at, _i64(value, true)) };
+export let writeF64Le = fn(buffer: ByteBuffer, at: I32, value: F64): I32 { _put(buffer, at, _f64(value, false)) };
+export let writeF64Be = fn(buffer: ByteBuffer, at: I32, value: F64): I32 { _put(buffer, at, _f64(value, true)) };

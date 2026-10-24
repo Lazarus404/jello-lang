@@ -1,0 +1,44 @@
+// The spectral norm of an infinite matrix, by the power method, at N = 800.
+let a = fn(i: I32, j: I32): F64 {
+  let ij = i + j;
+  1.0 / ((ij * (ij + 1) / 2 + i + 1) as F64)
+};
+let times = fn(x: Array<F64>, y: Array<F64>, n: I32) {
+  let i = 0;
+  while (i < n) {
+    let s = 0.0;
+    let j = 0;
+    while (j < n) { s = s + a(i, j) * x[j]; j++; }
+    y[i] = s;
+    i++;
+  }
+};
+let timesTransposed = fn(x: Array<F64>, y: Array<F64>, n: I32) {
+  let i = 0;
+  while (i < n) {
+    let s = 0.0;
+    let j = 0;
+    while (j < n) { s = s + a(j, i) * x[j]; j++; }
+    y[i] = s;
+    i++;
+  }
+};
+let n = 800;
+let u = Array.new<F64>(n);
+let v = Array.new<F64>(n);
+let t = Array.new<F64>(n);
+let i = 0;
+while (i < n) { u[i] = 1.0; i++; }
+let k = 0;
+while (k < 10) {
+  times(u, t, n); timesTransposed(t, v, n);
+  times(v, t, n); timesTransposed(t, u, n);
+  k++;
+}
+let vbv = 0.0;
+let vv = 0.0;
+i = 0;
+while (i < n) { vbv = vbv + u[i] * v[i]; vv = vv + v[i] * v[i]; i++; }
+let r = Math.sqrt(vbv / vv);
+System.assert(r > 1.2742241 && r < 1.2742242);
+"ok"

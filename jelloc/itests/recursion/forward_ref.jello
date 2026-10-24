@@ -1,0 +1,4 @@
+// Negative: callee must be in scope (mutual ref before binding)
+let f: I32 -> I32 = fn(n) { return g(n); };
+let g: I32 -> I32 = fn(n) { return f(n - 1); };
+"ok"

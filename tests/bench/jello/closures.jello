@@ -1,0 +1,26 @@
+// Higher-order calls: a closure-built pipeline over an array, 200 times.
+let mapInto = fn(xs: Array<I32>, out: Array<I32>, f: (I32) -> I32) {
+  let i = 0;
+  while (i < xs.len()) { out[i] = f(xs[i]); i++; }
+};
+let fold = fn(xs: Array<I32>, acc: I32, f: (I32, I32) -> I32): I32 {
+  let r = acc;
+  let i = 0;
+  while (i < xs.len()) { r = f(r, xs[i]); i++; }
+  r
+};
+let adder = fn(k: I32): (I32) -> I32 { fn(x: I32): I32 { x + k } };
+let n = 100000;
+let xs = Array.new<I32>(n);
+let ys = Array.new<I32>(n);
+let i = 0;
+while (i < n) { xs[i] = i % 1000; i++; }
+let total = 0;
+let round = 0;
+while (round < 200) {
+  mapInto(xs, ys, adder(round));
+  total = (total + fold(ys, 0, fn(a: I32, b: I32): I32 { (a + b) % 1000003 })) % 1000003;
+  round++;
+}
+System.assert(total == 964063);
+"ok"

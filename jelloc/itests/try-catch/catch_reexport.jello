@@ -1,0 +1,5 @@
+// catch (e) { e } must re-export the thrown payload
+let eqAtom = Atom.intern("equal");
+let v: Any = try { throw 42; "bad" } catch (e) { e };
+System.assert(Object.get(System.deepEqual(v, 42), eqAtom) == true);
+"ok"

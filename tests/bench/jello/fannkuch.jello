@@ -1,0 +1,42 @@
+// Pancake flips over every permutation of 10 items.
+let fannkuch = fn(n: I32): I32 {
+  let perm = Array.new<I32>(n);
+  let perm1 = Array.new<I32>(n);
+  let count = Array.new<I32>(n);
+  let i = 0;
+  while (i < n) { perm1[i] = i; i++; }
+  let maxFlips = 0;
+  let checksum = 0;
+  let sign = 1;
+  let r = n;
+  while (true) {
+    while (r != 1) { count[r - 1] = r; r--; }
+    i = 0;
+    while (i < n) { perm[i] = perm1[i]; i++; }
+    let flips = 0;
+    let k = perm[0];
+    while (k != 0) {
+      let lo = 0;
+      let hi = k;
+      while (lo < hi) { let t = perm[lo]; perm[lo] = perm[hi]; perm[hi] = t; lo++; hi--; }
+      flips++;
+      k = perm[0];
+    }
+    if (flips > maxFlips) { maxFlips = flips; }
+    checksum = checksum + sign * flips;
+    sign = 0 - sign;
+    while (true) {
+      if (r == n) { return maxFlips * 1000000 + checksum; }
+      let first = perm1[0];
+      i = 0;
+      while (i < r) { perm1[i] = perm1[i + 1]; i++; }
+      perm1[r] = first;
+      count[r] = count[r] - 1;
+      if (count[r] > 0) { break; }
+      r++;
+    }
+  }
+  0
+};
+System.assert(fannkuch(10) == 38073196);
+"ok"

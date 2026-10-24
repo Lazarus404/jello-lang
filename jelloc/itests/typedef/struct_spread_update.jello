@@ -1,0 +1,12 @@
+typedef MemoSlot = {
+  let query: I32;
+  let hit: I32;
+};
+
+let prev: MemoSlot = { query: 1, hit: 0 };
+let next: MemoSlot = { ...prev, hit: prev.hit + 1 };
+System.assert(next.query == 1 && next.hit == 1);
+
+let prev_dyn: Dynamic = { query: 2, hit: 0 };
+let next_dyn: MemoSlot = { ...prev_dyn, hit: 2 };
+System.assert(next_dyn.query == 2 && next_dyn.hit == 2);

@@ -1,0 +1,43 @@
+import { concat, trim, slice, len, get, u8 } from std.core.Bytes;
+
+let _isAlphaNum: (I32) -> Bool = fn(ch: I32) {
+  (ch >= 48 && ch <= 57) || (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122)
+};
+
+let _lowerAscii: (I32) -> I32 = fn(ch: I32) {
+  match (ch) {
+    c when (c >= 65 && c <= 90) => { c + 32 },
+    _ => { ch },
+  }
+};
+
+export let slugify: (Bytes) -> Bytes = fn(title: Bytes) {
+  if (len(title) == 0) {
+    "untitled"
+  } else {
+    let out = "";
+    let prevDash = 0;
+    let i = 0;
+    let n = len(title);
+    while (i < n) {
+      let ch = _lowerAscii(get(title, i));
+      if (_isAlphaNum(ch) == true) {
+        out = concat(out, u8(ch));
+        prevDash = 0;
+      } else {
+        if (prevDash == 0 && len(out) > 0) {
+          out = concat(out, "-");
+          prevDash = 1;
+        }
+      }
+      i++;
+    }
+    if (len(out) == 0) {
+      "untitled"
+    } else {
+      out
+    }
+  }
+};
+
+if (slugify("Hello World") == "hello-world") { "ok" } else { "fail" }

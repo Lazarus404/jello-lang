@@ -1,0 +1,302 @@
+package std.core;
+
+/* Functions of arrays, which a program calls as Array.f(xs, ...) or as
+ * xs.f(...); the compiler's intrinsics new, resize, len, pop, push and join
+ * (of an Array<Bytes>, with a separator between each two) win. An index out
+ * of range traps, as indexing does. */
+
+// The index of the first VALUE in VALUES, or -1.
+export let indexOf<T: Eq> = fn(values: Array<T>, value: T): I32 {
+  let i = 0;
+
+  while (i < values.len()) {
+    if (values[i] == value) { return i; }
+    i++;
+  }
+  -1
+};
+
+// The index of VALUE in VALUES, which it is appended to when absent.
+export let internIndex<T: Eq> = fn(values: Array<T>, value: T): I32 {
+  let found = indexOf(values, value);
+  if (found >= 0) { return found; }
+  values.push(value);
+  values.len() - 1
+};
+
+// OUT, after appending the items of VALUES from index START on.
+export let appendFrom<T> = fn(out: Array<T>, values: Array<T>, start: I32): Array<T> {
+  let i = start;
+
+  while (i < values.len()) {
+    out.push(values[i]);
+    i++;
+  }
+  out
+};
+
+// Whether VALUES holds VALUE.
+export let contains<T: Eq> = fn(values: Array<T>, value: T): Bool { indexOf(values, value) >= 0 };
+
+// A new array of the items of VALUES.
+export let copy<T> = fn(values: Array<T>): Array<T> { appendFrom(Array.new<T>(0), values, 0) };
+
+// A new array of the COUNT items of VALUES from index START on.
+export let slice<T> = fn(values: Array<T>, start: I32, count: I32): Array<T> {
+  let out = Array.new<T>(0);
+  while (out.len() < count) { out.push(values[start + out.len()]); }
+  out
+};
+
+// The first item of VALUES that KEEP holds for, or null.
+export let first<T> = fn(values: Array<T>, keep: (T) -> Bool): ?T {
+  let i = 0;
+
+  while (i < values.len()) {
+    if (keep(values[i])) { return values[i]; }
+    i++;
+  }
+  null
+};
+
+// The last item of VALUES that KEEP holds for, or null.
+export let last<T> = fn(values: Array<T>, keep: (T) -> Bool): ?T {
+  let i = values.len() - 1;
+
+  while (i >= 0) {
+    if (keep(values[i])) { return values[i]; }
+    i--;
+  }
+  null
+};
+
+// The result of F for each item of VALUES, in order.
+export let map<T, U> = fn(values: Array<T>, f: (T) -> U): Array<U> {
+  let out = Array.new<U>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    out.push(f(values[i]));
+    i++;
+  }
+  out
+};
+
+// The result of F for each item of VALUES and its index, in order.
+export let mapIndexed<T, U> = fn(values: Array<T>, f: (T, I32) -> U): Array<U> {
+  let out = Array.new<U>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    out.push(f(values[i], i));
+    i++;
+  }
+  out
+};
+
+// The items of VALUES that KEEP holds for, in order.
+export let filter<T> = fn(values: Array<T>, keep: (T) -> Bool): Array<T> {
+  let out = Array.new<T>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    if (keep(values[i])) { out.push(values[i]); }
+    i++;
+  }
+  out
+};
+
+// The items of VALUES that KEEP holds for with their index, in order.
+export let filterIndexed<T> = fn(values: Array<T>, keep: (T, I32) -> Bool): Array<T> {
+  let out = Array.new<T>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    if (keep(values[i], i)) { out.push(values[i]); }
+    i++;
+  }
+  out
+};
+
+// The items of VALUES that DROP does not hold for, in order.
+export let reject<T> = fn(values: Array<T>, drop: (T) -> Bool): Array<T> {
+  let out = Array.new<T>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    if (!drop(values[i])) { out.push(values[i]); }
+    i++;
+  }
+  out
+};
+
+// The items of VALUES that DROP does not hold for with their index, in order.
+export let rejectIndexed<T> = fn(values: Array<T>, drop: (T, I32) -> Bool): Array<T> {
+  let out = Array.new<T>(0);
+  let i = 0;
+
+  while (i < values.len()) {
+    if (!drop(values[i], i)) { out.push(values[i]); }
+    i++;
+  }
+  out
+};
+
+// INITIAL, after F folds in each item of VALUES in order.
+export let reduce<T, U> = fn(values: Array<T>, initial: U, f: (U, T) -> U): U {
+  let result = initial;
+  let i = 0;
+
+  while (i < values.len()) {
+    result = f(result, values[i]);
+    i++;
+  }
+  result
+};
+
+// INITIAL, after F folds in each item of VALUES and its index in order.
+export let reduceIndexed<T, U> = fn(values: Array<T>, initial: U, f: (U, T, I32) -> U): U {
+  let result = initial;
+  let i = 0;
+
+  while (i < values.len()) {
+    result = f(result, values[i], i);
+    i++;
+  }
+  result
+};
+
+// VALUES, after calling F on each item in order.
+export let forEach<T> = fn(values: Array<T>, f: (T) -> Null): Array<T> {
+  let i = 0;
+
+  while (i < values.len()) {
+    f(values[i]);
+    i++;
+  }
+  values
+};
+
+// VALUES, after calling F on each item and its index in order.
+export let forEachIndexed<T> = fn(values: Array<T>, f: (T, I32) -> Null): Array<T> {
+  let i = 0;
+
+  while (i < values.len()) {
+    f(values[i], i);
+    i++;
+  }
+  values
+};
+
+// VALUES, reversed in place.
+export let reverse<T> = fn(values: Array<T>): Array<T> {
+  let low = 0;
+  let high = values.len() - 1;
+
+  while (low < high) {
+    let item = values[low];
+    values[low] = values[high];
+    values[high] = item;
+    low++;
+    high--;
+  }
+  values
+};
+
+/* The new length of VALUES, after inserting VALUE at index AT, from 0 to
+ * its length, moving the items from AT on up by one. */
+export let insert<T> = fn(values: Array<T>, at: I32, value: T): I32 {
+  if ((at < 0) || (at > values.len())) { throw "Array.insert index out of range"; }
+  values.push(value);
+  let i = values.len() - 1;
+
+  while (i > at) {
+    values[i] = values[i - 1];
+    i--;
+  }
+  values[at] = value;
+  values.len()
+};
+
+/* The item at index AT of VALUES, which is removed, moving the items after
+ * it down by one. */
+export let remove<T> = fn(values: Array<T>, at: I32): T {
+  let item = values[at];
+  let i = at + 1;
+
+  while (i < values.len()) {
+    values[i - 1] = values[i];
+    i++;
+  }
+  values.pop();
+  item
+};
+
+// The first item of VALUES, which is removed, or null when it is empty.
+export let shift<T> = fn(values: Array<T>): ?T {
+  if (values.len() == 0) { return null; }
+  remove(values, 0)
+};
+
+// The new length of VALUES, after inserting VALUE first.
+export let unshift<T> = fn(values: Array<T>, value: T): I32 { insert(values, 0, value) };
+
+// The COUNT items of VALUES from index START on, which are replaced by ITEMS.
+export let splice<T> = fn(values: Array<T>, start: I32, count: I32, ...items: T): Array<T> {
+  if ((start < 0) || (start > values.len())) { throw "Array.splice index out of range"; }
+  let removed = slice(values, start, count);
+  let rest = slice(values, start + count, values.len() - start - count);
+  values.resize(start);
+  appendFrom(values, items, 0);
+  appendFrom(values, rest, 0);
+  removed
+};
+
+/* VALUES, sorted in place by a stable merge sort; COMPARE(a, b) is below 0
+ * when a goes before b, above 0 when after, and 0 when either may. */
+export let sort<T> = fn(values: Array<T>, compare: (T, T) -> I32): Array<T> {
+  let n = values.len();
+  if (n < 2) { return values; }
+  let source = values;
+  let target = copy(values);
+  let width = 1;
+  let swapped = false;
+
+  // Each pass merges runs of WIDTH from SOURCE into runs of twice that in TARGET.
+  while (width < n) {
+    let low = 0;
+
+    while (low < n) {
+      let middle = low + width < n ? low + width : n;
+      let high = middle + width < n ? middle + width : n;
+      let i = low;
+      let j = middle;
+      let k = low;
+
+      while (k < high) {
+        // Taking the left item on a tie keeps the sort stable.
+        if ((i < middle) && ((j >= high) || (compare(source[i], source[j]) <= 0))) {
+          target[k] = source[i];
+          i++;
+        } else {
+          target[k] = source[j];
+          j++;
+        }
+        k++;
+      }
+      low = high;
+    }
+    let merged = target;
+    target = source;
+    source = merged;
+    swapped = !swapped;
+    width = width * 2;
+  }
+
+  // After an odd number of passes the sorted items are in the copy.
+  if (swapped) {
+    values.resize(0);
+    appendFrom(values, source, 0);
+  }
+  values
+};

@@ -1,0 +1,34 @@
+load { addr_resolve, random_int } from std;
+import { bind, sendTo, tryRecvFrom, pollFd, payload } from std.io.net.Udp;
+import { create, registerPoll, awaitFuture } from std.io.EventLoop;
+import { pending, complete } from std.concurrency.Future;
+
+typedef EchoHdr = bytes-layout {
+  let tag: U16.le;
+  let payload: rest;
+};
+
+let port = 40000 + random_int(0, 19999);
+let loop = create();
+let addr = addr_resolve("127.0.0.1", port);
+let sock = bind(addr);
+let pkt = EchoHdr.pack({ tag: 7, payload: bits[8(9)] });
+
+let f = pending();
+registerPoll(loop, pollFd(sock), fn(_loop) {
+  let got = tryRecvFrom(sock, 4096);
+  if (got != null) {
+    complete(f, got);
+  }
+});
+
+let _sent = sendTo(sock, pkt, addr, port);
+
+let rec = await f;
+let raw = payload(rec);
+let tag = match (raw) {
+  EchoHdr(h) => h.tag,
+  _ => 0,
+};
+System.assert(tag == 7);
+"ok"

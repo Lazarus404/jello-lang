@@ -1,0 +1,125 @@
+package std.net;
+
+/* TCP: listeners, which accept connections, and the streams those and
+ * connect make. A call that has to wait parks only its process. A program
+ * imports this module both ways:
+ *
+ *   import std.net.Tcp as Tcp;
+ *   import type { Listener, Stream } from std.net.Tcp;
+ *
+ * A socket belongs to the process that made it, and closes when that
+ * finishes; only its owner may use it. Sent in a message, inside an enum, or
+ * captured by a new process, it moves: the sender's reads as closed, and the
+ * receiver owns it once it receives the message, or the new process from its
+ * start. A message never received closes it, and one that cannot be sent
+ * leaves it with the sender. One in a global stays with the process that made
+ * it: in the copy of the globals a new process starts with, it reads as
+ * closed. A call that fails throws what went wrong, as Bytes, such as
+ * "Connection refused"; one with a time limit returns null once it passes. */
+
+load {
+  net_tcp_listen,
+  net_tcp_accept,
+  net_tcp_connect,
+  net_read,
+  net_write,
+  net_close,
+  net_local_port,
+  net_peer_host,
+  net_peer_port,
+  net_error,
+  net_error_text,
+} from vm;
+
+let _listen: (Bytes, I32) -> Dynamic = net_tcp_listen;
+let _accept: (Dynamic, I32) -> Dynamic = net_tcp_accept;
+let _connect: (Bytes, I32, I32) -> Dynamic = net_tcp_connect;
+let _read: (Dynamic, I32, I32) -> Bytes = net_read;
+let _write: (Dynamic, Bytes) -> Bool = net_write;
+let _close: (Dynamic) -> Bool = net_close;
+let _localPort: (Dynamic) -> I32 = net_local_port;
+let _peerHost: (Dynamic) -> Bytes = net_peer_host;
+let _peerPort: (Dynamic) -> I32 = net_peer_port;
+let _error: () -> I32 = net_error;
+let _errorText: (I32) -> Bytes = net_error_text;
+
+// Throws why the last call failed.
+let _raise = fn() { throw _errorText(_error()); };
+
+// Throws why the last call failed, unless its time limit passed.
+let _unlessTimedOut = fn() { if (_error() != -1) { _raise(); }; };
+
+// A connected stream of bytes.
+export typedef Stream = { let handle: Dynamic; };
+
+export prototype Stream {
+  init(handle: Dynamic) { this.handle = handle; };
+  /* Up to MAX bytes, as soon as there are any; empty once the other end has
+   * closed its side. */
+  read(max: I32): Bytes { this.readWithin(max, -1) as Bytes };
+  // As read, but null once MS milliseconds pass with nothing to read.
+  readWithin(max: I32, ms: I32): ?Bytes {
+    let data = _read(this.handle, max, ms);
+
+    if ((Bytes.len(data) == 0) && (_error() != 0)) {
+      _unlessTimedOut();
+      return null;
+    };
+    data
+  };
+  // Writes all of DATA, waiting while the other end is slow to take it.
+  write(data: Bytes) {
+    if (!_write(this.handle, data)) { _raise(); };
+  };
+  // Closes it; whether it was open.
+  close(): Bool { _close(this.handle) };
+  // The numeric address of its other end.
+  peerHost(): Bytes { _peerHost(this.handle) };
+  peerPort(): I32 { _peerPort(this.handle) };
+  // The port of its own end.
+  localPort(): I32 { _localPort(this.handle) };
+};
+
+// A socket listening for connections.
+export typedef Listener = { let handle: Dynamic; };
+
+export prototype Listener {
+  init(handle: Dynamic) { this.handle = handle; };
+  // The next connection, waiting for one as long as it takes.
+  accept(): Stream { this.acceptWithin(-1) as Stream };
+  // As accept, but null once MS milliseconds pass with none.
+  acceptWithin(ms: I32): ?Stream {
+    let s = _accept(this.handle, ms);
+
+    if (s == null) {
+      _unlessTimedOut();
+      return null;
+    };
+    new Stream(s)
+  };
+  // The port it listens on, the one chosen for it when it was asked for 0.
+  port(): I32 { _localPort(this.handle) };
+  // Stops listening; whether it was open.
+  close(): Bool { _close(this.handle) };
+};
+
+// A listener on HOST, empty for every address, and PORT, 0 for any free one.
+export let listen = fn(host: Bytes, port: I32): Listener {
+  let l = _listen(host, port);
+  if (l == null) { _raise(); };
+  new Listener(l)
+};
+
+// As connect, but null once MS milliseconds pass without connecting.
+export let connectWithin = fn(host: Bytes, port: I32, ms: I32): ?Stream {
+  let s = _connect(host, port, ms);
+
+  if (s == null) {
+    _unlessTimedOut();
+    return null;
+  };
+  new Stream(s)
+};
+
+// A stream connected to HOST and PORT.
+export let connect = fn(host: Bytes, port: I32): Stream { connectWithin(host, port, -1) as Stream };

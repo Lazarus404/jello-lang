@@ -1,0 +1,12 @@
+import { readText, writeText, exists, open, close, readFromHandle } from std.io.File;
+
+let path = "std_io_ctest.tmp";
+let data = "hello std.File";
+System.assert(writeText(path, data));
+System.assert(exists(path));
+let got = readText(path);
+System.assert(got == data);
+let h = open(path);
+System.assert(readFromHandle(h) == data);
+System.assert(close(h));
+"ok"

@@ -1,0 +1,24 @@
+// Allocates and walks complete binary trees: short-lived records for the collector.
+typedef Node = { let left: ?Node; let right: ?Node; };
+let make = fn(depth: I32): Node {
+  if (depth == 0) { { left: null, right: null } }
+  else { { left: make(depth - 1), right: make(depth - 1) } }
+};
+let check = fn(node: Node): I32 {
+  let l = node.left;
+  let r = node.right;
+  if (l == null || r == null) { 1 } else { 1 + check(l) + check(r) }
+};
+let maxDepth = 16;
+let total = check(make(maxDepth + 1));
+let longLived = make(maxDepth);
+let depth = 4;
+while (depth <= maxDepth) {
+  let iterations = 1 << (maxDepth - depth + 4);
+  let i = 0;
+  while (i < iterations) { total = total + check(make(depth)); i++; }
+  depth = depth + 2;
+}
+total = total + check(longLived);
+System.assert(total == 14985902);
+"ok"
