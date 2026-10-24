@@ -37,7 +37,7 @@ export let defaultStyle = fn(): Style {
     indent: 2,
     lineWidth: 100,
     stripComments: false,
-    keepDocComments: true,
+    keepDocComments: false,
     rewriteComments: true,
     blankBeforeOneLineBlocks: false,
   }
@@ -110,13 +110,17 @@ let _isDoc = fn(piece: Piece): Bool {
   }
 };
 
+// Checks whether line `i` of `lines` is a `#!` line at the top, which says what runs the file.
+let _isShebang = fn(lines: Array<Line>, i: I32): Bool {
+  (i == 0) && (lines[0].pieces.len() > 0) && lines[0].pieces[0].text.startsWith("#!")
+};
+
 /** Returns each line of `lines` that holds only a block comment on one line, slash-star or
  * slash-star-star, as the line comment of its text, so that a comment of one line is always a
- * line comment; but a doc comment when `keepDoc` says, since stripping comments would then remove
- * it. */
-let _lineCommentsOfBlocks = fn(lines: Array<Line>, keepDoc: Bool): Array<Line> {
+ * line comment. */
+let _lineCommentsOfBlocks = fn(lines: Array<Line>): Array<Line> {
   lines.map(fn(line: Line): Line {
-    if ((line.pieces.len() != 1) || (keepDoc && _isDoc(line.pieces[0]))) { return line; }
+    if (line.pieces.len() != 1) { return line; }
     let piece = line.pieces[0];
 
     let single = match (piece.kind) {
@@ -132,15 +136,21 @@ let _lineCommentsOfBlocks = fn(lines: Array<Line>, keepDoc: Bool): Array<Line> {
   })
 };
 
-/** Removes the comments of `lines`, but doc comments when `keepDoc` says, and the lines that
- * held only comments; their blank lines go to the line below. */
+/** Removes the comments of `lines`, but doc comments when `keepDoc` says and a `#!` line at the
+ * top, which says what runs the file, and the lines that held only comments; their blank lines go
+ * to the line below. */
 let _stripComments = fn(lines: Array<Line>, keepDoc: Bool): Array<Line> {
   let out = Array.new<Line>(0);
   let carried = 0;
+  let i = 0;
 
-  for (line in lines) {
+  while (i < lines.len()) {
+    let line = lines[i];
+    let shebang = _isShebang(lines, i);
+    i++;
+
     let kept = line.pieces.filter(fn(piece: Piece): Bool {
-      _isCode(piece) || (keepDoc && _isDoc(piece))
+      _isCode(piece) || (keepDoc && _isDoc(piece)) || shebang
     });
 
     if (kept.len() == 0) {
@@ -760,8 +770,7 @@ let _render = fn(lines: Array<Line>, layout: Layout, style: Style): Bytes {
     let indent = layout.indents[i] * style.indent;
     if (line.blanks > 0) { out.push(""); }
 
-    if (style.rewriteComments && _lone(line, PieceKind.LineComment)
-      && !((i == 0) && line.pieces[0].text.startsWith("#!"))) {
+    if (style.rewriteComments && _lone(line, PieceKind.LineComment) && !_isShebang(lines, i)) {
       let texts = [line.pieces[0].text];
 
       while ((i + 1 < lines.len()) && (lines[i + 1].blanks == 0)
@@ -797,16 +806,15 @@ export let formatSource = fn(src: Bytes, path: Bytes, style: Style): ?Bytes {
   let (tokens, _, starts, ends) = lexFile(src, path);
   let lines = sourceLines(src, tokens, starts, ends);
 
-  if (style.stripComments && style.rewriteComments) {
+  if (style.stripComments) {
     lines = _stripComments(lines, style.keepDocComments);
   } else if (style.rewriteComments) {
     lines = _moveTrailingComments(lines);
   }
   lines = _joinBraces(_splitLines(lines));
 
-  if (style.rewriteComments) {
-    lines = _lineCommentsOfBlocks(lines, style.stripComments && style.keepDocComments);
-  }
+  // Only kept doc comments outlive stripping, and they keep their slash-star-star.
+  if (style.rewriteComments && !style.stripComments) { lines = _lineCommentsOfBlocks(lines); }
 
   let layout = _layout(lines);
   _spaceLines(lines, layout, style);
