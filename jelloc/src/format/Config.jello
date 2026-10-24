@@ -24,9 +24,11 @@ let _realPath: (Bytes) -> Bytes = file_real_path;
 // The name of the file.
 const _NAME = ".formatter";
 
-// The settings of the files under `paths`, real paths, as a `.formatter` object holds them.
+/* The settings, as a `.formatter` object holds them, of the files under `paths`, real paths,
+ * that have one of `extensions`, or any ending when it is empty. */
 typedef Override = {
   let paths: Array<Bytes>;
+  let extensions: Array<Bytes>;
   let settings: Json;
 };
 
@@ -177,7 +179,7 @@ export let loadFormatter = fn(root: Bytes, strip: Bool): Formatter {
   };
 
   let style = _style(value, base);
-  if (strip) { style.stripComments = true; }
+  if (strip && (jsonField(value, "strip_comments") == null)) { style.stripComments = true; }
   let overrides = Array.new<Override>(0);
   let found = jsonField(value, "overrides");
 
@@ -197,7 +199,11 @@ export let loadFormatter = fn(root: Bytes, strip: Bool): Formatter {
       };
       // Checked now, so that a bad value is reported whichever files there are.
       _style(item, style);
-      overrides.push({ paths: _realPaths(root, _strings(item, "paths")), settings: item });
+      let paths = _strings(item, "paths");
+      let endings = _strings(item, "extensions");
+      // An override that names only extensions applies to all the files under `root`.
+      if ((paths.len() == 0) && (endings.len() > 0)) { paths = ["."]; }
+      overrides.push({ paths: _realPaths(root, paths), extensions: endings, settings: item });
     }
   }
 
@@ -226,13 +232,21 @@ let _underAny = fn(real: Bytes, paths: Array<Bytes>): Bool {
   paths.filter(fn(path: Bytes): Bool { _under(real, path) }).len() > 0
 };
 
+// Checks whether `name` ends with any of `endings`.
+let _endsWithAny = fn(name: Bytes, endings: Array<Bytes>): Bool {
+  endings.filter(fn(ending: Bytes): Bool { name.endsWith(ending) }).len() > 0
+};
+
 // Returns the style of the file at `path`.
 export let styleFor = fn(formatter: Formatter, path: Bytes): Style {
   let real = _realPath(path);
   let style = formatter.style;
 
   for (override in formatter.overrides) {
-    if (_underAny(real, override.paths)) { style = _style(override.settings, style); }
+    if (_underAny(real, override.paths)
+      && ((override.extensions.len() == 0) || _endsWithAny(path, override.extensions))) {
+      style = _style(override.settings, style);
+    }
   }
   style
 };
@@ -251,8 +265,7 @@ let _walk = fn(formatter: Formatter, dir: Bytes, files: Array<Bytes>, seen: Arra
     if (entry.endsWith("/")) {
       let sub = Bytes.slice(path, 0, path.len() - 1);
       if (!_underAny(_realPath(sub), formatter.exclude)) { _walk(formatter, sub, files, seen); }
-    } else if (formatter.extensions.filter(fn(ending: Bytes): Bool { entry.endsWith(ending) })
-      .len() > 0) {
+    } else if (_endsWithAny(entry, formatter.extensions)) {
       let real = _realPath(path);
 
       if (!_underAny(real, formatter.exclude) && !_holds(seen, real)) {

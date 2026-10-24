@@ -1,3 +1,5 @@
+package e2e;
+
 // jelloc's command line, as a developer meets it: what each kind of run
 // prints where, and its exit status (0 success, 1 a program that does not
 // compile, 2 a bad command line), run through support.Run. The fixtures
@@ -522,4 +524,17 @@ let testFmt = fn(t: Test) {
   T.equal(t, jelloc(["fmt", fresh("no-such-file.jello")], NONE),
     (1, "", "jelloc: cannot read " + fresh("no-such-file.jello")));
   _usage(t, [(["fmt", "--frobnicate"], "unknown option: --frobnicate")]);
+};
+
+// fmt --strip-comments removes every comment, doc comments too, but a #! line at
+// the top; --check with it lists the file while it holds any.
+let testFmtStripsComments = fn(t: Test) {
+  let file = fresh("strip.jello");
+  let src = "#!/usr/bin/env jello\n// gone\nlet a = 1; // gone\n/** gone */\na\n";
+  writeText(file, src);
+  T.equal(t, jelloc(["fmt", "--check", "--strip-comments", file], NONE), (1, file, ""));
+  T.equal(t, readText(file), src);
+  T.equal(t, jelloc(["fmt", "--strip-comments", file], NONE), (0, "", ""));
+  T.equal(t, readText(file), "#!/usr/bin/env jello\nlet a = 1;\na\n");
+  T.equal(t, jelloc(["fmt", "--check", "--strip-comments", file], NONE), (0, "", ""));
 };

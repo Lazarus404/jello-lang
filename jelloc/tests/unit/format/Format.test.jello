@@ -55,9 +55,24 @@ let testLocatesInvalidJson = fn(t: Test) {
   T.isTrue(t, contains(message, "[E0215]"));
 };
 
-let testStripsCommentsFromTheCommandLineUnlessAnOverrideKeepsThem = fn(t: Test) {
-  let formatter = loadFormatter("tests/unit/format/cases/keep-comments", true);
-  T.equal(t, formatter.style.stripComments, true);
-  let style = styleFor(formatter, "tests/unit/format/cases/keep-comments/input.jello");
+let testStripsCommentsFromTheCommandLineWhereTheyAreNotRewritten = fn(t: Test) {
+  let dir = _CASES + "keep-comments/";
+  let style = styleFor(loadFormatter(dir, true), dir + "input.jello");
   T.equal(t, style.rewriteComments, false);
+  T.equal(t, style.stripComments, true);
+};
+
+let testAppliesAnOverrideByExtension = fn(t: Test) {
+  let dir = "tests/unit/format/config/by-extension/";
+  let formatter = loadFormatter(dir, false);
+  T.equal(t, styleFor(formatter, dir + "a.jello").stripComments, true);
+  T.equal(t, styleFor(formatter, dir + "a.fixture.jello").stripComments, false);
+};
+
+let testKeepsCommentsOnTheCommandLineWhereTheFormatterSaysNotToStrip = fn(t: Test) {
+  for (name in ["keep-on-strip", "keep-on-strip-top"]) {
+    let dir = `tests/unit/format/config/${name}/`;
+    let style = styleFor(loadFormatter(dir, true), dir + ".formatter");
+    T.equal(t, style.stripComments, false);
+  }
 };
