@@ -1,0 +1,306 @@
+package std.concurrent;
+
+/* Jello processes over the VM's built-in vm library. A process runs a body
+ * with a typed inbox, receiving messages of one type M, usually an enum
+ * matched in full. A message behaves as a copy: after send, neither the
+ * sender nor the receiver sees the other's writes. A program imports this
+ * module both ways, so that Process<M> names the type and Process.spawn the
+ * function:
+ *
+ *   import std.concurrent.Process as Process;
+ *   import type { Process, Inbox } from std.concurrent.Process;
+ *
+ * Waiting for a message, a reply, another process or time parks only the
+ * caller. A wait that no process or timer could ever end traps DEADLOCK. Times
+ * are in milliseconds, on a monotonic clock, and are lower bounds: a process
+ * runs again once it has waited them and its turn comes. */
+
+load {
+  proc_spawn,
+  proc_spawn_detached,
+  proc_spawn_on_main,
+  proc_on_main,
+  proc_self,
+  proc_send,
+  proc_receive,
+  proc_pending,
+  proc_join,
+  proc_join_within,
+  proc_wait_message,
+  proc_sleep,
+  proc_clock,
+  proc_send_after,
+  proc_timer_cancel,
+  proc_exited,
+  proc_exit_value,
+  proc_stop,
+  proc_on_exit,
+  proc_yield,
+  proc_reply_new,
+  proc_reply_send,
+  proc_reply_wait,
+  proc_reply_value,
+} from vm;
+
+let _spawn: (Dynamic) -> Dynamic = proc_spawn;
+let _spawnDetached: (Dynamic) -> Dynamic = proc_spawn_detached;
+let _spawnOnMain: (Dynamic) -> Dynamic = proc_spawn_on_main;
+let _onMain: () -> Bool = proc_on_main;
+let _self: () -> Dynamic = proc_self;
+let _send: (Dynamic, Dynamic) -> Bool = proc_send;
+let _receive: () -> Dynamic = proc_receive;
+let _pending: () -> I32 = proc_pending;
+let _join: (Dynamic) -> I32 = proc_join;
+let _joinWithin: (Dynamic, I32) -> I32 = proc_join_within;
+let _waitMessage: (I32) -> Bool = proc_wait_message;
+let _sleep: (I32) -> Bool = proc_sleep;
+let _clock: () -> I32 = proc_clock;
+let _sendAfter: (I32, Dynamic) -> Dynamic = proc_send_after;
+let _timerCancel: (Dynamic) -> Bool = proc_timer_cancel;
+let _exited: (Dynamic) -> I32 = proc_exited;
+let _exitValue: (Dynamic) -> Dynamic = proc_exit_value;
+let _stop: (Dynamic) -> Bool = proc_stop;
+let _onExit: (Dynamic) -> Bool = proc_on_exit;
+let _yield: () -> Bool = proc_yield;
+let _replyNew: () -> Dynamic = proc_reply_new;
+let _replySend: (Dynamic, Dynamic) -> Bool = proc_reply_send;
+let _replyWait: (Dynamic, Dynamic, I32) -> I32 = proc_reply_wait;
+let _replyValue: (Dynamic) -> Dynamic = proc_reply_value;
+
+/* How a process finished: its body returned, it was stopped, it crashed, with
+ * a copy of what its uncaught throw threw, or the process owning it finished. */
+export enum Exit { Normal; Stopped; Crashed(value: Dynamic); ParentExited; }
+
+// The Exit of process H, which has finished in the way CODE numbers.
+let _exit = fn(code: I32, h: Dynamic): Exit {
+  match (code) {
+    0 => Exit.Normal,
+    1 => Exit.Stopped,
+    2 => Exit.Crashed(_exitValue(h)),
+    3 => Exit.ParentExited,
+    _ => {
+      throw "std.concurrent.Process: no Exit numbered " + Std.string(code);
+      Exit.Stopped
+    },
+  }
+};
+
+// A message on its way, which cancel can stop.
+export typedef Timer = { let handle: Dynamic; };
+
+export prototype Timer {
+  init(handle: Dynamic) { this.handle = handle; };
+  // Stops the message being sent; whether it had yet to be.
+  cancel(): Bool { _timerCancel(this.handle) };
+};
+
+/* The inbox of the process that made it, which receives messages of type M. A
+ * process has one inbox, so it makes one Inbox, of the one type it receives;
+ * a message of another type traps where it is received. */
+export typedef Inbox<M> = { let handle: Dynamic; };
+
+export prototype Inbox<M> {
+  init() { this.handle = _self(); };
+  // The next message, in the order they arrived, parking until one does.
+  receive(): M { _receive() as M };
+  // The next message, or null when none has arrived.
+  tryReceive(): ?M { _pending() > 0 ? _receive() as M : null };
+  /* The next message, parking for at most MS until one arrives, or null when
+   * none has by then. */
+  receiveWithin(ms: I32): ?M { _waitMessage(ms) ? _receive() as M : null };
+  // Sends a copy of MESSAGE to this inbox once MS have passed.
+  sendAfter(ms: I32, message: M): Timer { new Timer(_sendAfter(ms, message as Dynamic)) };
+  // How many messages have arrived and wait to be received.
+  waiting(): I32 { _pending() };
+};
+
+// A process that receives messages of type M.
+export typedef Process<M> = { let handle: Dynamic; };
+
+export prototype Process<M> {
+  init(handle: Dynamic) { this.handle = handle; };
+  /* Sends a copy of MESSAGE to the process, never waiting; whether it went,
+   * which it does not once the process has finished. */
+  send(message: M): Bool { _send(this.handle, message as Dynamic) };
+  /* Asks the process to stop where it next resumes; whether it had yet to
+   * finish. A process stopping itself stops at once. */
+  stop(): Bool { _stop(this.handle) };
+  // Parks until the process has finished; how it did.
+  join(): Exit { _exit(_join(this.handle), this.handle) };
+  /* Parks for at most MS until the process has finished; how it did, or null
+   * when it has yet to. */
+  joinWithin(ms: I32): ?Exit {
+    let code = _joinWithin(this.handle, ms);
+    code < 0 ? null : _exit(code, this.handle)
+  };
+  // How the process finished, or null while it runs.
+  exited(): ?Exit {
+    let code = _exited(this.handle);
+    code < 0 ? null : _exit(code, this.handle)
+  };
+};
+
+// A one-shot channel back to a process that called another, carrying a T.
+export typedef Reply<T> = { let handle: Dynamic; };
+
+export prototype Reply<T> {
+  init(handle: Dynamic) { this.handle = handle; };
+  /* Sends a copy of VALUE to the caller, waking it; whether it went, which it
+   * does only the first time. */
+  send(value: T): Bool { _replySend(this.handle, value as Dynamic) };
+};
+
+// A block's processes, all stopped and joined when it ends: see scoped.
+export typedef Scope = {
+  let handles: Array<Dynamic>;
+  let limit: I32;
+  let closed: Bool;
+};
+
+export prototype Scope {
+  init() {
+    this.handles = Array.new<Dynamic>(0);
+    this.limit = 8;
+    this.closed = false;
+  };
+};
+
+/* Starts a process running BODY with its inbox, after the processes already
+ * waiting to run. BODY is copied, as a message is. The caller owns it: when
+ * the caller finishes, however it does, the process is stopped, finishing
+ * with ParentExited unless it was asked to stop first. */
+export let spawn<M> = fn(body: (Inbox<M>) -> Void): Process<M> {
+  new Process<M>(_spawn(fn() { body(new Inbox<M>()); } as Dynamic))
+};
+
+/* As spawn, but nothing owns the process, which runs on after its caller
+ * finishes, until the program ends. */
+export let spawnDetached<M> = fn(body: (Inbox<M>) -> Void): Process<M> {
+  new Process<M>(_spawnDetached(fn() { body(new Inbox<M>()); } as Dynamic))
+};
+
+// Stops every process on SCOPE, then joins each.
+let _close = fn(scope: Scope) {
+  scope.closed = true;
+  let i = 0;
+
+  while (i < scope.handles.len()) {
+    _stop(scope.handles[i]);
+    i++;
+  }
+  i = 0;
+
+  while (i < scope.handles.len()) {
+    _join(scope.handles[i]);
+    i++;
+  }
+};
+
+/* Forgets the processes on SCOPE that have finished, so that a long-lived
+ * scope holds only those still running. */
+let _prune = fn(scope: Scope) {
+  let running = Array.new<Dynamic>(0);
+  let i = 0;
+
+  while (i < scope.handles.len()) {
+    if (_exited(scope.handles[i]) < 0) { running.push(scope.handles[i]); }
+    i++;
+  }
+  scope.handles = running;
+  scope.limit = 2 * running.len() + 8;
+};
+
+/* Runs BODY with a new scope, then stops every process spawned on it and
+ * parks until they have all finished, whether BODY returns or throws. If the
+ * process running BODY is stopped instead, they stop with it, as the
+ * processes it owns. */
+export let scoped = fn(body: (Scope) -> Void) {
+  let scope = new Scope();
+
+  try { body(scope); } catch (e) {
+    _close(scope);
+    throw e;
+  }
+  _close(scope);
+};
+
+/* As spawn, but on SCOPE too, so that it is stopped and joined when the
+ * scope's block ends. Throws once the block has ended. Call it from the
+ * block's own process: a copy of SCOPE in another process is not the block's. */
+export let spawnIn<M> = fn(scope: Scope, body: (Inbox<M>) -> Void): Process<M> {
+  if (scope.closed) { throw "Process.spawnIn on a scope whose block has ended"; }
+  if (scope.handles.len() >= scope.limit) { _prune(scope); }
+  let p = spawn<M>(body);
+  scope.handles.push(p.handle);
+  p
+};
+
+/* As spawn, but the process only ever runs on the program's main thread, as
+ * the main process does, for libraries that must be called there, such as a
+ * window system's. It runs while the main process waits. */
+export let spawnOnMain<M> = fn(body: (Inbox<M>) -> Void): Process<M> {
+  new Process<M>(_spawnOnMain(fn() { body(new Inbox<M>()); } as Dynamic))
+};
+
+// Whether the caller is running on the program's main thread.
+export let onMain = fn(): Bool { _onMain() };
+
+// The process whose inbox is INBOX.
+export let self<M> = fn(inbox: Inbox<M>): Process<M> { new Process<M>(inbox.handle) };
+
+let _unanswered = "the process finished without replying";
+
+// Sends P the message MAKE builds around a new reply, which it returns.
+let _ask<M, T> = fn(p: Process<M>, make: (Reply<T>) -> M): Reply<T> {
+  let reply = new Reply<T>(_replyNew());
+  p.send(make(reply));
+  reply
+};
+
+/* Sends P the message MAKE builds around a reply, and parks until P sends a
+ * T back through it. Throws if P finishes without replying. */
+export let call<M, T> = fn(p: Process<M>, make: (Reply<T>) -> M): T {
+  let reply = _ask(p, make);
+  if (_replyWait(reply.handle, p.handle, -1) == 0) { throw _unanswered; }
+  _replyValue(reply.handle) as T
+};
+
+/* As call, but parks for at most MS, and is null when P has not replied by
+ * then. */
+export let callWithin<M, T> = fn(p: Process<M>, ms: I32, make: (Reply<T>) -> M): ?T {
+  let reply = _ask(p, make);
+
+  match (_replyWait(reply.handle, p.handle, ms)) {
+    0 => {
+      throw _unanswered;
+      null
+    },
+    1 => _replyValue(reply.handle) as T,
+    _ => null,
+  }
+};
+
+/* Sends TO the message MAP makes of how P finished, once it has, from a
+ * process that waits for it, which the caller owns, so that it stops watching
+ * when the caller finishes. */
+export let monitor<M, N> = fn(p: Process<M>, to: Process<N>, map: (Exit) -> N): Process<Exit> {
+  spawn<Exit>(fn(inbox: Inbox<Exit>) { to.send(map(p.join())); })
+};
+
+/* Runs CLEANUP when the calling process finishes, however it does, before the
+ * cleanups registered earlier and before the processes it owns are stopped. A
+ * stop waits until cleanups are done, a park inside one ends it, and each has
+ * a budget of 100,000 reductions, after which it is stopped. The main
+ * process's cleanups run when the program ends, before its other processes
+ * are stopped. */
+export let onExit = fn(cleanup: () -> Void) { _onExit(cleanup as Dynamic); };
+
+// Parks for MS, letting other processes run meanwhile.
+export let sleep = fn(ms: I32) { _sleep(ms); };
+
+/* The milliseconds since processes were first used, on the clock that waits
+ * are measured by; it wraps after 24 days. */
+export let now = fn(): I32 { _clock() };
+
+// Lets every process waiting to run run first.
+export let yield = fn() { _yield(); };

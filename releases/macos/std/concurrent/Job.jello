@@ -1,0 +1,102 @@
+package std.concurrent;
+
+/* Fork/join work on the schedulers that run processes. A job is a process
+ * owned by its caller that computes one value; parallelFor runs a loop's
+ * chunks across the schedulers. Work runs in processes of its own, so what it
+ * captures is copied, as a message is, and large data reaches it through a
+ * Buffer, which a copy shares. A program imports this module both ways:
+ *
+ *   import std.concurrent.Job as Job;
+ *   import type { Job } from std.concurrent.Job;
+ *
+ * A job's value is copied back to the caller, so it is of a type a reply
+ * carries: an enum, a scalar, Bytes, an Atom or an Object. */
+
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Exit, Reply } from std.concurrent.Process;
+import type { Buffer } from std.concurrent.Buffer;
+
+load { proc_reply_new, proc_reply_wait, proc_reply_value, proc_schedulers } from vm;
+
+let _replyNew: () -> Dynamic = proc_reply_new;
+let _replyWait: (Dynamic, Dynamic, I32) -> I32 = proc_reply_wait;
+let _replyValue: (Dynamic) -> Dynamic = proc_reply_value;
+let _schedulers: () -> I32 = proc_schedulers;
+
+/* Parks until P has finished, then throws what its work threw, or "the job
+ * trapped" when it trapped, unless it finished normally. */
+let _finish = fn(p: Process<I32>) {
+  match (p.join()) {
+    Normal => null,
+    Crashed(thrown) => {
+      throw thrown == null ? "the job trapped" as Dynamic : thrown;
+      null
+    },
+    _ => {
+      throw "the job did not finish";
+      null
+    },
+  };
+};
+
+// Work computing a T in a process of its own.
+export typedef Job<T> = {
+  let process: Process<I32>;
+  let reply: Reply<T>;
+};
+
+export prototype Job<T> {
+  init(process: Process<I32>, reply: Reply<T>) {
+    this.process = process;
+    this.reply = reply;
+  };
+  /* Parks until the work has finished; its value, or what it threw, thrown
+   * again. A job that trapped throws "the job trapped". */
+  join(): T {
+    if (_replyWait(this.reply.handle, this.process.handle, -1) == 0) { _finish(this.process); }
+    _replyValue(this.reply.handle) as T
+  };
+};
+
+/* Starts WORK in a process owned by the caller, as Process.spawn does; join
+ * gives its value. */
+export let start<T> = fn(work: () -> T): Job<T> {
+  let reply = new Reply<T>(_replyNew());
+  new Job<T>(Process.spawn<I32>(fn(inbox: Inbox<I32>) { reply.send(work()); }), reply)
+};
+
+/* Calls BODY(start, end) for the chunks of [0, COUNT), each at most GRAIN
+ * long, in at most one process a scheduler, and returns once every chunk has
+ * finished. Chunks run in no set order, each once; a body that throws stops
+ * its process taking more, and once every process has finished, the failure
+ * of the first to have failed, in the order they started, is thrown again.
+ * Nothing runs when COUNT is not positive, and a GRAIN that is not positive
+ * throws. */
+export let parallelFor = fn(count: I32, grain: I32, body: (I32, I32) -> Void) {
+  if (grain < 1) { throw "Job.parallelFor: grain must be positive, not " + Std.string(grain); }
+  if (count < 1) { return; }
+  let chunks = (count - 1) / grain + 1;
+  let next = new Buffer(4);
+  let schedulers = _schedulers();
+  let workers = Array.new<Process<I32>>(0);
+
+  while ((workers.len() < chunks) && (workers.len() < schedulers)) {
+    workers.push(Process.spawn<I32>(fn(inbox: Inbox<I32>) {
+      let chunk = next.addI32(0, 1);
+
+      while ((chunk >= 0) && (chunk < chunks)) {
+        let first = chunk * grain;
+        body(first, count - first > grain ? first + grain : count);
+        chunk = next.addI32(0, 1);
+      }
+    }));
+  }
+  let failure: Dynamic = null;
+  let i = 0;
+
+  while (i < workers.len()) {
+    try { _finish(workers[i]); } catch (e) { if (failure == null) { failure = e; } }
+    i++;
+  }
+  if (failure != null) { throw failure; };
+};

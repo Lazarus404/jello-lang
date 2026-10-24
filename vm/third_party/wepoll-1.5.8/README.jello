@@ -1,0 +1,18 @@
+wepoll 1.5.8 (2020-06-29), vendored for the VM's poller on Windows
+=================================================================
+
+Source: https://github.com/piscisaureus/wepoll, tag v1.5.8, commit
+0598a791bf9c, from the dist files at that tag.
+
+Copied unmodified:
+
+  LICENSE
+  wepoll.c, wepoll.h
+
+wepoll gives Windows an epoll interface over the AFD driver's socket polling,
+level-triggered or one-shot. The VM's poller (src/proc/poll.c) watches each
+socket one-shot and arms it again whenever a reader or writer finds it not
+ready, which is the edge-triggered behaviour the other systems' pollers have.
+
+The build (vm/Makefile) compiles it on Windows only, as upstream intends,
+without this project's warning flags, into the VM's archive.

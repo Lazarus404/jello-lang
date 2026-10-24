@@ -1,0 +1,83 @@
+package std.net;
+
+/* TLS: streams whose data is encrypted, and whose server proves who it is
+ * with a certificate. A program imports this module both ways:
+ *
+ *   import std.net.Tls as Tls;
+ *   import type { Config } from std.net.Tls;
+ *
+ * A configuration is one side's: a server's certificate chain and private
+ * key, or the certificates a client trusts. Securing a TCP stream runs the
+ * handshake on it, after which its read, write and close carry encrypted
+ * data, and closing it tells the other end first. A client checks the
+ * server's certificate against those it trusts and the name it connected to.
+ * Configurations are shared when sent to another process; a secured stream
+ * moves as any stream does. A stream that cannot be secured is closed, and
+ * the call throws what went wrong, as Bytes. TLS 1.2, on Mbed TLS, in the
+ * native library tls.jdll, which a program importing this module needs. */
+
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
+
+load { net_tls_start, net_error, net_error_text } from vm;
+load { tls_version, tls_config } from tls;
+
+let _make: (Bool, Bytes, Bytes) -> Dynamic = tls_config;
+let _start: (Dynamic, Dynamic, Bytes) -> Bool = net_tls_start;
+let _error: () -> I32 = net_error;
+let _errorText: (I32) -> Bytes = net_error_text;
+let _version: () -> Bytes = tls_version;
+
+// Throws why the last call failed.
+let _raise = fn() { throw _errorText(_error()); };
+
+// The TLS library's name and version, as "Mbed TLS 3.5.1".
+export let library = fn(): Bytes { _version() };
+
+// One side's configuration.
+export typedef Config = { let handle: Dynamic; };
+
+export prototype Config {
+  init(handle: Dynamic) { this.handle = handle; };
+};
+
+/* SERVER's configuration from CERTIFICATES and KEY, as tls_config makes it,
+ * or, when it gives an error code instead, what stops it being made. */
+let _config = fn(server: Bool, certificates: Bytes, key: Bytes): Config {
+  let made = _make(server, certificates, key);
+  if (made is I32) { throw _errorText(made as I32); };
+  new Config(made)
+};
+
+/* A server's configuration: CERTIFICATES, a PEM certificate chain with the
+ * server's own first, and KEY, the PEM private key of the first. */
+export let server = fn(certificates: Bytes, key: Bytes): Config {
+  _config(true, certificates, key)
+};
+
+/* A client's configuration, trusting the PEM certificates TRUSTED, or the
+ * system's when it is empty. */
+export let client = fn(trusted: Bytes): Config { _config(false, trusted, "") };
+
+// Secures STREAM as CONFIG's server, waiting for the handshake as long as it takes.
+export let secureServer = fn(stream: Stream, config: Config): Stream {
+  if (!_start(stream.handle, config.handle, "")) { _raise(); };
+  stream
+};
+
+/* Secures STREAM as CONFIG's client of the server HOST, the name its
+ * certificate must have, waiting for the handshake as long as it takes. */
+export let secureClient = fn(stream: Stream, config: Config, host: Bytes): Stream {
+  if (!_start(stream.handle, config.handle, host)) { _raise(); };
+  stream
+};
+
+// A secured stream connected to HOST and PORT, as CONFIG's client.
+export let connect = fn(host: Bytes, port: I32, config: Config): Stream {
+  secureClient(Tcp.connect(host, port), config, host)
+};
+
+// The next connection to LISTENER, secured as CONFIG's server.
+export let accept = fn(listener: Listener, config: Config): Stream {
+  secureServer(listener.accept(), config)
+};

@@ -1,0 +1,55 @@
+// 800 bodies under gravity for 40 steps: each step's accelerations, then its
+// moves, spread over the schedulers by Job.parallelFor, the state in shared
+// Buffers of F64.
+import std.concurrent.Job as Job;
+import std.concurrent.Process as Process;
+import type { Buffer } from std.concurrent.Buffer;
+
+let B = 800;
+let STEPS = 40;
+let DT = 0.001;
+let position = new Buffer(8 * 3 * B);
+let velocity = new Buffer(8 * 3 * B);
+let i = 0;
+while (i < B) {
+  position.setF64(3 * i, ((i * 37) % 101) as F64 / 10.0);
+  position.setF64(3 * i + 1, ((i * 59) % 103) as F64 / 10.0);
+  position.setF64(3 * i + 2, ((i * 71) % 107) as F64 / 10.0);
+  i++;
+}
+let start = Process.now();
+let step = 0;
+while (step < STEPS) {
+  Job.parallelFor(B, 16, fn(first: I32, end: I32) {
+    let a = first;
+    while (a < end) {
+      let x = position.getF64(3 * a); let y = position.getF64(3 * a + 1); let z = position.getF64(3 * a + 2);
+      let ax = 0.0; let ay = 0.0; let az = 0.0;
+      let b = 0;
+      while (b < B) {
+        let dx = position.getF64(3 * b) - x;
+        let dy = position.getF64(3 * b + 1) - y;
+        let dz = position.getF64(3 * b + 2) - z;
+        let d2 = dx * dx + dy * dy + dz * dz + 0.01;
+        let f = 1.0 / (d2 * Math.sqrt(d2));
+        ax = ax + dx * f; ay = ay + dy * f; az = az + dz * f;
+        b++;
+      }
+      velocity.setF64(3 * a, velocity.getF64(3 * a) + DT * ax);
+      velocity.setF64(3 * a + 1, velocity.getF64(3 * a + 1) + DT * ay);
+      velocity.setF64(3 * a + 2, velocity.getF64(3 * a + 2) + DT * az);
+      a++;
+    }
+  });
+  Job.parallelFor(3 * B, 96, fn(first: I32, end: I32) {
+    let k = first;
+    while (k < end) { position.setF64(k, position.getF64(k) + DT * velocity.getF64(k)); k++; }
+  });
+  step++;
+}
+let ms = Process.now() - start;
+let sum = 0.0;
+i = 0;
+while (i < 3 * B) { let v = velocity.getF64(i); sum = sum + v * v; i++; }
+System.assert(Math.abs(sum - 253.27778330888) < 0.0000001);
+"ms=" + Std.string(ms)

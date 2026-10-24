@@ -1,0 +1,28 @@
+.jlo module version=1 features=[]
+types: [I32, BYTES, DYNAMIC, BOOL, FUNCTION(0)]
+sigs: [{ ret=I32, nargs=1, args=[I32] }]
+atoms: []
+struct_sigs: []
+func[0] nregs=6 nargs=0 reg_types=[I32, BYTES, DYNAMIC, FUNCTION, I32, I32]
+  0: CONST_I32 a=r0 b=r0 c=r0 imm=8
+  1: BYTES_NEW a=r1 b=r0 c=r0 imm=0
+  2: TO_DYN a=r2 b=r1 c=r0 imm=0
+  3: CLOSURE a=r3 b=r2 c=r1 imm=1
+  4: CONST_I32 a=r4 b=r0 c=r0 imm=200000
+  5: CALLR a=r5 b=r3 c=r1 imm=4
+  6: CALLR a=r0 b=r3 c=r1 imm=4
+  7: ADD_I32 a=r0 b=r0 c=r5 imm=0
+  8: RET a=r0 b=r0 c=r0 imm=0
+func[1] nregs=7 cap_start=6 nargs=1 reg_types=[I32, BYTES, BOOL, I32, I32, BYTES, DYNAMIC]
+  0: CONST_I32 a=r3 b=r0 c=r0 imm=64
+  1: CONST_I32 a=r4 b=r0 c=r0 imm=0
+  2: EQ_I32_IMM a=r2 b=r0 c=r0 imm=0
+  3: JMP_IF a=r2 b=r0 c=r0 imm=4
+  4: BYTES_NEW a=r1 b=r3 c=r0 imm=0
+  5: SUB_I32_IMM a=r0 b=r0 c=r0 imm=1
+  6: ADD_I32_IMM a=r4 b=r4 c=r0 imm=1
+  7: JMP a=r0 b=r0 c=r0 imm=-6
+  8: FROM_DYN_PTR a=r5 b=r6 c=r0 imm=0
+  9: BYTES_LEN a=r3 b=r5 c=r0 imm=0
+  10: ADD_I32 a=r4 b=r4 c=r3 imm=0
+  11: RET a=r4 b=r0 c=r0 imm=0

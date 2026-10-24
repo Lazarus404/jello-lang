@@ -1,0 +1,43 @@
+// 50 keep-alive clients each GET "hello world" 400 times from an HTTP server over loopback.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
+import std.net.Http as Http;
+import type { Request, Response, Header, Client } from std.net.Http;
+
+let C = 50;
+let K = 400;
+
+let run = fn(): Bytes {
+  let listener = Tcp.listen("127.0.0.1", 0);
+  let port = listener.port();
+  Process.spawn<I32>(fn(_: Inbox<I32>) {
+    Http.serve(listener, fn(req: Request): Response { new Response(200, "hello world") });
+  });
+  let counts = new Inbox<I32>();
+  let main = Process.self<I32>(counts);
+  let start = Process.now();
+  let i = 0;
+  while (i < C) {
+    Process.spawn<I32>(fn(_: Inbox<I32>) {
+      let client = Http.connect("127.0.0.1", port);
+      let right = 0;
+      let k = 0;
+      while (k < K) {
+        let res = client.get("/");
+        if ((res.status == 200) && (res.body == "hello world")) { right++; }
+        k++;
+      }
+      client.close();
+      main.send(right);
+    });
+    i++;
+  }
+  let total = 0;
+  i = 0;
+  while (i < C) { total = total + counts.receive(); i++; }
+  System.assert(total == C * K);
+  "ms=" + Std.string(Process.now() - start)
+};
+run()

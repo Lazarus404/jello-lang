@@ -1,0 +1,7 @@
+// Negative: await f desugars to awaitFuture(loop, f), which must be in scope
+import { create, registerPoll } from std.io.EventLoop;
+import { pending } from std.concurrency.Future;
+let loop = create();
+let f = pending();
+await f;
+"ok"

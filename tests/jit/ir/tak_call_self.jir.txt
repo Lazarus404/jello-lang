@@ -1,0 +1,32 @@
+jir fn[0] nregs=4 flags=[numeric_fast] nslow=0
+  bc_pc=0  CONST_I32 a=r0 imm=18
+  bc_pc=1  CONST_I32 a=r1 imm=12
+  bc_pc=2  CONST_I32 a=r2 imm=6
+  bc_pc=3  SAFEPOINT
+  bc_pc=3  CALL_DIRECT a=r3 b=r0 imm=1
+  bc_pc=4  RET a=r3
+jir fn[1] nregs=13 flags=[numeric_fast] nslow=0
+  bc_pc=0  CMP_I32 a=r3 b=r1 c=r0 imm=LT
+  bc_pc=1  JMP_IF a=r3 imm=1
+  bc_pc=2  RET a=r2
+  bc_pc=3  SUB_I32_IMM a=r4 b=r0 imm=1
+  bc_pc=4  MOV a=r5 b=r1
+  bc_pc=5  MOV a=r6 b=r2
+  bc_pc=6  SAFEPOINT
+  bc_pc=6  CALL_SELF a=r7 b=r4
+  bc_pc=7  SUB_I32_IMM a=r8 b=r1 imm=1
+  bc_pc=8  MOV a=r9 b=r2
+  bc_pc=9  MOV a=r10 b=r0
+  bc_pc=10  SAFEPOINT
+  bc_pc=10  CALL_SELF a=r11 b=r8
+  bc_pc=11  SUB_I32_IMM a=r4 b=r2 imm=1
+  bc_pc=12  MOV a=r5 b=r0
+  bc_pc=13  MOV a=r6 b=r1
+  bc_pc=14  SAFEPOINT
+  bc_pc=14  CALL_SELF a=r12 b=r4
+  bc_pc=15  MOV a=r4 b=r7
+  bc_pc=16  MOV a=r5 b=r11
+  bc_pc=17  MOV a=r6 b=r12
+  bc_pc=18  SAFEPOINT
+  bc_pc=18  CALL_SELF a=r0 b=r4
+  bc_pc=19  RET a=r0

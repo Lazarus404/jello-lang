@@ -1,0 +1,50 @@
+// 50 connections each make 2,000 round trips of 64 bytes through an echo server over loopback.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import std.net.Tcp as Tcp;
+import type { Listener, Stream } from std.net.Tcp;
+
+let C = 50;
+let K = 2000;
+let MESSAGE = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+let run = fn(): Bytes {
+  let listener = Tcp.listen("127.0.0.1", 0);
+  let port = listener.port();
+  Process.spawn<I32>(fn(_: Inbox<I32>) {
+    while (true) {
+      let s = listener.accept();
+      Process.spawn<I32>(fn(_: Inbox<I32>) {
+        let data = s.read(65536);
+        while (Bytes.len(data) > 0) { s.write(data); data = s.read(65536); }
+      });
+    }
+  });
+  let counts = new Inbox<I32>();
+  let main = Process.self<I32>(counts);
+  let start = Process.now();
+  let i = 0;
+  while (i < C) {
+    Process.spawn<I32>(fn(_: Inbox<I32>) {
+      let s = Tcp.connect("127.0.0.1", port);
+      let right = 0;
+      let k = 0;
+      while (k < K) {
+        s.write(MESSAGE);
+        let got = s.read(64);
+        while (Bytes.len(got) < 64) { got = got + s.read(64 - Bytes.len(got)); }
+        if (got == MESSAGE) { right++; }
+        k++;
+      }
+      s.close();
+      main.send(right);
+    });
+    i++;
+  }
+  let total = 0;
+  i = 0;
+  while (i < C) { total = total + counts.receive(); i++; }
+  System.assert(total == C * K);
+  "ms=" + Std.string(Process.now() - start)
+};
+run()

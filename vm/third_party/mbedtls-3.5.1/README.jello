@@ -1,0 +1,20 @@
+Mbed TLS 3.5.1 (2023-11-06), vendored for std.net.Tls
+=====================================================
+
+Source: https://github.com/Mbed-TLS/mbedtls, tag v3.5.1, commit
+edb8fec9882084344a314368ac7fd957a187519c. Jello keeps to a release from
+before 2024.
+
+Copied unmodified:
+
+  LICENSE              Apache-2.0 OR GPL-2.0-or-later; Jello takes Apache-2.0
+  include/             the public headers, mbedtls_config.h among them
+  library/             the library's sources, the generated ones included
+
+The build (vm/Makefile) compiles every library/*.c, with every symbol
+hidden, into tls.jdll with tls/tls.c, its only user, which the VM loads only
+for a program that uses TLS. It keeps the default configuration (TLS 1.2, no
+PSA crypto) and adds, through MBEDTLS_USER_CONFIG_FILE, the options in
+src/include/jello/internal/tls_config.h: MBEDTLS_THREADING_C and
+MBEDTLS_THREADING_PTHREAD. test_vm.sh checks that tls.jdll carries this
+version's sources, by the path of its ssl_tls.c, and that jello does not.

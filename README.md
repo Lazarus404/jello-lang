@@ -52,6 +52,8 @@ the compiler as a native program, with that module built in.
 
 ### jello, the virtual machine
 
+The virtual machine has been ported from it's [old repo](https://github.com/Lazarus404/jello-vm/) and will be maintained here from now on.
+
 `vm/` builds these:
 
 - `jello`, which runs a `.jlo` module, with a JIT compiler on arm64 and x86_64 as well as an
@@ -66,10 +68,10 @@ the compiler as a native program, with that module built in.
 
 ### docs, the language reference
 
-[`docs/`](docs/README.md) describes the language as the compiler implements it: types,
+[`docs/`](docs/README.md) describes the language as the compiler implements it; types,
 statements, expressions, modules, the standard library, the tools and every error. Each example
 in it is a program the compiler's tests run, so what it says a program prints is what the program
-prints.
+prints. These docs were updated by AI (I'm lazy - shoot me), so please do report any inconsistencies (provided you're not lazy like me).
 
 ## Getting started
 
@@ -84,6 +86,14 @@ releases/macos/install.sh
 It installs `jello`, `jelloc` and `jlo_tool` in `~/.jello`, and sets up your shell so that they
 are on `PATH` and `jelloc` finds the standard library. Open a new terminal afterwards. The
 [release's README](releases/macos/README.md) lists its options, including `--uninstall`.
+
+Windows users can open PowerShell and use:
+
+```sh
+releases/install.ps1
+```
+
+Alternatively, download a release from the right-hand panel here in Github.
 
 ### Building from source
 

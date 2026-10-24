@@ -1,0 +1,19 @@
+// Builds byte strings by concatenation and finds each in a list of those seen, by equality.
+let words: Array<Bytes> = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
+let seen = Array.new<Bytes>(0);
+let counts = Array.new<I32>(0);
+let total = 0;
+let i = 0;
+while (i < 1000000) {
+  let w = words[i % 8] + "-" + words[(i / 8) % 8];
+  let at = 0;
+  while (at < seen.len() && seen[at] != w) { at++; }
+  if (at == seen.len()) { seen.push(w); counts.push(0); }
+  counts[at] = counts[at] + 1;
+  total = total + Bytes.len(w);
+  i++;
+}
+System.assert(seen.len() == 64);
+System.assert(counts[1] == 15625);
+System.assert(total == 10500000);
+"ok"

@@ -1,0 +1,23 @@
+PCRE2 10.30 (2017-08-14), vendored for std.jdll's regular expressions
+=====================================================================
+
+Source: https://github.com/PCRE2Project/pcre2, tag pcre2-10.30, commit
+921b0ae10fe26bdb979f70ec9512b9f95e3ddccb. The project pins a release that
+predates 2017-09-30; do not upgrade it without that decision changing.
+
+Copied unmodified, with the renames upstream's NON-AUTOTOOLS-BUILD asks for:
+
+  LICENCE, AUTHORS
+  src/pcre2_*.c        the 8-bit library sources in Makefile.am's
+                       COMMON_SOURCES, plus pcre2_jit_match.c and
+                       pcre2_jit_misc.c, which pcre2_jit_compile.c includes
+  src/pcre2_internal.h, src/pcre2_intmodedep.h, src/pcre2_ucp.h
+  src/pcre2.h          from src/pcre2.h.generic
+  src/config.h         from src/config.h.generic
+  src/pcre2_chartables.c  from src/pcre2_chartables.c.dist
+
+The build (vm/Makefile) compiles the library without JIT and defines
+HAVE_CONFIG_H, PCRE2_CODE_UNIT_WIDTH=8, PCRE2_STATIC, SUPPORT_UNICODE,
+HAVE_STDINT_H, HAVE_INTTYPES_H, HAVE_MEMMOVE and HAVE_STRERROR. Every symbol
+is hidden; std.jdll exports only its manifest. test_vm.sh checks that the
+built std.jdll carries this version's "10.30 2017-08-14" string.

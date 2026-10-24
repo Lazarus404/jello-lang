@@ -1,0 +1,6 @@
+// Negative: thread_spawn closures must not capture outer locals
+load { thread_spawn } from std;
+
+let x = 1;
+thread_spawn(fn(a, b) { x + a + b }, 0, 0);
+"ok"

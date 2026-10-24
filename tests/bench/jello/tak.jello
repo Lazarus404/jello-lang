@@ -1,0 +1,9 @@
+// Three-argument recursion: tak(24, 16, 8), twenty times.
+let tak = fn(x: I32, y: I32, z: I32): I32 {
+  if (y < x) { tak(tak(x - 1, y, z), tak(y - 1, z, x), tak(z - 1, x, y)) } else { z }
+};
+let r = 0;
+let i = 0;
+while (i < 20) { r = r + tak(24, 16, 8); i++; }
+System.assert(r == 180);
+"ok"

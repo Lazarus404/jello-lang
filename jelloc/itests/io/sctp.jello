@@ -1,0 +1,43 @@
+load { addr_resolve } from std;
+import { bind, connect, tryAccept, trySend, tryRecv, pollFd, boundPort, payload, stream, ppid, close } from std.io.net.Sctp;
+import { create, registerPoll, awaitFuture, unregisterPoll } from std.io.EventLoop;
+import { pending, complete } from std.concurrency.Future;
+
+let loop = create();
+let bindAddr = addr_resolve("127.0.0.1", 0);
+let server = bind(bindAddr);
+let port = boundPort(server);
+let connectAddr = addr_resolve("127.0.0.1", port);
+
+let acceptF = pending();
+registerPoll(loop, pollFd(server), fn(_loop) {
+  let conn = tryAccept(server);
+  if (conn != null) {
+    complete(acceptF, conn);
+    let _u = unregisterPoll(loop, pollFd(server));
+  }
+});
+
+let client = connect(connectAddr);
+let conn = await acceptF;
+
+let recvF = pending();
+registerPoll(loop, pollFd(conn), fn(_loop) {
+  let pkt = tryRecv(conn, 4096);
+  if (pkt != null) {
+    complete(recvF, pkt);
+    let _u = unregisterPoll(loop, pollFd(conn));
+  }
+});
+
+let sent = trySend(client, bits[8(7)], 0, 42);
+System.assert(sent > 0);
+
+let rec = await recvF;
+System.assert(Bytes.get_u8(payload(rec), 0) == 7);
+System.assert(stream(rec) == 0);
+System.assert(ppid(rec) == 42);
+close(client);
+close(conn);
+close(server);
+"ok"

@@ -1,0 +1,18 @@
+.jlo module version=1 features=[IMPORTS] entry=0
+types: [I32, BYTES, BOOL]
+sigs: []
+atoms: [test_native, echo_bytes]
+struct_sigs: []
+imports: [
+  { library=test_native, export=echo_bytes, ret=BYTES, args=[BYTES] }
+]
+func[0] nregs=7 reg_types=[I32, BYTES, I32, I32, BYTES, I32, BOOL]
+  0: CONST_I32 a=r0 b=r0 c=r0 imm=1
+  1: BYTES_NEW a=r1 b=r0 c=r0 imm=0
+  2: CONST_I32 a=r2 b=r0 c=r0 imm=0
+  3: CONST_I32 a=r3 b=r0 c=r0 imm=42
+  4: BYTES_SET_U8 a=r3 b=r1 c=r2 imm=0
+  5: CALL_NATIVE a=r4 b=r1 c=r1 imm=0
+  6: BYTES_GET_U8 a=r5 b=r4 c=r2 imm=0
+  7: EQ_I32_IMM a=r6 b=r5 c=r0 imm=42
+  8: RET a=r6 b=r0 c=r0 imm=0

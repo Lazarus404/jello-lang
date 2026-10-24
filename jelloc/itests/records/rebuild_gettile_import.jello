@@ -1,0 +1,24 @@
+import { add } from std.core.List;
+import { create, getTile, rebuild } from gel.engine.Tilemap;
+
+typedef MapRec = {
+  let width: I32;
+  let height: I32;
+  let tiles: List<Any>;
+};
+
+let touchRebuild = rebuild;
+
+let testRebuild: () -> Bool = fn() {
+  let map = create(4, 3, 1, 1, null);
+  rebuild(map) == true
+};
+
+let testGetTile: () -> Bool = fn() {
+  let map = create(4, 3, 1, 1, null);
+  getTile(map, 0, 0) == -1
+};
+
+System.assert(testRebuild() == true);
+System.assert(testGetTile() == true);
+"ok"

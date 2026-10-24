@@ -1,0 +1,5 @@
+import { create, submit, take, shutdown } from std.concurrency.Pool;
+
+let pool = create(1);
+submit(pool, 42);
+(take(pool) == 42) ? "ok" : "bad"

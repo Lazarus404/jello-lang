@@ -1,0 +1,26 @@
+load { addr_resolve, random_int } from std;
+import { bind, sendTo, tryRecvFrom, pollFd } from std.io.net.Udp;
+import { create, registerPoll, runOnce } from std.io.EventLoop;
+
+let port = 40000 + random_int(0, 19999);
+let loop = create();
+let addr = addr_resolve("127.0.0.1", port);
+let sock = bind(addr);
+let pkt = bits[16(7), 8(9)];
+
+let state = { hits: 0 };
+registerPoll(loop, pollFd(sock), fn(_loop) {
+  let _got = tryRecvFrom(sock, 64);
+  state.hits = state.hits + 1;
+});
+
+let _sent = sendTo(sock, pkt, addr, port);
+
+let tries = 0;
+while ((state.hits == 0) && (tries < 20)) {
+  runOnce(loop, 100);
+  tries = tries + 1;
+}
+
+System.assert(state.hits > 0);
+"ok"

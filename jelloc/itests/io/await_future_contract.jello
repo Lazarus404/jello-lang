@@ -1,0 +1,7 @@
+import { pending, complete } from std.concurrency.Future;
+import { create, awaitFuture } from std.io.EventLoop;
+
+let loop = create();
+let future = pending();
+complete(future, 42);
+System.assert((await future) == 42);

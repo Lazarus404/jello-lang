@@ -1,0 +1,6 @@
+// Negative: await operand must be a Task scheduler or Future
+import { create, spawn } from std.concurrency.Task;
+let sched = create();
+spawn(sched, 1);
+await 42;
+"ok"

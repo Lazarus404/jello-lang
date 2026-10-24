@@ -1,0 +1,31 @@
+// One sender sends 100 messages to each of 10,000 receivers.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+let R = 10000;
+let M = 100;
+let sums = new Inbox<I32>();
+let main = Process.self<I32>(sums);
+let start = Process.now();
+let receivers = Array.new<Process<I32>>(0);
+let i = 0;
+while (i < R) {
+  receivers.push(Process.spawn<I32>(fn(inbox: Inbox<I32>) {
+    let sum = 0;
+    let n = 0;
+    while (n < M) { sum = sum + inbox.receive(); n++; }
+    main.send(sum);
+  }));
+  i++;
+}
+let m = 0;
+while (m < M) {
+  i = 0;
+  while (i < R) { receivers[i].send(m); i++; }
+  m++;
+}
+let total = 0;
+i = 0;
+while (i < R) { total = total + sums.receive(); i++; }
+System.assert(total == R * (M * (M - 1) / 2));
+"ms=" + Std.string(Process.now() - start)

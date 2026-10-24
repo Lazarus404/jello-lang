@@ -1,0 +1,35 @@
+package std.crypto;
+
+/* Random bytes and numbers from the system's entropy, which nobody can guess
+ * or repeat, so are fit for keys, nonces, salts and tokens. Math.random is
+ * faster, for simulations and games, but can be predicted. */
+
+load { random_bytes, random_int } from std;
+
+let _bytes: (I32) -> Bytes = random_bytes;
+let _int: (I32, I32) -> I32 = random_int;
+
+// COUNT random bytes.
+export let bytes = fn(count: I32): Bytes {
+  if (count < 0) { throw "Random.bytes: count " + Std.string(count) + " is below 0"; };
+  _bytes(count)
+};
+
+// A whole number from LOW to HIGH, both included, each as likely.
+export let int = fn(low: I32, high: I32): I32 {
+  if (low > high) {
+    throw "Random.int: low " + Std.string(low) + " is above high " + Std.string(high);
+  };
+  _int(low, high)
+};
+
+/* A random UUID (RFC 9562, version 4) in its usual text, as
+ * "7d444840-9dc0-4c8d-9c4e-5d7f0b6e1a2f". */
+export let uuid = fn(): Bytes {
+  let b = Bytes.copy(_bytes(16));
+  Bytes.set_u8(b, 6, (Bytes.get_u8(b, 6) & 15) | 64);
+  Bytes.set_u8(b, 8, (Bytes.get_u8(b, 8) & 63) | 128);
+  let hex = Bytes.toHex(b.toString());
+  Bytes.join([Bytes.slice(hex, 0, 8), Bytes.slice(hex, 8, 4), Bytes.slice(hex, 12, 4),
+    Bytes.slice(hex, 16, 4), Bytes.slice(hex, 20, 12)], "-")
+};

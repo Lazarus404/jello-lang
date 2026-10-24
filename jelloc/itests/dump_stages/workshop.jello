@@ -1,0 +1,43 @@
+// Learning-tool workshop: closures, blocks, match, while, objects, try/catch.
+
+let scale: I32 = 2;
+
+let double = fn(n) {
+  return n * scale;
+};
+
+let sum_block = {
+  let a = 10;
+  let b = 32;
+  a + b
+};
+
+let picked = match (sum_block) {
+  0 => "zero",
+  n when (n > 40) => "big",
+  _ => "other",
+};
+
+let counter = 0;
+while (counter < 3) {
+  counter = counter + 1;
+}
+
+let rec = { label: "workshop", value: sum_block };
+let label: Bytes = rec.label;
+
+let trapped = try {
+  if (double(1) == 0) {
+    throw "fail";
+  }
+  "ok"
+} catch (e) {
+  e
+};
+
+System.assert(double(21) == 42);
+System.assert(picked == "big");
+System.assert(Bytes.len(label) == 8);
+System.assert(trapped == "ok");
+
+"ok"

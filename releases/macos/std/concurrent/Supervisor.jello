@@ -1,0 +1,188 @@
+package std.concurrent;
+
+/* Supervisors: processes that start children and restart them when they
+ * finish, as a restart policy and a strategy say, giving up once they restart
+ * too often. A child is a function its process runs; one that receives makes
+ * its own `new Inbox<M>()`, and others find it, after any restart, with
+ * child. A program imports this module both ways:
+ *
+ *   import std.concurrent.Supervisor as Supervisor;
+ *   import type { Supervisor, Child, Strategy, Restart } from std.concurrent.Supervisor;
+ *
+ * The children belong to the supervisor, so stopping it, or its giving up,
+ * stops them, and it belongs to its caller, as any process does. */
+
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Exit, Reply } from std.concurrent.Process;
+
+/* Which children are restarted with one that is: only it, all of them, or it
+ * and those started after it. The others are stopped first, last started
+ * first, and start again in order with it, but for those that had finished
+ * already and temporary ones. */
+export enum Strategy { OneForOne; OneForAll; RestForOne; }
+
+/* When a child that finishes is restarted: always, only when it crashed, or
+ * never. */
+export enum Restart { Permanent; Transient; Temporary; }
+
+// A child: its name, the function its process runs, and when it restarts.
+export typedef Child = {
+  let name: Bytes;
+  let run: () -> Void;
+  let restart: Restart;
+};
+
+export prototype Child {
+  init(name: Bytes, run: () -> Void, restart: Restart) {
+    this.name = name;
+    this.run = run;
+    this.restart = restart;
+  };
+};
+
+/* What a supervisor receives: how a run of a child finished, which its
+ * monitor reports, asks for a child's process, and the ask to stop. */
+export enum Note {
+  Finished(child: I32, run: I32, exit: Exit);
+  Find(name: Bytes, reply: Reply<Dynamic>);
+  Shutdown;
+}
+
+// A running supervisor.
+export typedef Supervisor = { let process: Process<Note>; };
+
+export prototype Supervisor {
+  init(process: Process<Note>) { this.process = process; };
+  /* Stops the supervisor and its children, parking until they have all
+   * finished. */
+  stop() {
+    if (this.process.send(Note.Shutdown)) { this.process.join(); };
+  };
+  // Parks until the supervisor has finished: Crashed when it gave up.
+  join(): Exit { this.process.join() };
+};
+
+// Whether a child that finished as EXIT is to start again under POLICY.
+let _restarts = fn(policy: Restart, exit: Exit): Bool {
+  match (policy) {
+    Permanent => true,
+    Transient => match (exit) { Crashed(_) => true, _ => false },
+    Temporary => false,
+  }
+};
+
+/* Starts a supervisor of CHILDREN, in order, restarting them as STRATEGY
+ * says; once more than MAX restarts have happened within WITHIN
+ * milliseconds, it stops its children and crashes, throwing
+ * "too many restarts". */
+export let start = fn(
+  strategy: Strategy, children: Array<Child>, max: I32, within: I32
+): Supervisor {
+  new Supervisor(Process.spawn<Note>(fn(inbox: Inbox<Note>) {
+    let me = Process.self<Note>(inbox);
+    let n = children.len();
+    /* Each child's process, and how many times it has started, so that how a
+     * run finished that a later one has replaced is ignored. */
+    let running = Array.new<Process<I32>>(0);
+    let starts = Array.new<I32>(0);
+
+    // Starts child K, returning its process.
+    let launch = fn(k: I32): Process<I32> {
+      let run = children[k].run;
+      let p = Process.spawn<I32>(fn(_: Inbox<I32>) { run(); });
+      starts[k] = starts[k] + 1;
+      let started = starts[k];
+      Process.monitor<I32, Note>(p, me, fn(e: Exit): Note { Note.Finished(k, started, e) });
+      p
+    };
+
+    /* Stops children LAST down to FIRST, but for SKIP, their runs no longer
+     * counted, then parks until they have all finished. Returns which of them
+     * were still running. */
+    let halt = fn(first: I32, last: I32, skip: I32): Array<Bool> {
+      let was = Array.new<Bool>(0);
+      let j = first;
+
+      while (j <= last) {
+        was.push((j != skip) && (running[j].exited() == null));
+        j++;
+      }
+      j = last;
+
+      while (j >= first) {
+        if (j != skip) {
+          starts[j] = starts[j] + 1;
+          running[j].stop();
+        }
+        j--;
+      }
+      j = first;
+
+      while (j <= last) {
+        if (j != skip) { running[j].join(); }
+        j++;
+      }
+      was
+    };
+    let i = 0;
+
+    while (i < n) {
+      starts.push(0);
+      running.push(launch(i));
+      i++;
+    }
+    let times = Array.new<I32>(0);
+
+    while (true) {
+      match (inbox.receive()) {
+        Finished(k, started, exit) => {
+          if ((started == starts[k]) && _restarts(children[k].restart, exit)) {
+            let now = Process.now();
+            times = times.filter(fn(t: I32): Bool { now - t < within });
+            times.push(now);
+
+            if (times.len() > max) {
+              halt(0, n - 1, k);
+              throw "too many restarts";
+            }
+            let first = match (strategy) { OneForAll => 0, _ => k };
+            let last = match (strategy) { OneForOne => k, _ => n - 1 };
+            let was = halt(first, last, k);
+            let j = first;
+
+            while (j <= last) {
+              let again = match (children[j].restart) { Temporary => false, _ => was[j - first] };
+              if ((j == k) || again) { running[j] = launch(j); }
+              j++;
+            }
+          }
+        },
+        Find(name, reply) => {
+          let found: Dynamic = null;
+          let j = 0;
+
+          while ((j < n) && (found == null)) {
+            if ((children[j].name == name) && (running[j].exited() == null)) {
+              found = running[j].handle;
+            }
+            j++;
+          }
+          reply.send(found);
+        },
+        Shutdown => {
+          halt(0, n - 1, -1);
+          return;
+        },
+      };
+    }
+  }))
+};
+
+/* The process of SUP's child called NAME as it runs now, or null when there
+ * is none or it has finished. It receives messages of type M, which only the child knows. */
+export let child<M> = fn(sup: Supervisor, name: Bytes): ?Process<M> {
+  let handle = Process.call<Note, Dynamic>(sup.process, fn(reply: Reply<Dynamic>): Note {
+    Note.Find(name, reply)
+  });
+  handle == null ? null : new Process<M>(handle)
+};

@@ -1,0 +1,14 @@
+// Spawns 1,000,000 processes, then joins them all.
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+let N = 1000000;
+let start = Process.now();
+let processes = Array.new<Process<I32>>(0);
+let i = 0;
+while (i < N) { processes.push(Process.spawn<I32>(fn(_: Inbox<I32>) { null })); i++; }
+let normal = 0;
+i = 0;
+while (i < N) { match (processes[i].join()) { Normal => { normal++; null }, _ => null }; i++; }
+System.assert(normal == N);
+"ms=" + Std.string(Process.now() - start)
