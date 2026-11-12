@@ -16,6 +16,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     secrets:
       DEGUST_TOKEN: ${{ secrets.DEGUST_TOKEN }}
+      JELLO_VM_TOKEN: ${{ secrets.JELLO_VM_TOKEN }}
 
   package:
     name: ${{ matrix.target }}
@@ -23,6 +24,8 @@ jobs:
       matrix:
         include:
           - { target: macos-universal, runner: macos-15 }
+          - { target: macos-arm64, runner: macos-15, cc: "clang -arch arm64" }
+          - { target: macos-x64, runner: macos-15-intel, cc: "clang -arch x86_64" }
           - { target: linux-x64, runner: ubuntu-24.04, container: "ubuntu:22.04" }
           - { target: linux-arm64, runner: ubuntu-24.04-arm, container: "ubuntu:22.04" }
           - target: windows-x64
@@ -42,11 +45,17 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            clang make file python3 perl procps ca-certificates git xxd binutils curl xz-utils zip
+            clang cmake make file python3 perl procps ca-certificates git xxd binutils curl xz-utils zip
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/llvm-mingw
-        if: matrix.cc
+        with:
+          path: jello
+      - uses: ./jello/.github/actions/jello-vm
+        with:
+          token: ${{ secrets.JELLO_VM_TOKEN || github.token }}
+      - uses: ./jello/.github/actions/llvm-mingw
+        if: startsWith(matrix.target, 'windows-')
       - name: Package
+        working-directory: jello
         env:
           CC: ${{ matrix.cc || 'clang' }}
           HOST_CC: clang
@@ -67,6 +76,7 @@ jobs:
       # and runs the tools, then uninstalls, leaving nothing of Jello's behind but profile backups.
       - name: Install
         if: ${{ !startsWith(matrix.target, 'windows-') }}
+        working-directory: jello
         run: |
           export HOME="$RUNNER_TEMP/home"
           mkdir -p "$HOME"
@@ -82,8 +92,8 @@ jobs:
         with:
           name: release-${{ matrix.target }}
           path: |
-            dist/*.tar.gz
-            dist/*.zip
+            jello/dist/*.tar.gz
+            jello/dist/*.zip
 
   publish:
     needs: [gates, package]

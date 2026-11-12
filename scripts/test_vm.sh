@@ -5,14 +5,15 @@ set -euo pipefail
 [[ $# -eq 0 ]] || { echo "usage: $0 (takes no arguments)" >&2; exit 2; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VM="$ROOT/vm"
 TESTS="$ROOT/tests"
+. "$ROOT/scripts/vm.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # A VM of its own (a temporary build) unless JELLO_VM_BUILD_DIR names one.
 
-BUILD="${JELLO_VM_BUILD_DIR:-$TMP/build}"
+BUILD="$TMP/build"
+[[ -z "${JELLO_VM_BUILD_DIR:-}" ]] || BUILD="$VM_BUILD"
 
 # CC (word-split, e.g. "clang -arch x86_64") builds the VM and every test binary.
 
@@ -31,7 +32,7 @@ run_script() {
 }
 
 section "Build VM"
-make -C "$VM" BUILD_DIR="$BUILD"
+vm_build "$BUILD"
 
 JLO="$BUILD/jlo_tool"
 LIB="$BUILD/libjello_vm.a"
@@ -45,7 +46,7 @@ section "JIT=0 build"
 # Only the tools: std.jdll does not depend on the JIT. jlo_tool is built to check that it links.
 
 NOJIT="$TMP/nojit"
-make -C "$VM" JIT=0 BUILD_DIR="$NOJIT" -j4 "$NOJIT/jello" "$NOJIT/jlo_tool"
+vm_build "$NOJIT" -DJELLO_ENABLE_JIT=OFF -- jello jlo_tool
 "$JLO" asm "$TESTS/bytecode/bench/fib.jlo.txt" -o "$TMP/fib.jlo"
 
 # expect_nojit STATUS OUTPUT ARGS...: the JIT=0 jello run with ARGS gives STATUS and OUTPUT.
@@ -67,7 +68,7 @@ echo "JIT=0 jello runs fib interpreted and refuses --require-jit and --jit-repor
 section "Build test JDLL"
 
 # A library reaches the VM through the table it is handed, so it links with nothing undefined.
-# The target is the compiler's, as in the Makefile. Tests build with -D_GNU_SOURCE, as the VM
+# The target is the compiler's, as for the VM. Tests build with -D_GNU_SOURCE, as the VM
 # does on Linux: glibc hides POSIX under -std=c11, and macOS ignores it.
 
 case "$($CC -dumpmachine)" in
@@ -76,7 +77,7 @@ case "$($CC -dumpmachine)" in
   *) echo "test_vm.sh: unsupported target $($CC -dumpmachine)" >&2; exit 1 ;;
 esac
 for jdll in test_native test_blocking test_old_abi; do
-  $CC -std=c11 -D_GNU_SOURCE -I"$VM/src/include" "${JDLL_LINK[@]}" \
+  $CC -std=c11 -D_GNU_SOURCE -I"$VM_SRC/src/include" "${JDLL_LINK[@]}" \
     "$TESTS/jdll/$jdll.c" -o "$TMP/$jdll.jdll"
 done
 
@@ -128,7 +129,7 @@ build_c_test() {
   local name="$1"
   shift
   $CC -std=c11 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -Wshadow -Wno-unused-parameter -Werror "$@" \
-    -DJELLO_JDLL_HOST -I"$VM/src/include" "$TESTS/csrc/$name.c" \
+    -DJELLO_JDLL_HOST -I"$VM_SRC/src/include" "$TESTS/csrc/$name.c" \
     "$LIB" -lpthread -ldl -lm -o "$TMP/$name"
 }
 

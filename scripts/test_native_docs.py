@@ -17,9 +17,9 @@ The VM runs one scheduler, so that what a page says of blocking calls holds even
 
     scripts/test_native_docs.py [page.md...]
 
-With no pages, every page under docs/. CC is the C compiler (cc by default); JELLO_VM_BUILD_DIR
-is the VM build, as build_vm.sh has it. A fence that starts as a native one but does not parse,
-such as ```c native=my-lib, fails rather than going untested.
+With no pages, every page under docs/. CC is the C compiler (cc by default); JELLO_VM_DIR and
+JELLO_VM_BUILD_DIR are the VM's checkout and build, as build_vm.sh has them. A fence that starts
+as a native one but does not parse, such as ```c native=my-lib, fails rather than going untested.
 """
 
 import os
@@ -31,6 +31,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+VM_SRC = Path(os.environ.get("JELLO_VM_DIR", ROOT.parent / "jello-vm")).resolve() / "vm"
 FENCE = re.compile(r"^```(c|jello) native=([A-Za-z_][A-Za-z0-9_]*)(?: file=(\S+))?$")
 
 
@@ -83,7 +84,7 @@ def build(cc, library, source, out):
     c_file.write_text(source)
     flags, libraries = link_flags(cc)
     command = [*cc, "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
-               f"-I{ROOT / 'vm/src/include'}", *flags, str(c_file), *libraries,
+               f"-I{VM_SRC / 'src/include'}", *flags, str(c_file), *libraries,
                "-o", str(out / f"{library}.jdll")]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
@@ -123,7 +124,7 @@ def check(where, jelloc, directory, program):
 def main():
     pages = [Path(p).resolve() for p in sys.argv[1:]] or sorted((ROOT / "docs").rglob("*.md"))
     cc = shlex.split(os.environ.get("CC", "cc"))
-    jelloc = str(Path(os.environ.get("JELLO_VM_BUILD_DIR", ROOT / "vm/build")).resolve() / "jelloc")
+    jelloc = str(Path(os.environ.get("JELLO_VM_BUILD_DIR", ROOT / "build/vm")).resolve() / "jelloc")
     examples = 0
     with tempfile.TemporaryDirectory() as tmp:
         for page in pages:

@@ -1,0 +1,17 @@
+# Checks out Lazarus404/jello-vm at jello-vm, beside the jello-lang checkout, where the scripts
+# look for it (scripts/vm.sh).
+name: jello-vm
+description: Check out the Jello VM beside this repository
+inputs:
+  token:
+    description: A token that reads Lazarus404/jello-vm
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: Lazarus404/jello-vm
+        path: jello-vm
+        token: ${{ inputs.token }}
+        persist-credentials: false

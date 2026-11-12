@@ -29,7 +29,7 @@ BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 JELLO_DIR = os.path.join(BENCH_DIR, "jello")
 LUA_DIR = os.path.join(BENCH_DIR, "lua")
 OUT_DIR = os.path.join(BENCH_DIR, "out")
-BUILD_DIR = os.environ.get("JELLO_VM_BUILD_DIR") or os.path.join(ROOT, "vm", "build")
+BUILD_DIR = os.environ.get("JELLO_VM_BUILD_DIR") or os.path.join(ROOT, "build", "vm")
 
 
 def lua_version(exe: str) -> str:

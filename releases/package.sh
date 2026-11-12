@@ -3,8 +3,8 @@
 
 # Builds the VM and the compiler (./scripts/build_vm.sh, ./scripts/build_jello.sh) for the
 # system the compiler targets and lays out a release in OUT, by default releases/<os> (macos,
-# linux or windows). A macOS release is universal: its binaries hold an arm64 and an x86_64
-# build. A Windows release (CC an llvm-mingw clang) builds on Windows or, from another system,
+# linux or windows). A macOS release is universal, its binaries holding an arm64 and an x86_64
+# build, unless CC names one architecture (as "clang -arch arm64"). A Windows release (CC an llvm-mingw clang) builds on Windows or, from another system,
 # whose compiler (HOST_CC, by default cc) builds the VM that compiles the compiler module; it
 # interprets, without the JIT, and must import only the system's own DLLs.
 #   bin/       jello, the VM; jelloc, the compiler as a native program; and
@@ -24,9 +24,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-BUILD="$ROOT/vm/build"
+. "$ROOT/scripts/vm.sh"
+BUILD="$VM_BUILD"
+IMAGE="$ROOT/jelloc/build/jelloc1.jlo"
 
-# The system and architecture the compiler builds for, as the Makefile takes them.
+# The system and architecture the compiler builds for.
 
 target="$(${CC:-cc} -dumpmachine)"
 case "$target" in
@@ -44,10 +46,13 @@ OUT="${1:-$HERE/$os}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 
-# Elsewhere than on Windows, a Windows release's compiler module is built by this system's VM.
+# The compiler module is built by a VM for this system's own architecture: on macOS whichever
+# one CC names, and elsewhere than on Windows for a Windows release.
 
 build_cc="${CC:-cc}"
-if [[ "$os" == windows && "$(uname -s)" != MINGW* && "$(uname -s)" != MSYS* ]]; then
+if [[ "$os" == macos ]]; then
+  build_cc="${build_cc%% -arch *}"
+elif [[ "$os" == windows && "$(uname -s)" != MINGW* && "$(uname -s)" != MSYS* ]]; then
   build_cc="${HOST_CC:-cc}"
 fi
 CC="$build_cc" "$ROOT/scripts/build_vm.sh" > /dev/null
@@ -56,26 +61,34 @@ exe=
 installer=install.sh
 if [[ "$os" == macos ]]; then
   # Each architecture built afresh in its own directory, embedding the same compiler module,
-  # for macOS 11, the first on Apple silicon, rather than the building Mac's version; then
-  # joined by lipo into one binary of each.
-  arch=universal
-  UNIVERSAL="$BUILD/universal"
+  # for macOS 11, the first on Apple silicon, rather than the building Mac's version; a
+  # universal release's then joined by lipo into one binary of each.
+  if [[ " ${CC:-cc} " == *" -arch "* ]]; then
+    slices=("${target%%-*}")
+    MACOS="$BUILD/macos-$arch"
+  else
+    slices=(arm64 x86_64)
+    arch=universal
+    MACOS="$BUILD/universal"
+  fi
   export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
-  rm -rf "$UNIVERSAL"
-  for slice in arm64 x86_64; do
-    make -s -C "$ROOT/vm" BUILD_DIR="$UNIVERSAL/$slice" CC="${CC:-cc} -arch $slice" all jelloc \
-      > /dev/null
+  rm -rf "$MACOS"
+  for slice in "${slices[@]}"; do
+    CC="$build_cc -arch $slice" vm_build "$MACOS/$slice" "-DJELLOC_IMAGE=$IMAGE" -- \
+      "${VM_TARGETS[@]}" jelloc > /dev/null
   done
   for file in jello jelloc jlo_tool std.jdll tls.jdll libjello_vm.a; do
-    lipo -create "$UNIVERSAL/arm64/$file" "$UNIVERSAL/x86_64/$file" -output "$UNIVERSAL/$file"
+    inputs=()
+    for slice in "${slices[@]}"; do inputs+=("$MACOS/$slice/$file"); done
+    lipo -create "${inputs[@]}" -output "$MACOS/$file"
   done
-  BUILD="$UNIVERSAL"
+  BUILD="$MACOS"
 elif [[ "$os" == windows ]]; then
   exe=.exe
   installer=install.ps1
   WINDOWS="$BUILD/windows-$arch"
   rm -rf "$WINDOWS"
-  make -s -C "$ROOT/vm" BUILD_DIR="$WINDOWS" CC="$CC" AR="${AR:-llvm-ar}" all jelloc > /dev/null
+  vm_build "$WINDOWS" "-DJELLOC_IMAGE=$IMAGE" -- "${VM_TARGETS[@]}" jelloc > /dev/null
   BUILD="$WINDOWS"
   # Windows' own DLLs and its C runtime's, which every Windows 10 has; nothing to ship beside.
   for file in jello.exe jelloc.exe jlo_tool.exe std.jdll tls.jdll; do
@@ -93,18 +106,18 @@ mkdir -p "$OUT/bin" "$OUT/lib" "$OUT/include/jello" "$OUT/std" "$OUT/licenses"
 install -m 755 "$BUILD/jello$exe" "$BUILD/jelloc$exe" "$BUILD/jlo_tool$exe" "$OUT/bin/"
 install -m 755 "$BUILD/std.jdll" "$BUILD/tls.jdll" "$OUT/lib/"
 install -m 644 "$BUILD/libjello_vm.a" "$OUT/lib/"
-install -m 644 "$ROOT/vm/src/include/jello.h" "$OUT/include/"
-install -m 644 "$ROOT/vm/src/include/jello/jdll.h" "$OUT/include/jello/"
+install -m 644 "$VM_SRC/src/include/jello.h" "$OUT/include/"
+install -m 644 "$VM_SRC/src/include/jello/jdll.h" "$OUT/include/jello/"
 if [[ "$os" == windows ]]; then
-  install -m 644 "$ROOT/vm/tools/jello.manifest" "$OUT/include/"
+  install -m 644 "$VM_SRC/tools/jello.manifest" "$OUT/include/"
 fi
 cp -R "$ROOT/stdlib/." "$OUT/std/"
 find "$OUT/std" -name .DS_Store -delete
 install -m 644 "$ROOT/LICENSE" "$OUT/licenses/jello.txt"
-install -m 644 "$ROOT/vm/third_party/mbedtls-3.5.1/LICENSE" "$OUT/licenses/mbedtls-3.5.1.txt"
-install -m 644 "$ROOT/vm/third_party/pcre2-10.30/LICENCE" "$OUT/licenses/pcre2-10.30.txt"
+install -m 644 "$VM_SRC/third_party/mbedtls-3.5.1/LICENSE" "$OUT/licenses/mbedtls-3.5.1.txt"
+install -m 644 "$VM_SRC/third_party/pcre2-10.30/LICENCE" "$OUT/licenses/pcre2-10.30.txt"
 if [[ "$os" == windows ]]; then
-  install -m 644 "$ROOT/vm/third_party/wepoll-1.5.8/LICENSE" "$OUT/licenses/wepoll-1.5.8.txt"
+  install -m 644 "$VM_SRC/third_party/wepoll-1.5.8/LICENSE" "$OUT/licenses/wepoll-1.5.8.txt"
   # The binaries link the MinGW-w64 runtime and winpthreads statically, whose notices the
   # toolchain keeps in share/mingw32 beside the target's lib.
   mingw="$(dirname "$($CC -print-file-name=libwinpthread.a)")/../share/mingw32"
@@ -117,15 +130,19 @@ install -m 644 "$HERE/README.md" "$OUT/"
 version="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$ROOT/jelloc/jello.json")"
 [[ -n "$version" ]] || { echo "package.sh: no version in jelloc/jello.json" >&2; exit 1; }
 commit="$(git -C "$ROOT" rev-parse --short HEAD)"
-git -C "$ROOT" diff --quiet HEAD -- jelloc/src jelloc/boot stdlib vm/src vm/tls vm/tools ':!*.DS_Store' ||
+if ! git -C "$ROOT" diff --quiet HEAD -- jelloc/src jelloc/boot stdlib ':!*.DS_Store' ||
+  ! git -C "$JELLO_VM_DIR" diff --quiet HEAD -- vm ':!*.DS_Store'; then
   commit="$commit+dirty"
+fi
 printf '%s %s %s %s\n' "$version" "$commit" "$os" "$arch" > "$OUT/VERSION"
 
 # A release must not depend on where it was built: no binary names a path under the build
 # directory (a format such as "%s/src" is not one, though a short ROOT can look like it).
 
-if strings "$OUT"/bin/* "$OUT"/lib/*.jdll | grep -F "$ROOT/" | grep -vF "%s$ROOT/" > /dev/null; then
-  echo "package.sh: a binary names the build directory $ROOT" >&2
-  exit 1
-fi
+for dir in "$ROOT" "$JELLO_VM_DIR"; do
+  if strings "$OUT"/bin/* "$OUT"/lib/*.jdll | grep -F "$dir/" | grep -vF "%s$dir/" > /dev/null; then
+    echo "package.sh: a binary names the build directory $dir" >&2
+    exit 1
+  fi
+done
 printf 'Packaged Jello %s (%s, %s %s) in %s\n' "$version" "$commit" "$os" "$arch" "$OUT"

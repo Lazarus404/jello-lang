@@ -16,7 +16,7 @@ SEED="$COMPILER_DIR/boot/jelloc.jlo"
 
 abspath() { if [[ "$1" == /* ]]; then echo "$1"; else echo "$PWD/$1"; fi; }
 
-VM_BUILD="$(abspath "${JELLO_VM_BUILD_DIR:-$(dirname "$COMPILER_DIR")/vm/build}")"
+VM_BUILD="$(abspath "${JELLO_VM_BUILD_DIR:-$(dirname "$COMPILER_DIR")/build/vm}")"
 VM="$VM_BUILD/jello"
 
 JELLOC_JLO="$(abspath "${JELLOC_JLO:-$COMPILER_DIR/build/jelloc.jlo}")"

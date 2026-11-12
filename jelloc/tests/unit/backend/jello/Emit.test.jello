@@ -4,14 +4,18 @@ import type { Test } from std.testing;
 import std.testing as T;
 import { split, startsWith } from std.core.Bytes;
 import { readText } from std.io.File;
+import { getEnv } from std.io.Env;
 
 // An opcode's number is its place in the VM's JELLO_OP_LIST, which Emit restates as
 // `const JOP_X = n;`. A VM opcode inserted out of order would otherwise go unnoticed until
-// some program ran the wrong instruction.
+// some program ran the wrong instruction. The VM is the jello-vm checkout JELLO_VM_DIR, by
+// default beside this repository.
 let testOpcodesMatchTheVm = fn(t: Test) {
   let names = Array.new<Bytes>(0);
+  let vmDir = getEnv("JELLO_VM_DIR");
+  let vm = vmDir.len() > 0 ? vmDir : "../../jello-vm";
 
-  for (line in split(readText("../vm/src/include/jello/internal/bytecode.h"), "\n")) {
+  for (line in split(readText(`${vm}/vm/src/include/jello/internal/bytecode.h`), "\n")) {
     if (startsWith(line, "  OP(JOP_")) {
       names.push(split(Bytes.slice(line, 5, line.len() - 5), ",")[0]);
     }

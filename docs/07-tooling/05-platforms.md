@@ -5,7 +5,7 @@ the same on all of them: a module compiled on one runs on any other.
 
 | System | Architectures | Needs |
 |--------|---------------|-------|
-| macOS | arm64 (Apple silicon) and x64 (Intel), in one universal release | macOS 11 or later |
+| macOS | arm64 (Apple silicon) and x64 (Intel), one release each and a universal one of both | macOS 11 or later |
 | Linux | arm64 and x64, one release each | glibc 2.34 or later: Ubuntu 22.04, Debian 12, RHEL 9 and later |
 | Windows | arm64 and x64, one release each | Windows 10 version 1903 or later, or Windows 11 |
 

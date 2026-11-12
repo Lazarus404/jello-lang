@@ -38,8 +38,7 @@ build_x64
 "$ROOT/scripts/test_vm.sh"
 "$ROOT/scripts/test_jello.sh"
 
-# A checking build (its own directory: make does not rebuild on a flag
-# change), in which JIT code finds every caller-saved register overwritten
+# A checking build, in its own directory, in which JIT code finds every caller-saved register overwritten
 # after each C call (emit_call_fn), so a value kept in one across a call
 # fails every run, not only when the callee happens to use that register.
 # The VM gate, and test_jello.sh under stage 1, the largest JIT workload.

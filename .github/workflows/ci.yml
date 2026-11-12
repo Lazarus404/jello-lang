@@ -3,21 +3,24 @@
 # code finds every caller-saved register overwritten after each C call. Windows builds on Linux
 # with llvm-mingw, its programs and C tests then running on Windows itself, the fixtures compiled
 # and interpreted. Benchmarks stay local: shared runners are too noisy to hold them to a margin.
+# They run when a pull request is merged, on the merge commit, and for a tag through release.yml.
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+    types: [closed]
   workflow_dispatch:
   workflow_call: # release.yml publishes only what passes these
     secrets:
       DEGUST_TOKEN:
         required: false
+      JELLO_VM_TOKEN:
+        required: false
 
 jobs:
   gates:
     name: ${{ matrix.name }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged
     strategy:
       fail-fast: false
       matrix:
@@ -35,12 +38,17 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            clang make file python3 perl procps unzip zip ca-certificates git xxd curl
-      # jelloc's tests use degust from ../../degust, beside this repository. While degust is
-      # private, a DEGUST_TOKEN secret reads it, since this workflow's own token cannot.
+            clang cmake make file python3 perl procps unzip zip ca-certificates git xxd curl
+      # The scripts build the VM from ../jello-vm, and jelloc's tests use degust from ../../degust,
+      # both beside this repository. While they are private, JELLO_VM_TOKEN and DEGUST_TOKEN
+      # secrets read them, since this workflow's own token cannot.
       - uses: actions/checkout@v4
         with:
           path: jello
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+      - uses: ./jello/.github/actions/jello-vm
+        with:
+          token: ${{ secrets.JELLO_VM_TOKEN || github.token }}
       - uses: actions/checkout@v4
         with:
           repository: Lazarus404/degust
@@ -62,6 +70,7 @@ jobs:
 
   windows-build:
     name: windows-${{ matrix.arch }}-build
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged
     strategy:
       fail-fast: false
       matrix:
@@ -76,10 +85,14 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            clang make file python3 perl procps ca-certificates git xxd binutils curl xz-utils
+            clang cmake make file python3 perl procps ca-certificates git xxd binutils curl xz-utils
       - uses: actions/checkout@v4
         with:
           path: jello
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+      - uses: ./jello/.github/actions/jello-vm
+        with:
+          token: ${{ secrets.JELLO_VM_TOKEN || github.token }}
       - uses: ./jello/.github/actions/llvm-mingw
       - name: Package
         working-directory: jello
@@ -99,7 +112,7 @@ jobs:
           lib="$GITHUB_WORKSPACE/dist/jello-windows-${{ matrix.arch }}/lib/libjello_vm.a"
           mkdir -p "$out"
           for jdll in test_native test_blocking test_old_abi; do
-            "$CC" -std=c11 -Ivm/src/include -shared "tests/jdll/$jdll.c" -o "$out/$jdll.jdll"
+            "$CC" -std=c11 -I../jello-vm/vm/src/include -shared "tests/jdll/$jdll.c" -o "$out/$jdll.jdll"
           done
           for test in trap_pc_tests vm_safety_tests enum_tests thread_tests proc_switch_tests \
             proc_vm_tests proc_native_tests blocking_tests poll_tests run_for_tests jir_tests \
@@ -107,7 +120,7 @@ jobs:
             jit_mixed_tests jit_reload_tests jit_arm64_tests jit_golden_tests thread_stress_tests \
             capstone_stress_test; do
             "$CC" -std=c11 -D_WIN32_WINNT=0x0A00 -O2 -Wall -Wextra -Wpedantic -Wshadow \
-              -Wno-unused-parameter -Werror -DJELLO_JDLL_HOST -Ivm/src/include \
+              -Wno-unused-parameter -Werror -DJELLO_JDLL_HOST -I../jello-vm/vm/src/include \
               "tests/csrc/$test.c" "$lib" \
               -static -lpthread -lws2_32 -lbcrypt -o "$out/$test.exe"
           done
@@ -141,6 +154,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: jello
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
       - uses: actions/checkout@v4
         with:
           repository: Lazarus404/degust
