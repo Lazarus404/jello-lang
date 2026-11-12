@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: BSD-3-Clause
+
 # Installs the Jello release beside this script (package.sh lays it out) for
 # the current user, on the macOS or Linux machine it was built for.
 #
@@ -12,6 +13,7 @@
 # block between "# >>> jello >>>" and "# <<< jello <<<", which the installer
 # rewrites and the uninstaller removes. Older Jello installers' blocks, and
 # the jello-vm block and its vm-env.sh, are replaced.
+
 set -euo pipefail
 
 usage() {
@@ -27,7 +29,9 @@ EOF
 }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Run from releases/ itself, it installs the package package.sh made there for this OS.
+
 if [[ ! -f "$HERE/VERSION" ]]; then
   case "$(uname -s)" in
     Darwin) PACKAGED="$HERE/macos" ;;
@@ -75,6 +79,7 @@ TARGET="$PREFIX/sdk/$VERSION"
 
 # Removes the jello and jello-vm blocks from PROFILE, keeping a copy of it
 # beside it the first time.
+
 strip_blocks() {
   local profile="$1"
   [[ -f "$profile" ]] || return 0
@@ -125,9 +130,11 @@ mkdir "$TARGET.new"
 cp -R "$HERE/bin" "$HERE/lib" "$HERE/include" "$HERE/std" "$HERE/licenses" "$HERE/VERSION" \
   "$TARGET.new/"
 [[ -f "$HERE/README.md" ]] && cp "$HERE/README.md" "$TARGET.new/"
+
 # On macOS a release downloaded by a browser is quarantined, and Gatekeeper
 # would stop its unnotarised binaries; they are signed ad hoc, which is re-done
 # if the copy broke the signature.
+
 if [[ "$OS" == macos ]]; then
   xattr -dr com.apple.quarantine "$TARGET.new" 2>/dev/null || true
   for binary in "$TARGET.new"/bin/* "$TARGET.new"/lib/*.jdll; do
@@ -171,6 +178,7 @@ if [[ "$PROFILE" -eq 1 ]]; then
 fi
 
 # The installed tools, from a shell with nothing but env.sh.
+
 CHECK="$(mktemp -d)"
 trap 'rm -rf "$CHECK"' EXIT
 printf 'let who = "Jello";\n"hello from " + who\n' > "$CHECK/hello.jello"

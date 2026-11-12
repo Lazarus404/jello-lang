@@ -1,8 +1,8 @@
 # Jello
 
 A release of Jello for one system and architecture, which `VERSION` names after the version and
-the commit it was built from: `macos` and `universal`, for both Mac architectures, or `linux` or
-`windows` and `arm64` or `x64`. It installs without building anything; `package.sh`, in the
+the commit it was built from: `macos`, `linux` or `windows` and `arm64` or `x64`, or `macos` and
+`universal`, for both Mac architectures. It installs without building anything; `package.sh`, in the
 repository's `releases/`, builds one.
 
 | Path | Contents |
