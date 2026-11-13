@@ -1,0 +1,6 @@
+// error: 4:45: wrong argument type for splice: the parameter is Array<Fragment>, but this argument is Fragment [E0400]
+macro m(p) {
+  let one = quote.pat { 1 };
+  quote.expr { match (unquote(p)) { unquote(one), 2 => "small", _ => "big" } };
+}
+m(1)

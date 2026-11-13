@@ -64,8 +64,8 @@ macro stun_attrs() {
     (49239, "GoogNetworkInfo", "value", true)
   ];
   let variants = Array.new<Bytes>(0);
-  let decode = Array.new<Bytes>(0);
-  let encode = Array.new<Bytes>(0);
+  let decode = Array.new<Fragment>(0);
+  let encode = Array.new<Fragment>(0);
 
   for ((id, name, kind, first) in rows) {
     if (first) {
@@ -81,20 +81,31 @@ macro stun_attrs() {
         : (kind == "error_attribute" ? "reason"
         : ((kind == "attribute") || (kind == "xattribute") ? "addr.wire" : "value"));
       let encodedId = name == "AlternateServer" ? 32803 : id;
-      encode.push(`${pattern} => (${encodedId}, ${value}),`);
+      let matched = Macro.parse(pattern, "pat");
+      let encoded = Macro.parse(value, "expr");
+      encode.push(quote.arm { unquote(matched) => (unquote(encodedId), unquote(encoded)) });
     }
 
     let made = kind == "request" ? `Attr.${name}(false, false)`
       : (kind == "error_attribute" ? `Attr.${name}(0, value)`
       : ((kind == "attribute") || (kind == "xattribute")
         ? `Attr.${name}({ wire: value })` : `Attr.${name}(value)`));
-    decode.push(`${id} => ${made},`);
+    let decoded = Macro.parse(made, "expr");
+    decode.push(quote.arm { unquote(id) => unquote(decoded) });
   }
 
   Macro.emit_all([
     Macro.parse(`enum Attr { ${variants.join(" ")} Unknown(id: I32, value: Bytes); }`, "stmt"),
-    Macro.parse(`let decodeAttr = fn(id: I32, value: Bytes): Attr { match (id) { ${decode.join(" ")} _ => Attr.Unknown(id, value) } };`, "stmt"),
-    Macro.parse(`let encodeAttr = fn(attr: Attr): Tuple<I32, Bytes> { match (attr) { ${encode.join(" ")} Unknown(id, value) => (id, value) } };`, "stmt")
+    quote.stmt {
+      let decodeAttr = fn(id: I32, value: Bytes): Attr {
+        match (id) { unquote(decode), _ => Attr.Unknown(id, value) }
+      };
+    },
+    quote.stmt {
+      let encodeAttr = fn(attr: Attr): Tuple<I32, Bytes> {
+        match (attr) { unquote(encode), Unknown(id, value) => (id, value) }
+      };
+    }
   ]);
 }
 
