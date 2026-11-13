@@ -212,7 +212,7 @@ export typedef BitPatternSegment = {
   let value: Pattern;
 };
 
-// A match arm, `p1 when (f), p2 when (g) => body`.
+// The contents of a match arm, `p1 when (f), p2 when (g) => body`.
 export typedef MatchArmValue = {
   /** The patterns that share the body, each with its own guard. The parser takes the guard
    * before `=>` as the arm's, so the last has none of its own. */
@@ -222,6 +222,7 @@ export typedef MatchArmValue = {
   let body: Block;
 };
 
+// A match arm, or an arm-list `unquote(value)` inside a quote.
 export enum MatchArm {
   Arm(value: MatchArmValue);
   Unquote(value: Expr);
