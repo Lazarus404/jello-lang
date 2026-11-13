@@ -17,7 +17,7 @@ package frontend;
  * making at most `_MAX_NODES` nodes in a module. A call that is a statement takes what its macro
  * emits as statements; any other call must expand to one expression. */
 
-import type { Expr, Pattern, Program, QuoteBody, Stmt, Type } from frontend.syntax.Ast;
+import type { Expr, MatchArm, Pattern, Program, QuoteBody, Stmt, Type } from frontend.syntax.Ast;
 import {
   BinaryOp, Expr, FloatSize, IntSize, Pattern, Stmt, Type, UnaryOp, integerValue, patternNames,
   wideIntegerValue
@@ -66,6 +66,7 @@ enum Fragment {
   Parsed(source: Bytes, kind: Bytes);
   Name(name: Bytes);
   Literal(kind: I32, text: Bytes);
+  Splice(values: Array<Fragment>);
 }
 
 // The macros of every module loaded so far.
@@ -175,6 +176,7 @@ let _quoted = fn(body: QuoteBody, syntax: Syntax): Located {
     Statements(values) => Located.Statements(values, syntax.children),
     Pattern(value) => Located.Pattern(value, syntax.patterns[0]),
     Type(value) => Located.Type(value),
+    Arm(value) => Located.MatchArms([value], syntax),
   }
 };
 
@@ -195,6 +197,12 @@ let _holes = fn(body: QuoteBody, syntax: Syntax): Array<Tuple<Expr, Syntax>> {
       },
       Type(Unquote(name)) => {
         holes.push((Expr.Variable(name), _leaf(syntax)));
+        node
+      },
+      MatchArms([Unquote(value)], at) => {
+        let splice = Expr.Member(Expr.Variable("Macro"), "splice");
+        let callee = _node(at, [_leaf(at)]);
+        holes.push((Expr.Call(splice, [], [value]), _node(at, [callee, at])));
         node
       },
       Expression(Quote(_, _), at) => {
@@ -527,6 +535,12 @@ let _fragment = fn(): Fragment {
       Fragment.Literal(tag, Bytes.slice(_output, _read - 1, 1))
     },
     "n".code => Fragment.Literal(tag, ""),
+    "a".code => {
+      let count = _number();
+      let values = Array.new<Fragment>(0);
+      while (values.len() < count) { values.push(_fragment()); }
+      Fragment.Splice(values)
+    },
     _ => {
       internalError("a macro's output is malformed");
       Fragment.Argument(0)
@@ -641,7 +655,8 @@ let _argument = fn(index: I32): Located {
       let cannot = "a quote passed to a macro cannot unquote";
       rewrite(quoted, fn(node: Located): ?Located {
         match (node) {
-          Expression(Unquote(_), unquoted), Pattern(Unquote(_), unquoted) => {
+          Expression(Unquote(_), unquoted), Pattern(Unquote(_), unquoted),
+          MatchArms([Unquote(_)], unquoted) => {
             throw _at(unquoted, coded(E1002, cannot));
           },
           Type(Unquote(_)) => { throw _at(at, coded(E1002, cannot)); },
@@ -676,7 +691,7 @@ const _MARK = "\0";
 let _marked = fn(node: Located, scope: Array<Tuple<Bytes, I32>>): Located {
   rewrite(node, fn(inner: Located): ?Located {
     match (inner) {
-      Expression(Unquote(_), _), Pattern(Unquote(_), _) => inner,
+      Expression(Unquote(_), _), Pattern(Unquote(_), _), MatchArms([Unquote(_)], _) => inner,
       Expression(Call(Variable(name), [], args), at) when (_scopeIndex(scope, name) >= 0) => {
         let children = at.children;
         let marked = Array.new<Expr>(0);
@@ -693,6 +708,12 @@ let _marked = fn(node: Located, scope: Array<Tuple<Bytes, I32>>): Located {
       _ => null,
     }
   })
+};
+
+// Returns a fragment as match arms; initialized after the fragment converters below.
+let _armsOf: (Fragment) -> Tuple<Array<MatchArm>, Syntax> = fn(_fragment) {
+  internalError("_armsOf called before initialization");
+  ([], _leaf(_call))
 };
 
 // Returns quote `index` of the macro being expanded, with `holes` in place of its unquotes.
@@ -718,6 +739,10 @@ let _instantiate = fn(index: I32, holes: Array<Fragment>): Located {
   };
   let out = rewrite(_marked(_quoted(body, syntax), definition.scope), fn(node: Located): ?Located {
     match (node) {
+      MatchArms([Unquote(_)], _) => {
+        let (values, at) = _armsOf(take());
+        Located.MatchArms(values, at)
+      },
       Statements([Expression(Unquote(_))], _) => {
         let (values, at) = _statementsOf(take());
         Located.Statements(values, at)
@@ -749,6 +774,7 @@ let _located = fn(fragment: Fragment): Located {
       let (value, at) = _literalExpression(kind, text);
       Located.Expression(value, at)
     },
+    Splice(_) => { throw _failed(E1003, "emitted an Array<Fragment> where syntax is needed"); },
   }
 };
 
@@ -759,8 +785,32 @@ let _misplaced = fn(made: Located, needed: Bytes): Bytes {
     Statements(_, _) => "statements",
     Pattern(_, _) => "a pattern",
     Type(_) => "a type",
+    MatchArms(_, _) => "a match arm",
   };
   _failed(E1003, `emitted ${kind} where ${needed} is needed`)
+};
+
+// Returns `fragment` as match arms, flattening an Array<Fragment> splice.
+_armsOf = fn(fragment) {
+  match (fragment) {
+    Splice(values) => {
+      let arms = Array.new<MatchArm>(0);
+      let children = Array.new<Syntax>(0);
+      let patterns = Array.new<Syntax>(0);
+
+      for (value in values) {
+        let (made, at) = _armsOf(value);
+        arms.appendFrom(made, 0);
+        children.appendFrom(at.children, 0);
+        patterns.appendFrom(at.patterns, 0);
+      }
+      (arms, { ..._call, children, patterns })
+    },
+    _ => match (_located(fragment)) {
+      MatchArms(values, at) => (values, at),
+      made => { throw _misplaced(made, "a match arm"); },
+    },
+  }
 };
 
 // Returns `fragment` as an expression.
