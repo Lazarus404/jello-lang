@@ -1,0 +1,21 @@
+// expect: ok
+macro declare_all() {
+  Macro.emit_all([
+    quote.stmt { enum Choice { Empty; Value(value: I32); } },
+    quote.stmt { typedef Item = { let value: I32; }; },
+    quote.stmt {
+      prototype Item {
+        init(value: I32) { this.value = value; };
+        get(): I32 { this.value };
+      };
+    },
+    quote.stmt { let make = fn(value: I32): Item { new Item(value) }; },
+    quote.stmt { let choose = fn(value: I32): Choice { Choice.Value(value) }; }
+  ]);
+}
+
+declare_all();
+let item = make(42);
+System.assert(item.get() == 42);
+System.assert(match (choose(42)) { Value(42) => true, _ => false });
+"ok"
