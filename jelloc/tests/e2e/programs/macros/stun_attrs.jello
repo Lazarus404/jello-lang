@@ -1,0 +1,115 @@
+// expect: ok
+typedef Address = { let wire: Bytes; };
+
+macro stun_attrs() {
+  let rows: Array<Tuple<I32, Bytes, Bytes, Bool>> = [
+    (1, "MappedAddress", "attribute", true),
+    (2, "ResponseAddress", "attribute", true),
+    (3, "ChangeRequest", "request", true),
+    (4, "SourceAddress", "attribute", true),
+    (5, "ChangedAddress", "attribute", true),
+    (6, "Username", "value", true),
+    (7, "Password", "value", true),
+    (8, "MessageIntegrity", "value", true),
+    (9, "ErrorCode", "error_attribute", true),
+    (10, "UnknownAttributes", "value", true),
+    (11, "ReflectedFrom", "value", true),
+    (12, "ChannelNumber", "value", true),
+    (13, "Lifetime", "value", true),
+    (14, "AlternateServer", "attribute", true),
+    (15, "MagicCookie", "value", true),
+    (16, "Bandwidth", "value", true),
+    (17, "DestinationAddress", "attribute", true),
+    (18, "XorPeerAddress", "xattribute", true),
+    (19, "Data", "value", true),
+    (20, "Realm", "value", true),
+    (21, "Nonce", "value", true),
+    (22, "XorRelayedAddress", "xattribute", true),
+    (23, "RequestedAddressType", "value", true),
+    (24, "EvenPort", "value", true),
+    (25, "RequestedTransport", "value", true),
+    (26, "DontFragment", "value", true),
+    (27, "AccessToken", "value", true),
+    (28, "MessageIntegritySha256", "value", true),
+    (29, "PasswordAlgorithm", "value", true),
+    (30, "Userhash", "value", true),
+    (32, "XorMappedAddress", "xattribute", true),
+    (34, "ReservationToken", "value", true),
+    (36, "Priority", "value", true),
+    (37, "UseCandidate", "value", true),
+    (38, "Padding", "value", true),
+    (39, "ResponsePort", "value", true),
+    (40, "XorReflectedFrom", "xattribute", true),
+    (42, "ConnectionId", "value", true),
+    (48, "Ping", "value", true),
+    (32800, "XVovidaXorMappedAddress", "xattribute", true),
+    (32801, "XVovidaXorOnly", "value", true),
+    (32802, "Software", "value", true),
+    (32803, "AlternateServer", "attribute", false),
+    (32807, "CacheTimeout", "value", true),
+    (32808, "Fingerprint", "value", true),
+    (32770, "PasswordAlgorithms", "value", true),
+    (32768, "AdditionalAddressFamily", "value", true),
+    (32769, "AddressErrorCode", "value", true),
+    (32772, "Icmp", "value", true),
+    (32771, "AlternateDomain", "value", true),
+    (32809, "IceControlled", "value", true),
+    (32810, "IceControlling", "value", true),
+    (32811, "ResponseOrigin", "attribute", true),
+    (32812, "OtherAddress", "attribute", true),
+    (32814, "ThirdPartyAuthorization", "value", true),
+    (32848, "XVovidaSecondaryAddress", "attribute", true),
+    (49153, "ConnectionRequestBinding", "value", true),
+    (49154, "BindingChange", "value", true),
+    (49239, "GoogNetworkInfo", "value", true)
+  ];
+  let variants = Array.new<Bytes>(0);
+  let decode = Array.new<Bytes>(0);
+  let encode = Array.new<Bytes>(0);
+
+  for ((id, name, kind, first) in rows) {
+    if (first) {
+      let fields = kind == "request" ? "ip: Bool, port: Bool"
+        : (kind == "error_attribute" ? "code: I32, reason: Bytes"
+        : ((kind == "attribute") || (kind == "xattribute") ? "addr: Address" : "value: Bytes"));
+      variants.push(`${name}(${fields});`);
+
+      let pattern = kind == "request" ? `${name}(_, _)`
+        : (kind == "error_attribute" ? `${name}(_, reason)`
+        : ((kind == "attribute") || (kind == "xattribute") ? `${name}(addr)` : `${name}(value)`));
+      let value = kind == "request" ? "\"\""
+        : (kind == "error_attribute" ? "reason"
+        : ((kind == "attribute") || (kind == "xattribute") ? "addr.wire" : "value"));
+      let encodedId = name == "AlternateServer" ? 32803 : id;
+      encode.push(`${pattern} => (${encodedId}, ${value}),`);
+    }
+
+    let made = kind == "request" ? `Attr.${name}(false, false)`
+      : (kind == "error_attribute" ? `Attr.${name}(0, value)`
+      : ((kind == "attribute") || (kind == "xattribute")
+        ? `Attr.${name}({ wire: value })` : `Attr.${name}(value)`));
+    decode.push(`${id} => ${made},`);
+  }
+
+  Macro.emit_all([
+    Macro.parse(`enum Attr { ${variants.join(" ")} Unknown(id: I32, value: Bytes); }`, "stmt"),
+    Macro.parse(`let decodeAttr = fn(id: I32, value: Bytes): Attr { match (id) { ${decode.join(" ")} _ => Attr.Unknown(id, value) } };`, "stmt"),
+    Macro.parse(`let encodeAttr = fn(attr: Attr): Tuple<I32, Bytes> { match (attr) { ${encode.join(" ")} Unknown(id, value) => (id, value) } };`, "stmt")
+  ]);
+}
+
+stun_attrs();
+let ids = [
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+  21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 34, 36, 37, 38, 39, 40, 42, 48,
+  32800, 32801, 32802, 32803, 32807, 32808, 32770, 32768, 32769, 32772, 32771,
+  32809, 32810, 32811, 32812, 32814, 32848, 49153, 49154, 49239
+];
+for (id in ids) {
+  let value = id == 3 ? "" : "value";
+  let (encoded, roundtrip) = encodeAttr(decodeAttr(id, value));
+  System.assert(encoded == (id == 14 ? 32803 : id));
+  System.assert(roundtrip == value);
+}
+System.assert(encodeAttr(decodeAttr(1234, "unknown")) == (1234, "unknown"));
+"ok"
