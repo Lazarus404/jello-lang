@@ -178,13 +178,22 @@ let _block = fn(block: Block, out: Array<Syntax>) {
  * @param out  the list for expressions and statements
  * @param patterns  the list for patterns */
 let _arms = fn(arms: Array<MatchArm>, out: Array<Syntax>, patterns: Array<Syntax>) {
-  for ({ alternatives, guard, body } in arms) {
-    for ({ pattern, guard: own } in alternatives) {
-      _addPattern(patterns, pattern);
-      _optional(own, out);
-    }
-    _optional(guard, out);
-    _block(body, out);
+  for (arm in arms) {
+    match (arm) {
+      Arm({ alternatives, guard, body }) => {
+        for ({ pattern, guard: own } in alternatives) {
+          _addPattern(patterns, pattern);
+          _optional(own, out);
+        }
+        _optional(guard, out);
+        _block(body, out)
+      },
+      Unquote(value) => {
+        let child = Array.new<Syntax>(0);
+        _add(child, value);
+        out.push({ ...child[0], children: child })
+      },
+    };
   }
   null
 };
@@ -332,6 +341,7 @@ let _expr = fn(value: Expr): Syntax {
       Statement(inner) => _addStmt(out, inner),
       Statements(inner) => _stmts(inner, out),
       Pattern(pattern) => _addPattern(patterns, pattern),
+      Arm(arm) => _arms([arm], out, patterns),
       Type(_) => null,
     },
   };

@@ -33,7 +33,7 @@ let blockOf = fn(tail: ?Expr): Block { { statements: [], tail } };
 
 // An arm of one pattern, with no guards, whose body is the block of `tail`.
 let armOf = fn(pattern: Pattern, tail: Expr): MatchArm {
-  { alternatives: [{ pattern, guard: null }], guard: null, body: blockOf(tail) }
+  MatchArm.Arm({ alternatives: [{ pattern, guard: null }], guard: null, body: blockOf(tail) })
 };
 
 let testParsesPackageDeclarationsPrecedenceAndProgramTail = fn(t: Test) {
@@ -111,14 +111,14 @@ let testParsesMatchRegexpFallthroughAndEnumPayloadPatterns = fn(t: Test) {
 
   match (program) {
     { tail } => T.equal(t, tail, Expr.Match(Expr.Variable("x"), [
-      {
+      MatchArm.Arm({
         alternatives: [
           { pattern: Pattern.Enum("A", []), guard: null },
           { pattern: Pattern.Enum("B", [Pattern.BindPattern("v")]), guard: null }
         ],
         guard: null,
         body: blockOf(Expr.Variable("v"))
-      },
+      }),
       armOf(Pattern.RegExp("a+", "", "m"), Expr.Variable("m")),
       armOf(Pattern.Wildcard, Expr.Integer("0", IntSize.Infer))
     ]))
@@ -130,7 +130,7 @@ let testKeepsEachAlternativesGuardApartFromTheArms = fn(t: Test) {
 
   match (program) {
     { tail } => T.equal(t, tail, Expr.Match(Expr.Variable("x"), [
-      {
+      MatchArm.Arm({
         alternatives: [
           { pattern: Pattern.Enum("A", []), guard: Expr.Variable("a") },
           { pattern: Pattern.Enum("B", []), guard: null },
@@ -138,8 +138,30 @@ let testKeepsEachAlternativesGuardApartFromTheArms = fn(t: Test) {
         ],
         guard: Expr.Variable("c"),
         body: blockOf(Expr.Variable("value"))
-      }
+      })
     ]))
+  };
+};
+
+let testParsesQuotedMatchArmsAndArmListUnquotes = fn(t: Test) {
+  let program = parse("quote.expr { match (x) { unquote(arms) _ => 0 } }");
+
+  match (program.tail) {
+    Quote(Expression, Expression(Match(_, [Unquote(Variable("arms")), Arm(_)]))) => null,
+    _ => T.fail(t, "quoted arm splice was not preserved"),
+  };
+
+  let comma = parse("quote.expr { match (x) { unquote(arms), unquote(p) => 1, _ => 0 } }");
+
+  match (comma.tail) {
+    Quote(Expression, Expression(Match(_, [Unquote(_), Arm({ alternatives: [{ pattern: Unquote(_) }] }), Arm(_)]))) => null,
+    _ => T.fail(t, "a comma after an arm splice did not end it"),
+  };
+
+  let quoted = parse("quote.arm { A when (ok) => value }");
+  match (quoted.tail) {
+    Quote(Arm, Arm(Arm({ alternatives: [{ pattern: Enum("A", []) }], guard: Variable("ok") }))) => null,
+    _ => T.fail(t, "quoted match arm was not parsed"),
   };
 };
 

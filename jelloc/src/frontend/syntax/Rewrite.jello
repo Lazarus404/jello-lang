@@ -9,7 +9,8 @@ package frontend.syntax;
 
 import type {
   BitExprSegment, BitPatternSegment, Block, EnumConstructor, Expr, ListGenerator, ListLiteral,
-  MatchAlternative, MatchArm, Parameter, Pattern, PrototypeField, Stmt, StructField, Type
+  MatchAlternative, MatchArm, MatchArmValue, Parameter, Pattern, PrototypeField, Stmt, StructField,
+  Type
 } from frontend.syntax.Ast;
 import {
   Expr, ListLiteral, MatchArms, ObjectEntry, ParameterKind, Pattern, QuoteBody, Stmt, Type,
@@ -25,6 +26,7 @@ export enum Located {
   Statements(values: Array<Stmt>, syntax: Array<Syntax>);
   Pattern(value: Pattern, syntax: Syntax);
   Type(value: Type);
+  MatchArms(values: Array<MatchArm>, syntax: Syntax);
 }
 
 /** The hook of the rewrite under way; it returns a node's replacement, of the node's kind, or null
@@ -195,19 +197,45 @@ let _parameters = fn(cursor: Cursor, params: Array<Parameter>): Array<Parameter>
   out
 };
 
+let _arm = fn(cursor: Cursor, value: MatchArmValue): MatchArm {
+  let { alternatives, guard, body } = value;
+  let made = Array.new<MatchAlternative>(0);
+
+  for ({ pattern, guard: own } in alternatives) {
+    let rewritten = _patternChild(cursor, pattern);
+    made.push({ pattern: rewritten, guard: _optionalChild(cursor, own) });
+  }
+  let shared = _optionalChild(cursor, guard);
+  MatchArm.Arm({ alternatives: made, guard: shared, body: _block(cursor, body) })
+};
+
 // Rewrites match arms, their patterns being patterns of `cursor` and the rest its children.
 let _arms = fn(cursor: Cursor, arms: Array<MatchArm>): Array<MatchArm> {
   let out = Array.new<MatchArm>(0);
 
-  for ({ alternatives, guard, body } in arms) {
-    let made = Array.new<MatchAlternative>(0);
+  for (arm in arms) {
+    match (arm) {
+      Arm(value) => out.push(_arm(cursor, value)),
+      Unquote(value) => {
+        let syntax = _nextChild(cursor);
+        let replaced = _hook(Located.MatchArms([arm], syntax));
 
-    for ({ pattern, guard: own } in alternatives) {
-      let rewritten = _patternChild(cursor, pattern);
-      made.push({ pattern: rewritten, guard: _optionalChild(cursor, own) });
-    }
-    let shared = _optionalChild(cursor, guard);
-    out.push({ alternatives: made, guard: shared, body: _block(cursor, body) });
+        if (replaced == null) {
+          let (made, at) = _expression(value, syntax.children[0]);
+          out.push(MatchArm.Unquote(made));
+          cursor.made.push({ ...syntax, children: [at] });
+        } else {
+          match (replaced) {
+            MatchArms(values, at) => {
+              out.appendFrom(values, 0);
+              cursor.made.appendFrom(at.children, 0);
+              cursor.madePatterns.appendFrom(at.patterns, 0)
+            },
+            _ => internalError("a match arm's rewrite is no match arm"),
+          };
+        }
+      },
+    };
   }
   out
 };
@@ -299,6 +327,10 @@ let _quoteBody = fn(cursor: Cursor, body: QuoteBody): QuoteBody {
     Statements(inner) => QuoteBody.Statements(_statements(cursor, inner)),
     Pattern(pattern) => QuoteBody.Pattern(_patternChild(cursor, pattern)),
     Type(ty) => QuoteBody.Type(_type(ty)),
+    Arm(arm) => {
+      let made = _arms(cursor, [arm]);
+      QuoteBody.Arm(made[0])
+    },
   }
 };
 
@@ -564,6 +596,14 @@ export let rewrite = fn(node: Located, hook: (Located) -> ?Located): Located {
         Located.Pattern(made, at)
       },
       Type(value) => Located.Type(_type(value)),
+      MatchArms(values, syntax) => {
+        let replaced = _hook(node);
+
+        if (replaced != null) { replaced } else {
+          let cursor = _cursor(syntax);
+          Located.MatchArms(_arms(cursor, values), _made(syntax, cursor))
+        }
+      },
     }
   } catch (e) {
     _hook = outer;
