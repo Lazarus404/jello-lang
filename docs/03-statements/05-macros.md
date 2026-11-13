@@ -64,6 +64,7 @@ and functions, loop, branch and `return`.
 | `quote.stmts { ... }` | one statement or more |
 | `quote.type { ... }` | a type |
 | `quote.pat { ... }` | a pattern |
+| `quote.arm { ... }` | one match arm |
 | `quote { ... }` | statements if it starts with a keyword that starts a statement, else an expression |
 
 The kinds may also be spelt `expression`, `statement`, `statements` and `pattern`. A quote is
@@ -80,7 +81,7 @@ let q = quote.expr { 1 };
 Inside a quote, `unquote(value)` is a hole that the value fills when the quote is made. The value
 is a Fragment, whose syntax goes in the hole, or an `I32`, `I64`, `F64`, `Bool`, `Bytes` or `null`
 value, which goes in as a literal. A hole may stand for an expression, a statement, a pattern, a
-name to bind or assign, or a type:
+name to bind or assign, a type or a match arm:
 
 ```jello
 // expect: aabb 8 small!
@@ -105,6 +106,32 @@ log.join("") + " " + Std.string(big + 1) + " " + out
 As the arguments show, a call's argument is an expression, so a macro that takes statements is
 passed a quote of them. A quote passed to a macro cannot itself unquote. In a type, `unquote` takes
 only the name of a variable that holds a Fragment.
+
+In a `match` or `with ... else` arm list, an `unquote(arms)` that starts an arm, with no `=>` or
+guard after it, splices an `Array<Fragment>` of `quote.arm` fragments in order. It is followed by
+a comma like any other arm, and the array may be empty. Fragment arrays do not splice in other
+positions:
+
+```jello
+// expect: two other
+macro classify(value) {
+  let arms = [quote.arm { 1 => "one" }, quote.arm { 2 => "two" }];
+  quote.expr { match (unquote(value)) { unquote(arms), _ => "other" } };
+}
+classify(2) + " " + classify(3)
+```
+
+So an unquoted pattern starts an arm only when `=>` or a guard follows it. To give it other
+patterns that share the arm, put them first, as in `2, unquote(p) => "small"`:
+
+```jello
+// error: 4:45: wrong argument type for splice: the parameter is Array<Fragment>, but this argument is Fragment [E0400]
+macro m(p) {
+  let one = quote.pat { 1 };
+  quote.expr { match (unquote(p)) { unquote(one), 2 => "small", _ => "big" } };
+}
+m(1)
+```
 
 `unquote` is allowed only inside a quote:
 
@@ -153,8 +180,9 @@ them. Besides `emit` and `emit_all`:
 
 | Function | Gives |
 |----------|-------|
-| `Macro.parse(source, kind = "auto")` | the syntax of the Bytes `source`, read as `"expr"`, `"stmt"`, `"stmts"`, `"type"`, `"pat"` or `"auto"` |
+| `Macro.parse(source, kind = "auto")` | the syntax of the Bytes `source`, read as `"expr"`, `"stmt"`, `"stmts"`, `"type"`, `"pat"`, `"arm"` or `"auto"` |
 | `Macro.gensym(prefix)` | a name used nowhere else in the compilation |
+| `Macro.name(name)` | the identifier `name`, checked when the fragment is placed |
 | `Macro.literal(fragment)` | the value of an argument written as a literal, as a `Dynamic` |
 
 ```jello
