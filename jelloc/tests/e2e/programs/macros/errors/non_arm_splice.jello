@@ -1,0 +1,6 @@
+// error: 6:1: macro bad emitted an expression where a match arm is needed [E1003]
+macro bad() {
+  let arms = [quote.expr { 1 }];
+  quote.expr { match (0) { unquote(arms) _ => 0 } };
+}
+bad()

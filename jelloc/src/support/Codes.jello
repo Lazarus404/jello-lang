@@ -434,7 +434,8 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
     "`quote { ... }` makes syntax in a macro body, and `unquote(value)` splices into a "
     + "quote the syntax, or the literal, that `value` holds; neither means anything elsewhere, "
     + "and a quote cannot hold another. In a type, `unquote(name)` names a variable of the "
-    + "macro body."),
+    + "macro body. In a match-arm list, it may splice an `Array<Fragment>` of `quote.arm` "
+    + "fragments."),
   (E1002, "a macro call that cannot expand",
     "A macro call passes one argument per parameter. A call that is a statement expands to "
     + "the statements its macro emits; a call anywhere else must expand to one expression. A "

@@ -1,4 +1,4 @@
-// expect: ten other
+// expect: ten other two one
 // A quote holds an expression, statements, a pattern or a type, and Macro.parse reads any of
 // them; a literal argument unquoted in a pattern matches its value.
 macro classify(value, expected) {
@@ -17,8 +17,22 @@ macro parsedType(name) {
   quote.stmt { let unquote(name): unquote(t) = null; };
 }
 
+macro generatedMatch(value) {
+  let arms = [
+    Macro.parse("1 => \"one\"", "arm"),
+    quote.arm { 2 => "two" }
+  ];
+  quote.expr { match (unquote(value)) { unquote(arms) _ => "other" } };
+}
+
+// A splice takes a comma after it like any arm, and may be empty.
+macro commaMatch(value) {
+  let none = Array.new<Fragment>(0);
+  quote.expr { match (unquote(value)) { unquote(none), 1 => "one", _ => "other", } };
+}
+
 typed(xs, I32);
 xs.push(5);
 parsedType(nothing);
 System.assert(nothing == null);
-classify(xs[0] * 2, 10) + " " + classify(xs[0], 10)
+classify(xs[0] * 2, 10) + " " + classify(xs[0], 10) + " " + generatedMatch(2) + " " + commaMatch(1)

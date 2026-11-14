@@ -500,7 +500,8 @@ macro the module defines with `export macro`.
 `quote { ... }` makes syntax in a macro body, and `unquote(value)` splices into
 a quote the syntax, or the literal, that `value` holds; neither means anything
 elsewhere, and a quote cannot hold another. In a type, `unquote(name)` names a
-variable of the macro body.
+variable of the macro body. In a match-arm list, it may splice an
+`Array<Fragment>` of `quote.arm` fragments.
 
 ## E1002: a macro call that cannot expand
 

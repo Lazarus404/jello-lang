@@ -27,11 +27,11 @@ let testRepresentsRecursiveJelloSyntax = fn(t: Test) {
   let noGuard: ?Expr = null;
   let noType: ?Type = null;
   let noStatements: Array<Stmt> = [];
-  let arms: Array<MatchArm> = [{
+  let arms: Array<MatchArm> = [MatchArm.Arm({
     alternatives: [{ pattern: Pattern.BindPattern("n"), guard: noGuard }],
     guard: noGuard,
     body: { statements: noStatements, tail: Expr.Variable("n") }
-  }];
+  })];
   let packagePath: Array<Bytes> = ["demo", "ast"];
   let statements: Array<Stmt> = [
     Stmt.LetStmt(false, false, Pattern.BindPattern("sum"), [], noType, sum, null)
