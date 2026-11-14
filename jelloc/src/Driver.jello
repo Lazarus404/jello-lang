@@ -248,7 +248,7 @@ let _parseArgs = fn(argv: List<Bytes>): Tuple<Array<Bytes>, Mode, Bytes> {
  * @throws an error if a module fails to load or check */
 let _checked = fn(inputs: Array<Bytes>): Hir {
   checkProgram(if (_expanding) {
-    loadExpanders(inputs[0], _std)
+    loadExpanders(inputs[0], _std, _roots)
   } else if (_testing) {
     loadTests(inputs, _std, _roots)
   } else {

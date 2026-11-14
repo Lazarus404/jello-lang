@@ -17,10 +17,12 @@ package frontend;
  * making at most `_MAX_NODES` nodes in a module. A call that is a statement takes what its macro
  * emits as statements; any other call must expand to one expression. */
 
-import type { Expr, MatchArm, Pattern, Program, QuoteBody, Stmt, Type } from frontend.syntax.Ast;
+import type {
+  Expr, ImportItem, MatchArm, Pattern, Program, QuoteBody, Stmt, Type
+} from frontend.syntax.Ast;
 import {
-  BinaryOp, Expr, FloatSize, IntSize, Pattern, Stmt, Type, UnaryOp, integerValue, patternNames,
-  wideIntegerValue
+  BinaryOp, Expr, FloatSize, ImportKind, IntSize, Pattern, Stmt, Type, UnaryOp, integerValue,
+  patternNames, wideIntegerValue
 } from frontend.syntax.Ast;
 import type { Located } from frontend.syntax.Rewrite;
 import { Located, rewrite } from frontend.syntax.Rewrite;
@@ -76,6 +78,8 @@ let _imagePaths = Array.new<Bytes>(0);
 let _images = Array.new<Bytes>(0);
 // The standard library's directory, which a macro program's compilation needs.
 let _std = "";
+// The source roots a macro program's compilation needs after its defining file's directory.
+let _roots = Array.new<Bytes>(0);
 // The number the next gensym name ends with, so that names are unique in the compilation.
 let _names = 0;
 // The span an expansion failure is located at, or null.
@@ -108,12 +112,13 @@ let _call: Syntax = {
 export let macroFailureSpan = fn(): ?SourceSpan { _failure };
 
 /** Forgets every macro and macro program, for a new compilation whose standard library is in
- * directory `std`. */
-export let beginMacros = fn(std: Bytes) {
+ * directory `std` and whose additional source roots are `roots`. */
+export let beginMacros = fn(std: Bytes, roots: Array<Bytes>) {
   _definitions = Array.new<Definition>(0);
   _imagePaths = Array.new<Bytes>(0);
   _images = Array.new<Bytes>(0);
   _std = std;
+  _roots = roots;
   _names = 0;
   _failure = null;
   null
@@ -220,8 +225,8 @@ let _holes = fn(body: QuoteBody, syntax: Syntax): Array<Tuple<Expr, Syntax>> {
  * the quotes this way.
  * @param body  the body's statements, with their syntax
  * @return the rewritten statements
- * @throws an error for a statement a body cannot hold, a quote in a quote, or an unquote outside
- *   a quote */
+ * @throws an error for an import nested in the body, a statement a body cannot hold, a quote in a
+ *   quote, or an unquote outside a quote */
 let _body = fn(body: Located, quotes: Array<Tuple<QuoteBody, Syntax>>): Located {
   rewrite(body, fn(node: Located): ?Located {
     match (node) {
@@ -273,6 +278,34 @@ let _body = fn(body: Located, quotes: Array<Tuple<QuoteBody, Syntax>>): Located 
   })
 };
 
+/** Returns `body` without its direct imports, appending those imports and their source syntax to
+ * `imports`. The generated expander hoists them to its module scope. */
+let _bodyImports = fn(
+  body: Array<Stmt>,
+  syntax: Array<Syntax>,
+  imports: Array<Tuple<Stmt, Syntax>>
+): Tuple<Array<Stmt>, Array<Syntax>> {
+  let kept = Array.new<Stmt>(0);
+  let keptSyntax = Array.new<Syntax>(0);
+
+  for (i, statement in body) {
+    match (statement) {
+      ImportFrom(MacroOnly, _, _) => {
+        throw _at(syntax[i], coded(E1000, "a macro body cannot import a macro"));
+      },
+      ImportModule(MacroOnly, _, _) => {
+        throw _at(syntax[i], coded(E1000, "a macro body cannot import a macro"));
+      },
+      ImportModule(_, _, _), ImportFrom(_, _, _) => imports.push((statement, syntax[i])),
+      _ => {
+        kept.push(statement);
+        keptSyntax.push(syntax[i]);
+      },
+    };
+  }
+  (kept, keptSyntax)
+};
+
 // Returns the macro statements among a module's top-level `statements`, each with its syntax.
 let _macros = fn(statements: Array<Stmt>, syntax: Array<Syntax>): Array<Tuple<Stmt, Syntax>> {
   let out = Array.new<Tuple<Stmt, Syntax>>(0);
@@ -291,6 +324,26 @@ const _ARGUMENTS = "__arguments";
 // The statement a macro program holds where a body goes.
 const _BODY = "__body";
 
+let _importItems = fn(items: Array<ImportItem>): Bytes {
+  let shown = items.map(fn(item: ImportItem): Bytes {
+    item.alias == null ? item.name : `${item.name} as ${item.alias as Bytes}`
+  });
+  `{ ${shown.join(", ")} }`
+};
+
+let _importSource = fn(statement: Stmt): Bytes {
+  match (statement) {
+    ImportModule(Value, path, alias) => `import ${path.join(".")} as ${alias};`,
+    ImportFrom(Value, items, path) => `import ${_importItems(items)} from ${path.join(".")};`,
+    ImportFrom(TypeOnly, items, path) => `import type ${_importItems(items)} from ${path.join(".")};`,
+    ImportFrom(Native, items, path) => `load ${_importItems(items)} from ${path.join(".")};`,
+    _ => {
+      internalError("an unhoistable macro-body import");
+      ""
+    },
+  }
+};
+
 /** Returns the source of the program that runs the macros of a file, given its top-level
  * `statements` and their `syntax`, and the macros' bodies rewritten as it runs them (`_body`): the
  * program passes `std.macro`'s `run` one function per macro, in order, which binds the macro's
@@ -299,16 +352,18 @@ const _BODY = "__body";
 export let expanderSource = fn(
   statements: Array<Stmt>,
   syntax: Array<Syntax>
-): Tuple<Bytes, Array<Located>> {
+): Tuple<Bytes, Array<Located>, Array<Syntax>> {
   let macros = _macros(statements, syntax);
   let functions = Array.new<Bytes>(0);
   let bodies = Array.new<Located>(0);
+  let imports = Array.new<Tuple<Stmt, Syntax>>(0);
 
   for (defined in macros) {
     match (defined) {
       (Macro(_, _, params, body), at) => {
         let quotes = Array.new<Tuple<QuoteBody, Syntax>>(0);
-        bodies.push(_body(Located.Statements(body, at.children), quotes));
+        let (withoutImports, bodySyntax) = _bodyImports(body, at.children, imports);
+        bodies.push(_body(Located.Statements(withoutImports, bodySyntax), quotes));
 
         let bindings = Array.new<Bytes>(0);
 
@@ -324,8 +379,10 @@ export let expanderSource = fn(
 
   let source = "import std.macro.Macro as Macro;\n"
     + "import type { Fragment } from std.macro.Macro;\n"
+    + imports.map(fn(entry: Tuple<Stmt, Syntax>): Bytes { _importSource(entry.0) }).join("\n")
+    + (imports.len() == 0 ? "" : "\n")
     + `Macro.run([\n  ${functions.join(",\n  ")}\n])\n`;
-  (source, bodies)
+  (source, bodies, imports.map(fn(entry: Tuple<Stmt, Syntax>): Syntax { entry.1 }))
 };
 
 /** Puts `bodies`, which `expanderSource` gave with `node`'s source, into `node`, the program, at
@@ -359,7 +416,8 @@ let _image = fn(path: Bytes): Bytes {
   if (known >= 0) { return _images[known]; }
 
   let std = _std == "" ? "" : `--std\0${_std}\0`;
-  let args = `${path}\0--expanders\0${std}`;
+  let roots = _roots.map(fn(root: Bytes): Bytes { `--path\0${root}\0` }).join("");
+  let args = `${path}\0--expanders\0${std}${roots}`;
   let out = _imageRun("", args, 0);
   let made = Bytes.slice(out, 1, out.len() - 1);
 
@@ -383,7 +441,9 @@ let _define = fn(path: Bytes, index: I32, statement: Stmt, syntax: Syntax) {
       if (taken != "") { throw _at(syntax, taken); }
 
       let quotes = Array.new<Tuple<QuoteBody, Syntax>>(0);
-      _body(Located.Statements(body, syntax.children), quotes);
+      let ignored = Array.new<Tuple<Stmt, Syntax>>(0);
+      let (withoutImports, bodySyntax) = _bodyImports(body, syntax.children, ignored);
+      _body(Located.Statements(withoutImports, bodySyntax), quotes);
       _definitions.push({ path, name, exported, index, params, quotes, scope: _visible });
       _visible.push((name, _definitions.len() - 1));
     },

@@ -1,0 +1,8 @@
+// expect: 900150983cd24fb0d6963f7d28e17f72
+macro digest() {
+  import std.crypto.Hash as Hash;
+  let value = Hash.md5("abc").toHex();
+  quote.expr { unquote(value) };
+}
+
+digest()

@@ -10,7 +10,7 @@ package frontend;
  * resolves names through its `Import` rows. For `--test`, it also generates the entry module that
  * runs the test files' tests through `std.testing`'s `main`. */
 
-import type { Expr, Package, Stmt } from frontend.syntax.Ast;
+import type { Expr, Package, Program, Stmt } from frontend.syntax.Ast;
 import { ImportKind, bindPatternName, isBindPattern } from frontend.syntax.Ast;
 import { Token, lexFile } from frontend.syntax.Lexer;
 import { noteFailure } from frontend.semantics.Failures;
@@ -297,17 +297,13 @@ export let localName = fn(name: Bytes, alias: ?Bytes): Bytes { alias ?? name };
  * @throws an error if a dependency's package does not match its import path or it has a tail
  *   expression, an import names a macro, a namespace import is type-only or of a native
  *   library, or two imports bind the same name */
-let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<Import>): Module {
-  /* Lexing and parsing locate their own failures, so `_failure` is clear meanwhile; a package
-   * mismatch is then located at the importing statement again. */
-  let importing = _failure;
-  _failure = null;
-  let lexed = lexFile(text, path);
-  _noteMethodNames(lexed.0);
-  let program = parseProgram(lexed);
-  let syntax = programSyntax(program);
-  _failure = importing;
-
+let _parsedModule = fn(
+  path: Bytes,
+  program: Program,
+  syntax: Syntax,
+  parts: Array<Bytes>,
+  imports: Array<Import>
+): Module {
   let { packageName, statements, tail } = program;
 
   if (parts.len() != 0) {
@@ -369,23 +365,14 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
         match (kind) {
           Value => null,
           TypeOnly => {
-            throw coded(
-              E0206,
-              "a namespace import names values; "
-              + `import types with import type { T } from ${imported}`
-            );
+            throw coded(E0206,
+              "a namespace import names values; " + `import types with import type { T } from ${imported}`);
           },
           Native => {
-            throw coded(
-              E0206,
-              `a native library's exports are named: load { name } from ${imported};`
-            );
+            throw coded(E0206, `a native library's exports are named: load { name } from ${imported};`);
           },
           MacroOnly => {
-            throw coded(
-              E1000,
-              `a macro is imported by name: import macro { name } from ${imported};`
-            );
+            throw coded(E1000, `a macro is imported by name: import macro { name } from ${imported};`);
           },
         };
         let privately = testFile && _tests(parts, importParts);
@@ -400,17 +387,9 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
   _failure = null;
 
   if (!hasMacros(statements)) {
-    return {
-      path,
-      name: dotted,
-      statements,
-      syntax,
-      tail,
-      imports
-    };
+    return { path, name: dotted, statements, syntax, tail, imports };
   }
 
-  // The checker sees the module expanded, so its imports name the statements they end up as.
   let (expanded, expandedSyntax, expandedTail, moved) =
     expandModule(path, statements, syntax, tail, macros);
 
@@ -423,14 +402,21 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
       unchanged => unchanged,
     };
   }
-  {
-    path,
-    name: dotted,
-    statements: expanded,
-    syntax: expandedSyntax,
-    tail: expandedTail,
-    imports
-  }
+  { path, name: dotted, statements: expanded, syntax: expandedSyntax, tail: expandedTail, imports }
+};
+
+let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<Import>): Module {
+  /* Lexing and parsing locate their own failures, so `_failure` is clear meanwhile; a package
+   * mismatch is then located at the importing statement again. */
+  let importing = _failure;
+  _failure = null;
+  let lexed = lexFile(text, path);
+  _noteMethodNames(lexed.0);
+  let program = parseProgram(lexed);
+  let syntax = programSyntax(program);
+  _failure = importing;
+
+  _parsedModule(path, program, syntax, parts, imports)
 };
 
 // Appends `module`, loaded from the file `path`, to the module table and returns its index.
@@ -618,7 +604,7 @@ let _begin = fn(std: Bytes, roots: Array<Bytes>) {
   _visiting = Array.new<Bytes>(0);
   _failure = null;
   _stdRoot = _trimmed(std);
-  beginMacros(std);
+  beginMacros(std, roots);
   _roots = roots.map(_trimmed);
 
   _extensionIndexes = Array.new<I32>(0);
@@ -772,18 +758,21 @@ export let loadTests = fn(files: Array<Bytes>, std: Bytes, paths: Array<Bytes>):
  * entry module, which `frontend.Macros.expanderSource` makes and whose syntax is placed at the
  * file, holding the macros' bodies, with what it imports.
  * @param std  the standard library's directory, or empty for none
+ * @param paths  the further source roots, from `--path`, in order
  * @return the modules in initialisation order, the generated entry last
  * @throws an error if the file fails to parse, or a macro's body is invalid */
-export let loadExpanders = fn(path: Bytes, std: Bytes): Array<Module> {
-  _begin(std, [_directory(path)]);
+export let loadExpanders = fn(path: Bytes, std: Bytes, paths: Array<Bytes>): Array<Module> {
+  _begin(std, [_directory(path)].appendFrom(paths, 0));
   let program = parseProgram(lexFile(readText(path), path));
   let syntax = programSyntax(program);
-  let (source, bodies) = expanderSource(program.statements, syntax.children);
-
-  let wrapper = _module("", source, Array.new<Bytes>(0), Array.new<Import>(0));
-  let placed = relocated(wrapper.syntax, syntax.path, syntax.start, syntax.end);
+  let (source, bodies, importSyntax) = expanderSource(program.statements, syntax.children);
+  let wrapperProgram = parseProgram(lexFile(source, ""));
+  let wrapperSyntax = programSyntax(wrapperProgram);
+  let placed = relocated(wrapperSyntax, syntax.path, syntax.start, syntax.end);
+  for (i, at in importSyntax) { placed.children[i + 2] = at; }
+  let wrapper = _parsedModule("", wrapperProgram, placed, Array.new<Bytes>(0), Array.new<Import>(0));
   // The bodies are in the tail, `Macro.run`'s call; `relocated` made `placed` anew.
-  let tops = placed.children;
+  let tops = wrapper.syntax.children;
   let last = tops.len() - 1;
   let spliced = spliceBodies(Located.Expression(wrapper.tail, tops[last]), bodies);
 
