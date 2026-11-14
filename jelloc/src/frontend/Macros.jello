@@ -78,6 +78,8 @@ let _imagePaths = Array.new<Bytes>(0);
 let _images = Array.new<Bytes>(0);
 // The standard library's directory, which a macro program's compilation needs.
 let _std = "";
+// The source roots a macro program's compilation needs after its defining file's directory.
+let _roots = Array.new<Bytes>(0);
 // The number the next gensym name ends with, so that names are unique in the compilation.
 let _names = 0;
 // The span an expansion failure is located at, or null.
@@ -110,12 +112,13 @@ let _call: Syntax = {
 export let macroFailureSpan = fn(): ?SourceSpan { _failure };
 
 /** Forgets every macro and macro program, for a new compilation whose standard library is in
- * directory `std`. */
-export let beginMacros = fn(std: Bytes) {
+ * directory `std` and whose additional source roots are `roots`. */
+export let beginMacros = fn(std: Bytes, roots: Array<Bytes>) {
   _definitions = Array.new<Definition>(0);
   _imagePaths = Array.new<Bytes>(0);
   _images = Array.new<Bytes>(0);
   _std = std;
+  _roots = roots;
   _names = 0;
   _failure = null;
   null
@@ -413,7 +416,8 @@ let _image = fn(path: Bytes): Bytes {
   if (known >= 0) { return _images[known]; }
 
   let std = _std == "" ? "" : `--std\0${_std}\0`;
-  let args = `${path}\0--expanders\0${std}`;
+  let roots = _roots.map(fn(root: Bytes): Bytes { `--path\0${root}\0` }).join("");
+  let args = `${path}\0--expanders\0${std}${roots}`;
   let out = _imageRun("", args, 0);
   let made = Bytes.slice(out, 1, out.len() - 1);
 

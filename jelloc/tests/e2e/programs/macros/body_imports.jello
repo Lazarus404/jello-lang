@@ -1,10 +1,12 @@
 // expect: 2 1 4
+// flags: --path $DIR/auxiliary
 macro imported() {
   import { trim as strip } from std.core.Bytes;
   import std.core.Bytes as Bytes;
   import type { Date as Moment } from std.sys.Date;
+  import { suffix } from lib.Tool;
   let accepts = fn(_: Moment) { null };
-  let shown = Bytes.concat(strip(" 2 "), "!");
+  let shown = Bytes.concat(strip(" 2 "), suffix());
   quote.expr { Std.string(unquote(shown).len()) };
 }
 
