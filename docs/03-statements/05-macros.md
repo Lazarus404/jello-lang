@@ -353,8 +353,14 @@ is checked. So it:
 
 - sees only its parameters, its own locals, `Macro`, `Fragment` and the built-in names such as
   `Std` and `Array`; not the module's other bindings, which do not exist yet;
-- cannot `import` or `load`, or define a macro;
+- may directly `import` or `load` what the body needs; those declarations belong to the generated
+  expander module, not the module that defines the macro;
+- cannot import a macro, declare an import inside a nested block, or define a macro;
 - communicates only through what it emits.
+
+Imports the module that defines the macro already has are not visible in its body. Macros in one
+file share an expander module, so their body imports share its namespace and duplicate local names
+are errors as they are in an ordinary module.
 
 ```jello
 // error: 4:24: unknown name: limit [E0300]

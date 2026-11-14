@@ -1,7 +1,7 @@
-// error: 3:3: a macro body cannot import or load [E1000]
-macro bad() {
-  import { foo } from bar;
-  Macro.emit(quote.expr { 1 });
+// expect: ok
+macro trimmed() {
+  import { trim } from std.core.Bytes;
+  Macro.emit(quote.expr { unquote(trim(" ok ")) });
 }
 
-bad();
+trimmed()
