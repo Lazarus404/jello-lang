@@ -20,4 +20,9 @@ System.assert(describe("ab") == "none");
 let maybe: ?Bytes = Ping.pack({ kind: 1, stamp: 3 });
 let stamp = match (maybe) { Ping(p) => p.stamp, _ => 0 };
 System.assert(stamp == 3);
+
+typedef Cookied = bytes-layout.be { let cookie: u32 = 0x2112A442; let value: u8; };
+let cookieMatch = fn(raw: Bytes): Bool { match (raw) { Cookied(_) => true, _ => false } };
+System.assert(cookieMatch(Cookied.pack({ value: 9 })));
+System.assert(!cookieMatch("\x00\x00\x00\x00\x09"));
 "ok"

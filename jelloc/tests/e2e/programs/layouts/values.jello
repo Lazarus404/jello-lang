@@ -33,4 +33,18 @@ System.assert(Bytes.len(pair) == 5);
 System.assert(Pair.unpack(bits[8(1), rest(pair)]) == null);
 let b = match (Pair.unpack(pair)) { null => 0, p => p.b };
 System.assert(b == -2);
+
+// A layout-wide order applies unless a field says otherwise; constants are written and verified.
+typedef Network = bytes-layout.be {
+  let length: u16;
+  let native: u16.le;
+  let cookie: u32 = 0x2112A442;
+  let tid: bytes(12);
+};
+let network = Network.pack({ length: 3, native: 513, tid: "123456789012" });
+System.assert(network == "\x00\x03\x01\x02\x21\x12\xa4\x42" + "123456789012");
+let decoded = match (Network.unpack(network)) { null => null, value => (value.length, value.native, value.tid) };
+System.assert(decoded == (3, 513, "123456789012"));
+let wrongCookie = "\x00\x03\x01\x02\x00\x00\x00\x00" + "123456789012";
+System.assert(Network.unpack(wrongCookie) == null);
 "ok"

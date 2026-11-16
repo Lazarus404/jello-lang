@@ -185,10 +185,11 @@ export enum Endian {
   Little;
 }
 
-// What a bits segment holds; an integer, an `f32` float, or the rest of the bytes.
+// What a bits segment holds; an integer, an `f32` float, fixed bytes, or the rest of the bytes.
 export enum BitValueKind {
   Integer;
   Float;
+  Bytes;
   Rest;
 }
 
@@ -385,7 +386,7 @@ export typedef EnumConstructor = {
 };
 
 /** The type of a bytes-layout field; `u8`, `u16`, `u32`, `i32` or `f32` with an optional `.le` or
- * `.be` byte order, `bits(N)` for 1 to 7 bits, or `rest`. */
+ * `.be` byte order, `bits(N)` for 1 to 7 bits, `bytes(N)`, or `rest`. */
 export enum BytesLayoutType {
   U8;
   U16(endian: Endian);
@@ -393,13 +394,15 @@ export enum BytesLayoutType {
   I32(endian: Endian);
   F32(endian: Endian);
   Bits(width: I32);
+  Bytes(length: I32);
   Rest;
 }
 
-// A field of a bytes-layout typedef, `let name: type;`.
+// A field of a bytes-layout typedef, `let name: type;` or `let name: type = value;`.
 export typedef BytesLayoutField = {
   let name: Bytes;
   let ty: BytesLayoutType;
+  let value: ?Expr;
 };
 
 /** What a typedef defines; an alias, `typedef T = Type;`; a struct,
@@ -409,7 +412,7 @@ export typedef BytesLayoutField = {
 export enum TypedefBody {
   Alias(ty: Type);
   Struct(fields: Array<StructField>);
-  BytesLayout(fields: Array<BytesLayoutField>);
+  BytesLayout(endian: Endian, fields: Array<BytesLayoutField>);
   Abstract;
 }
 

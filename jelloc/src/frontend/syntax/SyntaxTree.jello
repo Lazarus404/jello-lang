@@ -385,6 +385,10 @@ let _stmt = fn(value: Stmt): Syntax {
       _stmts(body, out)
     },
     Return(inner) => _optional(inner, out),
+    Typedef(_, _, _, BytesLayout(_, fields)) => {
+      for (field in fields) { _optional(field.value, out); }
+      null
+    },
     Typedef(_, _, _, _), Enum(_, _, _, _), ImportModule(_, _, _), ImportFrom(_, _, _), Break,
     Continue => null,
   };

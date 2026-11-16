@@ -34,4 +34,11 @@ let lowest = fn(raw: Bytes): I32 {
   only
 };
 System.assert((lowest("z") == 122) && (lowest("zz") == -1));
+
+// Fixed bytes occupy their declared width and leave following segments readable.
+let fixed = bits[bytes(2)("id"), u8(7)];
+System.assert(fixed == "id\x07");
+let fixedParts = match (fixed) { bits[bytes(2)(id), u8(last)] => id + Std.string(last), _ => "bad" };
+System.assert(fixedParts == "id7");
+System.assert(match ("i\x07") { bits[bytes(2)(_), u8(_)] => false, _ => true });
 "ok"

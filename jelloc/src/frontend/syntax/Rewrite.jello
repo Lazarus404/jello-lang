@@ -8,7 +8,7 @@ package frontend.syntax;
  * two rewrites of one tree meet its nodes in the same order. Types have no syntax of their own. */
 
 import type {
-  BitExprSegment, BitPatternSegment, Block, EnumConstructor, Expr, ListGenerator, ListLiteral,
+  BitExprSegment, BitPatternSegment, Block, BytesLayoutField, EnumConstructor, Expr, ListGenerator, ListLiteral,
   MatchAlternative, MatchArm, MatchArmValue, Parameter, Pattern, PrototypeField, Stmt, StructField,
   Type
 } from frontend.syntax.Ast;
@@ -485,7 +485,14 @@ let _statementChildren = fn(cursor: Cursor, value: Stmt): Stmt {
       let made = match (body) {
         Alias(ty) => TypedefBody.Alias(_type(ty)),
         Struct(fields) => TypedefBody.Struct(_fields(fields)),
-        BytesLayout(_), Abstract => body,
+        BytesLayout(endian, fields) => {
+          let made = Array.new<BytesLayoutField>(0);
+          for (field in fields) {
+            made.push({ ...field, value: _optionalChild(cursor, field.value) });
+          }
+          TypedefBody.BytesLayout(endian, made)
+        },
+        Abstract => body,
       };
       Stmt.Typedef(exported, name, typeParams, made)
     },

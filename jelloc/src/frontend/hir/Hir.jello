@@ -282,17 +282,20 @@ export let integerBits = fn(ty: I32): I32 {
     : 32
 };
 /** The code flag of a big-endian bits segment. A segment's code is its width in bits, 0 for a
- * rest, plus `BITS_BIG` when it is big-endian and `BITS_FLOAT` when it is an `f32`. */
+ * rest, plus its kind and byte-order flags. */
 export const BITS_BIG = 64;
 // The code flag of an `f32` bits segment.
 export const BITS_FLOAT = 128;
+// The code flag of a fixed `bytes(N)` segment.
+export const BITS_BYTES = 256;
 // Returns the width in bits of the bits segment with code `code`, 0 for a rest.
-export let segmentWidth = fn(code: I32): I32 { code & 63 };
+export let segmentWidth = fn(code: I32): I32 { (code & BITS_BYTES) != 0 ? code & 255 : code & 63 };
 
 /** Returns the type of the value of the bits segment with code `code`; Bytes for a rest, F32 for
  * an `f32`, and otherwise I32. */
 export let segmentType = fn(code: I32): I32 {
-  (code & BITS_FLOAT) != 0 ? TYPE_F32 : segmentWidth(code) == 0 ? TYPE_BYTES : TYPE_I32
+  ((code & BITS_FLOAT) != 0) ? TYPE_F32 : ((code & BITS_BYTES) != 0) || (segmentWidth(code) == 0)
+    ? TYPE_BYTES : TYPE_I32
 };
 // Checks whether `ty` is an unsigned integer type.
 export let isUnsigned = fn(ty: I32): Bool { (ty >= TYPE_U8) && (ty <= TYPE_U64) };
@@ -1603,14 +1606,20 @@ let _layoutCodes = Array.new<Array<I32>>(0);
 let _layoutOffsets = Array.new<Array<I32>>(0);
 // By bytes layout, the number of bytes its fixed fields fill.
 let _layoutBytes = Array.new<I32>(0);
+// By bytes layout, the literal node to write and verify for each physical field, or -1.
+let _layoutConstants = Array.new<Array<I32>>(0);
+// By bytes layout, the physical index of each public record field.
+let _layoutFields = Array.new<Array<I32>>(0);
 
 /** Adds a record named `name` that a bytes layout lays out field by field, and returns it. Its
  * fields are defined later, as a record's are.
  * @param codes  each field's segment code
  * @param offsets  each field's bit offset
- * @param fixed  the number of bytes the fixed fields fill */
+ * @param fixed  the number of bytes the fixed fields fill
+ * @param constants  a literal node for each constant field, or -1
+ * @param fields  the physical index of each public record field */
 export let declareLayout = fn(
-  name: Bytes, codes: Array<I32>, offsets: Array<I32>, fixed: I32
+  name: Bytes, codes: Array<I32>, offsets: Array<I32>, fixed: I32, constants: Array<I32>, fields: Array<I32>
 ): I32 {
   let ty = declareRecord(name);
   while (_layouts.len() <= ty) { _layouts.push(-1); }
@@ -1619,6 +1628,8 @@ export let declareLayout = fn(
   _layoutCodes.push(codes);
   _layoutOffsets.push(offsets);
   _layoutBytes.push(fixed);
+  _layoutConstants.push(constants);
+  _layoutFields.push(fields);
   ty
 };
 
@@ -1632,6 +1643,10 @@ export let layoutCodes = fn(ty: I32): Array<I32> { _layoutCodes[_layouts[ty]] };
 export let layoutOffsets = fn(ty: I32): Array<I32> { _layoutOffsets[_layouts[ty]] };
 // Returns the number of bytes the fixed fields of the bytes layout `ty` fill.
 export let layoutBytes = fn(ty: I32): I32 { _layoutBytes[_layouts[ty]] };
+// Returns the constant node of physical layout field `field`, or -1.
+export let layoutConstant = fn(ty: I32, field: I32): I32 { _layoutConstants[_layouts[ty]][field] };
+// Returns the physical layout field index of public record field `field`.
+export let layoutFieldIndex = fn(ty: I32, field: I32): I32 { _layoutFields[_layouts[ty]][field] };
 
 /** Checks whether `ty`, which may be out of range, is a generic enum or record, whose fields may
  * hold its Params. Lowering skips it and lowers its instances instead. */
