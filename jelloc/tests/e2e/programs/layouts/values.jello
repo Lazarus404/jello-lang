@@ -47,4 +47,12 @@ let decoded = match (Network.unpack(network)) { null => null, value => (value.le
 System.assert(decoded == (3, 513, "123456789012"));
 let wrongCookie = "\x00\x03\x01\x02\x00\x00\x00\x00" + "123456789012";
 System.assert(Network.unpack(wrongCookie) == null);
+
+// A final bytes field may take its size from an earlier layout field.
+typedef Tlv = bytes-layout.be { let tag: u16; let length: u16; let value: bytes(length); };
+let tlv = Tlv.pack({ tag: 9, length: 3, value: "abc" });
+System.assert(tlv == "\x00\x09\x00\x03abc");
+let parsed = match (Tlv.unpack(tlv)) { null => null, value => (value.tag, value.length, value.value) };
+System.assert(parsed == (9, 3, "abc"));
+System.assert(Tlv.unpack("\x00\x09\x00\x03ab") == null);
 "ok"

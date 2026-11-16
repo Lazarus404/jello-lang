@@ -1610,6 +1610,8 @@ let _layoutBytes = Array.new<I32>(0);
 let _layoutConstants = Array.new<Array<I32>>(0);
 // By bytes layout, the physical index of each public record field.
 let _layoutFields = Array.new<Array<I32>>(0);
+// By bytes layout physical field, the physical field whose I32 value sizes it, or -1.
+let _layoutSizes = Array.new<Array<I32>>(0);
 
 /** Adds a record named `name` that a bytes layout lays out field by field, and returns it. Its
  * fields are defined later, as a record's are.
@@ -1617,9 +1619,11 @@ let _layoutFields = Array.new<Array<I32>>(0);
  * @param offsets  each field's bit offset
  * @param fixed  the number of bytes the fixed fields fill
  * @param constants  a literal node for each constant field, or -1
- * @param fields  the physical index of each public record field */
+ * @param fields  the physical index of each public record field
+ * @param sizes  the physical size field of each dynamic bytes field, or -1 */
 export let declareLayout = fn(
-  name: Bytes, codes: Array<I32>, offsets: Array<I32>, fixed: I32, constants: Array<I32>, fields: Array<I32>
+  name: Bytes, codes: Array<I32>, offsets: Array<I32>, fixed: I32, constants: Array<I32>, fields: Array<I32>,
+  sizes: Array<I32>
 ): I32 {
   let ty = declareRecord(name);
   while (_layouts.len() <= ty) { _layouts.push(-1); }
@@ -1630,6 +1634,7 @@ export let declareLayout = fn(
   _layoutBytes.push(fixed);
   _layoutConstants.push(constants);
   _layoutFields.push(fields);
+  _layoutSizes.push(sizes);
   ty
 };
 
@@ -1645,6 +1650,8 @@ export let layoutOffsets = fn(ty: I32): Array<I32> { _layoutOffsets[_layouts[ty]
 export let layoutBytes = fn(ty: I32): I32 { _layoutBytes[_layouts[ty]] };
 // Returns the constant node of physical layout field `field`, or -1.
 export let layoutConstant = fn(ty: I32, field: I32): I32 { _layoutConstants[_layouts[ty]][field] };
+// Returns the physical field whose value sizes physical `field`, or -1.
+export let layoutSizeField = fn(ty: I32, field: I32): I32 { _layoutSizes[_layouts[ty]][field] };
 // Returns the physical layout field index of public record field `field`.
 export let layoutFieldIndex = fn(ty: I32, field: I32): I32 { _layoutFields[_layouts[ty]][field] };
 

@@ -41,4 +41,26 @@ System.assert(fixed == "id\x07");
 let fixedParts = match (fixed) { bits[bytes(2)(id), u8(last)] => id + Std.string(last), _ => "bad" };
 System.assert(fixedParts == "id7");
 System.assert(match ("i\x07") { bits[bytes(2)(_), u8(_)] => false, _ => true });
+
+// A bytes segment may take the preceding length binding; each sized segment is checked before it binds.
+let tlv = bits[u16.be(9), u16.be(3), bytes(3)("abc"), rest("tail")];
+let decoded = match (tlv) {
+  bits[u16.be(kind), u16.be(length), bytes(length)(value), rest(tail)] =>
+    Std.string(kind) + " " + value + " " + tail,
+  _ => "bad",
+};
+System.assert(decoded == "9 abc tail");
+System.assert(match (bits[u16.be(1), u16.be(3), rest("ab")]) {
+  bits[u16.be(_), u16.be(length), bytes(length)(_), rest(_)] => false,
+  _ => true,
+});
+let sized = bits[u8(3), bytes(3)("abc")];
+System.assert(sized == "\x03abc");
+let expressionSized = bits[u8(2), u8(1), bytes((2 + 1))("abc")];
+System.assert(expressionSized == "\x02\x01abc");
+let patternExpression = match (expressionSized) {
+  bits[u8(first), u8(second), bytes((first + second))(value), rest(_)] => value,
+  _ => "bad",
+};
+System.assert(patternExpression == "abc");
 "ok"

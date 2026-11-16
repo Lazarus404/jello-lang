@@ -200,6 +200,7 @@ export typedef BitExprSegment = {
   let endian: Endian;
   let signed: Bool;
   let kind: BitValueKind;
+  let size: ?Expr;
   let value: Expr;
 };
 
@@ -210,6 +211,7 @@ export typedef BitPatternSegment = {
   let endian: Endian;
   let signed: Bool;
   let kind: BitValueKind;
+  let size: ?Expr;
   let value: Pattern;
 };
 
@@ -394,7 +396,7 @@ export enum BytesLayoutType {
   I32(endian: Endian);
   F32(endian: Endian);
   Bits(width: I32);
-  Bytes(length: I32);
+  Bytes(length: I32, size: ?Expr);
   Rest;
 }
 

@@ -647,6 +647,7 @@ typedef SegmentType = {
   let endian: Endian;
   let signed: Bool;
   let kind: BitValueKind;
+  let size: ?Expr;
 };
 
 /** Parses a bits segment's type, before its parenthesised value; `rest`, `bytes(N)`, a number of
@@ -657,6 +658,7 @@ let _bitsSegment = fn(): SegmentType {
   let width = 0;
   let signed = false;
   let kind = BitValueKind.Integer;
+  let size: ?Expr = null;
 
   match (next()) {
     Ident(name) when (name == "rest") => {
@@ -667,12 +669,9 @@ let _bitsSegment = fn(): SegmentType {
       match (name) {
         "bytes" => {
           expect(Token.LParen);
-          width = match (next()) {
-            IntegerConstant(digits, _) => _bytesLength(digits) * 8,
-            _ => {
-              _error(E0104, "expected byte length");
-              0
-            },
+          match (peek()) {
+            IntegerConstant(digits, _) => { width = _bytesLength(digits) * 8; next(); },
+            _ => { size = _parseExpr(0); },
           };
           expect(Token.RParen);
           kind = BitValueKind.Bytes;
@@ -705,7 +704,7 @@ let _bitsSegment = fn(): SegmentType {
   if ((peek() == Token.Dot) && ((width <= 8) || (kind == BitValueKind.Rest) || (kind == BitValueKind.Bytes))) {
     _error(E0104, "endian suffix needs a 16- or 32-bit segment, not 8 bits or fewer, or rest");
   }
-  { width: width, endian: _endian(), signed: signed, kind: kind }
+  { width: width, endian: _endian(), signed: signed, kind: kind, size }
 };
 
 /** Parses a bits pattern after `bits`; `[type(pattern), ...]` with at least one segment and an
@@ -726,6 +725,7 @@ let _parseBitPattern = fn(): Pattern {
       endian: ty.endian,
       signed: ty.signed,
       kind: ty.kind,
+      size: ty.size,
       value
     });
     if (peek() != Token.Comma) { break; }
@@ -1220,6 +1220,7 @@ let _parseBitExpr = fn(): Expr {
       endian: ty.endian,
       signed: ty.signed,
       kind: ty.kind,
+      size: ty.size,
       value
     });
     if (peek() != Token.Comma) { break; }
@@ -2271,15 +2272,13 @@ let _layoutType = fn(defaultEndian: Endian): BytesLayoutType {
 
   if (_eatIdent("bytes")) {
     expect(Token.LParen);
-    let length = match (next()) {
-      IntegerConstant(digits, _) => _bytesLength(digits),
-      _ => {
-        _error(E0104, "expected byte length");
-        0
-      },
+    let length = 0;
+    let size: ?Expr = match (peek()) {
+      IntegerConstant(digits, _) => { length = _bytesLength(digits); next(); null },
+      _ => _parseExpr(0),
     };
     expect(Token.RParen);
-    return BytesLayoutType.Bytes(length);
+    return BytesLayoutType.Bytes(length, size);
   }
 
   if (peek() == Token.Bits) {
