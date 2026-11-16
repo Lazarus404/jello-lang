@@ -16,7 +16,7 @@ package frontend.semantics;
  * `declareTypes` for each module. */
 
 import type {
-  BytesLayoutField, BytesLayoutType, Stmt, StructField, TypeParam,
+  BytesLayoutField, BytesLayoutType, Endian, Stmt, StructField, TypeParam,
 } from frontend.syntax.Ast;
 import { BitValueKind } from frontend.syntax.Ast;
 import { placeSegments, segmentCode } from frontend.semantics.Bits;
@@ -131,6 +131,7 @@ let _layoutCode = fn(ty: BytesLayoutType): I32 {
     U32(endian), I32(endian) => segmentCode(32, endian, BitValueKind.Integer),
     F32(endian) => segmentCode(32, endian, BitValueKind.Float),
     Bits(width) => width,
+    Bytes(length) => segmentCode(length * 8, Endian.Little, BitValueKind.Bytes),
     Rest => 0,
   }
 };
@@ -296,7 +297,7 @@ export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool)
         }
         enterSyntax(parent);
       },
-      Typedef(exported, name, typeParams, BytesLayout(fields)) => {
+      Typedef(exported, name, typeParams, BytesLayout(_, fields)) => {
         let parent = enterSyntax(syntaxChild(i));
 
         if (typeParams.len() != 0) {
@@ -332,7 +333,7 @@ export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool)
         _defineStruct(name, fields);
         enterSyntax(parent);
       },
-      Typedef(_, name, _, BytesLayout(fields)) => {
+      Typedef(_, name, _, BytesLayout(_, fields)) => {
         let parent = enterSyntax(syntaxChild(i));
         _defineLayout(name, fields);
         enterSyntax(parent);

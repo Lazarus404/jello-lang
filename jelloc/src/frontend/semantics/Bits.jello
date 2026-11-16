@@ -14,7 +14,7 @@ package frontend.semantics;
 import type { BitExprSegment, Endian, Expr as AstExpr, ObjectEntry } from frontend.syntax.Ast;
 import { BitValueKind, wideIntegerValue } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
-import { BITS_BIG, BITS_FLOAT, Op, segmentType, segmentWidth } from frontend.hir.Hir;
+import { BITS_BIG, BITS_BYTES, BITS_FLOAT, Op, segmentType, segmentWidth } from frontend.hir.Hir;
 import { i32Of, lengthTest } from frontend.semantics.Derived;
 import { checkOperand, enterSyntax, syntaxChild, widened } from frontend.semantics.TypeCheck;
 import { E0007, E0104, E0400, coded } from support.Codes;
@@ -23,7 +23,7 @@ import { E0007, E0104, E0400, coded } from support.Codes;
  * `kind`. */
 export let segmentCode = fn(width: I32, endian: Endian, kind: BitValueKind): I32 {
   let order = match (endian) { Big => BITS_BIG, Little => 0 };
-  width + order + (match (kind) { Float => BITS_FLOAT, _ => 0 })
+  width + order + (match (kind) { Float => BITS_FLOAT, Bytes => BITS_BYTES, _ => 0 })
 };
 
 /** Returns the bit offset of each segment, in order, with the current syntax locating an error.
@@ -165,11 +165,17 @@ export let restOf = fn(bytes: I32, again: I32, fixed: I32): I32 {
   H.opNode(Op.BytesSlice, H.TYPE_BYTES, [bytes, i32Of(fixed), length])
 };
 
+// Returns fixed bytes at the segment's byte offset and width.
+let _fixedBytes = fn(bytes: I32, offset: I32, code: I32): I32 {
+  H.opNode(Op.BytesSlice, H.TYPE_BYTES, [bytes, i32Of(offset / 8), i32Of(segmentWidth(code) / 8)])
+};
+
 /** Returns field `field` of the record of the bytes layout `ty` that bytes hold.
  * @param read  makes a fresh read of the bytes */
 export let layoutField = fn(ty: I32, field: I32, read: () -> I32): I32 {
   let code = H.layoutCodes(ty)[field];
   if (segmentWidth(code) == 0) { return restOf(read(), read(), H.layoutBytes(ty)); }
+  if ((code & BITS_BYTES) != 0) { return _fixedBytes(read(), H.layoutOffsets(ty)[field], code); }
   H.node(Op.BitsRead, segmentType(code), H.layoutOffsets(ty)[field], code, [read()])
 };
 

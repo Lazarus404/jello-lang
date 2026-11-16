@@ -89,7 +89,7 @@ const _ELEMENT = -4;
  * index is the number of items before the spread, and a second `_SLICE` step holds the number
  * after it. */
 const _SLICE = -5;
-/** A path step to a bits segment; its index is the segment's bit offset * 256 plus its code
+/** A path step to a bits segment; its index is the segment's bit offset * 512 plus its code
  * (`frontend.semantics.Bits`). */
 const _SEGMENT = -6;
 // A path step to the bytes after a bits pattern's fixed segments; its index is their length.
@@ -237,8 +237,8 @@ let _read = fn(subject: Subject, path: Array<I32>): I32 {
       value = _slice(value, index, path[i + 3]);
       i += 2;
     } else if (tag == _SEGMENT) {
-      ty = segmentType(index % 256);
-      value = node(Op.BitsRead, ty, index / 256, index % 256, [value]);
+      ty = segmentType(index % 512);
+      value = node(Op.BitsRead, ty, index / 512, index % 512, [value]);
     } else if (tag == _REST) {
       // The rest reads the bytes again for their length.
       value = restOf(value, _read(subject, path.slice(0, i)), index);
@@ -796,7 +796,7 @@ let _test = fn(
         let step = if (segmentWidth(codes[s]) == 0) {
           _step(path, _REST, fixed)
         } else {
-          _step(path, _SEGMENT, offsets[s] * 256 + codes[s])
+          _step(path, _SEGMENT, offsets[s] * 512 + codes[s])
         };
         _test(subject, segment, at, step, segmentType(codes[s]), tests, bound);
       }

@@ -365,6 +365,13 @@ let _bitsSegmentWidth = fn(digits: Bytes): I32 {
   width
 };
 
+// Returns the positive byte count of `bytes(N)`, whose fixed bit width fits a segment descriptor.
+let _bytesLength = fn(digits: Bytes): I32 {
+  let length = digits.len() <= 3 ? _digitsI32(digits) : 0;
+  if ((length < 1) || (length > 511)) { _error(E0104, "bytes(N) length must be 1..511"); }
+  length
+};
+
 /** Consumes the `>` that closes type arguments or type parameters. A token that only starts
  * with one, such as the `>>` that closes two lists at once or the `>=` of `Array<I32>= v`, is
  * consumed and the rest of it set `pending`, so that `peek` returns that rest next.
@@ -642,8 +649,8 @@ typedef SegmentType = {
   let kind: BitValueKind;
 };
 
-/** Parses a bits segment's type, before its parenthesised value; `rest`, a number of bits (1 to
- * 8, 16 or 32), or `u8`, `u16`, `u32`, `i32` or `f32` in either case, followed by an optional
+/** Parses a bits segment's type, before its parenthesised value; `rest`, `bytes(N)`, a number of
+ * bits (1 to 8, 16 or 32), or `u8`, `u16`, `u32`, `i32` or `f32` in either case, followed by an optional
  * `.le` or `.be` except on an 8-bit or `rest` segment.
  * @throws an error for an unknown segment type, a bad width or a misplaced byte order */
 let _bitsSegment = fn(): SegmentType {
@@ -658,6 +665,18 @@ let _bitsSegment = fn(): SegmentType {
     },
     Ident(name) => {
       match (name) {
+        "bytes" => {
+          expect(Token.LParen);
+          width = match (next()) {
+            IntegerConstant(digits, _) => _bytesLength(digits) * 8,
+            _ => {
+              _error(E0104, "expected byte length");
+              0
+            },
+          };
+          expect(Token.RParen);
+          kind = BitValueKind.Bytes;
+        },
         "u8", "U8" => { width = 8; },
         "u16", "U16" => { width = 16; },
         "u32", "U32" => { width = 32; },
@@ -683,7 +702,7 @@ let _bitsSegment = fn(): SegmentType {
     },
   };
 
-  if ((peek() == Token.Dot) && ((width <= 8) || (kind == BitValueKind.Rest))) {
+  if ((peek() == Token.Dot) && ((width <= 8) || (kind == BitValueKind.Rest) || (kind == BitValueKind.Bytes))) {
     _error(E0104, "endian suffix needs a 16- or 32-bit segment, not 8 bits or fewer, or rest");
   }
   { width: width, endian: _endian(), signed: signed, kind: kind }
@@ -2244,11 +2263,24 @@ let _parseStructFields = fn(): Array<StructField> {
   fields
 };
 
-/** Parses a bytes-layout field's type; `rest`, `bits(N)` for 1 to 7 bits, or `u8`, `u16`,
+/** Parses a bytes-layout field's type; `rest`, `bytes(N)`, `bits(N)` for 1 to 7 bits, or `u8`, `u16`,
  * `u32`, `i32` or `f32` in either case with an optional `.le` or `.be`, which `u8` ignores.
  * @throws an error for an unknown type or a bad width */
-let _layoutType = fn(): BytesLayoutType {
+let _layoutType = fn(defaultEndian: Endian): BytesLayoutType {
   if (_eatIdent("rest")) { return BytesLayoutType.Rest; }
+
+  if (_eatIdent("bytes")) {
+    expect(Token.LParen);
+    let length = match (next()) {
+      IntegerConstant(digits, _) => _bytesLength(digits),
+      _ => {
+        _error(E0104, "expected byte length");
+        0
+      },
+    };
+    expect(Token.RParen);
+    return BytesLayoutType.Bytes(length);
+  }
 
   if (peek() == Token.Bits) {
     next();
@@ -2265,7 +2297,7 @@ let _layoutType = fn(): BytesLayoutType {
     return BytesLayoutType.Bits(width);
   }
   let name = _ident();
-  let endian = _endian();
+  let endian = peek() == Token.Dot ? _endian() : defaultEndian;
 
   match (name) {
     "u8", "U8" => BytesLayoutType.U8,
@@ -2281,7 +2313,7 @@ let _layoutType = fn(): BytesLayoutType {
 };
 
 // Parses a bytes-layout typedef's fields, `{ let name: type; ... }`; see `_layoutType`.
-let _parseLayoutFields = fn(): Array<BytesLayoutField> {
+let _parseLayoutFields = fn(defaultEndian: Endian): Array<BytesLayoutField> {
   expect(Token.LBrace);
   let fields = Array.new<BytesLayoutField>(0);
 
@@ -2289,7 +2321,9 @@ let _parseLayoutFields = fn(): Array<BytesLayoutField> {
     expect(Token.Let);
     let name = _ident();
     expect(Token.Colon);
-    fields.push({ name, ty: _layoutType() });
+    let ty = _layoutType(defaultEndian);
+    let value = peek() == Token.Equal ? { next(); _parseExpr(0) } : null;
+    fields.push({ name, ty, value });
     expect(Token.Semicolon);
   }
   expect(Token.RBrace);
@@ -2391,7 +2425,8 @@ let _parseStmtInner = fn(): Stmt {
         next();
         expect(Token.Minus);
         if (!_eatIdent("layout")) { _error(E0100, "expected bytes-layout"); }
-        TypedefBody.BytesLayout(_parseLayoutFields())
+        let endian = _endian();
+        TypedefBody.BytesLayout(endian, _parseLayoutFields(endian))
       } else if (_eatIdent("abstract")) {
         TypedefBody.Abstract
       } else if (peek() == Token.LBrace) {
