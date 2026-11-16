@@ -221,6 +221,7 @@ The field types are:
 | `i32` | signed integer | 32 bits |
 | `f32` | `F32` float | 32 bits |
 | `bits(N)` | unsigned integer, `N` from 1 to 7 | `N` bits |
+| `bytes(N)` | `Bytes` exactly `N` bytes long | `N` bytes |
 | `rest` | `Bytes`: everything after the fields before it | the remaining bytes |
 
 The type names may also be written in capitals (`U16`). A 16- or 32-bit field may have a byte
@@ -232,6 +233,22 @@ segments of a `bits[...]` expression do (see [Bits](../04-expressions/04-bits.md
 - a `rest` field, if any, is last; without one, `unpack` needs exactly the layout's length, and
   with one it needs at least the length of the fields before it;
 - a value too wide for its field, given as a literal to `pack`, is an error.
+
+A layout may put `.be` or `.le` after `bytes-layout` to choose the default byte order for its
+16- and 32-bit fields; a field suffix still overrides that default. A field with `= value` is a
+constant: `pack` writes it, `unpack` and layout patterns reject a different wire value, and it is
+not part of the record callers construct or receive.
+
+```jello
+// expect: [0, 3, 33, 18, 164, 66, 97, 98]
+typedef Network = bytes-layout.be {
+  let length: u16;
+  let cookie: u32 = 0x2112A442;
+  let id: bytes(2);
+};
+let raw = Network.pack({ length: 3, id: "ab" });
+Std.string([raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]])
+```
 
 ```jello
 // expect: [37, 7]

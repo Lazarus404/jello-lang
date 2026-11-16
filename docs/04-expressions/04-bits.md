@@ -24,6 +24,7 @@ comma. Each segment is a type followed by its value in parentheses, `type(value)
 | `u16` | 16 bits | an integer |
 | `u32`, `i32` | 32 bits | an integer |
 | `f32` | 32 bits | an `F32`, in IEEE 754 single precision |
+| `bytes(N)` | `N` bytes | `Bytes` exactly `N` bytes long |
 | `rest` | the length of the value | `Bytes` |
 
 The named types can also be written in capitals, as `U16` or `F32`. Any other width, such as `12`,
@@ -103,7 +104,17 @@ let be = bits[f32.be(1.5)];
 Std.string([le[0], le[1], le[2], le[3]]) + " " + Std.string([be[0], be[1], be[2], be[3]])
 ```
 
-### rest
+### Fixed bytes and rest
+
+`bytes(N)` copies exactly `N` bytes. It is useful for a fixed opaque field such as an identifier;
+packing a value of another length throws, and a pattern too short to supply all its bytes does not
+match.
+
+```jello
+// expect: id7
+let packet = bits[bytes(2)("id"), u8(7)];
+match (packet) { bits[bytes(2)(name), u8(last)] => name + Std.string(last), _ => "bad" }
+```
 
 A `rest` segment copies a whole `Bytes` value in. There is at most one, and it must be the last
 segment.
