@@ -16,16 +16,16 @@ package frontend.semantics;
  * `declareTypes` for each module. */
 
 import type {
-  BytesLayoutField, BytesLayoutType, Endian, Stmt, StructField, TypeParam,
+  BytesLayoutField, BytesLayoutType, Endian, Expr, Stmt, StructField, TypeParam,
 } from frontend.syntax.Ast;
-import { BitValueKind } from frontend.syntax.Ast;
+import { BitValueKind, integerValue } from frontend.syntax.Ast;
 import { placeSegments, segmentCode } from frontend.semantics.Bits;
-import { E0302, E0605, E0804, coded } from support.Codes;
+import { E0104, E0302, E0605, E0804, coded } from support.Codes;
 import { checkFields, defineEnums } from frontend.semantics.Enums;
 import {
   declareAbstract, declareEnum, declareGenericEnum, declareGenericPrototype, declareGenericRecord,
   declareLayout, declarePrototype, declareRecord, defineVariants, enumParams, isParametric,
-  isPrototype, layoutCodes, readsTyped, segmentType, typeName,
+  isPrototype, layoutCodes, readsTyped, segmentType, typeName, Op, TYPE_BYTES, TYPE_I32, bytesId, node,
 } from frontend.hir.Hir;
 import { declareScopedType, exportScopedType, scopedType } from frontend.semantics.ModuleScope;
 import type { Syntax } from frontend.syntax.Source;
@@ -139,14 +139,28 @@ let _layoutCode = fn(ty: BytesLayoutType): I32 {
 /** Adds the bytes layout `name` with `fields`, at its statement's syntax, which is current.
  * @return its record type
  * @throws a located error if it misplaces a segment (see `Bits.placeSegments`) */
+let _constant = fn(value: Expr, code: I32): I32 {
+  match (value) {
+    Integer(digits, _) => node(Op.I32, TYPE_I32, integerValue(digits, false), 0, []),
+    Bytes(text) when (segmentType(code) == TYPE_BYTES) => node(Op.Bytes, TYPE_BYTES, bytesId(text), 0, []),
+    _ => { throw coded(E0104, "a bytes-layout constant is an integer or bytes literal"); },
+  }
+};
+
 let _declareLayout = fn(name: Bytes, fields: Array<BytesLayoutField>): I32 {
   let codes = Array.new<I32>(0);
+  let constants = Array.new<I32>(0);
+  let public = Array.new<I32>(0);
 
-  for (field in fields) {
-    codes.push(_layoutCode(field.ty));
+  for (i, field in fields) {
+    let code = _layoutCode(field.ty);
+    codes.push(code);
+    let constant = field.value == null ? -1 : _constant(field.value as Expr, code);
+    constants.push(constant);
+    if (constant < 0) { public.push(i); }
   }
   let (offsets, fixed) = placeSegments(codes);
-  declareLayout(name, codes, offsets, fixed)
+  declareLayout(name, codes, offsets, fixed, constants, public)
 };
 
 /** Defines the fields of the record `name`, `fields`, whose types may name its type parameters,
@@ -176,8 +190,10 @@ let _defineLayout = fn(name: Bytes, fields: Array<BytesLayoutField>) {
   let types = Array.new<I32>(0);
 
   for (f, field in fields) {
-    names.push(field.name);
-    types.push(segmentType(codes[f]));
+    if (field.value == null) {
+      names.push(field.name);
+      types.push(segmentType(codes[f]));
+    }
   }
   _defineRecord(name, names, types)
 };

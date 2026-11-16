@@ -24,13 +24,14 @@ import {
   Kind, Op, TYPE_ATOM, TYPE_BOOL, TYPE_BYTES, TYPE_DYNAMIC, TYPE_I32, TYPE_I64, TYPE_OBJECT, auxOf,
   bindingNode, bytesId, bytesOf, declareBinding, endsPath,
   fieldCount, fieldType, innerOf, isEnum, isFloatType, isInteger, isKind, isLayout, isLinked,
+  layoutFieldIndex,
   isObject, isRecord, local, memberCount, memberType, node, noValueType, nullable, nullType, opNode,
   opOf, recordField, resolve, segmentType, segmentWidth, stdNative, tupleType, typeArg,
   typeArgCount, typeName, typeOf, unify, variantCount, variantName, variantTag,
 } from frontend.hir.Hir;
 import type { Syntax } from frontend.syntax.Source;
 import {
-  checkSegmentLiteral, layoutField, layoutFits, layoutRecord, placeSegments, restOf, segmentCode,
+  checkSegmentLiteral, layoutField, layoutRecord, layoutValid, placeSegments, restOf, segmentCode,
 } from frontend.semantics.Bits;
 import { scopedType } from frontend.semantics.ModuleScope;
 import {
@@ -249,7 +250,7 @@ let _read = fn(subject: Subject, path: Array<I32>): I32 {
 
       if ((i + 2 < path.len()) && (path[i + 2] == -1)) {
         ty = memberType(index, path[i + 3]);
-        value = layoutField(index, path[i + 3], read);
+        value = layoutField(index, layoutFieldIndex(index, path[i + 3]), read);
         i += 2;
       } else {
         ty = index;
@@ -541,7 +542,7 @@ let _test = fn(
         let written = `the bytes layout pattern ${name}(…)`;
         throw coded(E0703, `${written} takes one pattern, for the record`);
       }
-      tests.push(layoutFits(layout, opNode(Op.BytesLen, TYPE_I32, [_read(subject, path)])));
+      tests.push(layoutValid(layout, fn(): I32 { _read(subject, path) }));
       let step = _step(path, _LAYOUT, layout);
       _test(subject, args[0], subPattern(syntax, 0), step, layout, tests, bound)
     },
