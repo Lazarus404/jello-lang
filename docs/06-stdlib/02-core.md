@@ -176,12 +176,21 @@ Bytes.xor("\x0f\xf0", "\xf0\x0f").toHex() + " "
 | `utf8Length(text: Bytes): I32` | the number of code points |
 | `utf8CharAt(text: Bytes, index: I32): I32` | the code point at code point `index` |
 | `utf8FromCodepoint(code: I32): Bytes` | the UTF-8 encoding of `code` |
+| `utf8Normalize(text: Bytes, form: NormalForm): Bytes` | Unicode NFC, NFD, NFKC, or NFKD; invalid UTF-8 traps |
 
 ```jello
 // expect: 6 5 233 true é
 let word = "héllo";
 Std.string(word.len()) + " " + Std.string(word.utf8Length()) + " " + Std.string(word.utf8CharAt(1))
   + " " + Std.string(word.utf8Validate()) + " " + Bytes.utf8FromCodepoint(233)
+```
+
+`Nfc` is the ordinary canonical composed form. `Nfkc` additionally folds compatibility characters:
+
+```jello
+// expect: ff
+import { NormalForm } from std.core.Bytes;
+Bytes.utf8Normalize("\xef\xac\x80", NormalForm.Nfkc)
 ```
 
 ### Hexadecimal and Base64

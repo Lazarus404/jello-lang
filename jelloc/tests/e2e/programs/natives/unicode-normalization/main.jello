@@ -1,0 +1,8 @@
+// expect: 1111
+import { NormalForm, utf8Normalize } from std.core.Bytes;
+
+let nfc = utf8Normalize("e\xcc\x81", NormalForm.Nfc) == "\xc3\xa9" ? 1 : 0;
+let nfd = utf8Normalize("\xc3\xa9", NormalForm.Nfd) == "e\xcc\x81" ? 10 : 0;
+let nfkc = utf8Normalize("\xef\xac\x80", NormalForm.Nfkc) == "ff" ? 100 : 0;
+let nfkd = utf8Normalize("\xef\xac\x80", NormalForm.Nfkd) == "ff" ? 1000 : 0;
+nfc + nfd + nfkc + nfkd
