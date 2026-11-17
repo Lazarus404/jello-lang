@@ -2272,15 +2272,13 @@ let _layoutType = fn(defaultEndian: Endian): BytesLayoutType {
 
   if (_eatIdent("bytes")) {
     expect(Token.LParen);
-    let length = match (next()) {
-      IntegerConstant(digits, _) => _bytesLength(digits),
-      _ => {
-        _error(E0104, "expected byte length");
-        0
-      },
+    let length = 0;
+    let size: ?Expr = match (peek()) {
+      IntegerConstant(digits, _) => { length = _bytesLength(digits); next(); null },
+      _ => _parseExpr(0),
     };
     expect(Token.RParen);
-    return BytesLayoutType.Bytes(length);
+    return BytesLayoutType.Bytes(length, size);
   }
 
   if (peek() == Token.Bits) {

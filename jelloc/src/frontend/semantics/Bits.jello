@@ -15,7 +15,7 @@ import type { BitExprSegment, Endian, Expr as AstExpr, ObjectEntry } from fronte
 import { BitValueKind, wideIntegerValue } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
 import {
-  BITS_BIG, BITS_BYTES, BITS_FLOAT, Op, layoutConstant, layoutFieldIndex, segmentType, segmentWidth
+  BITS_BIG, BITS_BYTES, BITS_FLOAT, Op, layoutConstant, layoutFieldIndex, layoutSizeField, segmentType, segmentWidth
 } from frontend.hir.Hir;
 import { bytesOf, i32Of, lengthTest } from frontend.semantics.Derived;
 import { checkOperand, enterSyntax, hideValue, syntaxChild, widened } from frontend.semantics.TypeCheck;
@@ -245,7 +245,24 @@ export let packLayout = fn(ty: I32, values: Array<I32>): I32 {
       input++;
     }
   }
-  _checkedPack(H.layoutCodes(ty), H.layoutOffsets(ty), H.layoutBytes(ty), physical)
+  let dynamic = -1;
+  for (field, _ in H.layoutCodes(ty)) { if (layoutSizeField(ty, field) >= 0) { dynamic = field; } }
+  if (dynamic < 0) { return _checkedPack(H.layoutCodes(ty), H.layoutOffsets(ty), H.layoutBytes(ty), physical); }
+
+  let statements = Array.new<I32>(0);
+  let sizeBinding = hideValue(statements, "size", physical[layoutSizeField(ty, dynamic)]);
+  let bytesBinding = hideValue(statements, "bytes", physical[dynamic]);
+  let size = fn(): I32 { H.local(sizeBinding, H.TYPE_I32) };
+  let payload = fn(): I32 { H.local(bytesBinding, H.TYPE_BYTES) };
+  let nonnegative = H.opNode(Op.Gt, H.TYPE_BOOL, [size(), i32Of(-1)]);
+  let exact = H.opNode(Op.Eq, H.TYPE_BOOL, [H.opNode(Op.BytesLen, H.TYPE_I32, [payload()]), size()]);
+  statements.push(H.opNode(Op.Expression, 0, [orThrow(H.opNode(Op.And, H.TYPE_BOOL, [nonnegative, exact]),
+    bytesOf("bytes segment has the wrong length"))]));
+  physical[layoutSizeField(ty, dynamic)] = size();
+  let prefix = _checkedPack(H.layoutCodes(ty).slice(0, dynamic), H.layoutOffsets(ty).slice(0, dynamic),
+    H.layoutBytes(ty), physical.slice(0, dynamic));
+  statements.push(H.opNode(Op.BytesConcat, H.TYPE_BYTES, [prefix, payload()]));
+  H.node(Op.Block, H.TYPE_BYTES, 0, 1, statements)
 };
 
 /** Returns the bytes after the first `fixed` of `bytes`, which `again` reads again for their
@@ -277,7 +294,14 @@ export let layoutRecord = fn(ty: I32, read: () -> I32): I32 {
   let values = Array.new<I32>(0);
 
   while (values.len() < H.fieldCount(ty, 0)) {
-    values.push(layoutField(ty, layoutFieldIndex(ty, values.len()), read));
+    let physical = layoutFieldIndex(ty, values.len());
+    let source = layoutSizeField(ty, physical);
+    if (source < 0) {
+      values.push(layoutField(ty, physical, read));
+    } else {
+      values.push(H.opNode(Op.BytesSlice, H.TYPE_BYTES,
+        [read(), i32Of(H.layoutOffsets(ty)[physical] / 8), layoutField(ty, source, read)]));
+    }
   }
   H.opNode(Op.Tuple, ty, values)
 };
@@ -300,6 +324,17 @@ export let layoutValid = fn(ty: I32, read: () -> I32): I32 {
       let actual = layoutField(ty, field, read);
       let equal = H.opNode(Op.Eq, H.TYPE_BOOL, [actual, _constantAt(constant)]);
       valid = H.opNode(Op.And, H.TYPE_BOOL, [valid, equal]);
+    }
+  }
+  for (field, _ in H.layoutCodes(ty)) {
+    let source = layoutSizeField(ty, field);
+    if (source >= 0) {
+      let size = fn(): I32 { layoutField(ty, source, read) };
+      let nonnegative = H.opNode(Op.Gt, H.TYPE_BOOL, [size(), i32Of(-1)]);
+      let end = H.opNode(Op.Add, H.TYPE_I32, [i32Of(H.layoutOffsets(ty)[field] / 8), size()]);
+      let length = H.opNode(Op.BytesLen, H.TYPE_I32, [read()]);
+      let enough = H.opNode(Op.Not, H.TYPE_BOOL, [H.opNode(Op.Gt, H.TYPE_BOOL, [end, length])]);
+      valid = H.opNode(Op.And, H.TYPE_BOOL, [valid, H.opNode(Op.And, H.TYPE_BOOL, [nonnegative, enough])]);
     }
   }
   valid

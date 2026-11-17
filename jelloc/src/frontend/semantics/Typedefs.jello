@@ -131,7 +131,7 @@ let _layoutCode = fn(ty: BytesLayoutType): I32 {
     U32(endian), I32(endian) => segmentCode(32, endian, BitValueKind.Integer),
     F32(endian) => segmentCode(32, endian, BitValueKind.Float),
     Bits(width) => width,
-    Bytes(length) => segmentCode(length * 8, Endian.Little, BitValueKind.Bytes),
+    Bytes(length, _) => segmentCode(length * 8, Endian.Little, BitValueKind.Bytes),
     Rest => 0,
   }
 };
@@ -151,16 +151,37 @@ let _declareLayout = fn(name: Bytes, fields: Array<BytesLayoutField>): I32 {
   let codes = Array.new<I32>(0);
   let constants = Array.new<I32>(0);
   let public = Array.new<I32>(0);
+  let sizes = Array.new<I32>(0);
 
   for (i, field in fields) {
     let code = _layoutCode(field.ty);
     codes.push(code);
+    let sized = match (field.ty) {
+      Bytes(_, size) when (size != null) => match (size as Expr) {
+        Variable(name) => {
+          let source = -1;
+          let earlier = 0;
+          while (earlier < i) {
+            if (fields[earlier].name == name) { source = earlier; }
+            earlier++;
+          }
+          if (source < 0) { throw coded(E0104, "a bytes-layout size names an earlier field"); }
+          source
+        },
+        _ => { throw coded(E0104, "a bytes-layout size names an earlier field"); },
+      },
+      _ => -1,
+    };
+    if ((sized >= 0) && (i + 1 != fields.len())) {
+      throw coded(E0104, "a sized bytes-layout field must be last");
+    }
+    sizes.push(sized);
     let constant = field.value == null ? -1 : _constant(field.value as Expr, code);
     constants.push(constant);
     if (constant < 0) { public.push(i); }
   }
   let (offsets, fixed) = placeSegments(codes);
-  declareLayout(name, codes, offsets, fixed, constants, public)
+  declareLayout(name, codes, offsets, fixed, constants, public, sizes)
 };
 
 /** Defines the fields of the record `name`, `fields`, whose types may name its type parameters,
