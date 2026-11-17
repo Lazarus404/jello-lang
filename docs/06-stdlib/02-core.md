@@ -141,6 +141,8 @@ code points. An index out of range traps.
 | `replaceAll(text: Bytes, pattern: Bytes, replacement: Bytes): Bytes` | `text` with every `pattern` replaced |
 | `copy(text: Bytes): ByteBuffer` | a new buffer holding the bytes of `text` |
 | `u8(value: I32): Bytes` | the one byte `value`; outside 0 to 255 traps |
+| `xor(left: Bytes, right: Bytes): Bytes` | the bytewise exclusive-or; both values must have the same length |
+| `crc32(data: Bytes): I32` | CRC-32 using the zlib polynomial, as an I32 bit pattern |
 
 The separator of `split` and the pattern of `replace` and `replaceAll` must not be empty; each
 throws when it is. `join(split(t, s), s)` is `t`.
@@ -155,6 +157,15 @@ while (i < buffer.len()) { buffer.set(i, buffer.get(i) - 32); i++; }
 Std.string(parts) + " " + "a-b-c".replaceAll("-", "+") + " [" + line.trim() + "] "
   + Std.string("hello".endsWith("lo")) + " " + Std.string("abcabc".indexOfFrom("b", 2)) + " "
   + "hello".substring(3, 5) + " " + buffer.toString()
+```
+
+`crc32` may be negative because Jello represents its 32 result bits as an `I32`; cast it to `I64`
+and mask when comparing an unsigned published checksum.
+
+```jello
+// expect: ffff true
+Bytes.xor("\x0f\xf0", "\xf0\x0f").toHex() + " "
+  + Std.string(((Bytes.crc32("123456789") as I64) & 0xffffffff) == 0xcbf43926)
 ```
 
 ### UTF-8

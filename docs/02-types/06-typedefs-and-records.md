@@ -222,6 +222,7 @@ The field types are:
 | `f32` | `F32` float | 32 bits |
 | `bits(N)` | unsigned integer, `N` from 1 to 7 | `N` bits |
 | `bytes(N)` | `Bytes` exactly `N` bytes long | `N` bytes |
+| `bytes(field)` | `Bytes` exactly as long as an earlier integer field | that field's value |
 | `rest` | `Bytes`: everything after the fields before it | the remaining bytes |
 
 The type names may also be written in capitals (`U16`). A 16- or 32-bit field may have a byte
@@ -238,6 +239,20 @@ A layout may put `.be` or `.le` after `bytes-layout` to choose the default byte 
 16- and 32-bit fields; a field suffix still overrides that default. A field with `= value` is a
 constant: `pack` writes it, `unpack` and layout patterns reject a different wire value, and it is
 not part of the record callers construct or receive.
+
+A final `bytes(field)` field may take its size from an earlier field. `pack` requires its Bytes
+value to have that exact length; `unpack` returns null when the value is negative or when the input
+does not contain all declared bytes. This form is for a trailing variable-length payload; use a
+`bits[...]` pattern when later fields or a size expression are needed.
+
+```jello
+// expect: 9 abc true
+typedef Tlv = bytes-layout.be { let tag: u16; let length: u16; let value: bytes(length); };
+let raw = Tlv.pack({ tag: 9, length: 3, value: "abc" });
+let parsed = Tlv.unpack(raw);
+Std.string(parsed == null ? 0 : parsed.tag) + " " + (parsed == null ? "" : parsed.value) + " "
+  + Std.string(Tlv.unpack("\x00\x09\x00\x03ab") == null)
+```
 
 ```jello
 // expect: [0, 3, 33, 18, 164, 66, 97, 98]

@@ -116,6 +116,26 @@ let packet = bits[bytes(2)("id"), u8(7)];
 match (packet) { bits[bytes(2)(name), u8(last)] => name + Std.string(last), _ => "bad" }
 ```
 
+`bytes(size)` may instead use an earlier binding in a pattern, or an `I32` expression in an
+expression. Its size is checked before the segment is read; a negative or too-large pattern size
+does not match. Packing requires the Bytes value to have exactly that many bytes.
+
+```jello
+// expect: 9 abc tail
+let packet = bits[u16.be(9), u16.be(3), bytes(3)("abc"), rest("tail")];
+match (packet) {
+  bits[u16.be(kind), u16.be(length), bytes(length)(value), rest(tail)] =>
+    Std.string(kind) + " " + value + " " + tail,
+  _ => "bad",
+}
+```
+
+```jello
+// expect: abc
+let packet = bits[u8(2), u8(1), bytes((2 + 1))("abc"), rest("")];
+match (packet) { bits[u8(first), u8(second), bytes((first + second))(value), rest(_)] => value, _ => "bad" }
+```
+
 A `rest` segment copies a whole `Bytes` value in. There is at most one, and it must be the last
 segment.
 
