@@ -13,6 +13,7 @@ load {
   unicode_from_codepoint,
   bytes_u8,
   bytes_xor,
+  bytes_crc32,
   bytes_hex,
   bytes_from_hex,
   bytes_base64,
@@ -31,6 +32,8 @@ export let utf8FromCodepoint: (I32) -> Bytes = unicode_from_codepoint;
 export let u8: (I32) -> Bytes = bytes_u8;
 // The bytewise exclusive-or of equally sized LEFT and RIGHT.
 export let xor: (Bytes, Bytes) -> Bytes = bytes_xor;
+// CRC-32 (zlib polynomial) as an I32 bit pattern.
+export let crc32: (Bytes) -> I32 = bytes_crc32;
 
 let _fromHex: (Bytes) -> Dynamic = bytes_from_hex;
 let _base64: (Bytes, Bool) -> Bytes = bytes_base64;
