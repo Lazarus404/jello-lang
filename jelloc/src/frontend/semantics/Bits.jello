@@ -148,6 +148,58 @@ let _checkedPack = fn(codes: Array<I32>, offsets: Array<I32>, fixed: I32, values
  * @throws a located error for a misplaced segment, a value of the wrong type, or a literal that
  *   does not fit its segment */
 export let checkBits = fn(segments: Array<BitExprSegment>): I32 {
+  let dynamic = false;
+  for (segment in segments) { if (segment.size != null) { dynamic = true; } }
+
+  if (dynamic) {
+    let parts = Array.new<I32>(0);
+    let codes = Array.new<I32>(0);
+    let values = Array.new<I32>(0);
+    let child = 0;
+
+    let flush = fn() {
+      if (codes.len() > 0) {
+        let (offsets, fixed) = placeSegments(codes);
+        parts.push(_checkedPack(codes, offsets, fixed, values));
+        codes = Array.new<I32>(0);
+        values = Array.new<I32>(0);
+      }
+      null
+    };
+
+    for ({ width, endian, signed, kind, size, value } in segments) {
+      if (size != null) {
+        flush();
+        let checkedSize = widened(checkOperand(size as AstExpr, child, H.TYPE_I32), H.TYPE_I32);
+        child++;
+        let checkedValue = widened(checkOperand(value, child, H.TYPE_BYTES), H.TYPE_BYTES);
+        child++;
+        let statements = Array.new<I32>(0);
+        let sizeBinding = hideValue(statements, "size", checkedSize);
+        let valueBinding = hideValue(statements, "bytes", checkedValue);
+        let length = H.opNode(Op.BytesLen, H.TYPE_I32, [H.local(valueBinding, H.TYPE_BYTES)]);
+        let nonnegative = H.opNode(Op.Gt, H.TYPE_BOOL, [H.local(sizeBinding, H.TYPE_I32), i32Of(-1)]);
+        let exact = H.opNode(Op.Eq, H.TYPE_BOOL, [length, H.local(sizeBinding, H.TYPE_I32)]);
+        let valid = H.opNode(Op.And, H.TYPE_BOOL, [nonnegative, exact]);
+        statements.push(H.opNode(Op.Expression, 0, [orThrow(valid, bytesOf("bytes segment has the wrong length"))]));
+        statements.push(H.local(valueBinding, H.TYPE_BYTES));
+        parts.push(H.node(Op.Block, H.TYPE_BYTES, 0, 1, statements));
+      } else {
+        let code = segmentCode(width, endian, kind);
+        _fits(code, signed, value);
+        let ty = segmentType(code);
+        let checked = widened(checkOperand(value, child, ty), ty);
+        child++;
+        codes.push(code);
+        values.push(checked);
+      }
+    }
+    flush();
+    let out = parts[0];
+    for (i, part in parts) { if (i > 0) { out = H.opNode(Op.BytesConcat, H.TYPE_BYTES, [out, part]); } }
+    return out;
+  }
+
   let codes = Array.new<I32>(0);
 
   for ({ width, endian, kind } in segments) {

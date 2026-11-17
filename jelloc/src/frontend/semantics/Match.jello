@@ -15,9 +15,9 @@ import type {
   WithClause,
 } from frontend.syntax.Ast;
 import { warn } from frontend.semantics.Failures;
-import { BinaryOp, Pattern, unsignedWideValue, wideIntegerValue } from frontend.syntax.Ast;
+import { BinaryOp, BitValueKind, Pattern, unsignedWideValue, wideIntegerValue } from frontend.syntax.Ast;
 import {
-  E0105, E0400, E0406, E0410, E0605, E0700, E0701, E0702, E0703, E0704, E0705, E0706, E0800,
+  E0104, E0105, E0400, E0406, E0410, E0605, E0700, E0701, E0702, E0703, E0704, E0705, E0706, E0800,
   E0802, E0803, E1001, coded,
 } from support.Codes;
 import {
@@ -775,6 +775,74 @@ let _test = fn(
     // The length is tested before any segment is read.
     Bits(segments) => {
       if (resolve(ty) != TYPE_BYTES) { _mismatch("a bits", ty); }
+      let dependent = -1;
+
+      for (s, segment in segments) {
+        if (segment.size != null) {
+          if (dependent >= 0) { throw coded(E0104, "a bits pattern has at most one sized bytes segment"); }
+          dependent = s;
+        }
+      }
+
+      if (dependent >= 0) {
+        if ((dependent + 2 != segments.len()) || (segments[dependent + 1].kind != BitValueKind.Rest)) {
+          throw coded(E0104, "a sized bytes segment must be followed only by rest");
+        }
+        let prefix = segments.slice(0, dependent);
+        let codes = Array.new<I32>(0);
+        for ({ width, endian, kind } in prefix) { codes.push(segmentCode(width, endian, kind)); }
+        let (offsets, fixed) = placeSegments(codes);
+        let length = fn(): I32 { opNode(Op.BytesLen, TYPE_I32, [_read(subject, path)]) };
+
+        for (s, { signed, value: segment } in prefix) {
+          let at = subPattern(syntax, s);
+          if (let Integer(digits, _) = segment) {
+            enterSyntax(at);
+            checkSegmentLiteral(codes[s], signed, digits, false);
+            enterSyntax(syntax);
+          }
+          _test(subject, segment, at, _step(path, _SEGMENT, offsets[s] * 512 + codes[s]),
+            segmentType(codes[s]), tests, bound);
+        }
+
+        let sizeAst = segments[dependent].size as AstExpr;
+        let sized = fn(): I32 {
+          checkArm(bound.names, _boundReads(subject, bound), [], sizeAst, dependent, TYPE_I32, false)
+        };
+        let nonnegative = opNode(Op.Gt, TYPE_BOOL, [sized(), i32Of(-1)]);
+        let end = opNode(Op.Add, TYPE_I32, [i32Of(fixed), sized()]);
+        let enough = opNode(Op.Not, TYPE_BOOL, [opNode(Op.Gt, TYPE_BOOL, [end, length()])]);
+        tests.push(opNode(Op.And, TYPE_BOOL, [nonnegative, enough]));
+
+        let value = segments[dependent].value;
+        match (value) {
+          BindPattern(name) => _bind(bound, name, path, subPattern(syntax, dependent)),
+          Wildcard => null,
+          _ => { throw coded(E0104, "a sized bytes pattern binds a name or _"); },
+        };
+        let bytesRoot = _addRoot(subject, nullType(TYPE_BYTES));
+        let slice = opNode(Op.BytesSlice, TYPE_BYTES, [_read(subject, path), i32Of(fixed), sized()]);
+        tests.push(_store(subject, bytesRoot, slice));
+        if (let BindPattern(name) = value) {
+          bound.paths[bound.names.indexOf(name)] = [bytesRoot, _UNWRAP, 0];
+        }
+
+        let tail = segments[dependent + 1].value;
+        match (tail) {
+          BindPattern(name) => _bind(bound, name, path, subPattern(syntax, dependent + 1)),
+          Wildcard => null,
+          _ => { throw coded(E0104, "a sized bytes segment's rest binds a name or _"); },
+        };
+        let restRoot = _addRoot(subject, nullType(TYPE_BYTES));
+        let start = fn(): I32 { opNode(Op.Add, TYPE_I32, [i32Of(fixed), sized()]) };
+        let count = opNode(Op.Sub, TYPE_I32, [length(), start()]);
+        let rest = opNode(Op.BytesSlice, TYPE_BYTES, [_read(subject, path), start(), count]);
+        tests.push(_store(subject, restRoot, rest));
+        if (let BindPattern(name) = tail) {
+          bound.paths[bound.names.indexOf(name)] = [restRoot, _UNWRAP, 0];
+        }
+        return true;
+      }
       let codes = Array.new<I32>(0);
 
       for ({ width, endian, kind } in segments) {

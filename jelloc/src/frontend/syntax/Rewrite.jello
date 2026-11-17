@@ -290,8 +290,9 @@ let _bitSegments = fn(cursor: Cursor, segments: Array<BitExprSegment>): Array<Bi
   let made = Array.new<BitExprSegment>(0);
 
   for (original in segments) {
+    let size = _optionalChild(cursor, original.size);
     let value = _child(cursor, original.value);
-    let segment: BitExprSegment = { ...original, value };
+    let segment: BitExprSegment = { ...original, size, value };
     made.push(segment);
   }
   made
@@ -535,8 +536,9 @@ let _bitPatternSegments = fn(
   let made = Array.new<BitPatternSegment>(0);
 
   for (original in segments) {
+    let size = _optionalChild(cursor, original.size);
     let value = _subPattern(cursor, original.value);
-    let segment: BitPatternSegment = { ...original, value };
+    let segment: BitPatternSegment = { ...original, size, value };
     made.push(segment);
   }
   made
