@@ -1,5 +1,5 @@
 // expect: |Zg==|Zm8=|Zm9v|Zm9vYg==|Zm9vYmE=|Zm9vYmFy|+vv8/f7/|-vv8_f7_|Zm9vYg
-// expect: foobar|foob|fooba|fooba|true|00ff10ab|true
+// expect: foobar|foob|fooba|fooba|true|00ff10ab|true|ffff
 // expect: Bytes.fromHex: not hexadecimal|Bytes.fromHex: not hexadecimal|Bytes.fromBase64: not Base64
 // expect: Bytes.fromBase64: not Base64|Bytes.fromBase64: not Base64|Bytes.fromBase64: not Base64
 /* Base64's published answers (RFC 4648), in both alphabets, and reading
@@ -15,7 +15,7 @@ Bytes.join([
   Bytes.fromBase64("Zm9vYmFy") + "|" + Bytes.fromBase64("Zm9vYg") + "|" + Bytes.fromBase64("Zm9vYmE=")
     + "|" + Bytes.fromBase64("Zm9vYmE", true) + "|"
     + Std.string(Bytes.fromBase64("-vv8_f7_", true) == high) + "|" + Bytes.fromHex("00FF10ab").toHex()
-    + "|" + Std.string(Bytes.fromHex("") == ""),
+    + "|" + Std.string(Bytes.fromHex("") == "") + "|" + Bytes.xor("\x0f\xf0", "\xf0\x0f").toHex(),
   error(fn() { Bytes.fromHex("abc") }) + "|" + error(fn() { Bytes.fromHex("0g") }) + "|"
     + error(fn() { Bytes.fromBase64("Zm9v YmFy") }),
   error(fn() { Bytes.fromBase64("+vv8", true) }) + "|" + error(fn() { Bytes.fromBase64("Zm9vZ") })
