@@ -9,16 +9,16 @@ let _TOMB = 2;
 let _INITIAL_CAPACITY = 8;
 
 export typedef HashMap<K: HashKey, V> = {
-  let keys: Array<K>;
-  let values: Array<V>;
+  let slotsKeys: Array<K>;
+  let slotsValues: Array<V>;
   let states: Array<I32>;
   let count: I32;
   let tombstones: I32;
 };
 
-let _newArrays<K, V> = fn(map: HashMap<K, V>, capacity: I32) {
-  map.keys = Array.new<K>(capacity);
-  map.values = Array.new<V>(capacity);
+let _newArrays<K: HashKey, V> = fn(map: HashMap<K, V>, capacity: I32) {
+  map.slotsKeys = Array.new<K>(capacity);
+  map.slotsValues = Array.new<V>(capacity);
   map.states = Array.new<I32>(capacity);
   map.count = 0;
   map.tombstones = 0;
@@ -30,7 +30,7 @@ let _slot<K: HashKey, V> = fn(map: HashMap<K, V>, key: K): I32 {
   let firstTomb = -1;
 
   while (map.states[slot] != _EMPTY) {
-    if ((map.states[slot] == _LIVE) && (map.keys[slot] == key)) { return slot; }
+    if ((map.states[slot] == _LIVE) && (map.slotsKeys[slot] == key)) { return slot; }
     if ((firstTomb < 0) && (map.states[slot] == _TOMB)) { firstTomb = slot; }
     slot = (slot + 1) & mask;
   }
@@ -39,17 +39,17 @@ let _slot<K: HashKey, V> = fn(map: HashMap<K, V>, key: K): I32 {
 
 let _insert<K: HashKey, V> = fn(map: HashMap<K, V>, key: K, value: V) {
   let slot = _slot(map, key);
-  if (map.states[slot] == _LIVE) { map.values[slot] = value; return; }
+  if (map.states[slot] == _LIVE) { map.slotsValues[slot] = value; return; }
   if (map.states[slot] == _TOMB) { map.tombstones--; }
-  map.keys[slot] = key;
-  map.values[slot] = value;
+  map.slotsKeys[slot] = key;
+  map.slotsValues[slot] = value;
   map.states[slot] = _LIVE;
   map.count++;
 };
 
 let _rehash<K: HashKey, V> = fn(map: HashMap<K, V>, capacity: I32) {
-  let keys = map.keys;
-  let values = map.values;
+  let keys = map.slotsKeys;
+  let values = map.slotsValues;
   let states = map.states;
   _newArrays(map, capacity);
   let slot = 0;
@@ -70,14 +70,14 @@ export prototype HashMap<K: HashKey, V> {
 
   set(key: K, value: V) {
     let slot = _slot(this, key);
-    if (this.states[slot] == _LIVE) { this.values[slot] = value; return; }
+    if (this.states[slot] == _LIVE) { this.slotsValues[slot] = value; return; }
     _makeRoom(this);
     _insert(this, key, value);
   };
 
   get(key: K): ?V {
     let slot = _slot(this, key);
-    this.states[slot] == _LIVE ? this.values[slot] : null
+    this.states[slot] == _LIVE ? this.slotsValues[slot] : null
   };
 
   exists(key: K): Bool { this.states[_slot(this, key)] == _LIVE };
@@ -99,7 +99,7 @@ export prototype HashMap<K: HashKey, V> {
     let out = Array.new<K>(0);
     let slot = 0;
     while (slot < this.states.len()) {
-      if (this.states[slot] == _LIVE) { out.push(this.keys[slot]); }
+      if (this.states[slot] == _LIVE) { out.push(this.slotsKeys[slot]); }
       slot++;
     }
     out
@@ -110,7 +110,7 @@ export prototype HashMap<K: HashKey, V> {
     let out = Array.new<V>(0);
     let slot = 0;
     while (slot < this.states.len()) {
-      if (this.states[slot] == _LIVE) { out.push(this.values[slot]); }
+      if (this.states[slot] == _LIVE) { out.push(this.slotsValues[slot]); }
       slot++;
     }
     out
@@ -120,7 +120,7 @@ export prototype HashMap<K: HashKey, V> {
   each(f: (K, V) -> Void) {
     let slot = 0;
     while (slot < this.states.len()) {
-      if (this.states[slot] == _LIVE) { f(this.keys[slot], this.values[slot]); }
+      if (this.states[slot] == _LIVE) { f(this.slotsKeys[slot], this.slotsValues[slot]); }
       slot++;
     }
   };
@@ -134,7 +134,11 @@ export prototype HashMap<K: HashKey, V> {
 
   toString() where K: Show, V: Show: Bytes {
     let parts = Array.new<Bytes>(0);
-    this.each(fn(key: K, value: V) { parts.push(Std.string(key) + " => " + Std.string(value)); });
+    let slot = 0;
+    while (slot < this.states.len()) {
+      if (this.states[slot] == _LIVE) { parts.push(Std.string(this.slotsKeys[slot] as Dynamic) + " => " + Std.string(this.slotsValues[slot] as Dynamic)); }
+      slot++;
+    }
     "[" + parts.join(", ") + "]"
   };
 };
