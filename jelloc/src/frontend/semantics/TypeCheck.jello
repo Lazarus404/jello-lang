@@ -630,7 +630,7 @@ export let checkTypeArgCount = fn(name: Bytes, ty: I32, count: I32): Bool {
 /** Returns the end of a diagnostic for a use of a type parameter that needs a bound it lacks,
  * showing how to declare it; `needs the bound Eq: write <T: Eq>`.
  * @param param  the Param
- * @param bound  the bound's name; Eq, Show or Integer
+ * @param bound  the bound's name; Eq, Show, Integer or HashKey
  * @return the text */
 export let needsBound = fn(param: I32, bound: Bytes): Bytes {
   `needs the bound ${bound}: write <${H.typeName(param)}: ${bound}>`
@@ -703,6 +703,52 @@ let _heldFields = fn(ty: I32): I32 {
   ty
 };
 
+/** The enum and record types `_unsupportedHashKey` is examining. Recursive values are supported
+ * when their other fields are, so a type already being examined counts as supported. */
+let _decidingHashKeys = Array.new<I32>(0);
+
+/** Returns the first part of `ty` that cannot be a HashKey, or -1 when it can. Arrays and lists
+ * are mutable or have nil semantics, floats make NaN unequal to itself, and nullable or Dynamic
+ * values do not have one stable equality rule. */
+let _unsupportedHashKey = fn(ty: I32): I32 {
+  let resolved = H.resolve(ty);
+  match (H.kindOf(resolved)) {
+    Bool, Atom, Bytes, Function, Object => -1,
+    Var => resolved,
+    Param => H.hasBounds(resolved, H.BOUND_HASH_KEY) ? -1 : resolved,
+    Tuple => {
+      let found = -1;
+      let field = 0;
+
+      while ((found < 0) && (field < H.typeArgCount(resolved))) {
+        found = _unsupportedHashKey(H.typeArg(resolved, field));
+        field++;
+      }
+      found
+    },
+    Record, Enum, Applied => {
+      if (H.isLayout(resolved)) { return resolved; }
+      if (_decidingHashKeys.indexOf(resolved) >= 0) { return -1; }
+      _decidingHashKeys.push(resolved);
+      let found = -1;
+      let tag = 0;
+
+      while ((found < 0) && (tag < H.variantCount(resolved))) {
+        let field = 0;
+        while ((found < 0) && (field < H.fieldCount(resolved, tag))) {
+          found = _unsupportedHashKey(H.fieldType(resolved, tag, field));
+          field++;
+        }
+        tag++;
+      }
+      _decidingHashKeys.pop();
+      found
+    },
+    _ when (H.isInteger(resolved)) => -1,
+    _ => resolved,
+  }
+};
+
 /** Returns the HIR type that an AST type denotes. A name is a builtin type, a type parameter in
  * scope or a type in module scope; `Array`, `List`, `Tuple` and `Null` take their type arguments
  * here, a generic enum is applied to its arguments, and `?T` is a Null<T>.
@@ -768,7 +814,11 @@ export let checkType = fn(ty: AstType): I32 { match (ty) {
       let alias = _aliasIndex(named);
       alias >= 0
         ? H.substitute(_aliasTypes[alias].body, _aliasTypes[alias].params, _checkTypes(args))
-        : _heldFields(H.appliedType(named, _checkTypes(args)))
+        : {
+          let checked = _checkTypes(args);
+          _checkTypeArgs(H.enumParams(named), name, checked);
+          _heldFields(H.appliedType(named, checked))
+        }
     },
   },
   Function(args, result) => H.functionType(_checkParamTypes(args), _resultType(result)),
@@ -2845,16 +2895,15 @@ let _checkNativeCall = fn(native: I32, name: Bytes, args: Array<AstExpr>, receiv
   _call(Op.CallNative, native, ty, args, [], name, -1, receiver)
 };
 
-/** Checks that each type argument of a call of a template meets its type parameter's bounds and,
+/** Checks that each type argument of a generic declaration meets its type parameter's bounds and,
  * where the template writes Null<T> for that parameter, is not a List or a type that holds null.
  * A type argument still unknown passes; `instantiateTemplates` checks it again once it is known.
- * @param t  the template index
+ * @param params  the declaration's type parameters
  * @param name  the name the call uses, for diagnostics
  * @param types  the type arguments
  * @throws a located error naming the bound a type argument does not meet, or a type argument that
  *   cannot be used as Null<T> */
-let _checkTypeArgs = fn(t: I32, name: Bytes, types: Array<I32>) {
-  let params = _templates[t].params;
+let _checkTypeArgs = fn(params: Array<I32>, name: Bytes, types: Array<I32>) {
 
   for (i, typeArg in types) {
     let ty = H.resolve(typeArg);
@@ -2862,6 +2911,7 @@ let _checkTypeArgs = fn(t: I32, name: Bytes, types: Array<I32>) {
     let paramName = H.typeName(param);
     let missing = H.isUnknown(ty) ? ""
       : H.hasBounds(param, H.BOUND_INTEGER) && !H.isInteger(ty) ? "Integer"
+      : H.hasBounds(param, H.BOUND_HASH_KEY) && (_unsupportedHashKey(ty) >= 0) ? "HashKey"
       : H.hasBounds(param, H.BOUND_EQ) && (_unsupported(ty, false) >= 0) ? "Eq"
       : H.hasBounds(param, H.BOUND_SHOW) && (_unsupported(ty, true) >= 0) ? "Show" : "";
 
@@ -3005,7 +3055,7 @@ let _checkGenericCall = fn(
   let made = _call(Op.Call, 0, ty, args, [], name, index, receiver);
   let call = H.opOf(made) == Op.Block ? H.lastChild(made) : made;
   if (deferred) { H.unify(H.innerOf(ty), expected); }
-  _checkTypeArgs(t, name, types);
+  _checkTypeArgs(_templates[t].params, name, types);
 
   if (!_templateBody) {
     _pending.push({ call, template: t, types, depth: _instanceDepth + 1, need: _needHere() });
@@ -4079,12 +4129,13 @@ let _declarePrototype = fn(statement: I32, name: Bytes, ty: I32, fields: Array<P
 
 /** Returns the flag that a bound sets on a Param.
  * @param bound  the bound's name as written
- * @return `BOUND_EQ`, `BOUND_SHOW` or `BOUND_INTEGER`
+ * @return `BOUND_EQ`, `BOUND_SHOW`, `BOUND_INTEGER` or `BOUND_HASH_KEY`
  * @throws a located error if the name is no bound */
 let _bound = fn(bound: Bytes): I32 {
   match (bound) {
     "Eq" => H.BOUND_EQ, "Show" => H.BOUND_SHOW, "Integer" => H.BOUND_INTEGER,
-    _ => { throw coded(E0501, `unknown bound ${bound}: the bounds are Eq, Show and Integer`) },
+    "HashKey" => H.BOUND_HASH_KEY,
+    _ => { throw coded(E0501, `unknown bound ${bound}: the bounds are Eq, Show, Integer and HashKey`) },
   }
 };
 
@@ -4100,7 +4151,7 @@ let _isTypeName = fn(name: Bytes): Bool {
 
 /** Creates the Params that type parameters declare, each checked with its own span current.
  * @param typeParams  the type parameters
- * @param bounded  whether they may have bounds; an enum's or a typedef's may not
+ * @param bounded  whether they may have bounds; an enum or alias may not
  * @return the Params, in order
  * @throws a located error if one hides a type, has bounds where none are allowed, repeats a
  *   name, or names an unknown bound */
@@ -4117,7 +4168,7 @@ export let checkTypeParams = fn(typeParams: Array<TypeParam>, bounded: Bool): Ar
     }
 
     if (!bounded && (bounds.len() != 0)) {
-      throw coded(E0501, "only a function's type parameters take bounds");
+      throw coded(E0501, "only a function, record or prototype's type parameters take bounds");
     }
     if (names.indexOf(param) >= 0) { throw coded(E0302, `duplicate type parameter: ${param}`); }
     let required = 0;
@@ -5677,7 +5728,7 @@ export let instantiateTemplates = fn(): Bool {
     let outer = enterNode(pending.call);
     let template = _templates[pending.template];
     _settleTypeArgs(pending.types, template.params, template.name);
-    _checkTypeArgs(pending.template, template.name, pending.types);
+    _checkTypeArgs(template.params, template.name, pending.types);
     H.setCallee(
       pending.call, _instance(pending.template, pending.types, pending.depth, pending.need)
     );

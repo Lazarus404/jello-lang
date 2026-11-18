@@ -341,15 +341,17 @@ export const KIND_F16: I32 = 10;
 export let isFloatKind = fn(code: I32): Bool { (code >= KIND_F64) && (code <= KIND_F16) };
 
 /** The Eq bound of a Param, as a bit in its `first`. The bounds are bit sets, so that Integer
- * implies Eq and Show. */
+ * and HashKey imply Eq. */
 export const BOUND_EQ: I32 = 1;
 // The Show bound of a Param.
 export const BOUND_SHOW: I32 = 2;
 // The Integer bound of a Param, which includes the Eq and Show bits.
 export const BOUND_INTEGER: I32 = 7;
+// The HashKey bound of a Param, which includes Eq.
+export const BOUND_HASH_KEY: I32 = 9;
 /** The flag in a Param's `first` set once its template writes Null<T> for it (`nullType`), so that
  * its type arguments must not hold null. */
-const _NULLED = 8;
+const _NULLED = 16;
 
 /** The op of each node of the current program. The tables from here to `_fields` are the program
  * being built or read; `beginHir` starts an empty one and `useHir` makes a finished one current,

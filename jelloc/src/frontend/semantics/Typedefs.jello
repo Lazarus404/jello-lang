@@ -224,7 +224,9 @@ let _paramKey = fn(params: Array<TypeParam>): Bytes {
   let names = "";
 
   for (param in params) {
-    names = `${names}${param.name},`;
+    names = `${names}${param.name}:`;
+    for (bound in param.bounds) { names = `${names}${bound}+`; }
+    names = `${names},`;
   }
   names
 };
@@ -315,7 +317,7 @@ export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool)
         let ty = if (typeParams.len() == 0) {
           declarePrototype(name)
         } else {
-          declareGenericPrototype(name, checkTypeParams(typeParams, false))
+          declareGenericPrototype(name, checkTypeParams(typeParams, true))
         };
         _declare(name, exported, ty);
         enterSyntax(parent);
@@ -328,7 +330,7 @@ export let declareTypes = fn(statements: Array<Stmt>, module: I32, opened: Bool)
           let ty = if (typeParams.len() == 0) {
             declareRecord(name)
           } else {
-            declareGenericRecord(name, checkTypeParams(typeParams, false))
+            declareGenericRecord(name, checkTypeParams(typeParams, true))
           };
           _declare(name, exported, ty);
         }

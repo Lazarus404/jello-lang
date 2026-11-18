@@ -1,0 +1,8 @@
+// expect: 7
+prototype Box<K: HashKey> {
+  key: null;
+  init(key: K) { this.key = key; };
+  get(): K { this.key as K };
+};
+
+new Box<Tuple<Bytes, I32>>(("127.0.0.1", 3478)).get().1
