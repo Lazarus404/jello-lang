@@ -1,0 +1,25 @@
+// expect: true true true true true true true true
+typedef Point = { let x: I32; let y: Bytes; };
+enum Token { Word(value: Bytes); Pair(left: I32, right: Bytes); End; }
+
+let bytesA = "peer";
+let bytesB = "pe" + "er";
+let tupleA = (7, "ok");
+let tupleB = (7, "ok");
+let pointA: Point = { x: 3, y: "p" };
+let pointB: Point = { x: 3, y: "p" };
+let tokenA = Token.Pair(9, "x");
+let tokenB = Token.Pair(9, "x");
+let object = { x: 1 };
+let sameObject = object;
+let function = fn(value: I32): I32 { value };
+let sameFunction = function;
+
+Std.string(Std.hash(7i64) == Std.hash(7i64)) + " "
+  + Std.string(Std.hash(true) == Std.hash(true)) + " "
+  + Std.string(Std.hash(:peer) == Std.hash(:peer)) + " "
+  + Std.string(Std.hash(bytesA) == Std.hash(bytesB)) + " "
+  + Std.string(Std.hash(tupleA) == Std.hash(tupleB)) + " "
+  + Std.string(Std.hash(pointA) == Std.hash(pointB)) + " "
+  + Std.string(Std.hash(tokenA) == Std.hash(tokenB)) + " "
+  + Std.string((Std.hash(object) == Std.hash(sameObject)) && (Std.hash(function) == Std.hash(sameFunction)))

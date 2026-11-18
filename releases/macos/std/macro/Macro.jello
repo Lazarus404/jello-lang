@@ -31,6 +31,7 @@ export enum Fragment {
   Name(name: Bytes);
   // A literal of VALUE.
   Literal(value: Dynamic);
+  Splice(values: Array<Fragment>);
 }
 
 // What the macro has emitted so far.
@@ -44,9 +45,9 @@ let _literal = Array.new<Bool>(0);
 // Checks that KIND is a kind of syntax parse reads.
 let _kind = fn(kind: Bytes) {
   match (kind) {
-    "auto", "expr", "stmt", "stmts", "type", "pat" => null,
+    "auto", "expr", "stmt", "stmts", "type", "pat", "arm" => null,
     _ => {
-      throw "Macro.parse: unknown kind " + kind + "; use expr, stmt, stmts, type, pat or auto";
+      throw "Macro.parse: unknown kind " + kind + "; use expr, stmt, stmts, type, pat, arm or auto";
       null
     },
   }
@@ -90,6 +91,12 @@ export let gensym = fn(prefix: Bytes): Fragment {
   Fragment.Name(name)
 };
 
+// The identifier NAME, validated when the compiler reads the fragment.
+export let name = fn(name: Bytes): Fragment { Fragment.Name(name) };
+
+// A sequence of arm fragments for an arm-list unquote.
+export let splice = fn(values: Array<Fragment>): Fragment { Fragment.Splice(values) };
+
 /* The value of FRAGMENT, when it is a literal: an argument written as one,
  * with an optional minus, or a literal unquoted. Its type is the literal's,
  * so it is read with `as`, as in Macro.literal(n) as I32. */
@@ -116,7 +123,8 @@ export let quoted = fn(index: I32, holes: Array<Dynamic>): Fragment {
       is I32, is I64, is F64, is Bool, is Bytes => Fragment.Literal(hole),
       _ when (hole == null) => Fragment.Literal(hole),
       _ => {
-        throw "unquote takes a Fragment, or an I32, I64, F64, Bool, Bytes or null value";
+        throw "unquote takes a Fragment, or an I32, I64, F64, Bool, Bytes or null value; "
+          + "an Array<Fragment> splices only into a match's arms";
         Fragment.Literal(null)
       },
     });
@@ -209,6 +217,11 @@ _encode = fn(fragment, out) {
         throw "a Fragment.Literal holds an I32, I64, F64, Bool, Bytes or null value";
         null
       },
+    },
+    Splice(values) => {
+      out.push("a" + Std.string(values.len()) + ";");
+      for (value in values) { _encode(value, out); }
+      null
     },
   }
 };

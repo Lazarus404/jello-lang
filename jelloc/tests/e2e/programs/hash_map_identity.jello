@@ -1,0 +1,12 @@
+// expect: true true true
+import type { HashMap } from std.core.HashMap;
+
+let objects = new HashMap<Object, Bytes>();
+let object = { peer: 1 };
+objects.set(object, "object");
+let functions = new HashMap<(I32) -> I32, Bytes>();
+let function = fn(value: I32): I32 { value };
+functions.set(function, "function");
+
+Std.string(objects.get(object) == "object") + " " + Std.string(objects.get({ peer: 1 }) == null) + " "
+  + Std.string(functions.get(function) == "function")

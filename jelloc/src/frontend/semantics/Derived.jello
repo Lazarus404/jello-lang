@@ -10,6 +10,7 @@ package frontend.semantics;
  * functions per type. `frontend.semantics.Modules` installs `structuralEquality` and `unsupported`
  * into `frontend.semantics.TypeCheck`; `frontend.semantics.Aggregates` and
  * `frontend.semantics.Interpolation` call `printed` for `Std.string` and template holes, and
+ * `printedLiteral` for `Std.literal`, and
  * `frontend.semantics.Testing` calls `literalOf` to show an assertion's values. */
 
 import type { BinaryOp } from frontend.syntax.Ast;
@@ -19,7 +20,7 @@ import { Kind, Op } from frontend.hir.Hir;
 import { equalValues } from frontend.semantics.Values;
 import { Binding } from frontend.semantics.ModuleScope;
 import {
-  bufferHint, callFunction, defineFunction, enterSyntax, generateFunction, inTemplate,
+  bufferHint, callFunction, defineFunction, enterSyntax, generateFunction, inTemplate, prototypeString,
   isNullaryVariant, needsBound, newBinding, syntaxChild, unknownType,
 } from frontend.semantics.TypeCheck;
 import { E0500, coded } from support.Codes;
@@ -293,6 +294,8 @@ let _equalFunctions = Array.new<I32>(0);
 let _stringTypes = Array.new<I32>(0);
 // The function index of each type's `string`, at the type's position in `_stringTypes`.
 let _stringFunctions = Array.new<I32>(0);
+let _hashTypes = Array.new<I32>(0);
+let _hashFunctions = Array.new<I32>(0);
 
 // Forgets the functions generated for the previous program, before a program is checked.
 export let resetDerived = fn(): Bool {
@@ -300,7 +303,67 @@ export let resetDerived = fn(): Bool {
   _equalFunctions = Array.new<I32>(0);
   _stringTypes = Array.new<I32>(0);
   _stringFunctions = Array.new<I32>(0);
+  _hashTypes = Array.new<I32>(0);
+  _hashFunctions = Array.new<I32>(0);
   true
+};
+
+let _combineHash = fn(left: I32, right: I32): I32 {
+  H.callVm("hash_combine", [H.TYPE_I32, H.TYPE_I32], H.TYPE_I32, [left, right])
+};
+
+let _hashTuple = fn(value: I32, ty: I32): Array<I32> {
+  let hash = i32Of(0);
+  let field = 0;
+  while (field < H.memberCount(ty)) {
+    let item = H.node(Op.TupleField, H.memberType(ty, field), field, 0, [H.local(value, ty)]);
+    hash = _combineHash(hash, hashValue(item));
+    field++;
+  }
+  [hash]
+};
+
+let _hashEnum = fn(value: I32, ty: I32): Array<I32> {
+  let tag = H.variantCount(ty) - 1;
+  let result = _tag(H.local(value, ty));
+  while (tag >= 0) {
+    let hash = i32Of(tag);
+    let field = 0;
+    while (field < H.fieldCount(ty, tag)) {
+      hash = _combineHash(hash, hashValue(_field(value, ty, tag, field)));
+      field++;
+    }
+    let chosen = H.opNode(Op.Eq, H.TYPE_BOOL, [_tag(H.local(value, ty)), i32Of(tag)]);
+    result = H.opNode(Op.If, H.TYPE_I32, [chosen, hash, result]);
+    tag--;
+  }
+  [result]
+};
+
+let _hashBody = fn(params: Array<I32>, ty: I32): Array<I32> {
+  match (H.kindOf(ty)) { Tuple, Record => _hashTuple(params[0], ty), _ => _hashEnum(params[0], ty) }
+};
+
+export let hashValue = fn(value: I32): I32 {
+  let ty = H.defaultIntegers(H.typeOf(value));
+  match (H.kindOf(ty)) {
+    Bool => H.callVm("hash_bool", [H.TYPE_BOOL], H.TYPE_I32, [value]),
+    Atom => H.callVm("hash_atom", [H.TYPE_ATOM], H.TYPE_I32, [value]),
+    Bytes => H.callVm("hash_bytes", [H.TYPE_BYTES], H.TYPE_I32, [value]),
+    I64, U64 => H.callVm("hash_i64", [ty], H.TYPE_I32, [value]),
+    I8, I16, I32, U8, U16, U32 => {
+      let wide = ty == H.TYPE_I32 ? value : H.opNode(Op.Convert, H.TYPE_I32, [value]);
+      H.callVm("hash_i32", [H.TYPE_I32], H.TYPE_I32, [wide])
+    },
+    Function, Object => H.callVm("hash_identity", [H.TYPE_DYNAMIC], H.TYPE_I32,
+      [H.opNode(Op.ToDynamic, H.TYPE_DYNAMIC, [value])]),
+    Tuple, Record, Enum, Applied => {
+      if (inTemplate()) { return i32Of(0); }
+      let index = _derived(_hashTypes, _hashFunctions, "hash", ["value"], ty, H.TYPE_I32, _hashBody);
+      callFunction(Binding.Function(index), "hash", [value])
+    },
+    _ => i32Of(0),
+  }
 };
 
 /** Returns the derived function of one kind for a type, generating it on first use. The function
@@ -580,6 +643,9 @@ let _shown = fn(value: I32, quoted: Bool): I32 {
    * per type. */
   let present = H.typeOf(value);
   let ty = H.isInteger(present) ? present : H.defaultIntegers(present);
+  // A type with its own `toString` shows as that method says, inside another value too.
+  let custom = prototypeString(value);
+  if (custom >= 0) { return custom; }
   // A variant without a payload is a constant, shown by name.
   if (isNullaryVariant(value)) { return bytesOf(_variantName(ty, H.valueOf(value))); }
 
@@ -630,13 +696,16 @@ let _shown = fn(value: I32, quoted: Bool): I32 {
   }
 };
 
-/** Builds `Std.string(value)` of the checked `value`; `Bytes` as itself, and anything else as a
- * value literal, with any `Bytes` inside it quoted.
+/** Builds the text of the checked `value`, as `printed` or `printedLiteral` asks.
  * @param what  the call or form printing it, for the error
  * @param at  the syntax child the error is located at, or -1 for the node being checked
+ * @param quoted  whether a `Bytes` value is shown as a quoted literal rather than as itself
  * @throws a located error if the value holds a type that cannot print, such as a function, a
  *     buffer or a type parameter without the bound Show */
-export let printed = fn(value: I32, what: Bytes, at: I32): I32 {
+let _checkedText = fn(value: I32, what: Bytes, at: I32, quoted: Bool): I32 {
+  // A type with its own `toString` prints even when its fields could not.
+  let custom = prototypeString(value);
+  if (custom >= 0) { return custom; }
   let ty = H.typeOf(value);
   let bad = _unsupported(ty, true);
 
@@ -646,7 +715,25 @@ export let printed = fn(value: I32, what: Bytes, at: I32): I32 {
     let held = bad == ty ? "" : `, which holds ${H.typeName(bad)}`;
     throw coded(E0500, `${shown}${held}${bufferHint(bad)}${_boundHint(bad, true)}`);
   }
-  _shown(value, false)
+  _shown(value, quoted)
+};
+
+/** Builds `Std.string(value)` of the checked `value`; `Bytes` as itself, and anything else as a
+ * value literal, with any `Bytes` inside it quoted.
+ * @param what  the call or form printing it, for the error
+ * @param at  the syntax child the error is located at, or -1 for the node being checked
+ * @throws a located error if the value holds a type that cannot print */
+export let printed = fn(value: I32, what: Bytes, at: I32): I32 {
+  _checkedText(value, what, at, false)
+};
+
+/** Builds `Std.literal(value)` of the checked `value`; a value literal, with `Bytes` quoted even at
+ * the top level, as `Std.string` shows it inside another value.
+ * @param what  the call printing it, for the error
+ * @param at  the syntax child the error is located at
+ * @throws a located error if the value holds a type that cannot print */
+export let printedLiteral = fn(value: I32, what: Bytes, at: I32): I32 {
+  _checkedText(value, what, at, true)
 };
 
 /** Builds a value's text as a literal, with `Bytes` quoted even at the top level, as an assertion's

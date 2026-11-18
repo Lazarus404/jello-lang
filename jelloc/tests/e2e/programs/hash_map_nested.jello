@@ -1,0 +1,11 @@
+// expect: [[1 => "one"]] ([1 => "one"], 2) ["a" => [1 => "one"]] [1 => "one"] null "q\"x" :a ["b"] 7
+import type { HashMap } from std.core.HashMap;
+
+let inner = new HashMap<I32, Bytes>();
+inner.set(1, "one");
+let outer = new HashMap<Bytes, HashMap<I32, Bytes>>();
+outer.set("a", inner);
+let found = outer.get("a");
+let missing = outer.get("b");
+[Std.string([inner]), Std.string((inner, 2)), Std.string(outer), Std.string(found), Std.string(missing),
+  Std.literal("q\"x"), Std.literal(:a), Std.literal(["b"]), Std.literal(7)].join(" ")

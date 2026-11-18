@@ -56,6 +56,7 @@ and taken out of containers. A bound after `:` allows more, and several bounds a
 | `Eq` | `==` and `!=`, also on types built from `T` such as `Array<T>` | types with `==` |
 | `Show` | `Std.string` | types `Std.string` can show |
 | `Integer` | arithmetic, bitwise operators and comparisons | the integer types |
+| `HashKey` | use as a `HashMap` key | integers, Bool, Atom, Bytes, immutable structural values, Objects and functions |
 
 ```jello
 // expect: [1, 2] found|missing|9
@@ -78,7 +79,34 @@ let max<T: Integer> = fn(a: T, b: T): T { a > b ? a : b };
 max("a", "b")
 ```
 
-Only a function's type parameters take bounds; those of enums, typedefs and prototypes do not.
+Functions, record typedefs and prototypes may bound their type parameters. Bounds on a record or
+prototype are checked wherever its type is instantiated. Enums and type aliases do not take bounds.
+`HashKey` excludes floats, arrays, lists, nullable values, `Dynamic`, byte buffers, byte layouts and
+native handles. A tuple, record or enum is a structural key only when all of its fields are keys;
+Objects and functions are keys by identity. This makes a bound on a generic record or prototype
+useful for types such as `HashMap<K: HashKey, V>`: every instantiation must supply an eligible `K`.
+
+```jello
+// expect: 3478
+typedef Entry<K: HashKey, V> = { let key: K; let value: V; };
+let entry: Entry<Tuple<Bytes, I32>, Bytes> = { key: ("127.0.0.1", 3478), value: "ok" };
+entry.key.1
+```
+
+A prototype method may require bounds only where it needs them. Write `where` after its parameters;
+the method is unavailable when the instance's type argument does not meet its requirement. This
+keeps operations such as `HashMap.toString() where K: Show, V: Show` available only for maps that
+can print both their keys and values:
+
+```jello
+// expect: [7]
+prototype Box<T> {
+  value: null;
+  init(value: T) { this.value = value; };
+  toString() where T: Show: Bytes { "[" + Std.literal(this.value as T) + "]" };
+};
+Std.string(new Box(7))
+```
 
 Inside a generic body, `value as T` converts a `Dynamic` to the type argument, checked as that
 type, and `value is T` tests for it (see [Nullability and Dynamic](02-nullability-and-dynamic.md)).

@@ -1,0 +1,10 @@
+// expect: ok
+prototype Box<K: HashKey> {
+  key: null;
+  init(key: K) { this.key = key; };
+};
+
+let tuple = new Box<Tuple<Bytes, I32>>(("127.0.0.1", 3478));
+let object = new Box<Object>({ peer: 1 });
+let function = new Box<(I32) -> I32>(fn(value: I32): I32 { value });
+"ok"

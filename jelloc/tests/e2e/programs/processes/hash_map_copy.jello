@@ -1,0 +1,36 @@
+// expect: true true
+// schedulers: 4
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+import type { HashMap } from std.core.HashMap;
+
+enum Message {
+  Maps(values: HashMap<I32, Bytes>, objects: HashMap<Object, Bytes>, functions: HashMap<(I32) -> I32, Bytes>, object: Object, function: (I32) -> I32);
+}
+
+let replies = new Inbox<Bool>();
+let main = Process.self<Bool>(replies);
+let worker = Process.spawn<Message>(fn(inbox: Inbox<Message>) {
+  let Maps(values, objects, functions, object, function) = inbox.receive();
+  let read = (values.size() == 3) && (values.get(1) == "one") && (values.get(2) == "two") && (values.get(3) == "three");
+  let aliases = (objects.get(object) == "object") && (functions.get(function) == "function");
+  values.set(5, "receiver");
+  main.send(read && aliases && !values.exists(4) && (values.get(5) == "receiver"));
+});
+
+let values = new HashMap<I32, Bytes>();
+values.set(1, "one");
+values.set(2, "two");
+values.set(3, "three");
+let object = { peer: 1 } as Object;
+let objects = new HashMap<Object, Bytes>();
+objects.set(object, "object");
+let function = fn(value: I32): I32 { value };
+let functions = new HashMap<(I32) -> I32, Bytes>();
+functions.set(function, "function");
+worker.send(Message.Maps(values, objects, functions, object, function));
+values.set(4, "sender");
+let receiver = replies.receive();
+let sender = (values.get(4) == "sender") && !values.exists(5);
+worker.join();
+Std.string(receiver) + " " + Std.string(sender)

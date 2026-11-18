@@ -143,6 +143,7 @@ run_c_test() {
 run_c_test trap_pc_tests
 run_c_test vm_safety_tests
 run_c_test enum_tests
+run_c_test identity_tests
 run_c_test thread_tests
 run_c_test proc_switch_tests -O2
 run_c_test proc_vm_tests

@@ -1,0 +1,35 @@
+// expect: true true true true true true true true true
+import type { HashMap } from std.core.HashMap;
+
+typedef Peer = { let host: Bytes; let port: I32; };
+enum Token { Word(value: Bytes); End; }
+
+let map = new HashMap<Bytes, I32>();
+map.set("one", 1);
+map.set("two", 2);
+map.set("one", 11);
+let replaced = (map.size() == 2) && (map.get("one") == 11);
+let bytes = "t" + "wo";
+let bytesKey = map.get(bytes) == 2;
+let removed = map.remove("one") && !map.exists("one") && (map.get("one") == null) && (map.size() == 1);
+map.set("one", 1);
+let reused = (map.size() == 2) && (map.get("one") == 1);
+
+let peers = new HashMap<Peer, Token>();
+peers.set({ host: "127.0.0.1", port: 3478 }, Token.Word("ok"));
+let tuple = new HashMap<Tuple<Bytes, I32>, Bool>();
+tuple.set(("127.0.0.1", 3478), true);
+
+let grown = new HashMap<I32, I32>();
+let i = 0;
+while (i < 100) { grown.set(i, i * 2); i++; }
+let all = true;
+i = 0;
+while (i < 100) { if (grown.get(i) != i * 2) { all = false; }; i++; }
+let removedMiddle = grown.remove(50) && (grown.get(51) == 102);
+grown.clear();
+
+Std.string(replaced) + " " + Std.string(bytesKey) + " " + Std.string(removed) + " "
+  + Std.string(reused) + " " + Std.string(peers.get({ host: "127.0.0.1", port: 3478 }) == Token.Word("ok")) + " "
+  + Std.string(tuple.get(("127.0.0.1", 3478)) == true) + " " + Std.string(all) + " "
+  + Std.string(removedMiddle) + " " + Std.string((grown.size() == 0) && !grown.exists(0))

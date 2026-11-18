@@ -1,0 +1,6 @@
+// error: 6:1: (I32) -> I32 does not satisfy the bound Show of V in HashMap.toString [E0501]
+import type { HashMap } from std.core.HashMap;
+
+let map = new HashMap<I32, (I32) -> I32>();
+map.set(1, fn(value: I32): I32 { value });
+Std.string(map)

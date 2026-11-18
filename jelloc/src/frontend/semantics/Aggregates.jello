@@ -20,7 +20,7 @@ import frontend.hir.Hir as H;
 import { internalError } from support.Internal;
 import { Kind, Op } from frontend.hir.Hir;
 import { checkBits, checkLayoutLiterals, packLayout, unpackLayout } from frontend.semantics.Bits;
-import { expressionOf, i32Of, printed } from frontend.semantics.Derived;
+import { expressionOf, hashValue, i32Of, printed, printedLiteral } from frontend.semantics.Derived;
 import { checkNumberCall, numberConstant } from frontend.semantics.Math;
 import { checkSystemAssertion } from frontend.semantics.Testing;
 import { storable, toDynamic } from frontend.semantics.Values;
@@ -42,13 +42,14 @@ import {
 import { closestNames } from support.Text;
 import {
   binaryValues, bufferHint, checkArity, checkFunctionCall, checkIndirectCall, checkInstance,
-  checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, hasSpread, hideValue,
-  fieldMismatch, isBound, isBoundOrAhead, joinArrays, linkedMember, newBinding, objectValue, one,
-  prototypeField, prototypeMethod, receiverMethodType, rejectAt, sealedMethod, spreadArray,
-  spreadOperand, syntaxChild, tupleFields, widened, withoutCallee,
+  checkMethodBounds, checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax,
+  hasSpread, hideValue, fieldMismatch, isBound, isBoundOrAhead, joinArrays, linkedMember,
+  newBinding, objectValue, one, prototypeField, prototypeMethod, receiverMethodType, rejectAt,
+  sealedMethod, spreadArray, spreadOperand, syntaxChild, tupleFields, unsupportedHashKey, widened,
+  withoutCallee,
 } from frontend.semantics.TypeCheck;
 import {
-  E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0600, E0601, E0800, E0801, E0805,
+  E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0501, E0600, E0601, E0800, E0801, E0805,
   E0807, E0808, E0900, coded,
 } from support.Codes;
 
@@ -199,10 +200,12 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
   let checked = checkPresent(base, 0);
   let tuple = objectValue(checked);
   let ty = H.typeOf(tuple);
-  // A prototype's method reads as its function, whose first parameter is its `this`.
+  /* A prototype's method reads as its function, whose first parameter is its `this`, when the
+   * instance meets the method's `where` bounds, as a call must. */
   let found = prototypeMethod(checked, member);
 
   if (found >= 0) {
+    checkMethodBounds(found, H.typeOf(checked));
     let key = namedKey(member);
     return readObject(tuple, key, receiverMethodType(found, H.typeOf(checked)));
   }
@@ -726,6 +729,26 @@ let _string = fn(args: Array<AstExpr>): I32 {
   printed(checkOperand(args[0], 1, -1), "Std.string", 1)
 };
 
+/** Checks `Std.literal(x)`, whose arguments are `args`; `x` as a value literal, `Bytes` quoted, as
+ * `Derived.printedLiteral` builds it.
+ * @return the Bytes node */
+let _literal = fn(args: Array<AstExpr>): I32 {
+  checkArity(args, 1, "Std.literal");
+  printedLiteral(checkOperand(args[0], 1, -1), "Std.literal", 1)
+};
+
+// Checks `Std.hash(x)`, available for the compile-time HashKey types only.
+let _hash = fn(args: Array<AstExpr>): I32 {
+  checkArity(args, 1, "Std.hash");
+  let value = checkOperand(args[0], 1, -1);
+  let ty = H.defaultIntegers(H.typeOf(value));
+  let bad = unsupportedHashKey(ty);
+  if (bad >= 0) {
+    throw coded(E0501, `Std.hash requires a HashKey, not ${H.typeName(ty)}`);
+  }
+  hashValue(value)
+};
+
 // Builds the length of the checked tuple `tuple`; its type's, once it is evaluated.
 let _tupleLength = fn(tuple: I32): I32 {
   H.node(Op.Block, H.TYPE_I32, 0, 1, [expressionOf(tuple), i32Of(H.typeArgCount(H.typeOf(tuple)))])
@@ -1240,6 +1263,8 @@ let _static = fn(
       }
     },
     "Std.string" => _string(args),
+    "Std.literal" => _literal(args),
+    "Std.hash" => _hash(args),
     "Array.join" => _arrayJoin(-1, args),
     "Tuple.len" => {
       checkArity(args, 1, qualified);

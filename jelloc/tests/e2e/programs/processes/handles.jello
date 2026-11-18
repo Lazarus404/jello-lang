@@ -8,20 +8,19 @@ import type { Process, Inbox } from std.concurrent.Process;
 import { compile, find, group } from std.core.RegExp;
 
 let digits = compile("[0-9]+", "");
-let inbox = new Inbox<Dynamic>();
-let me = Process.self<Dynamic>(inbox);
-let timer = inbox.sendAfter(100000, "never" as Dynamic);
-let child = Process.spawn<Dynamic>(fn(own: Inbox<Dynamic>) {
-  let re = own.receive();
-  let found = own.receive();
-  me.send(group(find("ab42", re), 0) as Dynamic);
-  me.send(group(find("x7", digits), 0) as Dynamic);
-  me.send(group(found, 1) as Dynamic);
-  me.send(timer.cancel() as Dynamic);
+enum Message { Run; }
+
+let inbox = new Inbox<Bytes>();
+let me = Process.self<Bytes>(inbox);
+let timer = inbox.sendAfter(100000, "never");
+let child = Process.spawn<Message>(fn(own: Inbox<Message>) {
+  own.receive();
+  me.send(group(find("ab42", compile("[a-z]*[0-9]+", "")), 0) as Bytes);
+  me.send(group(find("x7", digits), 0) as Bytes);
+  me.send(group(find("a-b-c", compile("-([a-z])-", "")), 1) as Bytes);
+  me.send(Std.string(timer.cancel()));
 });
-child.send(compile("[a-z]*([0-9]+)", ""));
-child.send(find("a-b-c", compile("-([a-z])-", "")));
-let got = Std.string(inbox.receive()) + " " + Std.string(inbox.receive()) + " "
-  + Std.string(inbox.receive()) + " " + Std.string(inbox.receive());
+child.send(Message.Run);
+let got = inbox.receive() + " " + inbox.receive() + " " + inbox.receive() + " " + inbox.receive();
 child.join();
 got + " | " + Std.string(timer.cancel())

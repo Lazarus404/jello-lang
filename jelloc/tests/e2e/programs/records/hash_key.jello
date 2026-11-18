@@ -1,0 +1,18 @@
+// expect: ok
+typedef Entry<K: HashKey, V> = { let key: K; let value: V; };
+typedef Point = { let x: I32; let y: I32; };
+enum Token { Word(value: Bytes); End; }
+prototype Peer {};
+
+let integer: Entry<I64, Bytes> = { key: 7i64, value: "integer" };
+let bool: Entry<Bool, Bytes> = { key: true, value: "bool" };
+let atom: Entry<Atom, Bytes> = { key: :peer, value: "atom" };
+let bytes: Entry<Bytes, Bytes> = { key: "peer", value: "bytes" };
+let tuple: Entry<Tuple<Bytes, I32>, Bytes> = { key: ("127.0.0.1", 3478), value: "tuple" };
+let record: Entry<Point, Bytes> = { key: { x: 1, y: 2 }, value: "record" };
+let variant: Entry<Token, Bytes> = { key: Token.Word("ok"), value: "enum" };
+let object: Entry<Object, Bytes> = { key: { peer: 1 }, value: "object" };
+let peer: Entry<Peer, Bytes> = { key: new Peer(), value: "prototype" };
+let function: Entry<(I32) -> I32, Bytes> = { key: fn(x: I32): I32 { x }, value: "function" };
+System.assert(integer.key == 7i64);
+"ok"

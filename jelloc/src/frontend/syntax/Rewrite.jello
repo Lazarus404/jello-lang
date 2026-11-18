@@ -461,7 +461,7 @@ let _statementChildren = fn(cursor: Cursor, value: Stmt): Stmt {
       let made = Array.new<PrototypeField>(0);
 
       for (field in fields) {
-        made.push({ name: field.name, value: _child(cursor, field.value) });
+        made.push({ name: field.name, bounds: field.bounds, value: _child(cursor, field.value) });
       }
       Stmt.Prototype(exported, name, typeParams, made)
     },

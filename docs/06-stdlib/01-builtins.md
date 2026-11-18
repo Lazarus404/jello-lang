@@ -34,19 +34,36 @@ When an intrinsic and an extension module function have the same name, the intri
 | Function | Description |
 | --- | --- |
 | `Std.string(value): Bytes` | `value` as text. Bytes is itself; anything else prints as a literal |
+| `Std.literal(value): Bytes` | `value` as a literal, Bytes quoted too, as it prints inside a collection |
+| `Std.hash(value): I32` | a per-program hash of a `HashKey` value |
 
 `Std.string` prints numbers, `Bool`, `null`, atoms, tuples, arrays, lists, enums, records and
-Objects; Bytes inside a collection print quoted. A function or a buffer from `Bytes.new` cannot be
-printed: that is a compile error (E0500), and a buffer's bytes are read with `buffer.toString()`
-first.
+Objects; Bytes inside a collection print quoted. For a type with an exact `toString(): Bytes`
+method, it calls that method, inside a collection too, only when its `where` bounds hold, so a
+`HashMap<K, V>` prints as `[key => value, ...]` only when both `K` and `V` satisfy `Show`. A
+`toString` that shows the values it holds prints them with `Std.literal`, as `HashMap` does, so
+that `"one"` and `:one` stay apart. A function or a buffer from `Bytes.new` cannot be printed: that
+is a compile error (E0500), and a buffer's bytes are read with `buffer.toString()` first.
 
 ```jello
-// expect: 42 2.5 true null ok ["a", "b"] (1, "one") Shade.Rgb(1, 2, 3) {x: 1}
+// expect: 42 2.5 true null ok ["a", "b"] (1, "one") Shade.Rgb(1, 2, 3) {x: 1} "ok" :ok
 enum Shade { Grey; Rgb(r: I32, g: I32, b: I32); }
 let parts = [Std.string(42), Std.string(2.5), Std.string(true), Std.string(null), Std.string("ok"),
   Std.string(["a", "b"]), Std.string((1, "one")), Std.string(Shade.Rgb(1, 2, 3)),
-  Std.string({ x: 1 })];
+  Std.string({ x: 1 }), Std.literal("ok"), Std.literal(:ok)];
 parts.join(" ")
+```
+
+`Std.hash` is consistent with `==`: equal `HashKey` values have equal hashes. Its result is seeded
+when the program starts, so it varies between runs and is suitable only for hash tables, never for
+persisted values or protocol data. Objects and functions hash by identity; Bytes and structural
+values hash by content.
+
+```jello
+// expect: true true
+let bytes = "pe" + "er";
+Std.string(Std.hash("peer") == Std.hash(bytes)) + " "
+  + Std.string(Std.hash(("127.0.0.1", 3478)) == Std.hash(("127.0.0.1", 3478)))
 ```
 
 ## System

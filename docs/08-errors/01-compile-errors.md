@@ -348,10 +348,12 @@ operand with `as`, so that both have the same type.
 
 ## E0501: a missing or unknown bound
 
-A generic function uses == on a type parameter, prints it, or uses it as an
-integer, so the parameter needs that bound, Eq, Show or Integer: `let same<T:
-Eq> = fn(a: T, b: T) ...`. A call's type argument must satisfy the bounds; only
-functions' type parameters take bounds.
+A generic function uses == on a type parameter, prints it, uses it as an integer
+or as a hash-map key, so the parameter needs that bound, Eq, Show, Integer or
+HashKey: `let same<T: Eq> = fn(a: T, b: T) ...`. A call's type argument must
+satisfy the bounds; functions, records and prototypes may take bounds. A
+conditional prototype method likewise requires its `where` bounds, as
+HashMap.toString() requires `K: Show` and `V: Show`.
 
 ## E0600: the wrong number of arguments
 

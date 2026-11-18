@@ -1,8 +1,8 @@
 // expect: null ok
-// `as Null` extracts the one value of Null from a Dynamic, so a process may take Null messages.
+// `as Null` extracts the one value of Null from a Dynamic.
 import std.concurrent.Process as Process;
 import type { Inbox } from std.concurrent.Process;
 let show = fn(d: Dynamic): Bytes { `${d as Null}` };
-let child = Process.spawn<Null>(fn(inbox: Inbox<Null>) { inbox.receive(); null; });
-child.send(null);
+let child = Process.spawn<I32>(fn(inbox: Inbox<I32>) { inbox.receive(); null; });
+child.send(0);
 `${show(null as Dynamic)} ok`

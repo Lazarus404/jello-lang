@@ -1,0 +1,8 @@
+// expect: [7] [ok]
+prototype Box<T> {
+  value: null;
+  init(value: T) { this.value = value; };
+  toString() where T: Show: Bytes { "[" + Std.string(this.value as T) + "]" };
+};
+
+Std.string(new Box(7)) + " " + new Box("ok").toString()

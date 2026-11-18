@@ -341,15 +341,17 @@ export const KIND_F16: I32 = 10;
 export let isFloatKind = fn(code: I32): Bool { (code >= KIND_F64) && (code <= KIND_F16) };
 
 /** The Eq bound of a Param, as a bit in its `first`. The bounds are bit sets, so that Integer
- * implies Eq and Show. */
+ * and HashKey imply Eq. */
 export const BOUND_EQ: I32 = 1;
 // The Show bound of a Param.
 export const BOUND_SHOW: I32 = 2;
 // The Integer bound of a Param, which includes the Eq and Show bits.
-export const BOUND_INTEGER: I32 = 7;
+export const BOUND_INTEGER: I32 = 5;
+// The HashKey bound of a Param, which includes Eq.
+export const BOUND_HASH_KEY: I32 = 9;
 /** The flag in a Param's `first` set once its template writes Null<T> for it (`nullType`), so that
  * its type arguments must not hold null. */
-const _NULLED = 8;
+const _NULLED = 16;
 
 /** The op of each node of the current program. The tables from here to `_fields` are the program
  * being built or read; `beginHir` starts an empty one and `useHir` makes a finished one current,
@@ -1155,6 +1157,13 @@ export let newParam = fn(name: Bytes, bounds: I32): I32 {
 };
 // Checks whether the Param `ty` has every bound in `bounds`, a set of `BOUND_` bits.
 export let hasBounds = fn(ty: I32, bounds: I32): Bool { (_flags(ty) & bounds) == bounds };
+// Returns a Param's bounds without its internal Null<T> marker.
+export let paramBounds = fn(ty: I32): I32 { _flags(ty) & 15 };
+// Replaces a Param's bounds without changing its internal Null<T> marker.
+export let setParamBounds = fn(ty: I32, bounds: I32): I32 {
+  _types[ty * _TYPE_WIDTH + 1] = (_flags(ty) & _NULLED) | bounds;
+  ty
+};
 /** Checks whether the template of the Param `ty` writes Null<T> for it (it is marked `_NULLED`),
  * so that its type arguments may not hold null. */
 export let isNulled = fn(ty: I32): Bool { (_flags(ty) & _NULLED) != 0 };
@@ -1547,6 +1556,9 @@ export let stdNative = fn(name: Bytes, params: Array<I32>, result: I32): I32 {
  * the checked arguments `args`. */
 export let callStd = fn(name: Bytes, params: Array<I32>, result: I32, args: Array<I32>): I32 {
   node(Op.CallNative, result, stdNative(name, params, result), 0, args)
+};
+export let callVm = fn(name: Bytes, params: Array<I32>, result: I32, args: Array<I32>): I32 {
+  node(Op.CallNative, result, declareNative("vm", name, functionType(params, result)), 0, args)
 };
 /** Adds an Enum type named `name`, without variants, and returns it. Enum types are nominal; each
  * declaration is a type of its own, never merged with another. Its variants are defined later with

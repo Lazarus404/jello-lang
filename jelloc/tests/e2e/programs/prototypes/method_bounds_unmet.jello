@@ -1,0 +1,14 @@
+// expect: 2
+// An instance that misses a method's `where` bounds still has its other methods.
+prototype Pair<T> {
+  first: null;
+  second: null;
+  init(first: T, second: T) { this.first = first; this.second = second; };
+  same() where T: Eq: Bool { (this.first as T) == (this.second as T) };
+  toString() where T: Show: Bytes {
+    Std.literal(this.first as T) + " " + Std.literal(this.second as T)
+  };
+  count(): I32 { 2 };
+};
+let double = fn(value: I32): I32 { value * 2 };
+Std.string(new Pair(double, double).count())

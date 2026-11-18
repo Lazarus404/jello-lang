@@ -1,0 +1,4 @@
+// error: 4:12: Header does not satisfy the bound HashKey of K in Entry [E0501]
+typedef Header = bytes-layout { let tag: u8; };
+typedef Entry<K: HashKey> = { let key: K; };
+let value: Entry<Header> = { key: bits[u8(1)] as Header };

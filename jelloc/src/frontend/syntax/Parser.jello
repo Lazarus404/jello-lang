@@ -554,6 +554,24 @@ let _optionalType = fn(): ?Type {
   _parseType()
 };
 
+// Parses method constraints, `where T: Eq + Show, U: HashKey`, after its parameters.
+let _methodBounds = fn(): Array<TypeParam> {
+  let out = Array.new<TypeParam>(0);
+  if (!_eatIdent("where")) { return out; }
+
+  while (true) {
+    let at = pos;
+    let name = _ident();
+    expect(Token.Colon);
+    let bounds = [_ident()];
+    while (peek() == Token.Plus) { next(); bounds.push(_ident()); }
+    out.push({ name, bounds, start: _offset(at, false), end: _offset(at, true) });
+    if (peek() != Token.Comma) { break; }
+    next();
+  }
+  out
+};
+
 /** Parses the type after `is`, where `fn` stands for any function and gets the type name
  * `__fn__`. */
 let _parseIsType = fn(): Type {
@@ -2348,7 +2366,7 @@ let _loopTail = fn(tail: Expr): Stmt {
 /** Parses a declaration or a statement that starts with a keyword, without marking it:
  *
  *   [export] let|const pattern [<T, ...>] [: Type] = value;
- *   [export] prototype Name [<T, ...>] { name: value; name(params) [: R] { ... }; ... };
+ *   [export] prototype Name [<T, ...>] { name: value; name(params) [where T: Eq] [: R] { ... }; ... };
  *   [export] typedef Name [<T, ...>] = Type | { let f: Type; ... } | bytes-layout { ... };
  *   [export] enum Name [<T, ...>] { Ctor; Ctor(field: Type, ...); ... } [;]
  *   [export] macro name(a, ...) { statements } [;]
@@ -2400,16 +2418,19 @@ let _parseStmtInner = fn(): Stmt {
       while (peek() != Token.RBrace) {
         let field = _ident();
 
-        let value = if (peek() == Token.LParen) {
+        let (bounds, value) = if (peek() == Token.LParen) {
           // `m(params) { ... }` is `m: method fn(params) { ... }`.
           let methodStart = pos;
-          _markExpr(_parseFunction(true), methodStart)
+          let params = _parseParams();
+          let bounds = _methodBounds();
+          let result = _optionalType();
+          (bounds, _markExpr(Expr.Function(params, result, _parseBlock(), true), methodStart))
         } else {
           expect(Token.Colon);
-          _parseExpr(0)
+          (Array.new<TypeParam>(0), _parseExpr(0))
         };
         expect(Token.Semicolon);
-        fields.push({ name: field, value });
+        fields.push({ name: field, bounds, value });
       }
       expect(Token.RBrace);
       expect(Token.Semicolon);

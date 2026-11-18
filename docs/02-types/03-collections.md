@@ -214,6 +214,57 @@ into an `Array<I32>`.
 Std.string([1, 2] == [1, 2]) + " " + Std.string([1, 2] == [2, 1])
 ```
 
+## Hash maps
+
+`HashMap<K: HashKey, V>` stores mutable key-value entries. Import its type from
+`std.core.HashMap`; `K` must be a `HashKey`, while `V` may be any value type.
+Numbers, `Bool`, `Atom` and `Bytes` are keys by value. Tuples, records and enum values are
+structural keys when every field is a key. Objects and functions are keys by identity: a distinct
+object with equal fields is a different key. Floats, arrays, lists, nullable values, `Dynamic`,
+buffers, byte layouts and native handles are not keys.
+
+```jello
+// expect: two true
+import type { HashMap } from std.core.HashMap;
+
+let map = new HashMap<Bytes, I32>();
+map.set("one", 1);
+map.set("two", 2);
+let hasTwo = map.exists("two");
+(map.get("two") == 2 ? "two" : "missing") + " " + Std.string(hasTwo)
+```
+
+`get(key): ?V` returns `null` when the key is absent. Consequently a map whose value type is
+already nullable cannot distinguish an absent key from a present key whose value is `null`; use
+`exists` as well when that distinction matters. `set` replaces an existing value, `remove` says
+whether it removed one, `clear` removes all entries, and `size` counts live entries.
+
+`keys`, `values` and `each` traverse live entries in the map's internal slot order. That order is
+unspecified: it is not insertion order and may change after a map grows or entries are removed.
+`copy` returns a map with independent backing arrays and the same entries. A map whose key and
+value types satisfy `Show` prints as `[key => value, ...]` through `Std.string`. The order can
+differ from one run to the next, so this example sorts what it traverses and prints a map of one
+entry.
+
+```jello
+// expect: [1, 2] 3 true ["one" => 1] 2 3
+import type { HashMap } from std.core.HashMap;
+
+let map = new HashMap<Bytes, I32>();
+map.set("one", 1); map.set("two", 2);
+let values = map.values();
+values.sort(fn(a: I32, b: I32): I32 { a - b });
+let total = 0;
+map.each(fn(key: Bytes, value: I32) { total += value; });
+let paired = map.get(map.keys()[1]) == map.values()[1];
+let copy = map.copy();
+copy.set("three", 3);
+let one = new HashMap<Bytes, I32>();
+one.set("one", 1);
+Std.string(values) + " " + Std.string(total) + " " + Std.string(paired) + " " + Std.string(one) + " "
+  + Std.string(map.size()) + " " + Std.string(copy.size())
+```
+
 ## Lists
 
 A `List<T>` is an immutable singly linked list. Adding an item in front makes a new list that

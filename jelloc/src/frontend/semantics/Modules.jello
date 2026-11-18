@@ -51,10 +51,10 @@ import {
   enterSpan, enterSyntax, finishProgram, initGlobal, instantiateTemplates, isDirectFunction,
   isLoaded, isTemplate, poisonDeclared, recoverTopLevel, syntaxChild,
   takeRegexpInits, unsupportedStatement, useAggregateChecks, useAssertionChecks,
-  useConditionChecks, useEnumChecks, useLetChecks, useStructuralEquality, useUnsupported,
+  useConditionChecks, useEnumChecks, useLetChecks, usePrototypeString, useStructuralEquality, useUnsupported,
   useValueChecks, withInstances
 } from frontend.semantics.TypeCheck;
-import { checkPrototype, instantiatePrototypes } from frontend.semantics.Prototypes;
+import { checkPrototype, checkPrototypeString, instantiatePrototypes } from frontend.semantics.Prototypes;
 import { verifyHir } from frontend.hir.Verify;
 import { E0206, E0210, E0213, E0214, E0304, E0605, E0901, coded } from support.Codes;
 
@@ -514,6 +514,7 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
   useAssertionChecks(checkAssertion);
   useStructuralEquality(structuralEquality);
   useUnsupported(unsupported);
+  usePrototypeString(checkPrototypeString);
   resetDerived();
   _initializers = Array.new<I32>(0);
 

@@ -310,6 +310,7 @@ jello_struct* jello_struct_new(jello_vm* vm, const jello_bc_module* m, uint32_t 
 
 typedef struct jello_object {
   jello_obj_header h;
+  uint64_t identity;
   struct jello_object* proto;
   uint32_t cap;
   uint32_t len;
@@ -351,6 +352,7 @@ jello_enum* jello_enum_new(jello_vm* vm, uint32_t type_id, uint32_t tag, uint32_
 
 typedef struct jello_function {
   jello_obj_header h;
+  uint64_t identity;
   uint32_t func_index;
   uint32_t ncaps;
   uint64_t captures[];
