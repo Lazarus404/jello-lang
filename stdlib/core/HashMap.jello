@@ -93,4 +93,48 @@ export prototype HashMap<K: HashKey, V> {
 
   clear() { _newArrays(this, _INITIAL_CAPACITY); };
   size(): I32 { this.count };
+
+  // The live keys in slot order; insertion order is not retained.
+  keys(): Array<K> {
+    let out = Array.new<K>(0);
+    let slot = 0;
+    while (slot < this.states.len()) {
+      if (this.states[slot] == _LIVE) { out.push(this.keys[slot]); }
+      slot++;
+    }
+    out
+  };
+
+  // The live values in the same slot order as keys().
+  values(): Array<V> {
+    let out = Array.new<V>(0);
+    let slot = 0;
+    while (slot < this.states.len()) {
+      if (this.states[slot] == _LIVE) { out.push(this.values[slot]); }
+      slot++;
+    }
+    out
+  };
+
+  // Calls F once for each live entry, in slot order.
+  each(f: (K, V) -> Void) {
+    let slot = 0;
+    while (slot < this.states.len()) {
+      if (this.states[slot] == _LIVE) { f(this.keys[slot], this.values[slot]); }
+      slot++;
+    }
+  };
+
+  // A map with its own backing arrays and the same live entries.
+  copy(): HashMap<K, V> {
+    let out = new HashMap<K, V>();
+    this.each(fn(key: K, value: V) { out.set(key, value); });
+    out
+  };
+
+  toString() where K: Show, V: Show: Bytes {
+    let parts = Array.new<Bytes>(0);
+    this.each(fn(key: K, value: V) { parts.push(Std.string(key) + " => " + Std.string(value)); });
+    "[" + parts.join(", ") + "]"
+  };
 };

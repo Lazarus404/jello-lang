@@ -1,0 +1,26 @@
+// expect: [2, 3] [20, 30] 2:20|3:30 [2 => "two", 3 => "three"] [] true
+import type { HashMap } from std.core.HashMap;
+
+typedef Peer = { let host: Bytes; let port: I32; };
+
+let map = new HashMap<I32, Bytes>();
+map.set(1, "one");
+map.set(2, "two");
+map.set(3, "three");
+map.remove(1);
+let keys = map.keys();
+let values = map.values();
+let pairs = Array.new<Bytes>(0);
+map.each(fn(key: I32, value: Bytes) { pairs.push(Std.string(key) + ":" + value); });
+
+let copy = map.copy();
+copy.set(2, "changed");
+copy.set(4, "four");
+let independent = (map.get(2) == "two") && !map.exists(4) && (copy.get(2) == "changed");
+let peers = new HashMap<Peer, Tuple<I32, Bytes>>();
+peers.set({ host: "127.0.0.1", port: 3478 }, (7, "ok"));
+System.assert(Std.string(peers) == "[{host: \"127.0.0.1\", port: 3478} => (7, \"ok\")]");
+let empty = new HashMap<I32, Bytes>();
+
+Std.string(keys) + " " + Std.string(values) + " " + pairs.join("|") + " " + Std.string(map) + " "
+  + Std.string(empty) + " " + Std.string(independent)
