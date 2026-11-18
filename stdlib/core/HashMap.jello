@@ -1,0 +1,96 @@
+package std.core;
+
+/* A mutable hash map over HashKey keys. Slots are empty, live or tombstones;
+ * a tombstone keeps its probe chain reachable until a later rebuild removes it. */
+
+let _EMPTY = 0;
+let _LIVE = 1;
+let _TOMB = 2;
+let _INITIAL_CAPACITY = 8;
+
+export typedef HashMap<K: HashKey, V> = {
+  let keys: Array<K>;
+  let values: Array<V>;
+  let states: Array<I32>;
+  let count: I32;
+  let tombstones: I32;
+};
+
+let _newArrays<K, V> = fn(map: HashMap<K, V>, capacity: I32) {
+  map.keys = Array.new<K>(capacity);
+  map.values = Array.new<V>(capacity);
+  map.states = Array.new<I32>(capacity);
+  map.count = 0;
+  map.tombstones = 0;
+};
+
+let _slot<K: HashKey, V> = fn(map: HashMap<K, V>, key: K): I32 {
+  let mask = map.states.len() - 1;
+  let slot = Std.hash(key) & mask;
+  let firstTomb = -1;
+
+  while (map.states[slot] != _EMPTY) {
+    if ((map.states[slot] == _LIVE) && (map.keys[slot] == key)) { return slot; }
+    if ((firstTomb < 0) && (map.states[slot] == _TOMB)) { firstTomb = slot; }
+    slot = (slot + 1) & mask;
+  }
+  firstTomb < 0 ? slot : firstTomb
+};
+
+let _insert<K: HashKey, V> = fn(map: HashMap<K, V>, key: K, value: V) {
+  let slot = _slot(map, key);
+  if (map.states[slot] == _LIVE) { map.values[slot] = value; return; }
+  if (map.states[slot] == _TOMB) { map.tombstones--; }
+  map.keys[slot] = key;
+  map.values[slot] = value;
+  map.states[slot] = _LIVE;
+  map.count++;
+};
+
+let _rehash<K: HashKey, V> = fn(map: HashMap<K, V>, capacity: I32) {
+  let keys = map.keys;
+  let values = map.values;
+  let states = map.states;
+  _newArrays(map, capacity);
+  let slot = 0;
+  while (slot < states.len()) {
+    if (states[slot] == _LIVE) { _insert(map, keys[slot], values[slot]); }
+    slot++;
+  }
+};
+
+let _makeRoom<K: HashKey, V> = fn(map: HashMap<K, V>) {
+  let capacity = map.states.len();
+  if ((map.count + map.tombstones + 1) * 10 < capacity * 7) { return; }
+  _rehash(map, (map.count + 1) * 10 >= capacity * 7 ? capacity * 2 : capacity);
+};
+
+export prototype HashMap<K: HashKey, V> {
+  init() { _newArrays(this, _INITIAL_CAPACITY); };
+
+  set(key: K, value: V) {
+    let slot = _slot(this, key);
+    if (this.states[slot] == _LIVE) { this.values[slot] = value; return; }
+    _makeRoom(this);
+    _insert(this, key, value);
+  };
+
+  get(key: K): ?V {
+    let slot = _slot(this, key);
+    this.states[slot] == _LIVE ? this.values[slot] : null
+  };
+
+  exists(key: K): Bool { this.states[_slot(this, key)] == _LIVE };
+
+  remove(key: K): Bool {
+    let slot = _slot(this, key);
+    if (this.states[slot] != _LIVE) { return false; }
+    this.states[slot] = _TOMB;
+    this.count--;
+    this.tombstones++;
+    true
+  };
+
+  clear() { _newArrays(this, _INITIAL_CAPACITY); };
+  size(): I32 { this.count };
+};
