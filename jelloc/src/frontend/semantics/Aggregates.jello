@@ -20,7 +20,7 @@ import frontend.hir.Hir as H;
 import { internalError } from support.Internal;
 import { Kind, Op } from frontend.hir.Hir;
 import { checkBits, checkLayoutLiterals, packLayout, unpackLayout } from frontend.semantics.Bits;
-import { expressionOf, i32Of, printed } from frontend.semantics.Derived;
+import { expressionOf, hashValue, i32Of, printed } from frontend.semantics.Derived;
 import { checkNumberCall, numberConstant } from frontend.semantics.Math;
 import { checkSystemAssertion } from frontend.semantics.Testing;
 import { storable, toDynamic } from frontend.semantics.Values;
@@ -45,10 +45,10 @@ import {
   checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax, hasSpread, hideValue,
   fieldMismatch, isBound, isBoundOrAhead, joinArrays, linkedMember, newBinding, objectValue, one,
   prototypeField, prototypeMethod, receiverMethodType, rejectAt, sealedMethod, spreadArray,
-  spreadOperand, syntaxChild, tupleFields, widened, withoutCallee,
+  spreadOperand, syntaxChild, tupleFields, unsupportedHashKey, widened, withoutCallee,
 } from frontend.semantics.TypeCheck;
 import {
-  E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0600, E0601, E0800, E0801, E0805,
+  E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0501, E0600, E0601, E0800, E0801, E0805,
   E0807, E0808, E0900, coded,
 } from support.Codes;
 
@@ -726,6 +726,18 @@ let _string = fn(args: Array<AstExpr>): I32 {
   printed(checkOperand(args[0], 1, -1), "Std.string", 1)
 };
 
+// Checks `Std.hash(x)`, available for the compile-time HashKey types only.
+let _hash = fn(args: Array<AstExpr>): I32 {
+  checkArity(args, 1, "Std.hash");
+  let value = checkOperand(args[0], 1, -1);
+  let ty = H.defaultIntegers(H.typeOf(value));
+  let bad = unsupportedHashKey(ty);
+  if (bad >= 0) {
+    throw coded(E0501, `Std.hash requires a HashKey, not ${H.typeName(ty)}`);
+  }
+  hashValue(value)
+};
+
 // Builds the length of the checked tuple `tuple`; its type's, once it is evaluated.
 let _tupleLength = fn(tuple: I32): I32 {
   H.node(Op.Block, H.TYPE_I32, 0, 1, [expressionOf(tuple), i32Of(H.typeArgCount(H.typeOf(tuple)))])
@@ -1240,6 +1252,7 @@ let _static = fn(
       }
     },
     "Std.string" => _string(args),
+    "Std.hash" => _hash(args),
     "Array.join" => _arrayJoin(-1, args),
     "Tuple.len" => {
       checkArity(args, 1, qualified);

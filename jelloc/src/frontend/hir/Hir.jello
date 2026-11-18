@@ -1557,6 +1557,9 @@ export let stdNative = fn(name: Bytes, params: Array<I32>, result: I32): I32 {
 export let callStd = fn(name: Bytes, params: Array<I32>, result: I32, args: Array<I32>): I32 {
   node(Op.CallNative, result, stdNative(name, params, result), 0, args)
 };
+export let callVm = fn(name: Bytes, params: Array<I32>, result: I32, args: Array<I32>): I32 {
+  node(Op.CallNative, result, declareNative("vm", name, functionType(params, result)), 0, args)
+};
 /** Adds an Enum type named `name`, without variants, and returns it. Enum types are nominal; each
  * declaration is a type of its own, never merged with another. Its variants are defined later with
  * `defineVariants`, so that they can refer to enums declared after it. */
