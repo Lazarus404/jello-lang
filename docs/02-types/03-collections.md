@@ -214,6 +214,50 @@ into an `Array<I32>`.
 Std.string([1, 2] == [1, 2]) + " " + Std.string([1, 2] == [2, 1])
 ```
 
+## Hash maps
+
+`HashMap<K: HashKey, V>` stores mutable key-value entries. Import its type from
+`std.core.HashMap`; `K` must be a `HashKey`, while `V` may be any value type.
+Numbers, `Bool`, `Atom` and `Bytes` are keys by value. Tuples, records and enum values are
+structural keys when every field is a key. Objects and functions are keys by identity: a distinct
+object with equal fields is a different key. Floats, arrays, lists, nullable values, `Dynamic`,
+buffers, byte layouts and native handles are not keys.
+
+```jello
+// expect: two true
+import type { HashMap } from std.core.HashMap;
+
+let map = new HashMap<Bytes, I32>();
+map.set("one", 1);
+map.set("two", 2);
+let hasTwo = map.exists("two");
+(map.get("two") == 2 ? "two" : "missing") + " " + Std.string(hasTwo)
+```
+
+`get(key): ?V` returns `null` when the key is absent. Consequently a map whose value type is
+already nullable cannot distinguish an absent key from a present key whose value is `null`; use
+`exists` as well when that distinction matters. `set` replaces an existing value, `remove` says
+whether it removed one, `clear` removes all entries, and `size` counts live entries.
+
+`keys`, `values` and `each` traverse live entries in the map's internal slot order. That order is
+unspecified: it is not insertion order and may change after a map grows or entries are removed.
+`copy` returns a map with independent backing arrays and the same entries. A map whose key and
+value types satisfy `Show` prints as `[key => value, ...]` through `Std.string`.
+
+```jello
+// expect: [one, two] [1, 2] one:1|two:2 [one => 1, two => 2] true
+import type { HashMap } from std.core.HashMap;
+
+let map = new HashMap<Bytes, I32>();
+map.set("one", 1); map.set("two", 2);
+let seen = Array.new<Bytes>(0);
+map.each(fn(key: Bytes, value: I32) { seen.push(key + ":" + Std.string(value)); });
+let copy = map.copy();
+copy.set("three", 3);
+Std.string(map.keys()) + " " + Std.string(map.values()) + " " + seen.join("|") + " "
+  + Std.string(map) + " " + Std.string(!map.exists("three"))
+```
+
 ## Lists
 
 A `List<T>` is an immutable singly linked list. Adding an item in front makes a new list that

@@ -4,10 +4,11 @@ The `std.core` package holds the functions of the built-in value types that the 
 implement itself:
 
 | Module | Import needed | Covers |
-| --- | --- | --- |
+| ------ | ------------- | ------ |
 | `std.core.Array` | no | searching, mapping, folding, inserting and sorting arrays |
 | `std.core.Bytes` | no | searching, splitting and trimming text; UTF-8; hexadecimal and Base64; fixed-width numbers |
 | `std.core.List` | no | the same operations for immutable lists |
+| `std.core.HashMap` | type import | mutable hash maps |
 | `std.core.Object` | no | field counts, merging and values of Objects |
 | `std.core.RegExp` | yes | regular expressions |
 
@@ -24,6 +25,31 @@ xs.mapp(fn(x: I32): I32 { x })
 
 A module can also be imported as any other, for instance to call a function by a bare name:
 `import { split, join } from std.core.Bytes;`.
+
+## std.core.HashMap
+
+Import `HashMap` as a type: `import type { HashMap } from std.core.HashMap;`. A
+`HashMap<K: HashKey, V>` holds mutable entries indexed by `K`.
+
+| Method | Description |
+| --- | --- |
+| `new HashMap<K, V>()` | an empty map |
+| `set(key: K, value: V)` | writes or replaces an entry |
+| `get(key: K): ?V` | the value, or `null` when absent |
+| `exists(key: K): Bool` | whether the key is present |
+| `remove(key: K): Bool` | removes an entry; whether it was present |
+| `clear()` | removes every entry |
+| `size(): I32` | the number of live entries |
+| `keys(): Array<K>` | the live keys |
+| `values(): Array<V>` | the live values, paired with `keys()` by index |
+| `each(f: (K, V) -> Void)` | calls `f` for every live entry |
+| `copy(): HashMap<K, V>` | a map with independent backing arrays |
+| `toString() where K: Show, V: Show: Bytes` | `[key => value, ...]` |
+
+Key eligibility and the distinction between structural and identity keys are described in
+[Collections](../02-types/03-collections.md#hash-maps). Traversal order is unspecified, not
+insertion order. `get` cannot distinguish an absent key from a stored `null` value; call `exists`
+when `V` is nullable.
 
 ## std.core.Array
 
