@@ -25,7 +25,7 @@ import { callField, namedKey, readObject, storeField, writeField } from frontend
 import { scopedType } from frontend.semantics.ModuleScope;
 import { E0302, E0402, E0805, coded } from support.Codes;
 import {
-  buildInstances, checkGenericPrototype, checkMethodCall, checkOperand, checkPresent, delegates,
+  buildInstances, checkGenericPrototype, checkMethodBounds, checkMethodCall, checkOperand, checkPresent, delegates,
   enterSyntax, fieldMismatch, findMethod, hasInitField, hideValue, linkedMember, methodValue,
   noteMethodCall, objectValue, prototypeGlobal, prototypeField, prototypeNamed, prototypeParent,
   prototypeValue, receiverMethodType, rejectAt, requireThis, resolveInstanceReads, sealedPrototype,
@@ -72,7 +72,19 @@ let _methodCall = fn(
  * @return the checked call, or -1 when it finds none */
 export let checkPrototypeCall = fn(receiver: I32, name: Bytes, args: Array<AstExpr>): I32 {
   let found = findMethod(H.typeOf(receiver), name);
-  found < 0 ? -1 : _methodCall(-1, receiver, found, H.typeOf(receiver), false, name, args)
+  if (found < 0) { return -1; }
+  checkMethodBounds(found, H.typeOf(receiver));
+  _methodCall(-1, receiver, found, H.typeOf(receiver), false, name, args)
+};
+
+// Installs the custom `Std.string` route without making Derived depend on prototype internals.
+export let checkPrototypeString = fn(value: I32): I32 {
+  let found = findMethod(H.typeOf(value), "toString");
+  if (found < 0) { return -1; }
+  let ty = receiverMethodType(found, H.typeOf(value));
+  if ((H.typeArgCount(ty) != 1) || (H.innerOf(ty) != H.TYPE_BYTES)) { return -1; }
+  checkMethodBounds(found, H.typeOf(value));
+  _methodCall(-1, value, found, H.typeOf(value), false, "toString", Array.new<AstExpr>(0))
 };
 
 /** Checks `super.name(args)`, the call's syntax current with `super` the first child of its

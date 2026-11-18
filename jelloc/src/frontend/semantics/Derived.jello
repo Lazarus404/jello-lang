@@ -19,7 +19,7 @@ import { Kind, Op } from frontend.hir.Hir;
 import { equalValues } from frontend.semantics.Values;
 import { Binding } from frontend.semantics.ModuleScope;
 import {
-  bufferHint, callFunction, defineFunction, enterSyntax, generateFunction, inTemplate,
+  bufferHint, callFunction, defineFunction, enterSyntax, generateFunction, inTemplate, prototypeString,
   isNullaryVariant, needsBound, newBinding, syntaxChild, unknownType,
 } from frontend.semantics.TypeCheck;
 import { E0500, coded } from support.Codes;
@@ -637,6 +637,8 @@ let _shown = fn(value: I32, quoted: Bool): I32 {
  * @throws a located error if the value holds a type that cannot print, such as a function, a
  *     buffer or a type parameter without the bound Show */
 export let printed = fn(value: I32, what: Bytes, at: I32): I32 {
+  let custom = prototypeString(value);
+  if (custom >= 0) { return custom; }
   let ty = H.typeOf(value);
   let bad = _unsupported(ty, true);
 

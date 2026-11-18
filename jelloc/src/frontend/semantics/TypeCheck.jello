@@ -279,10 +279,14 @@ typedef Method = {
   // The name of its field.
   let field: Bytes;
 };
+// A bound a method requires from one of its generic prototype's parameters.
+typedef MethodBound = { let param: I32; let bounds: I32; };
 // The prototypes' methods.
 let _prototypeMethods = Array.new<Method>(0);
 // The methods of generic prototypes' instances, each a function of its own.
 let _instanceMethods = Array.new<Method>(0);
+// By function index, the bounds its method requires from its prototype's parameters.
+let _methodBounds = Array.new<Array<MethodBound>>(0);
 
 // A call of a prototype's method, read from its receiver.
 typedef MethodCall = {
@@ -999,6 +1003,11 @@ export let useUnsupported = fn(find: (I32, Bool) -> I32): Bool {
   _unsupported = find;
   true
 };
+/** The prototype layer installs this so `Std.string` can call a prototype's `toString` method
+ * before derived structural printing. It returns -1 when none exists. */
+let _prototypeString: (I32) -> I32 = fn(_value) { -1 };
+export let usePrototypeString = fn(check: (I32) -> I32): Bool { _prototypeString = check; true };
+export let prototypeString = fn(value: I32): I32 { _prototypeString(value) };
 
 /** Checks whether `base.member` names a variant of an enum type; when `base` also names a
  * namespace import, as `import type { E }` and `import a.E as E` may, only a variant of it does,
@@ -2094,6 +2103,28 @@ export let receiverMethodType = fn(index: I32, ty: I32): I32 {
   (template >= 0) && (template == _functions[index].methodKind)
     ? H.substitute(_functionType(index), H.enumParams(template), H.templateArgs(ty))
     : _functionType(index)
+};
+
+/** Checks the bounds a method declares against the concrete arguments of its generic prototype.
+ * A method on a nongeneric prototype has no such constraints. */
+export let checkMethodBounds = fn(index: I32, ty: I32) {
+  if (index >= _methodBounds.len()) { return null; }
+  let template = H.templateOf(ty);
+  if (template < 0) { return null; }
+  let params = H.enumParams(template);
+  let args = H.templateArgs(ty);
+
+  for ({ param, bounds } in _methodBounds[index]) {
+    let argument = args[params.indexOf(param)];
+    let missing = ((bounds & H.BOUND_INTEGER) != 0) && !H.isInteger(argument) ? "Integer"
+      : ((bounds & H.BOUND_HASH_KEY) != 0) && (_unsupportedHashKey(argument) >= 0) ? "HashKey"
+      : ((bounds & H.BOUND_EQ) != 0) && (_unsupported(argument, false) >= 0) ? "Eq"
+      : ((bounds & H.BOUND_SHOW) != 0) && (_unsupported(argument, true) >= 0) ? "Show" : "";
+    if (missing != "") {
+      throw coded(E0501, `${H.typeName(argument)} does not satisfy the bound ${missing} of ${H.typeName(param)} in ${_functions[index].name}`);
+    }
+  }
+  null
 };
 
 // Returns the type of global `id`, noting the use (see `frontend.semantics.Failures.touch`).
@@ -4002,6 +4033,7 @@ let _addFunction = fn(
     name, ty: resultType < 0 ? -1 : H.functionType(types, resultType), params: names, node: -1,
     paramTypes: types, defaults, syntax, dropped: _templateBody, methodKind: kind
   });
+  _methodBounds.push(Array.new<MethodBound>(0));
   _functions.len() - 1
 };
 
@@ -4101,8 +4133,17 @@ let _declarePrototype = fn(statement: I32, name: Bytes, ty: I32, fields: Array<P
   try {
     for (f, member in fields) {
       match (member) {
-        { name: field, value: Function(params, result, _, true) } => {
+        { name: field, bounds, value: Function(params, result, _, true) } => {
           let index = _addFunction(`${name}.${field}`, params, result, -1, syntaxChild(f), ty);
+          let declared = Array.new<MethodBound>(0);
+          for ({ name: boundName, bounds: names } in bounds) {
+            let at = paramNames(typeParams).indexOf(boundName);
+            if (at < 0) { throw coded(E0501, `${boundName} is not a type parameter of ${name}`); }
+            let required = 0;
+            for (bound in names) { required = required | _bound(bound); }
+            declared.push({ param: typeParams[at], bounds: required });
+          }
+          _methodBounds[index] = declared;
           _functions[index].dropped = generic;
           _prototypeMethods.push({ function: index, field });
           _directStatements.push(statement);
@@ -5773,8 +5814,16 @@ export let methodValue = fn(ty: I32, name: Bytes, f: I32, body: AstBlock): I32 {
       `${H.typeName(ty)}.${name}`, _functions[found].params, receiverMethodType(found, ty)
     );
     _functions[index].methodKind = ty;
+    while (_methodBounds.len() <= index) { _methodBounds.push(Array.new<MethodBound>(0)); }
+    _methodBounds[index] = _methodBounds[found];
     _instanceMethods.push({ function: index, field: name });
+    let previous = Array.new<I32>(0);
+    for ({ param, bounds } in _methodBounds[found]) {
+      previous.push(H.paramBounds(param));
+      H.setParamBounds(param, H.paramBounds(param) | bounds);
+    }
     _checkIsolated(index, body, _syntax, "", _envNames, _envTypes, false, _NO_TYPES);
+    for (i, { param } in _methodBounds[found]) { H.setParamBounds(param, previous[i]); }
   }
   let ref = H.node(Op.FunctionRef, _functionType(index), index + 1, 0, []);
   enterSyntax(outer);
@@ -5937,6 +5986,7 @@ export let beginCheck = fn(): Bool {
   _captureFloor = 0;
   _prototypeMethods = Array.new<Method>(0);
   _instanceMethods = Array.new<Method>(0);
+  _methodBounds = Array.new<Array<MethodBound>>(0);
   _methodCalls = Array.new<MethodCall>(0);
   _methods = Array.new<I32>(0);
   _prototypes = Array.new<I32>(0);

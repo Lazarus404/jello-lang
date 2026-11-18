@@ -1,0 +1,7 @@
+// error: 6:1: (I32) -> I32 does not satisfy the bound Show of T in Box.toString [E0501]
+prototype Box<T> {
+  value: null;
+  init(value: T) { this.value = value; };
+  toString() where T: Show: Bytes { Std.string(this.value as T) };
+};
+new Box(fn(value: I32): I32 { value }).toString()

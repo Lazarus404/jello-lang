@@ -1157,6 +1157,13 @@ export let newParam = fn(name: Bytes, bounds: I32): I32 {
 };
 // Checks whether the Param `ty` has every bound in `bounds`, a set of `BOUND_` bits.
 export let hasBounds = fn(ty: I32, bounds: I32): Bool { (_flags(ty) & bounds) == bounds };
+// Returns a Param's bounds without its internal Null<T> marker.
+export let paramBounds = fn(ty: I32): I32 { _flags(ty) & 15 };
+// Replaces a Param's bounds without changing its internal Null<T> marker.
+export let setParamBounds = fn(ty: I32, bounds: I32): I32 {
+  _types[ty * _TYPE_WIDTH + 1] = (_flags(ty) & _NULLED) | bounds;
+  ty
+};
 /** Checks whether the template of the Param `ty` writes Null<T> for it (it is marked `_NULLED`),
  * so that its type arguments may not hold null. */
 export let isNulled = fn(ty: I32): Bool { (_flags(ty) & _NULLED) != 0 };
