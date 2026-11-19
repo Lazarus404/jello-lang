@@ -43,6 +43,8 @@ import type { Listener, Stream } from std.net.Tcp;
 | --- | --- |
 | `read(max: I32): Bytes` | up to `max` bytes, as soon as there are any; empty once the other end has closed |
 | `readWithin(max: I32, ms: I32): ?Bytes` | the same, or `null` once `ms` pass with nothing to read |
+| `readOr<M>(inbox: Inbox<M>, max: I32): Event<M>` | as `read`, or the next message, whichever comes first |
+| `readOrWithin<M>(inbox: Inbox<M>, max: I32, ms: I32): ?Event<M>` | the same, or `null` once `ms` pass with neither |
 | `write(data: Bytes)` | writes all of `data`, waiting while the other end is slow to take it |
 | `close(): Bool` | closes it; whether it was open |
 | `peerHost(): Bytes`, `peerPort(): I32` | the numeric address and port of the other end |
@@ -92,6 +94,52 @@ let run = fn(): Bytes {
 run()
 ```
 
+### Waiting for data or a message
+
+A process that serves a connection may also have to answer its inbox: a request from another
+process, or a tick it sent itself. `readOr` waits for both and gives whichever comes first, as an
+`Event<M>`:
+
+```text
+export enum Event<M> { Data(bytes: Bytes); Message(value: M); }
+```
+
+Data already waiting is read before a message already waiting, and an empty `Data` still means the
+other end has closed. A process parked in `readOr` can be stopped like one parked anywhere else.
+
+```jello
+// expect: data:hello message:tick data:
+import std.concurrent.Process as Process;
+import type { Inbox } from std.concurrent.Process;
+import std.net.Tcp as Tcp;
+import type { Stream, Event } from std.net.Tcp;
+
+let run = fn(): Bytes {
+  let listener = Tcp.listen("127.0.0.1", 0);
+  let client = Tcp.connect("127.0.0.1", listener.port());
+  let server = listener.accept();
+  let inbox = new Inbox<Bytes>();
+  client.write("hello");
+  inbox.sendAfter(20, "tick");
+  let seen: Array<Bytes> = [];
+  let open = true;
+  while (open) {
+    match (server.readOr(inbox, 64)) {
+      Data(bytes) => {
+        seen.push("data:" + bytes);
+        open = bytes.len() > 0;
+      },
+      Message(value) => {
+        seen.push("message:" + value);
+        client.close();
+      },
+    };
+  }
+  seen.join(" ")
+};
+run()
+```
+
 ## std.net.Udp
 
 | Function | Description |
@@ -103,11 +151,14 @@ run()
 | `sendTo(data: Bytes, host: Bytes, port: I32)` | sends `data` as one datagram |
 | `receive(max: I32): Datagram` | the next datagram, up to `max` bytes of it, waiting as long as it takes |
 | `receiveWithin(max: I32, ms: I32): ?Datagram` | the same, or `null` once `ms` pass with none |
+| `receiveOr<M>(inbox: Inbox<M>, max: I32): Event<M>` | as `receive`, or the next message, whichever comes first |
+| `receiveOrWithin<M>(inbox: Inbox<M>, max: I32, ms: I32): ?Event<M>` | the same, or `null` once `ms` pass with neither |
 | `port(): I32` | the port it is bound to, the one chosen when it was asked for 0 |
 | `close(): Bool` | closes it; whether it was open |
 
 A `Datagram` has the fields `data: Bytes`, and `host: Bytes` and `port: I32`, the numeric address
-of its sender.
+of its sender. `receiveOr` waits as `readOr` does, giving an
+`Event<M> { Datagram(value: Datagram); Message(value: M); }`.
 
 ```jello
 // expect: ping 127.0.0.1 true|pong ping|true

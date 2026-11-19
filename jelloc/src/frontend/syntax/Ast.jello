@@ -418,10 +418,12 @@ export enum TypedefBody {
   Abstract;
 }
 
-/** A field of a prototype; `name: value;`, or a method, `name(params) [where T: Bound, ...]
- * [: Result] { ... };`, whose value is the `method fn` it stands for. */
+/** A field of a prototype; `name: value;`, or a method, `name[<U, ...>](params) [where T: Bound,
+ * ...] [: Result] { ... };`, whose value is the `method fn` it stands for. */
 export typedef PrototypeField = {
   let name: Bytes;
+  // A generic method's own type parameters; empty for any other field.
+  let typeParams: Array<TypeParam>;
   // The enclosing prototype parameters the method requires bounds from.
   let bounds: Array<TypeParam>;
   let value: Expr;

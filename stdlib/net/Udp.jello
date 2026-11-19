@@ -8,7 +8,10 @@ package std.net;
  *
  * A socket belongs to a process as std.net.Tcp's do, and a call that fails
  * throws what went wrong, as Bytes; one with a time limit returns null once
- * it passes. */
+ * it passes. A socket's receiveOr waits for a datagram or a message,
+ * whichever comes first, as std.net.Tcp's readOr does. */
+
+import type { Inbox } from std.concurrent.Process;
 
 load {
   net_udp_bind,
@@ -23,7 +26,8 @@ load {
 } from vm;
 
 let _bind: (Bytes, I32) -> Dynamic = net_udp_bind;
-let _receiveFrom: (Dynamic, I32, I32) -> Bytes = net_receive_from;
+// Its last argument, when not 0, lets a message reaching the inbox end the wait.
+let _receiveFrom: (Dynamic, I32, I32, I32) -> Bytes = net_receive_from;
 let _sendTo: (Dynamic, Bytes, Bytes, I32) -> Bool = net_send_to;
 let _close: (Dynamic) -> Bool = net_close;
 let _localPort: (Dynamic) -> I32 = net_local_port;
@@ -32,8 +36,16 @@ let _peerPort: (Dynamic) -> I32 = net_peer_port;
 let _error: () -> I32 = net_error;
 let _errorText: (I32) -> Bytes = net_error_text;
 
+// What net_error says when a call's time limit passed.
+let _TIMED_OUT = -1;
+// What net_error says when a message reached the inbox before any datagram.
+let _MESSAGE = -3;
+
 // Throws why the last call failed.
 let _raise = fn() { throw _errorText(_error()); };
+
+// Throws why the last call failed, unless its time limit passed.
+let _unlessTimedOut = fn() { if (_error() != _TIMED_OUT) { _raise(); }; };
 
 /* A datagram received: its bytes, and the numeric host and port of its
  * sender. */
@@ -51,6 +63,12 @@ export prototype Datagram {
   };
 };
 
+// What receiveOr gives: the datagram received, or the message that came first.
+export enum Event<M> {
+  Datagram(value: Datagram);
+  Message(value: M);
+}
+
 // A bound UDP socket.
 export typedef Socket = { let handle: Dynamic; };
 
@@ -65,13 +83,27 @@ export prototype Socket {
   receive(max: I32): Datagram { this.receiveWithin(max, -1) as Datagram };
   // As receive, but null once MS milliseconds pass with none.
   receiveWithin(max: I32, ms: I32): ?Datagram {
-    let data = _receiveFrom(this.handle, max, ms);
+    let data = _receiveFrom(this.handle, max, ms, 0);
 
     if ((Bytes.len(data) == 0) && (_error() != 0)) {
-      if (_error() != -1) { _raise(); };
+      _unlessTimedOut();
       return null;
     };
     new Datagram(data, _peerHost(this.handle), _peerPort(this.handle))
+  };
+  /* As receive, but should a message reach INBOX before any datagram, it is
+   * received instead; a datagram already waiting is received first. */
+  receiveOr<M>(inbox: Inbox<M>, max: I32): Event<M> {
+    this.receiveOrWithin(inbox, max, -1) as Event<M>
+  };
+  // As receiveOr, but null once MS milliseconds pass with neither.
+  receiveOrWithin<M>(inbox: Inbox<M>, max: I32, ms: I32): ?Event<M> {
+    let data = _receiveFrom(this.handle, max, ms, 1);
+    let code = Bytes.len(data) == 0 ? _error() : 0;
+    if (code == _MESSAGE) { return Event.Message(inbox.receive()); };
+    if ((code != 0) && (code != _TIMED_OUT)) { throw _errorText(code); };
+    code == 0 ? Event.Datagram(new Datagram(data, _peerHost(this.handle), _peerPort(this.handle)))
+      : null
   };
   // The port it is bound to, the one chosen for it when it was asked for 0.
   port(): I32 { _localPort(this.handle) };

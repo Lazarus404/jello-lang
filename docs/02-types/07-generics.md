@@ -114,6 +114,35 @@ Only an instance whose type argument the VM can check (`Bool`, `I32`, `I64`, the
 `Atom`, `Bytes`, an enum or `Object`) may use `as T`; at any other type, such as `Array<I32>`, it
 is an error.
 
+### Generic methods
+
+A prototype method may take type parameters of its own, written after its name. A call infers
+them as a generic function's call does, or names them, `o.m<U>(args)`; on a generic prototype, the
+prototype's own type arguments are the receiver's. Each type argument gets an instance of its own:
+
+```jello
+// expect: (3, "x") (3, true) ("s", 2)
+prototype Cell<T> {
+  value: null;
+  init(value: T) { this.value = value; };
+  pair<U>(other: U): Tuple<T, U> { (this.value as T, other) };
+};
+let c = new Cell(3);
+`${Std.string(c.pair("x"))} ${Std.string(c.pair<Bool>(true))} ${Std.string(new Cell("s").pair(2))}`
+```
+
+A generic method is called directly, never read from the object: no value can hold its place, it
+cannot be replaced, and `o.m` without a call is an error (E0301), since it has no single function
+to give. For the same reason it cannot override a method of a prototype it delegates to, or be
+overridden by one (E0302). `init` cannot be generic; its type parameters belong to the prototype.
+
+```jello
+// error: 3:40: Child.show cannot override show, a generic method it delegates to [E0302]
+prototype Base { show<U: Show>(x: U): Bytes { Std.literal(x) }; };
+prototype Child { __proto__: Base; show(x: I32): Bytes { Std.string(x) }; };
+new Child().show(1)
+```
+
 ## Type arguments
 
 A call usually infers the type arguments from its arguments, from the type the context expects,

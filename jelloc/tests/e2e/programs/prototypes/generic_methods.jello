@@ -1,0 +1,34 @@
+// expect: 7 | 1 | Event.Message("s") | (:a, :a) | (3, "x") | (3, true) | ("s", 2) | 3/"q" | "s"/1 | base "hi" | base 5
+// A method may take type parameters of its own, on a prototype that is generic or not.
+enum Event<M> { Data(bytes: Bytes); Message(value: M); }
+
+typedef Box = { let n: I32; };
+
+prototype Box {
+  init(n: I32) { this.n = n; };
+  pick<U>(x: U, data: Bool): Event<U> { data ? Event.Data(Std.string(this.n)) : Event.Message(x) };
+  twice<U>(x: U): Tuple<U, U> { (x, x) };
+};
+
+prototype Cell<T> {
+  value: null;
+  init(value: T) { this.value = value; };
+  pair<U>(other: U): Tuple<T, U> { (this.value as T, other) };
+  showWith<U: Show>(other: U) where T: Show: Bytes {
+    Std.literal(this.value as T) + "/" + Std.literal(other)
+  };
+};
+
+prototype Base { greet<U: Show>(x: U): Bytes { "base " + Std.literal(x) }; };
+prototype Child { __proto__: Base; greet2(): Bytes { super.greet(5) }; };
+
+let show = fn(e: Event<I32>): Bytes {
+  match (e) { Data(bytes) => bytes, Message(v) => Std.string(v) }
+};
+let b = new Box(1);
+let c = new Cell(3);
+let d = new Cell("s");
+let k = new Child();
+[show(b.pick(7, false)), show(b.pick(8, true)), Std.string(b.pick<Bytes>("s", false)),
+  Std.string(b.twice(:a)), Std.string(c.pair("x")), Std.string(c.pair(true)),
+  Std.string(d.pair<I64>(2)), c.showWith("q"), d.showWith(1), k.greet("hi"), k.greet2()].join(" | ")

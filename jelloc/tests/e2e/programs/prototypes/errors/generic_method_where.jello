@@ -1,0 +1,7 @@
+// error: 7:1: (I32) -> I32 does not satisfy the bound Show of T in Cell.showWith [E0501]
+prototype Cell<T> {
+  value: null;
+  init(value: T) { this.value = value; };
+  showWith<U>(other: U) where T: Show: Bytes { Std.string(this.value as T) };
+};
+new Cell(fn(x: I32): I32 { x }).showWith(1)

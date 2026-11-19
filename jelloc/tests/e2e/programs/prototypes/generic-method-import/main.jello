@@ -1,0 +1,30 @@
+// expect: data:a message:7 data:b message:ping
+// A linked prototype's generic method, imported, is called with each message type it takes.
+import { Channel } from channel;
+import type { Event } from channel;
+import std.concurrent.Process as Process;
+import type { Process, Inbox } from std.concurrent.Process;
+
+let describe<M: Show> = fn(event: Event<M>): Bytes {
+  match (event) {
+    Data(bytes) => `data:${bytes}`,
+    Message(value) => `message:${value}`,
+  }
+};
+
+let inbox = new Inbox<Bytes>();
+let main = Process.self<Bytes>(inbox);
+let numbers = Process.spawn<I32>(fn(numbers: Inbox<I32>) {
+  let channel = new Channel();
+  channel.push("a");
+  let first = describe(channel.readOr(numbers));
+  main.send(`${first} ${describe(channel.readOr(numbers))}`);
+});
+numbers.send(7);
+let seen = inbox.receive();
+
+let channel = new Channel();
+channel.push("b");
+let first = describe(channel.readOr<Bytes>(inbox));
+main.send("ping");
+`${seen} ${first} ${describe(channel.readOr(inbox))}`

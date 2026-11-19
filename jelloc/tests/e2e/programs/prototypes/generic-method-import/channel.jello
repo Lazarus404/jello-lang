@@ -1,0 +1,19 @@
+import type { Inbox } from std.concurrent.Process;
+
+// What a channel's wait gives: its own data, or a message from the inbox.
+export enum Event<M> {
+  Data(bytes: Bytes);
+  Message(value: M);
+}
+
+export typedef Channel = { let pending: Array<Bytes>; };
+
+export prototype Channel {
+  init() { this.pending = Array.new<Bytes>(0); };
+  push(bytes: Bytes) { this.pending.push(bytes); };
+  // The next data, else the next message that INBOX receives.
+  readOr<M>(inbox: Inbox<M>): Event<M> {
+    let next = this.pending.shift();
+    next == null ? Event.Message(inbox.receive()) : Event.Data(next as Bytes)
+  };
+};

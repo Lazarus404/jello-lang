@@ -2418,7 +2418,9 @@ let _parseStmtInner = fn(): Stmt {
       while (peek() != Token.RBrace) {
         let field = _ident();
 
-        let (bounds, value) = if (peek() == Token.LParen) {
+        let typeParams = _typeParams();
+
+        let (bounds, value) = if ((typeParams.len() != 0) || (peek() == Token.LParen)) {
           // `m(params) { ... }` is `m: method fn(params) { ... }`.
           let methodStart = pos;
           let params = _parseParams();
@@ -2430,7 +2432,7 @@ let _parseStmtInner = fn(): Stmt {
           (Array.new<TypeParam>(0), _parseExpr(0))
         };
         expect(Token.Semicolon);
-        fields.push({ name: field, bounds, value });
+        fields.push({ name: field, typeParams, bounds, value });
       }
       expect(Token.RBrace);
       expect(Token.Semicolon);

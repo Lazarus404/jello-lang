@@ -1,0 +1,4 @@
+// error: 3:49: Child.show is generic, so it cannot override the show it delegates to [E0302]
+prototype Base { show(x: I32): Bytes { Std.string(x) }; };
+prototype Child { __proto__: Base; show<U: Show>(x: U): Bytes { Std.literal(x) }; };
+new Child().show(1)

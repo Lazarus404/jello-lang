@@ -247,6 +247,11 @@ typedef Template = {
   /** The function that checks its body once with its Params, which `finishProgram` drops; -1
    * until the body is checked. */
   let checker: I32;
+  /** For a generic method, the prototype type whose `this` its first parameter is, as
+   * `_addFunction` takes it; -1 for a generic function. */
+  let kind: I32;
+  // The bounds a generic method requires from its prototype's parameters.
+  let bounds: Array<MethodBound>;
 };
 // The generic functions, by template index.
 let _templates = Array.new<Template>(0);
@@ -287,6 +292,15 @@ let _prototypeMethods = Array.new<Method>(0);
 let _instanceMethods = Array.new<Method>(0);
 // By function index, the bounds its method requires from its prototype's parameters.
 let _methodBounds = Array.new<Array<MethodBound>>(0);
+// A prototype's generic method, `m<U>(params) { ... }`; called directly, never read from an Object.
+typedef GenericMethod = {
+  // Its template index; the template's `kind` is the prototype that declares it.
+  let template: I32;
+  // The name of its field.
+  let field: Bytes;
+};
+// The prototypes' generic methods.
+let _genericMethods = Array.new<GenericMethod>(0);
 
 // A call of a prototype's method, read from its receiver.
 typedef MethodCall = {
@@ -1955,6 +1969,17 @@ let ownMethod = fn(ty: I32, name: Bytes): I32 {
   -1
 };
 
+/** Returns the template index of the generic method `name` that the prototype type `ty` declares,
+ * or -1. */
+let _ownGenericMethod = fn(ty: I32, name: Bytes): I32 {
+  let declaring = _prototypeOf(ty);
+
+  for ({ template, field } in _genericMethods) {
+    if ((_templates[template].kind == declaring) && (field == name)) { return template; }
+  }
+  -1
+};
+
 /** Returns the function index of the method `name` of the generic prototype's instance `ty`, or
  * -1 before it is checked. */
 let _instanceMethod = fn(ty: I32, name: Bytes): I32 {
@@ -2106,18 +2131,17 @@ export let receiverMethodType = fn(index: I32, ty: I32): I32 {
     : _functionType(index)
 };
 
-/** Finds a bound that the method `index` declares and the concrete arguments of its generic
- * prototype's instance `ty` miss. A method on a nongeneric prototype has no such constraints.
+/** Finds a bound among `required`, those that the method `method` requires, which the concrete
+ * arguments of its generic prototype's instance `ty` miss. A method on a nongeneric prototype has
+ * no such constraints.
  * @return which bound is missed, or "" when the arguments meet them all */
-let _missingBound = fn(index: I32, ty: I32): Bytes {
-  if (index >= _methodBounds.len()) { return ""; }
+let _missingBounds = fn(required: Array<MethodBound>, ty: I32, method: Bytes): Bytes {
   let template = H.templateOf(ty);
   if (template < 0) { return ""; }
   let params = H.enumParams(template);
   let args = H.templateArgs(ty);
-  let method = _functions[index].name;
 
-  for ({ param, bounds } in _methodBounds[index]) {
+  for ({ param, bounds } in required) {
     let argument = args[params.indexOf(param)];
     let missing = ((bounds & H.BOUND_INTEGER) != 0) && !H.isInteger(argument) ? "Integer"
       : ((bounds & H.BOUND_HASH_KEY) != 0) && (_unsupportedHashKey(argument) >= 0) ? "HashKey"
@@ -2131,11 +2155,44 @@ let _missingBound = fn(index: I32, ty: I32): Bytes {
   ""
 };
 
+/** Rejects the instance `ty` when it misses a bound of `required`, those of `method`.
+ * @throws a located error naming the first bound it misses */
+let _requireBounds = fn(required: Array<MethodBound>, ty: I32, method: Bytes) {
+  let missing = _missingBounds(required, ty, method);
+  if (missing != "") { throw coded(E0501, missing); }
+  null
+};
+
+/** Adds the bounds of `required` to their Params, as a `where` clause does within its method.
+ * @return the bounds they had, for `_restoreBounds` */
+let _raiseBounds = fn(required: Array<MethodBound>): Array<I32> {
+  let previous = Array.new<I32>(0);
+
+  for ({ param, bounds } in required) {
+    previous.push(H.paramBounds(param));
+    H.setParamBounds(param, H.paramBounds(param) | bounds);
+  }
+  previous
+};
+
+// Gives the Params of `required` back the bounds `previous` holds (`_raiseBounds`).
+let _restoreBounds = fn(required: Array<MethodBound>, previous: Array<I32>) {
+  for (i, { param } in required) { H.setParamBounds(param, previous[i]); }
+  null
+};
+
+// Finds a bound that the method `index` requires and the instance `ty` misses (`_missingBounds`).
+let _missingBound = fn(index: I32, ty: I32): Bytes {
+  index < _methodBounds.len() ? _missingBounds(_methodBounds[index], ty, _functions[index].name)
+    : ""
+};
+
 /** Checks the bounds a method declares against the concrete arguments of its generic prototype.
  * @throws a located error naming the first bound they miss */
 export let checkMethodBounds = fn(index: I32, ty: I32) {
-  let missing = _missingBound(index, ty);
-  if (missing != "") { throw coded(E0501, missing); }
+  if (index < _methodBounds.len()) {
+    _requireBounds(_methodBounds[index], ty, _functions[index].name);
+  }
   null
 };
 
@@ -3101,26 +3158,91 @@ export let checkInstance = fn(
  * @param args  the arguments
  * @param expected  the type the context requires, or -1
  * @param receiver  a method's checked receiver, which gives the first parameter's type, or -1
+ * @param known  the leading type arguments, a generic prototype's for its generic method, which
+ *   `typeArgs` does not name
  * @return the `Call` node
  * @throws a located error if the type arguments or arguments are the wrong number or type, or a
  *   type argument does not meet its bounds */
 let _checkGenericCall = fn(
-  t: I32, name: Bytes, typeArgs: Array<AstType>, args: Array<AstExpr>, expected: I32, receiver: I32
+  t: I32, name: Bytes, typeArgs: Array<AstType>, args: Array<AstExpr>, expected: I32, receiver: I32,
+  known: Array<I32>
 ): I32 {
   _checkTemplate(t, false);
   let index = _templates[t].checker;
-  let (types, ty, deferred) =
-    _instanceType(_templates[t].params, _functions[index].ty, name, typeArgs, expected, -1);
+  let params = _templates[t].params;
+  let count = known.len();
+  let function = _functions[index].ty;
+  let own = params;
+
+  if (count != 0) {
+    function = H.substitute(function, params.slice(0, count), known);
+    own = params.slice(count, params.len() - count);
+  }
+  let (written, ty, deferred) = _instanceType(own, function, name, typeArgs, expected, -1);
+  let types = count == 0 ? written : known.copy().appendFrom(written, 0);
   // A call that spreads is the last child of a block (`_call`).
   let made = _call(Op.Call, 0, ty, args, [], name, index, receiver);
   let call = H.opOf(made) == Op.Block ? H.lastChild(made) : made;
   if (deferred) { H.unify(H.innerOf(ty), expected); }
-  checkTypeArgs(_templates[t].params, name, types);
+  checkTypeArgs(params, name, types);
 
   if (!_templateBody) {
     _pending.push({ call, template: t, types, depth: _instanceDepth + 1, need: _needHere() });
   }
   made
+};
+
+/** Finds the generic method `name` that a value of the prototype type `ty` finds; its prototype's
+ * own, or one of a prototype it delegates to. A method that is not generic, found first, hides it.
+ * @return its template index and the prototype type that declares it, or -1 and -1 */
+let _findGenericMethod = fn(ty: I32, name: Bytes): Tuple<I32, I32> {
+  // Most names are no generic method's, which spares walking the chain.
+  let named = false;
+  for ({ field } in _genericMethods) { named = named || (field == name); }
+  if (!named) { return (-1, -1); }
+  let at = _chainFind(ty, fn(at: I32): Bool {
+    (ownMethod(at, name) >= 0) || (_ownGenericMethod(at, name) >= 0)
+  });
+  let t = at >= 0 ? _ownGenericMethod(at, name) : -1;
+  t >= 0 ? (t, at) : (-1, -1)
+};
+
+/** Checks the body of the generic method `name` that the prototype type `ty` declares, unless that
+ * is done, so that its errors are found where it is declared, whether or not it is called. */
+export let checkGenericMethod = fn(ty: I32, name: Bytes): Bool {
+  let t = _ownGenericMethod(ty, name);
+  if (t < 0) { internalError("a generic method expected"); }
+  _checkTemplate(t, false)
+};
+
+// Checks whether a value of the prototype type `ty` finds a generic method `name`.
+export let hasGenericMethod = fn(ty: I32, name: Bytes): Bool {
+  H.isPrototype(ty) && (_findGenericMethod(ty, name).0 >= 0)
+};
+
+/** Checks `receiver.name(args)`, or `receiver.name<U>(args)`, when a value of the prototype type
+ * `start` finds a generic method `name` (`_findGenericMethod`); a direct call of its instance, with
+ * the receiver, as the prototype that declares it, for its `this`. A generic prototype's type
+ * arguments are the receiver's, and the method's own are those written or inferred.
+ * @param receiver  the checked receiver, whose syntax is the callee's first child
+ * @param start  the prototype type the method is looked for from; the receiver's, or for `super`,
+ *   the one the prototype delegates to
+ * @return the call, or -1 when there is no such method
+ * @throws a located error if the receiver's type arguments miss the method's `where` bounds, or
+ *   the call is wrong as a generic call's is */
+export let checkGenericMethodCall = fn(
+  receiver: I32, start: I32, name: Bytes, typeArgs: Array<AstType>, args: Array<AstExpr>,
+  expected: I32
+): I32 {
+  let (t, declaring) = _findGenericMethod(start, name);
+  if (t < 0) { return -1; }
+  let template = _templates[t];
+  let generic = H.isTemplateEnum(template.kind);
+  if (generic) { _requireBounds(template.bounds, declaring, template.name); }
+  let known = generic ? H.templateArgs(declaring) : _NO_TYPES;
+  let self = H.typeOf(receiver) == declaring ? receiver
+    : H.opNode(Op.Convert, declaring, [receiver]);
+  _checkGenericCall(t, name, typeArgs, args, expected, self, known)
 };
 
 /** Returns the template that a local, of this function or of an enclosing one, is.
@@ -3165,7 +3287,7 @@ export let checkFunctionCall = fn(
   expected: I32
 ): I32 {
   match (binding) {
-    Template(t) => _checkGenericCall(t, name, typeArgs, args, expected, receiver),
+    Template(t) => _checkGenericCall(t, name, typeArgs, args, expected, receiver, _NO_TYPES),
     Function(index) => {
       _plainCall(typeArgs);
       _checkDirectCall(index, args, receiver)
@@ -3200,7 +3322,7 @@ let _checkBindingCall = fn(
 ): I32 {
   // A local hides any module-level `name`, so `Unbound` may be a local template.
   let t = match (binding) { Unbound => _localTemplate(name), _ => -1 };
-  if (t >= 0) { return _checkGenericCall(t, name, typeArgs, args, expected, -1); }
+  if (t >= 0) { return _checkGenericCall(t, name, typeArgs, args, expected, -1, _NO_TYPES); }
 
   match (binding) {
     Template(_), Function(_), Native(_) =>
@@ -4164,19 +4286,13 @@ let _declarePrototype = fn(statement: I32, name: Bytes, ty: I32, fields: Array<P
   try {
     for (f, member in fields) {
       match (member) {
+        { name: field, typeParams: own, bounds, value } when (own.len() != 0) => {
+          let declared = _declaredBounds(name, typeParams, bounds, f);
+          _declareGenericMethod(ty, name, field, own, declared, value, syntaxChild(f));
+        },
         { name: field, bounds, value: Function(params, result, _, true) } => {
+          let declared = _declaredBounds(name, typeParams, bounds, f);
           let index = _addFunction(`${name}.${field}`, params, result, -1, syntaxChild(f), ty);
-          let declared = Array.new<MethodBound>(0);
-          for ({ name: boundName, bounds: names } in bounds) {
-          let at = paramNames(typeParams).indexOf(boundName);
-          if (at < 0) {
-            enterSyntax(syntaxChild(f));
-            throw coded(E0501, `${boundName} is not a type parameter of ${name}`);
-          }
-            let required = 0;
-            for (bound in names) { required = required | _bound(bound); }
-            declared.push({ param: typeParams[at], bounds: required });
-          }
           _methodBounds[index] = declared;
           _functions[index].dropped = generic;
           _prototypeMethods.push({ function: index, field });
@@ -4200,6 +4316,30 @@ let _declarePrototype = fn(statement: I32, name: Bytes, ty: I32, fields: Array<P
   info.parent = parent;
   if (failure != null) { throw failure; }
   null
+};
+
+/** Returns the bounds that a method of the prototype `name` requires, `where T: A + B, ...`, from
+ * the prototype's type parameters `typeParams`.
+ * @param bounds  the `where` clause's entries
+ * @param f  the method's field, the syntax child an error is located at
+ * @throws a located error if one names no type parameter of the prototype, or no bound */
+let _declaredBounds = fn(
+  name: Bytes, typeParams: Array<I32>, bounds: Array<TypeParam>, f: I32
+): Array<MethodBound> {
+  let declared = Array.new<MethodBound>(0);
+
+  for ({ name: boundName, bounds: names } in bounds) {
+    let at = paramNames(typeParams).indexOf(boundName);
+
+    if (at < 0) {
+      enterSyntax(syntaxChild(f));
+      throw coded(E0501, `${boundName} is not a type parameter of ${name}`);
+    }
+    let required = 0;
+    for (bound in names) { required = required | _bound(bound); }
+    declared.push({ param: typeParams[at], bounds: required });
+  }
+  declared
 };
 
 /** Returns the flag that a bound sets on a Param.
@@ -4275,9 +4415,44 @@ let _newTemplate = fn(
   _templates.push({
     name, params, value, syntax, module: currentModule(), bodyName, names: all,
     envTypes: _envTypes, locals: Array.new<I32>(0), keys: Array.new<I32>(0),
-    functions: Array.new<I32>(0), checker: -1
+    functions: Array.new<I32>(0), checker: -1, kind: -1, bounds: Array.new<MethodBound>(0)
   });
   _templates.len() - 1
+};
+
+/** Declares the generic method `field` of the prototype `ty`, named `name`, as a template whose
+ * type parameters are the prototype's, then its own, so that an instance's type arguments are
+ * the receiver's, then the method's. The prototype's syntax is current.
+ * @param typeParams  the method's own type parameters
+ * @param bounds  what it requires from the prototype's parameters
+ * @param value  its `method fn` literal
+ * @param syntax  that literal's syntax
+ * @throws a located error if it is `init`, or one of its type parameters repeats one of the
+ *   prototype's */
+let _declareGenericMethod = fn(
+  ty: I32, name: Bytes, field: Bytes, typeParams: Array<TypeParam>, bounds: Array<MethodBound>,
+  value: AstExpr, syntax: Syntax
+) {
+  if (field == "init") {
+    enterSyntax(syntax);
+    throw coded(E0402, `${name}.init cannot have type parameters of its own; give them to ${name}`);
+  }
+  let outer = paramNames(H.enumParams(ty));
+
+  for ({ name: param, start, end } in typeParams) {
+    if (outer.indexOf(param) >= 0) {
+      enterSyntax(_spanSyntax(_syntax.path, start, end));
+      throw coded(E0302, `${param} is already a type parameter of ${name}`);
+    }
+  }
+  let params = H.enumParams(ty).copy().appendFrom(checkTypeParams(typeParams, true), 0);
+  _templates.push({
+    name: `${name}.${field}`, params, value, syntax, module: currentModule(), bodyName: "",
+    names: paramNames(params), envTypes: _NO_TYPES, locals: Array.new<I32>(0),
+    keys: Array.new<I32>(0), functions: Array.new<I32>(0), checker: -1, kind: ty, bounds
+  });
+  _genericMethods.push({ template: _templates.len() - 1, field });
+  null
 };
 
 /** Declares a global of the module at the statement being checked, where a note about it points.
@@ -5673,9 +5848,12 @@ let _checkTemplate = fn(t: I32, local: Bool): Bool {
       _envTypes = types;
       _templateBody = true;
       let failure: ?Bytes = null;
+      // A generic method's body may use what its `where` clause requires of its prototype's Params.
+      let previous = _raiseBounds(template.bounds);
 
       try {
-        let index = _addFunction(template.name, fnParams, result, -1, template.syntax, -1);
+        let index =
+          _addFunction(template.name, fnParams, result, -1, template.syntax, template.kind);
         template.checker = index;
 
         if (local) {
@@ -5687,6 +5865,7 @@ let _checkTemplate = fn(t: I32, local: Bool): Bool {
           );
         }
       } catch (e) { failure = Std.string(e); }
+      _restoreBounds(template.bounds, previous);
       _envNames = outerNames;
       _envTypes = outerTypes;
       _templateBody = outerTemplate;
@@ -5749,6 +5928,8 @@ let _instance = fn(t: I32, types: Array<I32>, depth: I32, need: Need): I32 {
       let instance = `${template.name}<${H.typeArgNames(key)}>`;
       let ty = H.substitute(_functions[checker].ty, template.params, types);
       let index = generateFunction(instance, _functions[checker].params, ty);
+      // A generic method's instance has the receiver's type for its `this`.
+      if (template.kind >= 0) { _functions[index].methodKind = H.typeArg(ty, 0); }
       template.keys.push(key);
       template.functions.push(index);
       let outerScope = useModuleScope(template.module);
@@ -5861,13 +6042,9 @@ export let methodValue = fn(ty: I32, name: Bytes, f: I32, body: AstBlock): I32 {
     if (unmet != "") {
       _defineUnmet(index, unmet);
     } else {
-      let previous = Array.new<I32>(0);
-      for ({ param, bounds } in _methodBounds[found]) {
-        previous.push(H.paramBounds(param));
-        H.setParamBounds(param, H.paramBounds(param) | bounds);
-      }
+      let previous = _raiseBounds(_methodBounds[found]);
       _checkIsolated(index, body, _syntax, "", _envNames, _envTypes, false, _NO_TYPES);
-      for (i, { param } in _methodBounds[found]) { H.setParamBounds(param, previous[i]); }
+      _restoreBounds(_methodBounds[found], previous);
     }
   }
   let ref = H.node(Op.FunctionRef, _functionType(index), index + 1, 0, []);
@@ -6031,6 +6208,7 @@ export let beginCheck = fn(): Bool {
   _captureFloor = 0;
   _prototypeMethods = Array.new<Method>(0);
   _instanceMethods = Array.new<Method>(0);
+  _genericMethods = Array.new<GenericMethod>(0);
   _methodBounds = Array.new<Array<MethodBound>>(0);
   _methodCalls = Array.new<MethodCall>(0);
   _methods = Array.new<I32>(0);

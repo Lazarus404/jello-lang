@@ -25,11 +25,12 @@ import { callField, namedKey, readObject, storeField, writeField } from frontend
 import { scopedType } from frontend.semantics.ModuleScope;
 import { E0302, E0402, E0805, coded } from support.Codes;
 import {
-  buildInstances, checkGenericPrototype, checkMethodBounds, checkMethodCall, checkOperand, checkPresent, checkTypeArgs, delegates,
-  enterSyntax, fieldMismatch, findMethod, hasInitField, hideValue, linkedMember, methodValue,
-  noteMethodCall, objectValue, prototypeGlobal, prototypeField, prototypeNamed, prototypeParent,
-  prototypeValue, receiverMethodType, rejectAt, requireThis, resolveInstanceReads, sealedPrototype,
-  syntaxChild, widened,
+  buildInstances, checkGenericMethod, checkGenericMethodCall, checkGenericPrototype,
+  checkMethodBounds, checkMethodCall, checkOperand, checkPresent, checkTypeArgs, delegates,
+  enterSyntax, fieldMismatch, findMethod, hasGenericMethod, hasInitField, hideValue, linkedMember,
+  methodValue, noteMethodCall, objectValue, prototypeGlobal, prototypeField, prototypeNamed,
+  prototypeParent, prototypeValue, receiverMethodType, rejectAt, requireThis, resolveInstanceReads,
+  sealedPrototype, syntaxChild, widened,
 } from frontend.semantics.TypeCheck;
 
 /** Checks a call of method `index`, named `name`, which `holder` finds, with `receiver` as its
@@ -91,8 +92,11 @@ export let checkPrototypeString = fn(value: I32): I32 {
  * callee's; the method `name` of the Object that the prototype of the method being checked
  * delegates to, with its `this`. A prototype that `__proto__` names gives the method's type, and
  * any other Object's function is called as `callObjectField` calls one.
+ * @param expected  the type the context requires, which a generic method's call infers from, or -1
  * @throws a located error outside a prototype's method, or for a prototype without `__proto__` */
-export let checkSuperCall = fn(name: Bytes, types: Array<AstType>, args: Array<AstExpr>): I32 {
+export let checkSuperCall = fn(
+  name: Bytes, types: Array<AstType>, args: Array<AstExpr>, expected: I32
+): I32 {
   let outer = enterSyntax(syntaxChild(0));
   let ty = requireThis("`super`");
   let receiver = checkPresent(AstExpr.This, 0);
@@ -103,6 +107,10 @@ export let checkSuperCall = fn(name: Bytes, types: Array<AstType>, args: Array<A
   }
   let holder = readObject(prototypeValue(ty), namedKey("__proto__"), H.TYPE_OBJECT);
   enterSyntax(outer);
+  // A generic method is called directly, as the prototype that declares it.
+  let generic =
+    parent >= 0 ? checkGenericMethodCall(receiver, parent, name, types, args, expected) : -1;
+  if (generic >= 0) { return generic; }
   if (types.len() != 0) { throw coded(E0402, `super.${name} does not take type arguments`); }
   let found = parent >= 0 ? findMethod(parent, name) : -1;
 
@@ -121,30 +129,56 @@ let _writeMethod = fn(object: I32, ty: I32, name: Bytes, value: I32): I32 {
   H.callStd("object_seal", [H.TYPE_DYNAMIC, H.TYPE_DYNAMIC, H.TYPE_DYNAMIC], H.TYPE_BOOL, args)
 };
 
+/** Rejects the method `field` of the prototype type `ty`, named `name`, declared as its field `f`,
+ * when its linked typedef declares a field of that name too, or it would override a method it
+ * delegates to, or be overridden, where either is generic. A generic method is called as the
+ * receiver's type finds it, never read from the Object, so it can neither override nor be
+ * overridden.
+ * @param generic  whether the method is generic
+ * @throws a located error if it does */
+let _methodField = fn(ty: I32, name: Bytes, field: Bytes, f: I32, generic: Bool) {
+  let (declared, _) = linkedMember(ty, field);
+  let parent = prototypeParent(ty);
+  let inherited = (parent >= 0) && hasGenericMethod(parent, field);
+  let why = declared >= 0 ? `${field} is a method of ${name} and a field of its typedef`
+    : generic && (inherited || ((parent >= 0) && (findMethod(parent, field) >= 0)))
+      ? `${name}.${field} is generic, so it cannot override the ${field} it delegates to`
+    : inherited ? `${name}.${field} cannot override ${field}, a generic method it delegates to`
+    : "";
+
+  if (why != "") {
+    enterSyntax(syntaxChild(f));
+    throw coded(E0302, why);
+  }
+  null
+};
+
 /** Returns the `Declare` of the global of the prototype type `ty`, `prototype name { fields }`,
  * at its syntax; each field's value is its child. Its fields and methods are set, in order, on a
- * new Object, which initialises the global.
+ * new Object, which initialises the global. A generic method is no field of it; it is checked
+ * here, and its calls are direct.
  * @throws a located error if a field is declared twice */
 let _prototypeObject = fn(ty: I32, name: Bytes, fields: Array<PrototypeField>): I32 {
   let statements = Array.new<I32>(0);
   let object = hideValue(statements, "prototype", H.opNode(Op.ObjectNew, ty, []));
   let names = Array.new<Bytes>(0);
 
-  for (f, { name: field, value } in fields) {
+  for (f, { name: field, typeParams, value } in fields) {
     if (names.indexOf(field) >= 0) {
       enterSyntax(syntaxChild(f));
       throw coded(E0302, `${name} declares ${field} twice`);
     }
     names.push(field);
 
+    if (typeParams.len() != 0) {
+      _methodField(ty, name, field, f, true);
+      checkGenericMethod(ty, field);
+      continue;
+    }
+
     let stored = match (value) {
       Function(_, _, body, true) => {
-        let (declared, _) = linkedMember(ty, field);
-
-        if (declared >= 0) {
-          enterSyntax(syntaxChild(f));
-          throw coded(E0302, `${field} is a method of ${name} and a field of its typedef`);
-        }
+        _methodField(ty, name, field, f, false);
         _writeMethod(H.local(object, ty), ty, field, methodValue(ty, field, f, body))
       },
       _ => {

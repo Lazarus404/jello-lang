@@ -41,12 +41,12 @@ import {
 } from frontend.semantics.Prototypes;
 import { closestNames } from support.Text;
 import {
-  binaryValues, bufferHint, checkArity, checkFunctionCall, checkIndirectCall, checkInstance,
-  checkMethodBounds, checkOperand, checkPresent, checkPresentAs, declaredArgs, enterSyntax,
-  hasSpread, hideValue, fieldMismatch, isBound, isBoundOrAhead, joinArrays, linkedMember,
-  newBinding, objectValue, one, prototypeField, prototypeMethod, receiverMethodType, rejectAt,
-  sealedMethod, spreadArray, spreadOperand, syntaxChild, tupleFields, unsupportedHashKey, widened,
-  withoutCallee,
+  binaryValues, bufferHint, checkArity, checkFunctionCall, checkGenericMethodCall,
+  checkIndirectCall, checkInstance, checkMethodBounds, checkOperand, checkPresent, checkPresentAs,
+  declaredArgs, enterSyntax, hasGenericMethod, hasSpread, hideValue, fieldMismatch, isBound,
+  isBoundOrAhead, joinArrays, linkedMember, newBinding, objectValue, one, prototypeField,
+  prototypeMethod, receiverMethodType, rejectAt, sealedMethod, spreadArray, spreadOperand,
+  syntaxChild, tupleFields, unsupportedHashKey, widened, withoutCallee,
 } from frontend.semantics.TypeCheck;
 import {
   E0008, E0103, E0300, E0301, E0400, E0402, E0412, E0500, E0501, E0600, E0601, E0800, E0801, E0805,
@@ -200,6 +200,11 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
   let checked = checkPresent(base, 0);
   let tuple = objectValue(checked);
   let ty = H.typeOf(tuple);
+  // A generic method has no single function to read.
+  if (hasGenericMethod(H.typeOf(checked), member)) {
+    let called = `${member} is a generic method of ${H.typeName(H.typeOf(checked))}`;
+    throw coded(E0301, `${called}, so it can only be called; wrap the call in a function`);
+  }
   /* A prototype's method reads as its function, whose first parameter is its `this`, when the
    * instance meets the method's `where` bounds, as a call must. */
   let found = prototypeMethod(checked, member);
@@ -619,11 +624,15 @@ let _fieldTarget = fn(base: AstExpr, member: Bytes, inPlace: Bool): Tuple<I32, I
   let outer = enterSyntax(syntaxChild(0));
   let checked = checkPresent(base, 0);
   enterSyntax(outer);
+  let owner = H.typeOf(checked);
+
+  if (hasGenericMethod(owner, member)) {
+    throw coded(E0805, `${member} is a generic method, so it cannot be replaced`);
+  }
   // A prototype's method is replaced only by a function of its type.
   let replaced = prototypeMethod(checked, member);
   let record = objectValue(checked);
   let ty = H.typeOf(record);
-  let owner = H.typeOf(checked);
 
   if (replaced >= 0) {
     if (inPlace) { throw coded(E0807, `${member} is a method, so it cannot be updated in place`); }
@@ -635,6 +644,7 @@ let _fieldTarget = fn(base: AstExpr, member: Bytes, inPlace: Bool): Tuple<I32, I
     }
     return (record, -2, receiverMethodType(replaced, owner), owner);
   }
+
   if (ty == H.TYPE_OBJECT) { return (record, -1, prototypeField(owner, member), owner); }
   if (H.isKind(ty, Kind.Tuple)) { throw coded(E0103, "tuple fields cannot be assigned"); }
 
@@ -1335,7 +1345,7 @@ let _method = fn(
   expected: I32
 ): I32 {
   match (base) {
-    Super => { return checkSuperCall(name, types, args); },
+    Super => { return checkSuperCall(name, types, args, expected); },
     _ => null,
   };
   let outer = enterSyntax(syntaxChild(0));
@@ -1343,6 +1353,11 @@ let _method = fn(
   enterSyntax(outer);
   // A prototype's method wins over a function of `Object`, and a linked field holds a function.
   let declared = H.typeOf(receiver);
+
+  if (H.isPrototype(declared)) {
+    let call = checkGenericMethodCall(receiver, declared, name, types, args, expected);
+    if (call >= 0) { return call; }
+  }
 
   if (H.isPrototype(declared) && (types.len() == 0)) {
     let call = checkPrototypeCall(receiver, name, args);

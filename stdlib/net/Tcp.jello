@@ -15,7 +15,18 @@ package std.net;
  * leaves it with the sender. One in a global stays with the process that made
  * it: in the copy of the globals a new process starts with, it reads as
  * closed. A call that fails throws what went wrong, as Bytes, such as
- * "Connection refused"; one with a time limit returns null once it passes. */
+ * "Connection refused"; one with a time limit returns null once it passes.
+ *
+ * A stream's readOr waits for data or a message, whichever comes first, so
+ * one process can serve its connection and its inbox:
+ *
+ *   match (stream.readOr(inbox, 4096)) {
+ *     Data(bytes) => ...,
+ *     Message(value) => ...,
+ *   }
+ */
+
+import type { Inbox } from std.concurrent.Process;
 
 load {
   net_tcp_listen,
@@ -34,7 +45,8 @@ load {
 let _listen: (Bytes, I32) -> Dynamic = net_tcp_listen;
 let _accept: (Dynamic, I32) -> Dynamic = net_tcp_accept;
 let _connect: (Bytes, I32, I32) -> Dynamic = net_tcp_connect;
-let _read: (Dynamic, I32, I32) -> Bytes = net_read;
+// Its last argument, when not 0, lets a message reaching the inbox end the wait.
+let _read: (Dynamic, I32, I32, I32) -> Bytes = net_read;
 let _write: (Dynamic, Bytes) -> Bool = net_write;
 let _close: (Dynamic) -> Bool = net_close;
 let _localPort: (Dynamic) -> I32 = net_local_port;
@@ -43,11 +55,23 @@ let _peerPort: (Dynamic) -> I32 = net_peer_port;
 let _error: () -> I32 = net_error;
 let _errorText: (I32) -> Bytes = net_error_text;
 
+// What net_error says when a call's time limit passed.
+let _TIMED_OUT = -1;
+// What net_error says when a message reached the inbox before any data.
+let _MESSAGE = -3;
+
 // Throws why the last call failed.
 let _raise = fn() { throw _errorText(_error()); };
 
 // Throws why the last call failed, unless its time limit passed.
-let _unlessTimedOut = fn() { if (_error() != -1) { _raise(); }; };
+let _unlessTimedOut = fn() { if (_error() != _TIMED_OUT) { _raise(); }; };
+
+/* What readOr gives: the bytes read, empty once the other end has closed its
+ * side, or the message that reached the inbox first. */
+export enum Event<M> {
+  Data(bytes: Bytes);
+  Message(value: M);
+}
 
 // A connected stream of bytes.
 export typedef Stream = { let handle: Dynamic; };
@@ -59,13 +83,26 @@ export prototype Stream {
   read(max: I32): Bytes { this.readWithin(max, -1) as Bytes };
   // As read, but null once MS milliseconds pass with nothing to read.
   readWithin(max: I32, ms: I32): ?Bytes {
-    let data = _read(this.handle, max, ms);
+    let data = _read(this.handle, max, ms, 0);
 
     if ((Bytes.len(data) == 0) && (_error() != 0)) {
       _unlessTimedOut();
       return null;
     };
     data
+  };
+  /* As read, but should a message reach INBOX before any data, it is
+   * received instead; data already waiting is read first. */
+  readOr<M>(inbox: Inbox<M>, max: I32): Event<M> {
+    this.readOrWithin(inbox, max, -1) as Event<M>
+  };
+  // As readOr, but null once MS milliseconds pass with neither.
+  readOrWithin<M>(inbox: Inbox<M>, max: I32, ms: I32): ?Event<M> {
+    let data = _read(this.handle, max, ms, 1);
+    let code = Bytes.len(data) == 0 ? _error() : 0;
+    if (code == _MESSAGE) { return Event.Message(inbox.receive()); };
+    if ((code != 0) && (code != _TIMED_OUT)) { throw _errorText(code); };
+    code == 0 ? Event.Data(data) : null
   };
   // Writes all of DATA, waiting while the other end is slow to take it.
   write(data: Bytes) {

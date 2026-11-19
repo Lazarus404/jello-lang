@@ -1,0 +1,13 @@
+// expect: 0 1
+// A generic method called through super infers its type arguments from what the context expects.
+prototype Base { empty<U>(): Array<U> { Array.new<U>(0) }; };
+prototype Child {
+  __proto__: Base;
+  sizes(): Bytes {
+    let xs: Array<I32> = super.empty();
+    let ys: Array<Bytes> = super.empty();
+    ys.push("a");
+    `${Std.string(xs.len())} ${Std.string(ys.len())}`
+  };
+};
+new Child().sizes()

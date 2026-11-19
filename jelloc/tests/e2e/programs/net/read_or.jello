@@ -1,0 +1,95 @@
+// expect: message:wake|data:hi message:late|message:tick|null|stopped|data:|udp:ping message:m
+// schedulers: 4
+// readOr waits for data or a message, whichever comes first: a message wakes a reader parked on
+// a quiet stream, as does a tick sent after a delay; data already waiting is read before a
+// message already waiting; readOrWithin gives null once its time passes; a reader parked in it
+// can still be stopped; an empty Data still means the other end closed; and a UDP socket's
+// receiveOr does the same for datagrams.
+import std.concurrent.Process as Process;
+import type { Process, Inbox, Exit } from std.concurrent.Process;
+import std.net.Tcp as Tcp;
+import type { Listener, Stream, Event } from std.net.Tcp;
+import std.net.Udp as Udp;
+
+// What EVENT holds, as text.
+let shown = fn(event: Event<Bytes>): Bytes {
+  match (event) {
+    Data(bytes) => "data:" + bytes,
+    Message(value) => "message:" + value,
+  }
+};
+
+// A connected pair of streams.
+let pair = fn(): Tuple<Stream, Stream> {
+  let listener = Tcp.listen("127.0.0.1", 0);
+  let a = Tcp.connect("127.0.0.1", listener.port());
+  let b = listener.accept();
+  listener.close();
+  (a, b)
+};
+
+let run = fn(): Bytes {
+  let results = new Inbox<Bytes>();
+  let main = Process.self<Bytes>(results);
+
+  // A message wakes a reader parked on a stream nothing writes to.
+  let (_, quiet) = pair();
+  let reader = Process.spawn<Bytes>(fn(inbox: Inbox<Bytes>) {
+    main.send("parked");
+    main.send(shown(quiet.readOr(inbox, 16)));
+  });
+  results.receive();
+  Process.sleep(20);
+  reader.send("wake");
+  let woken = results.receive();
+
+  // Data already waiting comes before a message already waiting.
+  let (a, b) = pair();
+  a.write("hi");
+  Process.sleep(20);
+  main.send("late");
+  let first = shown(b.readOr(results, 16));
+  let second = shown(b.readOr(results, 16));
+
+  // A tick sent after a delay wakes the reader.
+  results.sendAfter(20, "tick");
+  let ticked = shown(b.readOr(results, 16));
+
+  // With neither, readOrWithin gives null once its time passes.
+  let timedOut = b.readOrWithin(results, 16, 20) == null ? "null" : "event";
+
+  // A reader parked in readOr can be stopped.
+  let (_, idle) = pair();
+  let parked = Process.spawn<Bytes>(fn(inbox: Inbox<Bytes>) {
+    main.send("parked");
+    idle.readOr(inbox, 16);
+    main.send("woke");
+  });
+  results.receive();
+  Process.sleep(20);
+  parked.stop();
+  let stopped = match (parked.join()) { Stopped => "stopped", _ => "other" };
+
+  // An empty Data means the other end closed.
+  a.close();
+  let closed = shown(b.readOr(results, 16));
+
+  // A datagram already waiting comes before a message already waiting.
+  let u = Udp.bind("127.0.0.1", 0);
+  u.sendTo("ping", "127.0.0.1", u.port());
+  Process.sleep(20);
+  main.send("m");
+  let datagram = match (u.receiveOr(results, 64)) {
+    Datagram(d) => "udp:" + d.data,
+    Message(value) => "message:" + value,
+  };
+  let message = match (u.receiveOr(results, 64)) {
+    Datagram(d) => "udp:" + d.data,
+    Message(value) => "message:" + value,
+  };
+  u.close();
+  b.close();
+
+  `${woken}|${first} ${second}|${ticked}|${timedOut}|${stopped}|${closed}|${datagram} ${message}`
+};
+run()
