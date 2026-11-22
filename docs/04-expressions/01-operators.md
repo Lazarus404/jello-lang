@@ -334,7 +334,8 @@ The operator is right-associative, so `a ? b : c ? d : e` is `a ? b : (c ? d : e
 is evaluated once, and the right side only when it is needed, so `x ?? expensive()` costs nothing
 when `x` is present. The two sides join as the branches of `?:` do: a `?Bytes` with a `Bytes`
 fallback gives a `Bytes`, and with a `?Bytes` fallback, a `?Bytes`. As there, a `Dynamic` left
-side needs a `Dynamic` fallback: `d ?? (0 as Dynamic)`.
+side needs a `Dynamic` fallback: `d ?? (0 as Dynamic)`. Where nothing else gives the whole a type,
+a literal fallback takes the left side's present type, so after a `?HashMap`, `[]` is an empty map.
 
 ```jello
 // expect: anon Ada 0

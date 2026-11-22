@@ -1,0 +1,22 @@
+// expect: 6 b|c 2 a
+import type { HashMap } from std.core.HashMap;
+
+let m = ["a" => 1, "b" => 2, "c" => 3];
+let total = 0;
+for (v in m) { total += v; }
+let big = Array.new<Bytes>(0);
+for (k, v in m) {
+  if (v < 2) { continue; }
+  big.push(k);
+}
+big.sort(fn(a: Bytes, b: Bytes): I32 { a == b ? 0 : a == "b" ? -1 : 1 });
+let walked = 0;
+for (_ in m) {
+  walked++;
+  if (walked == 2) { break; }
+}
+let find = fn(within: HashMap<Bytes, I32>, want: I32): ?Bytes {
+  for (k, v in within) { if (v == want) { return k; } }
+  null
+};
+`${Std.string(total)} ${big.join("|")} ${Std.string(walked)} ${find(m, 1) ?? "?"}`

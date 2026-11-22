@@ -13,7 +13,7 @@ package frontend.semantics;
  * located at the expression being checked. */
 
 import type {
-  AssignOp, BinaryOp, Expr as AstExpr, IncDecOp, ObjectEntry, Type as AstType,
+  AssignOp, BinaryOp, Expr as AstExpr, IncDecOp, MapEntry, ObjectEntry, Type as AstType,
 } from frontend.syntax.Ast;
 import { BinaryOp } from frontend.syntax.Ast;
 import frontend.hir.Hir as H;
@@ -37,14 +37,15 @@ import {
 } from frontend.semantics.Objects;
 import { checkFunctionIntrinsic, isFunctionIntrinsic } from frontend.semantics.Functions;
 import {
-  checkPrototypeCall, checkPrototypeExpr, checkSuperCall,
+  checkPrototypeCall, checkPrototypeExpr, checkSuperCall, methodCallWith, newInstance,
 } from frontend.semantics.Prototypes;
 import { closestNames } from support.Text;
 import {
   binaryValues, bufferHint, checkArity, checkFunctionCall, checkGenericMethodCall,
   checkIndirectCall, checkInstance, checkMethodBounds, checkOperand, checkPresent, checkPresentAs,
   declaredArgs, enterSyntax, hasGenericMethod, hasSpread, hideValue, fieldMismatch, isBound,
-  isBoundOrAhead, joinArrays, linkedMember, newBinding, objectValue, one, prototypeField,
+  isBoundOrAhead, isMapType, joinArrays, linkedMember, mapTemplate, newBinding, objectValue, one,
+  prototypeField,
   prototypeMethod, receiverMethodType, rejectAt, sealedMethod, spreadArray, spreadOperand,
   syntaxChild, tupleFields, unsupportedHashKey, widened, withoutCallee,
 } from frontend.semantics.TypeCheck;
@@ -406,6 +407,7 @@ let _tuple = fn(items: Array<AstExpr>, expected: I32): I32 {
  * @throws a failure that ends the check; an item whose type does not unify with the element type
  *   is recorded */
 let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
+  if ((items.len() == 0) && isMapType(expected)) { return _map([], expected); }
   let declared = H.isKind(expected, Kind.Array) ? H.innerOf(expected) : -1;
   let element = declared >= 0 ? declared : items.len() == 0 ? H.newVar(false) : -1;
   if (H.isOpen(declared)) { declared = -1; }
@@ -438,13 +440,101 @@ let _array = fn(items: Array<AstExpr>, expected: I32): I32 {
   joinArrays(parts, values, H.arrayType(H.resolve(element)))
 };
 
-/** Checks `base[index]` as a read; `Op.BytesGet` of Bytes or a buffer, or `Op.ArrayGet`.
+/** Checks `key`, syntax child `at` of the current syntax, as a key of a map of type `ty`.
+ * @return the checked key; one of another type is recorded as a failure */
+let _mapKey = fn(ty: I32, key: AstExpr, at: I32): I32 {
+  let keyType = H.templateArgs(ty)[0];
+  _mapPart(key, at, keyType, keyType, "key")
+};
+
+/** Checks `part`, syntax child `at` of the current syntax, as a map's key or value.
+ * @param ty  the type it must have, or -1 for any
+ * @param declared  the type it widens to, or -1
+ * @param what  `key` or `value`, for the diagnostic
+ * @return the checked part; one of another type is recorded as a failure */
+let _mapPart = fn(part: AstExpr, at: I32, ty: I32, declared: I32, what: Bytes): I32 {
+  let checked = widened(checkOperand(part, at, ty), declared);
+
+  if ((ty >= 0) && !H.unify(H.typeOf(checked), ty)) {
+    rejectAt(at, coded(E0400, `map ${what} must be ${H.typeName(ty)}`));
+  }
+  checked
+};
+
+/** Checks a map literal, `[k => v, ...]`, or `[]` where a HashMap is expected: a std.core.HashMap
+ * typed from the one expected, or else from its entries as an array is from its elements, with
+ * each entry set in turn, its key evaluated before its value, so that a later entry replaces an
+ * earlier one with an equal key. Its syntax children are each key followed by its value.
+ * @param expected  the type the context requires, or -1
+ * @return the block that makes and fills the map
+ * @throws a located error if the standard library has no HashMap, or the key type misses the
+ *   bound HashKey; an entry of another type is recorded as a failure */
+let _map = fn(entries: Array<MapEntry>, expected: I32): I32 {
+  let template = mapTemplate();
+  if (template < 0) { throw _wantMap(); }
+  let wanted = isMapType(expected) ? H.templateArgs(expected) : [-1, -1];
+  let types = wanted.map(fn(ty: I32): I32 {
+    ty >= 0 ? ty : entries.len() == 0 ? H.newVar(false) : -1
+  });
+  let declared = wanted.map(fn(ty: I32): I32 { H.isOpen(ty) ? -1 : ty });
+  let keys = Array.new<I32>(0);
+  let values = Array.new<I32>(0);
+
+  for (i, { key, value } in entries) {
+    let k = _mapPart(key, 2 * i, types[0], declared[0], "key");
+    if (types[0] < 0) { types[0] = H.typeOf(k); }
+    let v = _mapPart(value, 2 * i + 1, types[1], declared[1], "value");
+    if (types[1] < 0) { types[1] = H.typeOf(v); }
+    keys.push(k);
+    values.push(v);
+  }
+  let ty = H.appliedType(template, types.map(H.resolve));
+  let statements = Array.new<I32>(0);
+  let map = hideValue(statements, "map", newInstance(ty));
+
+  for (i, key in keys) {
+    statements.push(expressionOf(methodCallWith(H.local(map, ty), "set", [key, values[i]])));
+  }
+  statements.push(H.local(map, ty));
+  H.node(Op.Block, ty, 0, 1, statements)
+};
+
+// Why `m[k] op= v`, `m[k]++` and their kind are rejected.
+let _MAP_UPDATE = coded(
+  E0807, "a map entry cannot be updated in place, since it may be missing; set it, m[k] = v"
+);
+
+/** Checks `m[k] = v` as a set of the entry `key` of `map`, both checked, to `value`, syntax child
+ * 1 of the current syntax; the map, the key and the value are evaluated in that order, and the
+ * assignment's value is the value.
+ * @throws a located error for `m[k] op= v` (`_MAP_UPDATE`); a value of another type is recorded as
+ *   a failure */
+let _assignMap = fn(map: I32, key: I32, op: AssignOp, value: AstExpr): I32 {
+  if (let Compound(_) = op) { throw _MAP_UPDATE; }
+  let ty = H.typeOf(map);
+  let valueType = H.templateArgs(ty)[1];
+  let checked = _mapPart(value, 1, valueType, valueType, "value");
+  let statements = Array.new<I32>(0);
+  let m = hideValue(statements, "map", map);
+  let k = hideValue(statements, "key", key);
+  let v = hideValue(statements, "value", checked);
+  let args = [H.local(k, H.typeOf(key)), H.local(v, valueType)];
+  statements.push(expressionOf(methodCallWith(H.local(m, ty), "set", args)));
+  statements.push(H.local(v, valueType));
+  H.node(Op.Block, valueType, 0, 1, statements)
+};
+
+/** Checks `base[index]` as a read; `Op.BytesGet` of Bytes or a buffer, `Op.ArrayGet`, or a map's
+ * `get`, which gives null for a missing key.
  * @param base  syntax child 0, a Null<T> converted to its T
  * @param index  syntax child 1, an I32
  * @return the read
  * @throws a located error if `base` cannot be indexed */
 let _index = fn(base: AstExpr, index: AstExpr): I32 {
-  let value = objectValue(checkPresent(base, 0));
+  let checked = checkPresent(base, 0);
+  let mapType = H.typeOf(checked);
+  if (isMapType(mapType)) { return methodCallWith(checked, "get", [_mapKey(mapType, index, 1)]); }
+  let value = objectValue(checked);
   let ty = H.typeOf(value);
   if (ty == H.TYPE_OBJECT) { return readObject(value, objectKey(index, 1), H.TYPE_DYNAMIC); }
   let checkedIndex = _i32(index, 1, "index");
@@ -502,11 +592,18 @@ let _set = fn(target: I32, index: I32, value: I32): I32 {
 /** Checks `a[i]`, child 0 of the current syntax, as an assignment target.
  * @param base  the indexed expression
  * @param index  the index
- * @return the checked array, buffer or Object, and the checked index or key (`objectKey`)
+ * @return the checked array, buffer, map or Object, and the checked index or key (`objectKey`)
  * @throws a located error if the target is Bytes, which is immutable, or cannot be indexed */
 let _indexTarget = fn(base: AstExpr, index: AstExpr): Tuple<I32, I32> {
   let outer = enterSyntax(syntaxChild(0));
-  let array = objectValue(checkPresent(base, 0));
+  let checked = checkPresent(base, 0);
+
+  if (isMapType(H.typeOf(checked))) {
+    let key = _mapKey(H.typeOf(checked), index, 1);
+    enterSyntax(outer);
+    return (checked, key);
+  }
+  let array = objectValue(checked);
   let ty = H.typeOf(array);
 
   if (H.isKind(ty, Kind.Bytes)) {
@@ -580,6 +677,7 @@ let _updateIndex = fn(
 let _assignIndex = fn(base: AstExpr, index: AstExpr, op: AssignOp, value: AstExpr): I32 {
   let (array, checkedIndex) = _indexTarget(base, index);
   if (H.typeOf(array) == H.TYPE_OBJECT) { return assignObject(array, checkedIndex, op, value); }
+  if (isMapType(H.typeOf(array))) { return _assignMap(array, checkedIndex, op, value); }
   let element = _elementOf(array);
 
   let checked = match (op) {
@@ -608,6 +706,7 @@ let _assignIndex = fn(base: AstExpr, index: AstExpr, op: AssignOp, value: AstExp
 let _stepIndex = fn(base: AstExpr, index: AstExpr, op: IncDecOp, prefix: Bool): I32 {
   let (array, checkedIndex) = _indexTarget(base, index);
   if (H.typeOf(array) == H.TYPE_OBJECT) { throw OBJECT_UPDATE; }
+  if (isMapType(H.typeOf(array))) { throw _MAP_UPDATE; }
   let binary = match (op) { Increment => BinaryOp.Add, _ => BinaryOp.Subtract };
   _updateIndex(array, checkedIndex, binary, one(_elementOf(array)), true, !prefix)
 };
@@ -798,6 +897,14 @@ let _extensions = Array.new<Extension>(0);
 /** The types a call needed the extension module of when it was not loaded, or loaded too late to
  * be checked first. */
 let _wanted = Array.new<Bytes>(0);
+
+/** Notes std.core.HashMap as wanted, for a map literal that a program has without loading it, so
+ * that it is loaded and the program checked again.
+ * @return the failure that ends this check */
+let _wantMap = fn(): Bytes {
+  _wanted.internIndex("HashMap");
+  coded(E0300, "a map literal makes a std.core.HashMap, which the standard library does not have")
+};
 
 /** A builtin generic over a type parameter T; its qualified name, its signature over T, its HIR
  * op, the parameter whose Array<T> or List<T> gives T, or -1, and the diagnostic for each
@@ -1540,6 +1647,7 @@ export let checkAggregateExpr = fn(expr: AstExpr, expected: I32): I32 {
     Tuple(items) => _tuple(items, expected),
     Bits(segments) => checkBits(segments),
     Array(items) => _array(items, expected),
+    Map(entries) => _map(entries, expected),
     List(value) => checkList(value, expected),
     Interpolation(texts, holes) => checkInterpolation(texts, holes),
     Member(base, member) => _member(base, member),

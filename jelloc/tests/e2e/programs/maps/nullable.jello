@@ -1,0 +1,8 @@
+// expect: 1 1 0
+import type { HashMap } from std.core.HashMap;
+
+let some: ?HashMap<Bytes, I32> = ["a" => 1];
+let total = 0;
+for (v in some) { total += v; }
+let empty: ?HashMap<Bytes, I32> = [];
+`${total} ${Std.string(some["a"])} ${(empty ?? ["x" => 9]).size()}`

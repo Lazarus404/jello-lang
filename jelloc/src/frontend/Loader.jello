@@ -17,7 +17,7 @@ import { noteFailure } from frontend.semantics.Failures;
 import {
   E0200, E0201, E0202, E0203, E0204, E0205, E0206, E0207, E0209, E1000, coded
 } from support.Codes;
-import { packageSpan, parseProgram, programSyntax } from frontend.syntax.Parser;
+import { madeMaps, packageSpan, parseProgram, programSyntax } from frontend.syntax.Parser;
 import type { SourceSpan, Syntax } from frontend.syntax.Source;
 import { relocated } from frontend.syntax.Source;
 import { locate } from frontend.syntax.Locations;
@@ -171,6 +171,8 @@ let _extensionIndexes = Array.new<I32>(0);
 let _methodNames = Array.new<Bytes>(0);
 // Whether the last load's modules make or name a list, without which none has a list to call.
 let _listsNamed = false;
+// Whether the last load's modules make a map literal, `[k => v, ...]`.
+let _mapsWritten = false;
 
 /** The span a load failure is located at; the import statement being processed, or a
  * dependency's tail expression; null when there is none. */
@@ -413,6 +415,7 @@ let _module = fn(path: Bytes, text: Bytes, parts: Array<Bytes>, imports: Array<I
   let lexed = lexFile(text, path);
   _noteMethodNames(lexed.0);
   let program = parseProgram(lexed);
+  if (madeMaps()) { _mapsWritten = true; }
   let syntax = programSyntax(program);
   _failure = importing;
 
@@ -610,8 +613,13 @@ let _begin = fn(std: Bytes, roots: Array<Bytes>) {
   _extensionIndexes = Array.new<I32>(0);
   _methodNames = Array.new<Bytes>(0);
   _listsNamed = false;
+  _mapsWritten = false;
   null
 };
+
+/** Checks whether the last load's modules seem to write a map literal, which needs
+ * `std.core.HashMap`. */
+export let mapsWritten = fn(): Bool { _mapsWritten };
 
 /** Loads a program; the entry module and every module it imports, directly or not, each once.
  * Modules outside the standard library are found under the entry's directory, then under each of

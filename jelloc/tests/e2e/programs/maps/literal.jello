@@ -1,0 +1,11 @@
+// expect: 2 1 null 3 11 true
+let m = ["one" => 1, "two" => 2];
+let before = m.size();
+let first = m["one"];
+let missing = m["zero"];
+m["three"] = 3;
+let set = m["three"];
+let assigned = (m["one"] = 11);
+let again = ["a" => 1, "a" => 2]["a"] == 2;
+`${before} ${Std.string(first)} ${Std.string(missing)} ${Std.string(set)} ${assigned} `
+  + Std.string(again)

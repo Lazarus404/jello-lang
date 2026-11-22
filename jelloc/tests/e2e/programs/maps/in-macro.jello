@@ -1,0 +1,15 @@
+// expect: 3 6
+// A macro's quoted code may make, index and walk a map, which expand like any other syntax.
+macro tally(k, v) {
+  Macro.emit(quote.expr {
+    {
+      let m = [unquote(k) => unquote(v), "b" => 2];
+      m["c"] = m[unquote(k)] ?? 0;
+      let total = 0;
+      for (x in m) { total += x; }
+      `${m.size()} ${total}`
+    }
+  });
+}
+
+tally("a", 2)

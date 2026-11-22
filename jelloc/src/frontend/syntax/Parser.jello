@@ -31,6 +31,7 @@ import type {
   IntSize,
   ListGenerator,
   ListLiteral,
+  MapEntry,
   MatchAlternative,
   MatchArm,
   MatchArmValue,
@@ -161,6 +162,10 @@ let _errors = Array.new<Tuple<SourceSpan, Bytes, ?SourceSpan, Bytes>>(0);
 let _packageSpan: ?SourceSpan = null;
 // Returns the span of the last parse's `package` declaration, or null if it has none.
 export let packageSpan = fn(): ?SourceSpan { _packageSpan };
+// Whether the last parse made a map literal, `[k => v, ...]`.
+let _madeMaps = false;
+// Returns whether the last parse made a map literal, `[k => v, ...]`.
+export let madeMaps = fn(): Bool { _madeMaps };
 /** The note for the syntax error about to be thrown, its span (null for none) and text, which
  * `_recover` takes with the error. */
 let _noteSpan: ?SourceSpan = null;
@@ -997,8 +1002,8 @@ let _element = fn(): Expr {
   _markExpr(Expr.Spread(_parseExpr(0)), start)
 };
 
-/** Parses comma-separated items up to and including `end`, for a call, `new` or an array,
- * allowing a trailing comma.
+/** Parses comma-separated items up to and including `end`, for a call or `new`, allowing a
+ * trailing comma.
  * @param end  the closing token */
 let _exprList = fn(end: Token): Array<Expr> {
   let out = Array.new<Expr>(0);
@@ -1587,12 +1592,35 @@ let _parsePrimary = fn(): Expr {
   _markExpr(_primary(start), start)
 };
 
-/** Parses an array literal, `[a, ...rest, b]`, whose elements may be spread and which may end
- * with a comma.
- * @return the array, unmarked */
+/** Parses an array literal, `[a, ...rest, b]`, whose elements may be spread, or a map literal,
+ * `[k => v, ...]`, which an `=>` after its first item tells apart; either may end with a comma.
+ * @return the array or map, unmarked
+ * @throws an error for a literal that mixes elements and entries, or spreads into a map */
 let _parseArray = fn(): Expr {
   expect(Token.LBracket);
-  Expr.Array(_exprList(Token.RBracket))
+  let items = Array.new<Expr>(0);
+  let entries = Array.new<MapEntry>(0);
+
+  while (peek() != Token.RBracket) {
+    let item = _element();
+
+    if (peek() == Token.FatArrow) {
+      if (items.len() != 0) { _error(E0100, "an array literal cannot have map entries"); }
+      if (let Spread(_) = item) { _error(E0100, "a map literal's entries cannot be spread"); }
+      next();
+      entries.push({ key: item, value: _parseExpr(0) });
+    } else if (entries.len() != 0) {
+      _expected("'=>'", peek());
+    } else {
+      items.push(item);
+    }
+    if (peek() != Token.Comma) { break; }
+    next();
+  }
+  expect(Token.RBracket);
+  if (entries.len() == 0) { return Expr.Array(items); }
+  _madeMaps = true;
+  Expr.Map(entries)
 };
 
 // Parses type arguments, `<T, ...>`.
@@ -2615,6 +2643,7 @@ export let parseProgram = fn(lexed: Tuple<Array<Token>, Bytes, Array<I32>, Array
   pipelineTopic = false;
   inCondition = false;
   _packageSpan = null;
+  _madeMaps = false;
 
   let pkg = Package.None;
 

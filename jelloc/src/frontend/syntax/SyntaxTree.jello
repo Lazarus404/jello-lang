@@ -259,6 +259,13 @@ let _expr = fn(value: Expr): Syntax {
     Variable(_), Topic => null,
     Array(items), Tuple(items), Interpolation(_, items) => _exprs(items, out),
     List(list) => _list(list, out, patterns),
+    Map(entries) => {
+      for ({ key, value: entry } in entries) {
+        _add(out, key);
+        _add(out, entry);
+      }
+      null
+    },
     Object(entries) => {
       for (member in entries) {
         match (member) {

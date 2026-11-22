@@ -29,7 +29,9 @@ A module can also be imported as any other, for instance to call a function by a
 ## std.core.HashMap
 
 Import `HashMap` as a type: `import type { HashMap } from std.core.HashMap;`. A
-`HashMap<K: HashKey, V>` holds mutable entries indexed by `K`.
+`HashMap<K: HashKey, V>` holds mutable entries indexed by `K`. The literal `[key => value, ...]`
+makes one, `m[key]` reads an entry as `get` does, `m[key] = value` sets it, and `for` walks it; see
+[Collections](../02-types/03-collections.md#hash-maps).
 
 | Method | Description |
 | --- | --- |

@@ -24,14 +24,25 @@ import { storable, toDynamic } from frontend.semantics.Values;
 import { callField, namedKey, readObject, storeField, writeField } from frontend.semantics.Objects;
 import { scopedType } from frontend.semantics.ModuleScope;
 import { E0302, E0402, E0805, coded } from support.Codes;
+import { internalError } from support.Internal;
 import {
   buildInstances, checkGenericMethod, checkGenericMethodCall, checkGenericPrototype,
-  checkMethodBounds, checkMethodCall, checkOperand, checkPresent, checkTypeArgs, delegates,
-  enterSyntax, fieldMismatch, findMethod, hasGenericMethod, hasInitField, hideValue, linkedMember,
-  methodValue, noteMethodCall, objectValue, prototypeGlobal, prototypeField, prototypeNamed,
-  prototypeParent, prototypeValue, receiverMethodType, rejectAt, requireThis, resolveInstanceReads,
-  sealedPrototype, syntaxChild, widened,
+  checkMethodBounds, checkMethodCall, checkOperand, checkPresent, checkTypeArgs, declaredArgs,
+  delegates, enterSyntax, fieldMismatch, findMethod, hasGenericMethod, hasInitField, hideValue,
+  linkedMember, methodValue, noteMethodCall, objectValue, prototypeField, prototypeGlobal,
+  prototypeNamed, prototypeParent, prototypeValue, receiverMethodType, rejectAt, requireThis,
+  resolveInstanceReads, sealedPrototype, syntaxChild, widened,
 } from frontend.semantics.TypeCheck;
+
+/** Returns a call of the method value `callee` on `first`, its `this`, with the checked `values`,
+ * widened to the method's parameters. */
+let _callWith = fn(callee: I32, first: I32, values: Array<I32>): I32 {
+  let function = H.typeOf(callee);
+  let declared = declaredArgs(function);
+  let children = [callee, first];
+  for (i, value in values) { children.push(widened(value, declared[i + 1])); }
+  H.node(Op.CallIndirect, H.innerOf(function), 0, 0, children)
+};
 
 /** Checks a call of method `index`, named `name`, which `holder` finds, with `receiver` as its
  * `this`; `holder` is the receiver itself for `o.m(args)`, or the prototype's `__proto__` for
@@ -41,7 +52,8 @@ import {
  * @param receiver  the checked value of a prototype type
  * @param origin  the prototype type the method is found from
  * @param exact  whether `receiver` is of type `origin` exactly (`noteMethodCall`)
- * @param args  the arguments, syntax children from 1 on
+ * @param args  the arguments, syntax children from 1 on, when `values` is null
+ * @param values  the arguments checked already, which fit the method's parameters, or null
  * @return the block that binds the values and calls the method */
 let _methodCall = fn(
   holder: I32,
@@ -50,7 +62,8 @@ let _methodCall = fn(
   origin: I32,
   exact: Bool,
   name: Bytes,
-  args: Array<AstExpr>
+  args: Array<AstExpr>,
+  values: ?Array<I32>
 ): I32 {
   let ty = receiverMethodType(index, H.typeOf(receiver));
   let self = H.typeArg(ty, 0);
@@ -60,12 +73,25 @@ let _methodCall = fn(
   let callee = readObject(objectValue(source), namedKey(name), ty);
   let first = H.local(held, H.typeOf(receiver));
   if (H.typeOf(receiver) != self) { first = H.opNode(Op.Convert, self, [first]); }
-  let call = checkMethodCall(callee, index, first, args);
+  let call = values == null
+    ? checkMethodCall(callee, index, first, args)
+    : _callWith(callee, first, values);
   // Spread arguments are bound first, in a block that ends with the call.
   let site = H.opOf(call) == Op.Block ? H.lastChild(call) : call;
   noteMethodCall(site, origin, name, exact);
   statements.push(call);
   H.node(Op.Block, H.typeOf(call), 0, 1, statements)
+};
+
+/** Returns a call of the method `name` that `receiver`, a checked value of a prototype type, finds,
+ * with the checked `values` as its arguments; they fit its parameters, as the caller has checked.
+ */
+export let methodCallWith = fn(receiver: I32, name: Bytes, values: Array<I32>): I32 {
+  let ty = H.typeOf(receiver);
+  let found = findMethod(ty, name);
+  if (found < 0) { internalError(`${H.typeName(ty)} has no method ${name}`); }
+  checkMethodBounds(found, ty);
+  _methodCall(-1, receiver, found, ty, false, name, [], values)
 };
 
 /** Checks `o.name(args)` for `receiver`, a checked value of a prototype type, when it finds a
@@ -75,7 +101,7 @@ export let checkPrototypeCall = fn(receiver: I32, name: Bytes, args: Array<AstEx
   let found = findMethod(H.typeOf(receiver), name);
   if (found < 0) { return -1; }
   checkMethodBounds(found, H.typeOf(receiver));
-  _methodCall(-1, receiver, found, H.typeOf(receiver), false, name, args)
+  _methodCall(-1, receiver, found, H.typeOf(receiver), false, name, args, null)
 };
 
 // Installs the custom `Std.string` route without making Derived depend on prototype internals.
@@ -85,7 +111,7 @@ export let checkPrototypeString = fn(value: I32): I32 {
   let ty = receiverMethodType(found, H.typeOf(value));
   if ((H.typeArgCount(ty) != 1) || (H.innerOf(ty) != H.TYPE_BYTES)) { return -1; }
   checkMethodBounds(found, H.typeOf(value));
-  _methodCall(-1, value, found, H.typeOf(value), false, "toString", Array.new<AstExpr>(0))
+  _methodCall(-1, value, found, H.typeOf(value), false, "toString", [], null)
 };
 
 /** Checks `super.name(args)`, the call's syntax current with `super` the first child of its
@@ -115,7 +141,7 @@ export let checkSuperCall = fn(
   let found = parent >= 0 ? findMethod(parent, name) : -1;
 
   if (found >= 0) {
-    _methodCall(holder, receiver, found, parent, true, name, args)
+    _methodCall(holder, receiver, found, parent, true, name, args, null)
   } else {
     callField(holder, receiver, name, args)
   }
@@ -234,6 +260,51 @@ export let instantiatePrototypes = fn(): Bool {
   buildInstances(_prototypeObject) || resolved
 };
 
+/** Returns `new P(args)` for the prototype `checked`, an instance of `template` or -1; `exact` when
+ * it is named as a type, so that the Object is known to delegate to it.
+ * @throws a located error if the type arguments miss their bounds, `checked` is no Object, or the
+ *   arguments do not suit its init */
+let _newObject = fn(template: I32, exact: Bool, checked: I32, args: Array<AstExpr>): I32 {
+  let ty = H.typeOf(checked);
+
+  if (H.isTemplateEnum(template)) {
+    checkTypeArgs(H.enumParams(template), H.typeName(template), H.templateArgs(ty));
+  }
+
+  if (!H.isObject(ty)) {
+    enterSyntax(syntaxChild(0));
+    throw coded(E0805, "`new` makes an Object that delegates to an Object, not " + H.typeName(ty));
+  }
+  let made = H.isPrototype(ty) ? ty : H.TYPE_OBJECT;
+  let statements = Array.new<I32>(0);
+  let link = hideValue(statements, "prototype", checked);
+  let object = hideValue(statements, "object", H.opNode(Op.ObjectNew, made, []));
+  statements.push(expressionOf(writeField(H.local(object, made), "__proto__", H.local(link, ty))));
+  let init = H.isPrototype(ty) ? findMethod(ty, "init") : -1;
+
+  if (init >= 0) {
+    let call = _methodCall(-1, H.local(object, made), init, ty, exact, "init", args, null);
+    statements.push(expressionOf(call));
+  } else if (args.len() != 0) {
+    if (hasInitField(ty)) {
+      throw coded(E0805, "the init of " + H.typeName(ty)
+        + " is a field; `new` passes its arguments to an init method, `init(params) { ... }`");
+    }
+    throw coded(E0805, H.isPrototype(ty)
+      ? H.typeName(ty) + " has no init method, so `new` passes it no arguments"
+      : "`new` passes arguments only to a prototype's init method");
+  }
+  statements.push(H.local(object, made));
+  H.node(Op.Block, made, 0, 1, statements)
+};
+
+/** Returns a new Object of the prototype type `ty`, an instance of a generic prototype, made as
+ * `new P<T>()` makes one.
+ * @throws a located error if its type arguments miss their bounds */
+export let newInstance = fn(ty: I32): I32 {
+  _newObject(H.templateOf(ty), true, prototypeValue(ty), [])
+};
+
 /** Checks `new proto(args)`, the current syntax being its own, with `proto` its first child; an
  * Object that delegates to `proto`, after the `init` method that `proto`'s prototype type finds
  * runs with the arguments. Its type is that prototype type, or Object for an Object.
@@ -248,36 +319,7 @@ let _checkNew = fn(proto: AstExpr, args: Array<AstExpr>): I32 {
   while (inferred && (vars.len() < H.enumParamCount(template))) { vars.push(H.newVar(false)); }
   let named = inferred ? H.appliedType(template, vars) : template;
   let checked = named >= 0 ? prototypeValue(named) : checkPresent(proto, 0);
-  let ty = H.typeOf(checked);
-
-  if (H.isTemplateEnum(template)) { checkTypeArgs(H.enumParams(template), H.typeName(template), H.templateArgs(ty)); }
-
-  if (!H.isObject(ty)) {
-    enterSyntax(syntaxChild(0));
-    throw coded(E0805, "`new` makes an Object that delegates to an Object, not " + H.typeName(ty));
-  }
-  let made = H.isPrototype(ty) ? ty : H.TYPE_OBJECT;
-  let statements = Array.new<I32>(0);
-  let link = hideValue(statements, "prototype", checked);
-  let object = hideValue(statements, "object", H.opNode(Op.ObjectNew, made, []));
-  statements.push(expressionOf(writeField(H.local(object, made), "__proto__", H.local(link, ty))));
-  let init = H.isPrototype(ty) ? findMethod(ty, "init") : -1;
-
-  if (init >= 0) {
-    // Only a named prototype is known to be the one the Object delegates to.
-    let call = _methodCall(-1, H.local(object, made), init, ty, named >= 0, "init", args);
-    statements.push(expressionOf(call));
-  } else if (args.len() != 0) {
-    if (hasInitField(ty)) {
-      throw coded(E0805, "the init of " + H.typeName(ty)
-        + " is a field; `new` passes its arguments to an init method, `init(params) { ... }`");
-    }
-    throw coded(E0805, H.isPrototype(ty)
-      ? H.typeName(ty) + " has no init method, so `new` passes it no arguments"
-      : "`new` passes arguments only to a prototype's init method");
-  }
-  statements.push(H.local(object, made));
-  H.node(Op.Block, made, 0, 1, statements)
+  _newObject(template, named >= 0, checked, args)
 };
 
 // Checks `new P(args)`, or rejects a bare `super`, with the expression's syntax current.

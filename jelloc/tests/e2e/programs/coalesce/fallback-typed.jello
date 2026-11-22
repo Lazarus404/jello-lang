@@ -1,0 +1,18 @@
+// expect: [4294967296] ["k" => 1] null null (4294967296, "b") 80
+import type { HashMap } from std.core.HashMap;
+
+typedef Port = { let number: I32; };
+
+let wide: ?Array<I64> = null;
+let xs = wide ?? [];
+xs.push(4294967296);
+let maybe: ?HashMap<Bytes, I32> = null;
+let m = maybe ?? [];
+m["k"] = 1;
+let none: ?I32 = null;
+let either = fn(a: ?Bytes, b: ?Bytes) { a ?? b };
+let pair: ?Tuple<I64, Bytes> = null;
+let port: ?Port = null;
+let chosen = port ?? { number: 80 };
+`${Std.string(xs)} ${Std.string(m)} ${Std.string(none ?? null)} ${Std.string(either(null, null))} `
+  + `${Std.string(pair ?? (4294967296, "b"))} ${chosen.number}`

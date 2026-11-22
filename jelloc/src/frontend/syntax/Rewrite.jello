@@ -9,8 +9,8 @@ package frontend.syntax;
 
 import type {
   BitExprSegment, BitPatternSegment, Block, BytesLayoutField, BytesLayoutType, EnumConstructor, Expr, ListGenerator, ListLiteral,
-  MatchAlternative, MatchArm, MatchArmValue, Parameter, Pattern, PrototypeField, Stmt, StructField,
-  Type
+  MapEntry, MatchAlternative, MatchArm, MatchArmValue, Parameter, Pattern, PrototypeField, Stmt,
+  StructField, Type
 } from frontend.syntax.Ast;
 import {
   Expr, ListLiteral, MatchArms, ObjectEntry, ParameterKind, Pattern, QuoteBody, Stmt, Type,
@@ -342,6 +342,10 @@ let _expressionChildren = fn(cursor: Cursor, value: Expr): Expr {
     Bytes(_), RegExp(_, _), Atom(_), Bool(_), Integer(_, _), Float(_, _), Null, This, Super,
     Variable(_), Topic => value,
     Array(items) => Expr.Array(_children(cursor, items)),
+    Map(entries) => Expr.Map(entries.map(fn(entry: MapEntry): MapEntry {
+      let key = _child(cursor, entry.key);
+      { key, value: _child(cursor, entry.value) }
+    })),
     Tuple(items) => Expr.Tuple(_children(cursor, items)),
     Interpolation(texts, holes) => Expr.Interpolation(texts, _children(cursor, holes)),
     List(list) => Expr.List(_list(cursor, list)),

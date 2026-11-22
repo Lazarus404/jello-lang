@@ -215,8 +215,11 @@ do {
 
 `for (item in items) { ... }` runs its body once for each item of an `Array`, a `Bytes` or a
 buffer from `Bytes.new` (each byte as an `I32`), or a `List`, in order. A nullable collection is
-unwrapped as any operand is, so a null one traps with `NULL_DEREF`. `for (index, item in items) { ... }` also names the
-item's position, counting from 0.
+unwrapped as any operand is, so a null one traps with `NULL_DEREF`.
+`for (index, item in items) { ... }` also names the item's position, counting from 0.
+
+A `HashMap` gives its values, and `for (key, value in map)` names each value's key as well, in
+the map's unspecified order (see [Hash maps](../02-types/03-collections.md#hash-maps)).
 
 ```jello
 // expect: 6 0:a 1:b 2:c
@@ -238,8 +241,8 @@ total
 
 Each pass binds fresh names, so a closure made in the body keeps the item it saw. `break` and
 `continue` work as in `while`, and the names are not visible after the loop. An array's length
-is read before each pass, so items the body pushes are walked too; a list is walked as it was when
-the loop began.
+is read before each pass, so items the body pushes are walked too; a list or a hash map is walked
+as it was when the loop began.
 
 ## `break` and `continue`
 

@@ -40,7 +40,7 @@ import {
 import type { Import, Module } from frontend.Loader;
 import {
   Import, addExtensions, extensionsWanted, hasExtension, isHookName, isTestModule, isTestName,
-  loadedExtensions, localName, modulePath
+  loadedExtensions, localName, mapsWritten, modulePath
 } from frontend.Loader;
 import { programSyntax } from frontend.syntax.Parser;
 import type { Syntax } from frontend.syntax.Source;
@@ -49,12 +49,14 @@ import {
   checkDoWhile, checkEffect, checkFor, checkGlobalInitializer, checkLiteralRanges, checkOperand,
   checkTemplate, checkThrow, checkWhile, currentSpan, declareFunctions, declareGlobal, enterNode,
   enterSpan, enterSyntax, finishProgram, initGlobal, instantiateTemplates, isDirectFunction,
-  isLoaded, isTemplate, poisonDeclared, recoverTopLevel, syntaxChild,
-  takeRegexpInits, unsupportedStatement, useAggregateChecks, useAssertionChecks,
-  useConditionChecks, useEnumChecks, useLetChecks, usePrototypeString, useStructuralEquality, useUnsupported,
-  useValueChecks, withInstances
+  isLoaded, isTemplate, poisonDeclared, recoverTopLevel, syntaxChild, takeRegexpInits,
+  unsupportedStatement, useAggregateChecks, useAssertionChecks, useConditionChecks, useEnumChecks,
+  useLetChecks, useMapModule, useMethodCalls, usePrototypeString, useStructuralEquality,
+  useUnsupported, useValueChecks, withInstances
 } from frontend.semantics.TypeCheck;
-import { checkPrototype, checkPrototypeString, instantiatePrototypes } from frontend.semantics.Prototypes;
+import {
+  checkPrototype, checkPrototypeString, instantiatePrototypes, methodCallWith
+} from frontend.semantics.Prototypes;
 import { verifyHir } from frontend.hir.Verify;
 import { E0206, E0210, E0213, E0214, E0304, E0605, E0901, coded } from support.Codes;
 
@@ -64,6 +66,8 @@ import { E0206, E0210, E0213, E0214, E0304, E0605, E0901, coded } from support.C
 let _initializers = Array.new<I32>(0);
 // The index of `std.testing` among the modules, or -1 when the program does not load it.
 let _testing = -1;
+// The module whose HashMap map literals make, which a program that has one loads.
+let _MAP_MODULE = "std.core.HashMap";
 
 /** Checks that a native's function type can cross the JDLL ABI; every parameter and the result
  * must be `Bool`, `I32`, `I64`, `F32`, `F64`, `Bytes`, `Dynamic` or an abstract type, null or
@@ -515,6 +519,7 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
   useStructuralEquality(structuralEquality);
   useUnsupported(unsupported);
   usePrototypeString(checkPrototypeString);
+  useMethodCalls(methodCallWith);
   resetDerived();
   _initializers = Array.new<I32>(0);
 
@@ -532,9 +537,7 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
   let extensions = loadedExtensions();
 
   for (extension in extensions) {
-    if ((extension < entry) && (extendedType(modules[extension].name) != "")) {
-      runs[extension] = true;
-    }
+    if (extension < entry) { runs[extension] = true; }
   }
   _markRunning(modules, runs, opened);
 
@@ -544,6 +547,7 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
     if (runs[i] && (extended != "")) {
       useExtension(extended, i, _exportNames(module.statements));
     }
+    if (runs[i] && (module.name == _MAP_MODULE)) { useMapModule(i); }
   }
 
   /* A module that failed is the last checked, since modules after it may use what it would
@@ -615,6 +619,8 @@ let _checkWith = fn(modules: Array<Module>, types: Array<Bytes>): Hir {
  * @return the program's HIR */
 export let checkProgram = fn(modules: Array<Module>): Hir {
   let types = extensionsWanted(extensibleTypes(), isIntrinsicMethod);
+  // A map literal makes a HashMap, whether or not its module is imported.
+  if (mapsWritten() && hasExtension("HashMap")) { types.push("HashMap"); }
   _checkWith(types.len() == 0 ? modules : addExtensions(types), types)
 };
 

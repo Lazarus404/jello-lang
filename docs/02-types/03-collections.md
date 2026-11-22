@@ -216,12 +216,60 @@ Std.string([1, 2] == [1, 2]) + " " + Std.string([1, 2] == [2, 1])
 
 ## Hash maps
 
-`HashMap<K: HashKey, V>` stores mutable key-value entries. Import its type from
-`std.core.HashMap`; `K` must be a `HashKey`, while `V` may be any value type.
-Numbers, `Bool`, `Atom` and `Bytes` are keys by value. Tuples, records and enum values are
-structural keys when every field is a key. Objects and functions are keys by identity: a distinct
-object with equal fields is a different key. Floats, arrays, lists, nullable values, `Dynamic`,
-buffers, byte layouts and native handles are not keys.
+`HashMap<K: HashKey, V>` stores mutable key-value entries. `K` must be a `HashKey`, while `V`
+may be any value type. Numbers, `Bool`, `Atom` and `Bytes` are keys by value. Tuples, records
+and enum values are structural keys when every field is a key. Objects and functions are keys by
+identity: a distinct object with equal fields is a different key. Floats, arrays, lists, nullable
+values, `Dynamic`, buffers, byte layouts and native handles are not keys.
+
+A map literal, `[key => value, ...]`, makes a `HashMap`. Its key and value types come from the
+type expected of it or, failing that, from its first entry, and every entry must have them.
+When a key appears twice, the last entry wins. `m[key]` reads the value for a key, as a `?V`
+that is `null` when the key is absent, and `m[key] = value` sets it. `for` walks a map's values,
+or its keys and values:
+
+```jello
+// expect: 1 null 3 6 two
+let map = ["one" => 1, "two" => 2];
+map["three"] = 3;
+let total = 0;
+for (value in map) { total += value; }
+let named = "";
+for (key, value in map) { if (value == 2) { named = key; } }
+`${Std.string(map["one"])} ${Std.string(map["zero"])} ${Std.string(map.size())} ${total} ${named}`
+```
+
+The literal needs no import, but writing the type does: import it from `std.core.HashMap`. An
+empty literal, `[]`, is a map only where a `HashMap` is expected, and a literal's integer keys
+take the expected width:
+
+```jello
+// expect: b 1
+import type { HashMap } from std.core.HashMap;
+
+let wide: HashMap<I64, Bytes> = [1 => "a", 4294967296 => "b"];
+let counts: HashMap<Bytes, I32> = [];
+counts["x"] = (counts["x"] ?? 0) + 1;
+`${wide[4294967296] ?? "?"} ${Std.string(counts["x"])}`
+```
+
+Since an entry may be absent, it cannot be updated in place: `counts["x"] += 1` is an error, and
+so is `counts["x"]++`. Read it with a fallback and set it, as above.
+
+```jello
+// error: 2:22: map key must be Bytes [E0400]
+let map = ["a" => 1, 2 => 2];
+map
+```
+
+```jello
+// error: 3:1: a map entry cannot be updated in place, since it may be missing; set it, m[k] = v [E0807]
+let counts = ["a" => 1];
+counts["a"] += 1;
+counts
+```
+
+The methods give the same operations and more, on a map made with `new` as on a literal:
 
 ```jello
 // expect: two true
@@ -239,8 +287,9 @@ already nullable cannot distinguish an absent key from a present key whose value
 `exists` as well when that distinction matters. `set` replaces an existing value, `remove` says
 whether it removed one, `clear` removes all entries, and `size` counts live entries.
 
-`keys`, `values` and `each` traverse live entries in the map's internal slot order. That order is
-unspecified: it is not insertion order and may change after a map grows or entries are removed.
+`keys`, `values`, `each` and `for` traverse live entries in the map's internal slot order. That
+order is unspecified: it is not insertion order and may change after a map grows or entries are
+removed. A `for` loop walks the entries as they were when it began.
 `copy` returns a map with independent backing arrays and the same entries. A map whose key and
 value types satisfy `Show` prints as `[key => value, ...]` through `Std.string`. The order can
 differ from one run to the next, so this example sorts what it traverses and prints a map of one
@@ -259,10 +308,9 @@ map.each(fn(key: Bytes, value: I32) { total += value; });
 let paired = map.get(map.keys()[1]) == map.values()[1];
 let copy = map.copy();
 copy.set("three", 3);
-let one = new HashMap<Bytes, I32>();
-one.set("one", 1);
-Std.string(values) + " " + Std.string(total) + " " + Std.string(paired) + " " + Std.string(one) + " "
-  + Std.string(map.size()) + " " + Std.string(copy.size())
+let one = ["one" => 1];
+`${Std.string(values)} ${total} ${Std.string(paired)} ${Std.string(one)}`
+  + ` ${map.size()} ${copy.size()}`
 ```
 
 ## Lists

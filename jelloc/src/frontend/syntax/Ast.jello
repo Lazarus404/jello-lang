@@ -165,6 +165,12 @@ export typedef ListGenerator = {
   let guard: ?Expr;
 };
 
+// An entry of a map literal, `key => value`.
+export typedef MapEntry = {
+  let key: Expr;
+  let value: Expr;
+};
+
 // The body of a `list[...]` literal.
 export enum ListLiteral {
   // `list[]`.
@@ -304,6 +310,8 @@ export enum Expr {
   Variable(name: Bytes);
 
   Array(items: Array<Expr>);
+  // A map literal, `[k => v, ...]`, which makes a HashMap.
+  Map(entries: Array<MapEntry>);
   // A `list[...]` literal.
   List(value: ListLiteral);
   Tuple(items: Array<Expr>);

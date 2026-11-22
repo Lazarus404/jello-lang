@@ -1,0 +1,18 @@
+// expect: w true null ok null 2
+import type { HashMap } from std.core.HashMap;
+
+typedef Peer = { let host: Bytes; let port: I32; };
+
+let ints = [1 => "a", 2 => "b"];
+let wide: I64 = 4294967296;
+ints[wide] = "w";
+let pairs = [(1, "x") => true];
+let peers: HashMap<Peer, Bytes> = [{ host: "127.0.0.1", port: 3478 } => "ok"];
+let object = { host: "127.0.0.1" };
+let objects = [object => "found"];
+let nested = ["outer" => ["inner" => 2]];
+let inner = nested["outer"] ?? [];
+let samePeer = peers[{ host: "127.0.0.1", port: 3478 }] ?? "?";
+let otherObject = objects[{ host: "127.0.0.1" }];
+`${ints[4294967296] ?? "?"} ${Std.string(pairs[(1, "x")])} ${Std.string(pairs[(2, "x")])} `
+  + `${samePeer} ${Std.string(otherObject)} ${Std.string(inner["inner"])}`

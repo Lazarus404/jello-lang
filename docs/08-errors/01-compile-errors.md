@@ -466,8 +466,9 @@ Object literal spreads only another Object.
 
 ## E0807: an invalid index or tuple field
 
-Arrays, buffers and Objects are indexed with []; a tuple's fields are .0, .1 and
-so on, up to its size. A method cannot be updated in place.
+Arrays, buffers, Objects and HashMaps are indexed with []; a tuple's fields are
+.0, .1 and so on, up to its size. A method cannot be updated in place, and
+neither can a HashMap entry, which may be missing.
 
 ## E0808: a compile-time literal required
 

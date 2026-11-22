@@ -732,7 +732,6 @@ let _unsupportedHashKey = fn(ty: I32): I32 {
   let resolved = H.resolve(ty);
   match (H.kindOf(resolved)) {
     Bool, Atom, Bytes, Function, Object => -1,
-    Var => resolved,
     Param => H.hasBounds(resolved, H.BOUND_HASH_KEY) ? -1 : resolved,
     Tuple => {
       let found = -1;
@@ -767,6 +766,12 @@ let _unsupportedHashKey = fn(ty: I32): I32 {
   }
 };
 export let unsupportedHashKey = fn(ty: I32): I32 { _unsupportedHashKey(ty) };
+
+/** Checks whether `ty` is known not to be a HashKey; one with a part still unknown may yet be. */
+let _notHashKey = fn(ty: I32): Bool {
+  let bad = _unsupportedHashKey(ty);
+  (bad >= 0) && !H.isUnknown(bad)
+};
 
 /** Returns the HIR type that an AST type denotes. A name is a builtin type, a type parameter in
  * scope or a type in module scope; `Array`, `List`, `Tuple` and `Null` take their type arguments
@@ -1023,6 +1028,40 @@ export let useUnsupported = fn(find: (I32, Bool) -> I32): Bool {
 let _prototypeString: (I32) -> I32 = fn(_value) { -1 };
 export let usePrototypeString = fn(check: (I32) -> I32): Bool { _prototypeString = check; true };
 export let prototypeString = fn(value: I32): I32 { _prototypeString(value) };
+
+/** The prototype layer installs this so that map syntax can call a prototype's method with
+ * arguments checked already (`frontend.semantics.Prototypes.methodCallWith`). */
+let _methodWith: (I32, Bytes, Array<I32>) -> I32 = fn(_receiver, _name, _values) { -1 };
+export let useMethodCalls = fn(call: (I32, Bytes, Array<I32>) -> I32): Bool {
+  _methodWith = call;
+  true
+};
+
+// The module std.core.HashMap, whose HashMap map syntax makes and reads, or -1 for none.
+let _mapModule = -1;
+// Its generic prototype HashMap, once looked up, or -1.
+let _mapExport = -1;
+
+// Notes the module at index `module` as std.core.HashMap.
+export let useMapModule = fn(module: I32): Bool {
+  _mapModule = module;
+  _mapExport = -1;
+  true
+};
+
+/** Returns the generic prototype HashMap, or -1 until std.core.HashMap is checked before the
+ * current module. */
+export let mapTemplate = fn(): I32 {
+  if ((_mapModule < 0) || (_mapModule >= currentModule())) { return -1; }
+  if (_mapExport < 0) { _mapExport = exportedType(_mapModule, "HashMap"); }
+  _mapExport
+};
+
+// Checks whether `ty`, a type or -1, is an instance of std.core.HashMap's HashMap.
+export let isMapType = fn(ty: I32): Bool {
+  let template = ty >= 0 ? H.templateOf(ty) : -1;
+  (template >= 0) && (template == mapTemplate())
+};
 
 /** Checks whether `base.member` names a variant of an enum type; when `base` also names a
  * namespace import, as `import type { E }` and `import a.E as E` may, only a variant of it does,
@@ -3028,7 +3067,7 @@ export let checkTypeArgs = fn(params: Array<I32>, name: Bytes, types: Array<I32>
     let paramName = H.typeName(param);
     let missing = H.isUnknown(ty) ? ""
       : H.hasBounds(param, H.BOUND_INTEGER) && !H.isInteger(ty) ? "Integer"
-      : H.hasBounds(param, H.BOUND_HASH_KEY) && (_unsupportedHashKey(ty) >= 0) ? "HashKey"
+      : H.hasBounds(param, H.BOUND_HASH_KEY) && _notHashKey(ty) ? "HashKey"
       : H.hasBounds(param, H.BOUND_EQ) && (_unsupported(ty, false) >= 0) ? "Eq"
       : H.hasBounds(param, H.BOUND_SHOW) && (_unsupported(ty, true) >= 0) ? "Show" : "";
 
@@ -3433,7 +3472,8 @@ let _after = fn(declarations: Array<I32>, last: I32, value: Bool): I32 {
 export let mayBeNull = fn(value: AstExpr): Bool {
   match (value) {
     Bytes(_), RegExp(_, _), Atom(_), Bool(_), Integer(_, _), Float(_, _), Null => false,
-    Array(_), List(_), Tuple(_), Object(_), Bits(_), Interpolation(_, _), New(_, _) => false,
+    Array(_), Map(_), List(_), Tuple(_), Object(_), Bits(_), Interpolation(_, _), New(_, _) =>
+      false,
     Function(_, _, _, _), Unary(_, _), Binary(_, _, _), IncDec(_, _, _), Is(_, _) => false,
     _ => true,
   }
@@ -3831,9 +3871,11 @@ let _checkPipe = fn(value: AstExpr, body: AstExpr, topic: Bool, expected: I32): 
 
 /** Checks `value ?? fallback`, which evaluates `value` once, into a hidden `??` binding, and
  * `fallback` only when that is null. Its type joins `fallback`'s with `value`'s present type, so
- * `name ?? "anon"` is Bytes for a `?Bytes` name. A value that can never be null is the result
- * by itself; its fallback is still checked, though it never runs, much like a spare umbrella in
- * a desert.
+ * `name ?? "anon"` is Bytes for a `?Bytes` name. With no type expected of the whole, a fallback
+ * that cannot be null, such as a literal, is checked as the present type, so `m[k] ?? []` makes
+ * an empty map; one that may be null is checked as it stands, which an expected type would
+ * unwrap. A value that can never be null is the result by itself; its fallback is still checked,
+ * though it never runs, much like a spare umbrella in a desert.
  * @return the `Block` that binds the value and tests it
  * @throws a located error if the value's type is not yet known or the two sides' types do not
  *   join */
@@ -3848,7 +3890,9 @@ let _checkCoalesce = fn(value: AstExpr, fallback: AstExpr, expected: I32): I32 {
 
   // The fallback may not run, so it proves nothing about what follows.
   let before = narrowings();
-  let checkedFallback = checkOperand(fallback, 1, expected);
+  let typed = match (fallback) { Null => false, _ => !mayBeNull(fallback) };
+  let hint = typed && (expected < 0) && H.isKind(ty, Kind.Null) ? H.innerOf(ty) : expected;
+  let checkedFallback = checkOperand(fallback, 1, hint);
   keepNarrowings(before);
   if (!H.holdsNull(ty)) { return checked; }
 
@@ -3918,7 +3962,7 @@ let _checkExpr = fn(expr: AstExpr, syntax: Syntax, expected: I32): I32 {
     Coalesce(value, fallback) => _checkCoalesce(value, fallback, expected),
     Member(Variable(space), name) when (_isNamespace(space)) =>
       _bindingValue(_inNamespace(space, name), `${space}.${name}`),
-    Tuple(_), Array(_), List(_), Interpolation(_, _), Member(_, _), Index(_, _), Bits(_) =>
+    Tuple(_), Array(_), Map(_), List(_), Interpolation(_, _), Member(_, _), Index(_, _), Bits(_) =>
       _checkAggregate(expr, literal),
     /* `M.f(...)` calls an export of a namespace import; any other member or
      * generic callee is a builtin or a method. */
@@ -5406,33 +5450,54 @@ export let checkWhile = fn(condition: AstExpr, body: Array<Stmt>): I32 {
  * is current: the index's pattern, if any, then the item's, and as children the items and then
  * the body's statements. It is the `while` a careful hand would write. Arrays, Bytes and buffers
  * are walked by a hidden counter, their length read on each pass; a list is walked by a hidden
- * cursor along its tails. Both step after the body, in the step that `continue` reaches, so the
- * counter is never reassigned while the index is live and the two share a register; each pass
- * binds fresh names, so a closure keeps the item it saw, and an item `_` reads nothing.
+ * cursor along its tails. A HashMap is walked as arrays of its values and of their keys, taken
+ * before the first pass, each key being the index of its value. Both step after the body, in the
+ * step that `continue` reaches, so the counter is never reassigned while the index is live and
+ * the two share a register; each pass binds fresh names, so a closure keeps the item it saw, and
+ * an item `_` reads nothing.
  * @param index  the index's name pattern, or null
  * @param item  the pattern each item is bound to; a name, or a pattern that cannot fail
- * @param items  the Array, Bytes, ByteBuffer or List walked
+ * @param items  the Array, Bytes, ByteBuffer, List or HashMap walked
  * @param body  the body's statements
  * @return the `Block` of the hidden bindings and the `While`, with its step
  * @throws a located error if `items` cannot be walked, or for a duplicate name */
 export let checkFor = fn(index: ?Pattern, item: Pattern, items: AstExpr, body: Array<Stmt>): I32 {
   let source = _value(items, 0, -1);
   let ty = H.typeOf(source);
+  let isMap = isMapType(ty);
   let isList = H.isKind(ty, Kind.List);
   let isArray = H.isKind(ty, Kind.Array);
 
-  if (!isList && !isArray && (ty != H.TYPE_BYTES) && (ty != H.TYPE_BYTE_BUFFER)) {
+  if (!isMap && !isList && !isArray && (ty != H.TYPE_BYTES) && (ty != H.TYPE_BYTE_BUFFER)) {
     enterSyntax(syntaxChild(0));
-    throw coded(E0400, `for walks an Array, Bytes or a List, not ${H.typeName(ty)}`);
+    throw coded(E0400, `for walks an Array, Bytes, a List or a HashMap, not ${H.typeName(ty)}`);
   }
 
   let mark = _nameIds.len();
   let outerStart = _scopeStart;
   _scopeStart = mark;
+  let setup = Array.new<I32>(0);
+  let keyType = isMap ? H.templateArgs(ty)[0] : H.TYPE_I32;
+  let keys = -1;
+
+  if (isMap) {
+    // Only an index needs the keys, which are read first, from the same map.
+    if (index != null) {
+      let map = _declare("for.map", ty, false);
+      setup.push(H.declareBinding(Op.Const, map, "for.map", source));
+      keys = _declare("for.keys", H.arrayType(keyType), false);
+      let keysRead = _methodWith(H.local(map, ty), "keys", []);
+      setup.push(H.declareBinding(Op.Const, keys, "for.keys", keysRead));
+      source = H.local(map, ty);
+    }
+    source = _methodWith(source, "values", []);
+    ty = H.typeOf(source);
+    isArray = true;
+  }
   let element = isList || isArray ? H.innerOf(ty) : H.TYPE_I32;
   let held = _declare("for", ty, isList);
   let read = fn(): I32 { H.local(held, ty) };
-  let setup = [H.declareBinding(isList ? Op.Let : Op.Const, held, "for", source)];
+  setup.push(H.declareBinding(isList ? Op.Let : Op.Const, held, "for", source));
   // A list needs a count only for its index; the others are walked by one.
   let counter = (!isList || (index != null)) ? _declare("for.index", H.TYPE_I32, true) : -1;
   let count = fn(): I32 { H.local(counter, H.TYPE_I32) };
@@ -5457,7 +5522,9 @@ export let checkFor = fn(index: ?Pattern, item: Pattern, items: AstExpr, body: A
 
   if (index != null) {
     let name = bindPatternName(index);
-    prefix.push(H.declareBinding(Op.Const, _declare(name, H.TYPE_I32, false), name, count()));
+    let key = keys < 0 ? count()
+      : H.opNode(Op.ArrayGet, keyType, [H.local(keys, H.arrayType(keyType)), count()]);
+    prefix.push(H.declareBinding(Op.Const, _declare(name, keyType, false), name, key));
   }
   let itemSyntax = syntaxPattern(index == null ? 0 : 1);
 
@@ -6209,6 +6276,8 @@ export let beginCheck = fn(): Bool {
   _prototypeMethods = Array.new<Method>(0);
   _instanceMethods = Array.new<Method>(0);
   _genericMethods = Array.new<GenericMethod>(0);
+  _mapModule = -1;
+  _mapExport = -1;
   _methodBounds = Array.new<Array<MethodBound>>(0);
   _methodCalls = Array.new<MethodCall>(0);
   _methods = Array.new<I32>(0);

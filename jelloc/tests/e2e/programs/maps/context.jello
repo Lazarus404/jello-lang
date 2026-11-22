@@ -1,0 +1,11 @@
+// expect: b 1 ["x" => 1] 2
+import type { HashMap } from std.core.HashMap;
+
+let wide: HashMap<I64, Bytes> = [1 => "a", 4294967296 => "b"];
+let counts: HashMap<Bytes, I32> = [];
+let seen = counts["x"];
+counts["x"] = 1;
+let sizeOf = fn(m: HashMap<Bytes, Bool>): I32 { m.size() };
+let made = fn(): HashMap<I32, Bytes> { [] };
+`${wide[4294967296] ?? "?"} ${Std.string(seen ?? 1)} ${Std.string(counts)} `
+  + Std.string(sizeOf(["a" => true, "b" => false]) + made().size())

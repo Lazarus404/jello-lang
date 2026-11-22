@@ -1,0 +1,5 @@
+// expect: 2 ["a", "b"] true
+let m = ["a" => 1, "b" => 2];
+let keys = m.keys();
+keys.sort(fn(a: Bytes, b: Bytes): I32 { a == b ? 0 : a == "a" ? -1 : 1 });
+`${Std.string(m.size())} ${Std.string(keys)} ${Std.string(m.exists("b"))}`

@@ -1,0 +1,8 @@
+// expect: 2 4 true
+let m = ["a" => 1, "b" => 2];
+let passes = 0;
+for (k, v in m) {
+  passes++;
+  m[k + "+"] = v;
+}
+`${passes} ${m.size()} ${Std.string(m["a+"] == 1)}`
