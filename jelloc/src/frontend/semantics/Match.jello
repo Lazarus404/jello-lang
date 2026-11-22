@@ -796,6 +796,7 @@ let _test = fn(
 
         for (s, { signed, value: segment } in prefix) {
           let at = subPattern(syntax, s);
+
           if (let Integer(digits, _) = segment) {
             enterSyntax(at);
             checkSegmentLiteral(codes[s], signed, digits, false);
@@ -806,6 +807,7 @@ let _test = fn(
         }
 
         let sizeAst = segments[dependent].size as AstExpr;
+
         let sized = fn(): I32 {
           checkArm(bound.names, _boundReads(subject, bound), [], sizeAst, dependent, TYPE_I32, false)
         };
@@ -815,6 +817,7 @@ let _test = fn(
         tests.push(opNode(Op.And, TYPE_BOOL, [nonnegative, enough]));
 
         let value = segments[dependent].value;
+
         match (value) {
           BindPattern(name) => _bind(bound, name, path, subPattern(syntax, dependent)),
           Wildcard => null,
@@ -823,11 +826,13 @@ let _test = fn(
         let bytesRoot = _addRoot(subject, nullType(TYPE_BYTES));
         let slice = opNode(Op.BytesSlice, TYPE_BYTES, [_read(subject, path), i32Of(fixed), sized()]);
         tests.push(_store(subject, bytesRoot, slice));
+
         if (let BindPattern(name) = value) {
           bound.paths[bound.names.indexOf(name)] = [bytesRoot, _UNWRAP, 0];
         }
 
         let tail = segments[dependent + 1].value;
+
         match (tail) {
           BindPattern(name) => _bind(bound, name, path, subPattern(syntax, dependent + 1)),
           Wildcard => null,
@@ -838,6 +843,7 @@ let _test = fn(
         let count = opNode(Op.Sub, TYPE_I32, [length(), start()]);
         let rest = opNode(Op.BytesSlice, TYPE_BYTES, [_read(subject, path), start(), count]);
         tests.push(_store(subject, restRoot, rest));
+
         if (let BindPattern(name) = tail) {
           bound.paths[bound.names.indexOf(name)] = [restRoot, _UNWRAP, 0];
         }
@@ -1316,6 +1322,7 @@ let _subject = fn(subject: AstExpr, arms: Array<MatchArm>, children: Array<I32>)
       Arm({ alternatives }) => alternatives,
       Unquote(_) => { throw coded(E1001, "unquote is only allowed inside a quote"); },
     };
+
     for ({ pattern } in alternatives) {
       fits = fits && match (pattern) {
         Tuple(patterns) => (patterns.len() == items.len()) && (_spreadIndex(patterns, 0) < 0),

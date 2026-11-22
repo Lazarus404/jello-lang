@@ -159,6 +159,7 @@ let testParsesQuotedMatchArmsAndArmListUnquotes = fn(t: Test) {
   };
 
   let quoted = parse("quote.arm { A when (ok) => value }");
+
   match (quoted.tail) {
     Quote(Arm, Arm(Arm({ alternatives: [{ pattern: Enum("A", []) }], guard: Variable("ok") }))) => null,
     _ => T.fail(t, "quoted match arm was not parsed"),

@@ -1159,6 +1159,7 @@ export let newParam = fn(name: Bytes, bounds: I32): I32 {
 export let hasBounds = fn(ty: I32, bounds: I32): Bool { (_flags(ty) & bounds) == bounds };
 // Returns a Param's bounds without its internal Null<T> marker.
 export let paramBounds = fn(ty: I32): I32 { _flags(ty) & 15 };
+
 // Replaces a Param's bounds without changing its internal Null<T> marker.
 export let setParamBounds = fn(ty: I32, bounds: I32): I32 {
   _types[ty * _TYPE_WIDTH + 1] = (_flags(ty) & _NULLED) | bounds;
@@ -1557,6 +1558,7 @@ export let stdNative = fn(name: Bytes, params: Array<I32>, result: I32): I32 {
 export let callStd = fn(name: Bytes, params: Array<I32>, result: I32, args: Array<I32>): I32 {
   node(Op.CallNative, result, stdNative(name, params, result), 0, args)
 };
+
 export let callVm = fn(name: Bytes, params: Array<I32>, result: I32, args: Array<I32>): I32 {
   node(Op.CallNative, result, declareNative("vm", name, functionType(params, result)), 0, args)
 };

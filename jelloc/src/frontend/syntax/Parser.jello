@@ -569,7 +569,11 @@ let _methodBounds = fn(): Array<TypeParam> {
     let name = _ident();
     expect(Token.Colon);
     let bounds = [_ident()];
-    while (peek() == Token.Plus) { next(); bounds.push(_ident()); }
+
+    while (peek() == Token.Plus) {
+      next();
+      bounds.push(_ident());
+    }
     out.push({ name, bounds, start: _offset(at, false), end: _offset(at, true) });
     if (peek() != Token.Comma) { break; }
     next();
@@ -674,7 +678,8 @@ typedef SegmentType = {
 };
 
 /** Parses a bits segment's type, before its parenthesised value; `rest`, `bytes(N)`, a number of
- * bits (1 to 8, 16 or 32), or `u8`, `u16`, `u32`, `i32` or `f32` in either case, followed by an optional
+ * bits (1 to 8, 16 or 32), or `u8`, `u16`, `u32`, `i32` or `f32` in either case, followed by an
+ * optional
  * `.le` or `.be` except on an 8-bit or `rest` segment.
  * @throws an error for an unknown segment type, a bad width or a misplaced byte order */
 let _bitsSegment = fn(): SegmentType {
@@ -692,8 +697,12 @@ let _bitsSegment = fn(): SegmentType {
       match (name) {
         "bytes" => {
           expect(Token.LParen);
+
           match (peek()) {
-            IntegerConstant(digits, _) => { width = _bytesLength(digits) * 8; next(); },
+            IntegerConstant(digits, _) => {
+              width = _bytesLength(digits) * 8;
+              next();
+            },
             _ => { size = _parseExpr(0); },
           };
           expect(Token.RParen);
@@ -1311,7 +1320,8 @@ let _braceIsObject = fn(): Bool {
   }
 };
 
-/** Parses a quote after `quote`; an optional kind, `.expr`, `.stmt`, `.stmts`, `.type`, `.pat` or `.arm`
+/** Parses a quote after `quote`; an optional kind, `.expr`, `.stmt`, `.stmts`, `.type`, `.pat` or
+ * `.arm`
  * (or spelt out as `.expression`, `.statement`, `.statements` or `.pattern`), then the body in
  * braces. Without a kind, a body that starts with a statement keyword is one statement or more,
  * and any other body is an expression.
@@ -2310,7 +2320,8 @@ let _parseStructFields = fn(): Array<StructField> {
   fields
 };
 
-/** Parses a bytes-layout field's type; `rest`, `bytes(N)`, `bits(N)` for 1 to 7 bits, or `u8`, `u16`,
+/** Parses a bytes-layout field's type; `rest`, `bytes(N)`, `bits(N)` for 1 to 7 bits, or `u8`,
+ * `u16`,
  * `u32`, `i32` or `f32` in either case with an optional `.le` or `.be`, which `u8` ignores.
  * @throws an error for an unknown type or a bad width */
 let _layoutType = fn(defaultEndian: Endian): BytesLayoutType {
@@ -2319,8 +2330,13 @@ let _layoutType = fn(defaultEndian: Endian): BytesLayoutType {
   if (_eatIdent("bytes")) {
     expect(Token.LParen);
     let length = 0;
+
     let size: ?Expr = match (peek()) {
-      IntegerConstant(digits, _) => { length = _bytesLength(digits); next(); null },
+      IntegerConstant(digits, _) => {
+        length = _bytesLength(digits);
+        next();
+        null
+      },
       _ => _parseExpr(0),
     };
     expect(Token.RParen);
@@ -2367,7 +2383,10 @@ let _parseLayoutFields = fn(defaultEndian: Endian): Array<BytesLayoutField> {
     let name = _ident();
     expect(Token.Colon);
     let ty = _layoutType(defaultEndian);
-    let value = peek() == Token.Equal ? { next(); _parseExpr(0) } : null;
+    let value = peek() == Token.Equal ? {
+      next();
+      _parseExpr(0)
+    } : null;
     fields.push({ name, ty, value });
     expect(Token.Semicolon);
   }

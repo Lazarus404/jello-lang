@@ -156,11 +156,13 @@ let _declareLayout = fn(name: Bytes, fields: Array<BytesLayoutField>): I32 {
   for (i, field in fields) {
     let code = _layoutCode(field.ty);
     codes.push(code);
+
     let sized = match (field.ty) {
       Bytes(_, size) when (size != null) => match (size as Expr) {
         Variable(name) => {
           let source = -1;
           let earlier = 0;
+
           while (earlier < i) {
             if (fields[earlier].name == name) { source = earlier; }
             earlier++;
@@ -172,6 +174,7 @@ let _declareLayout = fn(name: Bytes, fields: Array<BytesLayoutField>): I32 {
       },
       _ => -1,
     };
+
     if ((sized >= 0) && (i + 1 != fields.len())) {
       throw coded(E0104, "a sized bytes-layout field must be last");
     }

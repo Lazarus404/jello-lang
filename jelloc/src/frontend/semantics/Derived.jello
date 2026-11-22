@@ -315,6 +315,7 @@ let _combineHash = fn(left: I32, right: I32): I32 {
 let _hashTuple = fn(value: I32, ty: I32): Array<I32> {
   let hash = i32Of(0);
   let field = 0;
+
   while (field < H.memberCount(ty)) {
     let item = H.node(Op.TupleField, H.memberType(ty, field), field, 0, [H.local(value, ty)]);
     hash = _combineHash(hash, hashValue(item));
@@ -326,9 +327,11 @@ let _hashTuple = fn(value: I32, ty: I32): Array<I32> {
 let _hashEnum = fn(value: I32, ty: I32): Array<I32> {
   let tag = H.variantCount(ty) - 1;
   let result = _tag(H.local(value, ty));
+
   while (tag >= 0) {
     let hash = i32Of(tag);
     let field = 0;
+
     while (field < H.fieldCount(ty, tag)) {
       hash = _combineHash(hash, hashValue(_field(value, ty, tag, field)));
       field++;
@@ -346,6 +349,7 @@ let _hashBody = fn(params: Array<I32>, ty: I32): Array<I32> {
 
 export let hashValue = fn(value: I32): I32 {
   let ty = H.defaultIntegers(H.typeOf(value));
+
   match (H.kindOf(ty)) {
     Bool => H.callVm("hash_bool", [H.TYPE_BOOL], H.TYPE_I32, [value]),
     Atom => H.callVm("hash_atom", [H.TYPE_ATOM], H.TYPE_I32, [value]),

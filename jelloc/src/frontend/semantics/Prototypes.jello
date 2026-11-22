@@ -168,7 +168,7 @@ let _methodField = fn(ty: I32, name: Bytes, field: Bytes, f: I32, generic: Bool)
   let inherited = (parent >= 0) && hasGenericMethod(parent, field);
   let why = declared >= 0 ? `${field} is a method of ${name} and a field of its typedef`
     : generic && (inherited || ((parent >= 0) && (findMethod(parent, field) >= 0)))
-      ? `${name}.${field} is generic, so it cannot override the ${field} it delegates to`
+    ? `${name}.${field} is generic, so it cannot override the ${field} it delegates to`
     : inherited ? `${name}.${field} cannot override ${field}, a generic method it delegates to`
     : "";
 

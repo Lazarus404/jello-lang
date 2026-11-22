@@ -238,6 +238,7 @@ export let packLayout = fn(ty: I32, values: Array<I32>): I32 {
 
   for (field, _ in H.layoutCodes(ty)) {
     let constant = layoutConstant(ty, field);
+
     if (constant >= 0) {
       physical.push(_constantAt(constant));
     } else {
@@ -296,6 +297,7 @@ export let layoutRecord = fn(ty: I32, read: () -> I32): I32 {
   while (values.len() < H.fieldCount(ty, 0)) {
     let physical = layoutFieldIndex(ty, values.len());
     let source = layoutSizeField(ty, physical);
+
     if (source < 0) {
       values.push(layoutField(ty, physical, read));
     } else {
@@ -320,14 +322,17 @@ export let layoutValid = fn(ty: I32, read: () -> I32): I32 {
 
   for (field, _ in H.layoutCodes(ty)) {
     let constant = layoutConstant(ty, field);
+
     if (constant >= 0) {
       let actual = layoutField(ty, field, read);
       let equal = H.opNode(Op.Eq, H.TYPE_BOOL, [actual, _constantAt(constant)]);
       valid = H.opNode(Op.And, H.TYPE_BOOL, [valid, equal]);
     }
   }
+
   for (field, _ in H.layoutCodes(ty)) {
     let source = layoutSizeField(ty, field);
+
     if (source >= 0) {
       let size = fn(): I32 { layoutField(ty, source, read) };
       let nonnegative = H.opNode(Op.Gt, H.TYPE_BOOL, [size(), i32Of(-1)]);

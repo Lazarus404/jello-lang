@@ -39,7 +39,11 @@ let _slot<K: HashKey, V> = fn(map: HashMap<K, V>, key: K): I32 {
 
 let _insert<K: HashKey, V> = fn(map: HashMap<K, V>, key: K, value: V) {
   let slot = _slot(map, key);
-  if (map.states[slot] == _LIVE) { map.slotsValues[slot] = value; return; }
+
+  if (map.states[slot] == _LIVE) {
+    map.slotsValues[slot] = value;
+    return;
+  }
   if (map.states[slot] == _TOMB) { map.tombstones--; }
   map.slotsKeys[slot] = key;
   map.slotsValues[slot] = value;
@@ -53,6 +57,7 @@ let _rehash<K: HashKey, V> = fn(map: HashMap<K, V>, capacity: I32) {
   let states = map.states;
   _newArrays(map, capacity);
   let slot = 0;
+
   while (slot < states.len()) {
     if (states[slot] == _LIVE) { _insert(map, keys[slot], values[slot]); }
     slot++;
@@ -70,7 +75,11 @@ export prototype HashMap<K: HashKey, V> {
 
   set(key: K, value: V) {
     let slot = _slot(this, key);
-    if (this.states[slot] == _LIVE) { this.slotsValues[slot] = value; return; }
+
+    if (this.states[slot] == _LIVE) {
+      this.slotsValues[slot] = value;
+      return;
+    }
     _makeRoom(this);
     _insert(this, key, value);
   };
@@ -98,6 +107,7 @@ export prototype HashMap<K: HashKey, V> {
   keys(): Array<K> {
     let out = Array.new<K>(0);
     let slot = 0;
+
     while (slot < this.states.len()) {
       if (this.states[slot] == _LIVE) { out.push(this.slotsKeys[slot]); }
       slot++;
@@ -109,6 +119,7 @@ export prototype HashMap<K: HashKey, V> {
   values(): Array<V> {
     let out = Array.new<V>(0);
     let slot = 0;
+
     while (slot < this.states.len()) {
       if (this.states[slot] == _LIVE) { out.push(this.slotsValues[slot]); }
       slot++;
@@ -119,6 +130,7 @@ export prototype HashMap<K: HashKey, V> {
   // Calls F once for each live entry, in slot order.
   each(f: (K, V) -> Void) {
     let slot = 0;
+
     while (slot < this.states.len()) {
       if (this.states[slot] == _LIVE) { f(this.slotsKeys[slot], this.slotsValues[slot]); }
       slot++;
@@ -135,6 +147,7 @@ export prototype HashMap<K: HashKey, V> {
   toString() where K: Show, V: Show: Bytes {
     let parts = Array.new<Bytes>(0);
     let slot = 0;
+
     while (slot < this.states.len()) {
       if (this.states[slot] == _LIVE) {
         let key = Std.literal(this.slotsKeys[slot]);

@@ -284,14 +284,19 @@ typedef Method = {
   // The name of its field.
   let field: Bytes;
 };
+
 // A bound a method requires from one of its generic prototype's parameters.
-typedef MethodBound = { let param: I32; let bounds: I32; };
+typedef MethodBound = {
+  let param: I32;
+  let bounds: I32;
+};
 // The prototypes' methods.
 let _prototypeMethods = Array.new<Method>(0);
 // The methods of generic prototypes' instances, each a function of its own.
 let _instanceMethods = Array.new<Method>(0);
 // By function index, the bounds its method requires from its prototype's parameters.
 let _methodBounds = Array.new<Array<MethodBound>>(0);
+
 // A prototype's generic method, `m<U>(params) { ... }`; called directly, never read from an Object.
 typedef GenericMethod = {
   // Its template index; the template's `kind` is the prototype that declares it.
@@ -730,6 +735,7 @@ let _decidingHashKeys = Array.new<I32>(0);
  * values do not have one stable equality rule. */
 let _unsupportedHashKey = fn(ty: I32): I32 {
   let resolved = H.resolve(ty);
+
   match (H.kindOf(resolved)) {
     Bool, Atom, Bytes, Function, Object => -1,
     Param => H.hasBounds(resolved, H.BOUND_HASH_KEY) ? -1 : resolved,
@@ -752,6 +758,7 @@ let _unsupportedHashKey = fn(ty: I32): I32 {
 
       while ((found < 0) && (tag < H.variantCount(resolved))) {
         let field = 0;
+
         while ((found < 0) && (field < H.fieldCount(resolved, tag))) {
           found = _unsupportedHashKey(H.fieldType(resolved, tag, field));
           field++;
@@ -767,7 +774,7 @@ let _unsupportedHashKey = fn(ty: I32): I32 {
 };
 export let unsupportedHashKey = fn(ty: I32): I32 { _unsupportedHashKey(ty) };
 
-/** Checks whether `ty` is known not to be a HashKey; one with a part still unknown may yet be. */
+// Checks whether `ty` is known not to be a HashKey; one with a part still unknown may yet be.
 let _notHashKey = fn(ty: I32): Bool {
   let bad = _unsupportedHashKey(ty);
   (bad >= 0) && !H.isUnknown(bad)
@@ -839,10 +846,10 @@ export let checkType = fn(ty: AstType): I32 { match (ty) {
       alias >= 0
         ? H.substitute(_aliasTypes[alias].body, _aliasTypes[alias].params, _checkTypes(args))
         : {
-          let checked = _checkTypes(args);
-           checkTypeArgs(H.enumParams(named), name, checked);
-          _heldFields(H.appliedType(named, checked))
-        }
+        let checked = _checkTypes(args);
+        checkTypeArgs(H.enumParams(named), name, checked);
+        _heldFields(H.appliedType(named, checked))
+      }
     },
   },
   Function(args, result) => H.functionType(_checkParamTypes(args), _resultType(result)),
@@ -1026,12 +1033,17 @@ export let useUnsupported = fn(find: (I32, Bool) -> I32): Bool {
 /** The prototype layer installs this so `Std.string` can call a prototype's `toString` method
  * before derived structural printing. It returns -1 when none exists. */
 let _prototypeString: (I32) -> I32 = fn(_value) { -1 };
-export let usePrototypeString = fn(check: (I32) -> I32): Bool { _prototypeString = check; true };
+
+export let usePrototypeString = fn(check: (I32) -> I32): Bool {
+  _prototypeString = check;
+  true
+};
 export let prototypeString = fn(value: I32): I32 { _prototypeString(value) };
 
 /** The prototype layer installs this so that map syntax can call a prototype's method with
  * arguments checked already (`frontend.semantics.Prototypes.methodCallWith`). */
 let _methodWith: (I32, Bytes, Array<I32>) -> I32 = fn(_receiver, _name, _values) { -1 };
+
 export let useMethodCalls = fn(call: (I32, Bytes, Array<I32>) -> I32): Bool {
   _methodWith = call;
   true
@@ -2186,6 +2198,7 @@ let _missingBounds = fn(required: Array<MethodBound>, ty: I32, method: Bytes): B
       : ((bounds & H.BOUND_HASH_KEY) != 0) && (_unsupportedHashKey(argument) >= 0) ? "HashKey"
       : ((bounds & H.BOUND_EQ) != 0) && (_unsupported(argument, false) >= 0) ? "Eq"
       : ((bounds & H.BOUND_SHOW) != 0) && (_unsupported(argument, true) >= 0) ? "Show" : "";
+
     if (missing != "") {
       let bound = `the bound ${missing} of ${H.typeName(param)} in ${method}`;
       return `${H.typeName(argument)} does not satisfy ${bound}`;
@@ -3060,7 +3073,6 @@ let _checkNativeCall = fn(native: I32, name: Bytes, args: Array<AstExpr>, receiv
  * @throws a located error naming the bound a type argument does not meet, or a type argument that
  *   cannot be used as Null<T> */
 export let checkTypeArgs = fn(params: Array<I32>, name: Bytes, types: Array<I32>) {
-
   for (i, typeArg in types) {
     let ty = H.resolve(typeArg);
     let param = params[i];
@@ -6086,8 +6098,9 @@ export let checkGenericPrototype = fn(ty: I32, check: () -> I32): I32 {
  * (`buildInstances`). */
 export let methodValue = fn(ty: I32, name: Bytes, f: I32, body: AstBlock): I32 {
   let found = ownMethod(ty, name);
-  // Generic prototype methods are checked with each concrete instance, not
-  // while their receiver still has abstract parameters.
+
+  /* Generic prototype methods are checked with each concrete instance, not
+   * while their receiver still has abstract parameters. */
   if (H.isTemplateEnum(ty) && (_methodBounds[found].len() > 0)) {
     return H.node(Op.FunctionRef, _functions[found].ty, found + 1, 0, []);
   }

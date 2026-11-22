@@ -201,6 +201,7 @@ let _member = fn(base: AstExpr, member: Bytes): I32 {
   let checked = checkPresent(base, 0);
   let tuple = objectValue(checked);
   let ty = H.typeOf(tuple);
+
   // A generic method has no single function to read.
   if (hasGenericMethod(H.typeOf(checked), member)) {
     let called = `${member} is a generic method of ${H.typeName(H.typeOf(checked))}`;
@@ -852,6 +853,7 @@ let _hash = fn(args: Array<AstExpr>): I32 {
   let value = checkOperand(args[0], 1, -1);
   let ty = H.defaultIntegers(H.typeOf(value));
   let bad = unsupportedHashKey(ty);
+
   if (bad >= 0) {
     throw coded(E0501, `Std.hash requires a HashKey, not ${H.typeName(ty)}`);
   }

@@ -495,6 +495,7 @@ let _statementChildren = fn(cursor: Cursor, value: Stmt): Stmt {
         Struct(fields) => TypedefBody.Struct(_fields(fields)),
         BytesLayout(endian, fields) => {
           let made = Array.new<BytesLayoutField>(0);
+
           for (field in fields) {
             let ty = match (field.ty) {
               Bytes(length, size) => BytesLayoutType.Bytes(length, _optionalChild(cursor, size)),
