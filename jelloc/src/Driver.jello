@@ -32,7 +32,9 @@ import {
 import { takeInternalError } from support.Internal;
 import { verifyFailureSpan } from frontend.hir.Verify;
 import { printHir, printHirWithSpans } from frontend.hir.Print;
-import { functionNode, lowerProgram, relowerBodyInParts } from ir.Lower;
+import {
+  functionNode, lowerProgram, refineOutline, relowerBodyInParts, relowerOutlined,
+} from ir.Lower;
 import { optimizeProgram } from ir.Optimize;
 import { printIr } from ir.Print;
 import { legalizeJlo, relegalizeJlo } from backend.jello.Legalize;
@@ -268,18 +270,32 @@ let _allocatedInParts = fn(legalized: Program): Program {
   }
 };
 
+/** Allocates `lowered`, lowered from `checked`, optimised without inlining or clean-up. While a
+ * function other than the body needs too many registers, the outline plan is refined
+ * (`Lower.refineOutline`) and the program lowered again, its statements in finer parts each pass.
+ * @throws the error of the last pass, when refining cannot help */
+let _allocatedOutlined = fn(checked: Hir, lowered: Program): Program {
+  try {
+    _allocatedInParts(legalizeJlo(optimizeProgram(lowered, false)))
+  } catch (e) {
+    if ((allocationFailure() <= 0) || !refineOutline(allocationFailure())) { throw e; }
+    _allocatedOutlined(checked, relowerOutlined(checked))
+  }
+};
+
 /** Compiles the files `inputs` as far as allocated IR; checks, lowers, optimises, legalises and
  * allocates. When a function other than the body needs too many registers, which inlining
- * may cause, the program is optimised again without inlining or clean-up.
+ * may cause, the program is optimised again without inlining or clean-up, then outlined.
  * @throws the error of the first pass that fails */
 let _allocated = fn(inputs: Array<Bytes>): Program {
-  let lowered = lowerProgram(_checked(inputs));
+  let checked = _checked(inputs);
+  let lowered = lowerProgram(checked);
 
   try {
     _allocatedInParts(legalizeJlo(optimizeProgram(lowered, true)))
   } catch (e) {
     if (allocationFailure() <= 0) { throw e; }
-    _allocatedInParts(legalizeJlo(optimizeProgram(lowered, false)))
+    _allocatedOutlined(checked, lowered)
   }
 };
 
