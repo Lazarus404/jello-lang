@@ -748,6 +748,18 @@ let _physicalRegisters = fn(spilled: Array<Bool>): Array<ValueType> {
   physical
 };
 
+/** Rejects `function` for taking more parameters, counting captures, than there are registers.
+ * @param function  a legalised function
+ * @throws an error naming the count */
+let _tooManyParams = fn(function: Function) {
+  let count = function.params.len();
+  let captures = function.captures;
+  let taken = captures == 0
+    ? `${count} parameters`
+    : `${count - captures} parameters and ${captures} captures`;
+  throw coded(E0901, `function @${function.id} takes ${taken}; at most 256 fit`);
+};
+
 /** Allocates `function`'s registers; builds the shared window, inserts the window moves,
  * builds the interference graph, fixes the parameters to registers from 0 and the window from
  * `_windowBase`, coalesces, and colours. Each type that spills takes two temporaries, so it
@@ -865,11 +877,19 @@ let _allocateOrRecord = fn(function: Function): Function {
  * The last function, the program body, is allocated first, as it is the likeliest to fail.
  * @param program  a program from `Legalize.legalizeJlo`
  * @return the program on physical registers, ready for `Emit.emitAllocated`
- * @throws a failing function's allocation error (too many registers, or a catch value left
- *         without one), after recording its ID for `allocationFailure` */
+ * @throws a failing function's allocation error (too many parameters or registers, or a catch
+ *         value left without one), after recording its ID for `allocationFailure` */
 export let allocateProgram = fn(program: Program): Program {
   _failed = -1;
   let functions = program.functions;
+
+  // A function with too many parameters fails whatever its callers do, so it is found first.
+  for (function in functions) {
+    if (function.params.len() > _REGISTER_LIMIT) {
+      _failed = function.id;
+      _tooManyParams(function);
+    }
+  }
   let last = functions.len() - 1;
   let body = _allocateOrRecord(functions[last]);
 

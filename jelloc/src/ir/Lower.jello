@@ -364,6 +364,33 @@ let _capturedBox = fn(id: I32): I32 {
   binding >= 0 ? _boxes[binding] : _boxed(id)
 };
 
+/** A closure with more captures than this takes them packed in one environment, an array of
+ * their boxes, so that neither its creator's capture window nor its parameters outgrow the
+ * registers. */
+const _PACKED_CAPTURES = 32;
+
+// Returns whether a closure with `count` captures takes them packed in one environment.
+let _packsCaptures = fn(count: I32): Bool { count > _PACKED_CAPTURES };
+
+/** Lowers the captures of `FunctionRef` node `id`, each boxed, and returns the registers the
+ * closure takes them in; when `_packsCaptures`, one box of their environment, a cell of boxes. */
+let _captures = fn(id: I32): Array<I32> {
+  let count = childCount(id);
+  let packed = _packsCaptures(count);
+  let captures = Array.new<I32>(0);
+  let env = packed ? _freshCell(TYPE_DYNAMIC) : -1;
+  if (packed) { _emit(Op.ArrayNew, env, [_i32(count)], 0); }
+  let i = 0;
+
+  while (i < count) {
+    let box = _capturedBox(childOf(id, i));
+    if (packed) { _emit(Op.ArraySet, -1, [env, _i32(i), box], 0); } else { captures.push(box); }
+    i++;
+  }
+  if (packed) { captures.push(_unaryOp(Op.Box, TYPE_DYNAMIC, env)); }
+  captures
+};
+
 /** Lowers the statements of the block node `id`.
  * @return whether its tail runs; a tail after the end of every path is checked but never runs */
 let _statements = fn(id: I32): Bool {
@@ -1342,13 +1369,7 @@ let _exprAt = fn(id: I32): I32 {
     Convert => _convert(id),
     // A closure holds its captures boxed.
     FunctionRef => {
-      let captures = Array.new<I32>(0);
-      let i = 0;
-
-      while (i < childCount(id)) {
-        captures.push(_capturedBox(childOf(id, i)));
-        i++;
-      }
+      let captures = _captures(id);
       let dst = _fresh(typeOf(id));
       _emit(Op.ConstFunction, dst, captures, valueOf(id));
       dst
@@ -1752,9 +1773,20 @@ let _irFunction = fn(id: I32, params: Array<I32>, captures: I32, result: ValueTy
   { id, params, captures, registers: _registers, result, blocks: _blocks, entry: 0 }
 };
 
+/** Takes a packed environment (see `_captures`) as the next of `params`, and unboxes it.
+ * @return the environment's register */
+let _unpackEnvironment = fn(params: Array<I32>): I32 {
+  let box = _fresh(TYPE_DYNAMIC);
+  let env = _freshCell(TYPE_DYNAMIC);
+  params.push(box);
+  _emit(Op.Unbox, env, [box], 0);
+  env
+};
+
 /** Lowers HIR function `id` into IR function `functionId`. Its captures arrive boxed after its
- * arguments, and each is unboxed on entry when the body reads its value, not only its box, or
- * when it is a cell. The body's tail is returned.
+ * arguments, or packed in one boxed environment (see `_captures`), whose boxes are taken out on
+ * entry. Each is unboxed on entry when the body reads its value, not only its box, or when it is
+ * a cell. The body's tail is returned.
  * @param id  the HIR `Function` node
  * @param functionId  the IR function ID
  * @return the IR function */
@@ -1762,13 +1794,22 @@ let _function = fn(id: I32, functionId: I32): IrFunction {
   _begin(lastChild(id), functionId);
   let params = Array.new<I32>(0);
   let arguments = typeArgCount(typeOf(id));
+  let packed = _packsCaptures(childCount(id) - 1 - arguments);
+  let env = -1;
   let i = 0;
 
   while (i < childCount(id) - 1) {
     let param = childOf(id, i);
     let capture = match (opOf(param)) { Capture => true, _ => false };
     let register = _fresh(capture ? TYPE_DYNAMIC : typeOf(param));
-    params.push(register);
+
+    // The captures follow the arguments, so the environment arrives at the first of them.
+    if (packed && (i == arguments)) { env = _unpackEnvironment(params); }
+    if (capture && packed) {
+      _emit(Op.ArrayGet, register, [env, _i32(i - arguments)], 0);
+    } else {
+      params.push(register);
+    }
     if (capture) { _setBox(valueOf(param), register); }
 
     let bound = register;
