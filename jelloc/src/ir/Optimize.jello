@@ -474,10 +474,9 @@ let _specialiseAll = fn(functions: Array<Function>): ?Array<Function> {
 };
 
 /** Optimises a lowered program. `Driver` passes the result to `Legalize.legalizeJlo`; when the
- * body then needs too many registers, `Lower.relowerBodyInParts` lowers it again from the HIR,
- * with its globals, and keeps the other functions, which never address a promoted global.
- * Inlining may leave another function needing too many, so `Driver` then optimises again
- * without rewriting.
+ * body then needs too many registers, the program is lowered again with the body's statements in
+ * parts (`Lower.refineOutline`). Inlining may leave another function needing too many, so
+ * `Driver` then optimises again without rewriting.
  * @param program  a program from `Lower.lowerProgram`, whose body, function ID 0, is last
  * @param rewrite  whether to copy small functions for the functions they are passed, inline
  *   direct calls of small leaf functions, then clean up every function but the body, which runs

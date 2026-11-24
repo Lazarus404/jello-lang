@@ -420,10 +420,12 @@ let _explained = fn(): Array<Tuple<Bytes, Bytes, Bytes>> { [
   (E0900, "not supported yet",
     "The form is part of the language, but this compiler does not support it yet."),
   (E0901, "a compiler limit",
-    "The program passes a limit of the compiler or VM: 256 registers in one function, "
-    + "try regions nested 16 deep, natives of more than 8 arguments, generic instances "
-    + "nested 64 deep, or macro expansions nested 32 deep or making more than 4096 nodes in "
-    + "one module. Split the function, or simplify the nesting."),
+    "The program passes a limit of the compiler or VM: a function of more than 256 "
+    + "parameters, one statement that needs more than 256 registers (a bigger function runs "
+    + "in parts, but a statement holding no block cannot), try regions nested 16 deep, natives "
+    + "of more than 8 arguments, generic instances nested 64 deep, or macro expansions nested "
+    + "32 deep or making more than 4096 nodes in one module. Split the statement or the "
+    + "function, or simplify the nesting."),
 
   (E1000, "an invalid macro",
     "A macro is defined at the top level of a module, once per name and with no value's "

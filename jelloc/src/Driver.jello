@@ -32,12 +32,10 @@ import {
 import { takeInternalError } from support.Internal;
 import { verifyFailureSpan } from frontend.hir.Verify;
 import { printHir, printHirWithSpans } from frontend.hir.Print;
-import {
-  functionNode, lowerProgram, refineOutline, relowerBodyInParts, relowerOutlined,
-} from ir.Lower;
+import { functionNode, isPart, lowerProgram, refineOutline, relowerOutlined } from ir.Lower;
 import { optimizeProgram } from ir.Optimize;
 import { printIr } from ir.Print;
-import { legalizeJlo, relegalizeJlo } from backend.jello.Legalize;
+import { legalizeJlo } from backend.jello.Legalize;
 import { allocateProgram, allocationFailure } from backend.jello.Allocate;
 import { emitAllocated } from backend.jello.Emit;
 import { exists, listDir, makeDirs, readText, writeText } from std.io.File;
@@ -258,45 +256,30 @@ let _checked = fn(inputs: Array<Bytes>): Hir {
   })
 };
 
-/** Allocates `legalized`; a program body with more registers than one function can have is
- * lowered again to run in parts.
- * @throws an error if a function needs too many registers */
-let _allocatedInParts = fn(legalized: Program): Program {
-  try {
-    allocateProgram(legalized)
-  } catch (e) {
-    if (allocationFailure() != 0) { throw e; }
-    allocateProgram(relegalizeJlo(relowerBodyInParts(legalized), legalized))
-  }
-};
-
-/** Allocates `lowered`, lowered from `checked`, optimised without inlining or clean-up. While a
- * function other than the body needs too many registers, the outline plan is refined
- * (`Lower.refineOutline`) and the program lowered again, its statements in finer parts each pass.
+/** Allocates `lowered`, lowered from `checked`, optimised with or without `rewrite`
+ * (`Optimize.optimizeProgram`). While a function needs too many registers, the outline plan is
+ * refined (`Lower.refineOutline`) and the program lowered again, in finer parts each pass. With
+ * rewriting, that is so only for the program body and its parts: another function may need too
+ * many only for what was inlined into it, so the program is optimised again without rewriting.
  * @throws the error of the last pass, when refining cannot help */
-let _allocatedOutlined = fn(checked: Hir, lowered: Program): Program {
+let _allocatedFrom = fn(checked: Hir, lowered: Program, rewrite: Bool): Program {
   try {
-    _allocatedInParts(legalizeJlo(optimizeProgram(lowered, false)))
+    allocateProgram(legalizeJlo(optimizeProgram(lowered, rewrite)))
   } catch (e) {
-    if ((allocationFailure() <= 0) || !refineOutline(allocationFailure())) { throw e; }
-    _allocatedOutlined(checked, relowerOutlined(checked))
+    let failed = allocationFailure();
+    if (failed < 0) { throw e; }
+    let refined = (!rewrite || (failed == 0) || isPart(failed)) && refineOutline(failed);
+    if (!refined && !rewrite) { throw e; }
+    _allocatedFrom(checked, refined ? relowerOutlined(checked) : lowered, refined && rewrite)
   }
 };
 
 /** Compiles the files `inputs` as far as allocated IR; checks, lowers, optimises, legalises and
- * allocates. When a function other than the body needs too many registers, which inlining
- * may cause, the program is optimised again without inlining or clean-up, then outlined.
+ * allocates (`_allocatedFrom`).
  * @throws the error of the first pass that fails */
 let _allocated = fn(inputs: Array<Bytes>): Program {
   let checked = _checked(inputs);
-  let lowered = lowerProgram(checked);
-
-  try {
-    _allocatedInParts(legalizeJlo(optimizeProgram(lowered, true)))
-  } catch (e) {
-    if (allocationFailure() <= 0) { throw e; }
-    _allocatedOutlined(checked, lowered)
-  }
+  _allocatedFrom(checked, lowerProgram(checked), true)
 };
 
 /** Returns `message` formatted as a diagnostic pointing at the start of `span`, quoting its source

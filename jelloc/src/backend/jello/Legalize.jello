@@ -12,7 +12,7 @@ package backend.jello;
 import type { BasicBlock, Function, Instruction, Program } from ir.Model;
 import { Op, Terminator, ValueType, instructionAt } from ir.Model;
 import { terminatorRead } from ir.Cfg;
-import { verifyProgramFrom } from ir.Verify;
+import { verifyLegalizedProgram } from ir.Verify;
 
 // The register types of the function being legalised, with the temporaries legalisation adds.
 let _registers = Array.new<ValueType>(0);
@@ -282,38 +282,13 @@ let _function = fn(function: Function): Function {
   }
 };
 
-/** Legalises the functions of `program` from index `kept`, keeping those before it, which are
- * legalised already, and checks the result with `Verify.verifyProgramFrom`. The input is not
- * modified. */
-let _legalize = fn(program: Program, kept: I32): Program {
-  let functions = program.functions;
-  let selected = Array.new<Function>(0);
-  let i = 0;
-
-  while (i < kept) {
-    selected.push(functions[i]);
-    i++;
-  }
-
-  while (i < functions.len()) {
-    selected.push(_function(functions[i]));
-    i++;
-  }
-
-  let legalized: Program = { ...program, functions: selected };
-  verifyProgramFrom(legalized, true, kept);
-  legalized
-};
-
-/** Legalises every function of `program` (see `_legalize`). `Driver` passes the result to
- * `Allocate.allocateProgram`.
+/** Legalises every function of `program` and checks the result with
+ * `Verify.verifyLegalizedProgram`. `Driver` passes the result to `Allocate.allocateProgram`. The
+ * input is not modified.
  * @param program  a program from `Lower.lowerProgram`
  * @return the legalised program */
-export let legalizeJlo = fn(program: Program): Program { _legalize(program, 0) };
-
-/** Legalises `program`, which `Lower.relowerBodyInParts` lowered from the legalised program
- * `earlier`; the functions it took from `earlier`, all but its last, are legalised already.
- * @return the legalised program */
-export let relegalizeJlo = fn(program: Program, earlier: Program): Program {
-  _legalize(program, earlier.functions.len() - 1)
+export let legalizeJlo = fn(program: Program): Program {
+  let legalized: Program = { ...program, functions: program.functions.map(_function) };
+  verifyLegalizedProgram(legalized);
+  legalized
 };

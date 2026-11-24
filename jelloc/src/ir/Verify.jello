@@ -961,12 +961,10 @@ let _signatureOf = fn(function: Function): ValueType {
 };
 
 /** Verifies `program`; indexes its functions by ID (which must be non-negative and unique) and
- * records their signatures and the program's pools and tables, then checks each function from
- * index `first`.
+ * records their signatures and the program's pools and tables, then checks each function.
  * @param legalized  whether to check the legalised forms
- * @param first  the index of the first function to check; those before it were checked already
  * @throws an internal error if it is invalid */
-let _program = fn(program: Program, legalized: Bool, first: I32): Bool {
+let _program = fn(program: Program, legalized: Bool): Bool {
   _legalized = legalized;
   let functions = program.functions;
   _functionIndexes = Array.new<I32>(0);
@@ -997,27 +995,15 @@ let _program = fn(program: Program, legalized: Bool, first: I32): Bool {
   _globals = program.globals;
   _natives = program.natives;
   _inProgram = true;
-  let i = first;
-
-  while (i < functions.len()) {
-    _function(functions[i]);
-    i++;
-  }
+  for (function in functions) { _function(function); }
   _inProgram = false;
   true
 };
 
 // Verifies `program` as lowering produces it, before legalisation (see `_program`).
-export let verifyProgram = fn(program: Program): Bool { _program(program, false, 0) };
+export let verifyProgram = fn(program: Program): Bool { _program(program, false) };
 // Verifies `program` in its legalised forms (see `_program`).
-export let verifyLegalizedProgram = fn(program: Program): Bool { _program(program, true, 0) };
-
-/** Verifies `program`, whose functions before index `first` were verified already in a program
- * with the same pools up to their uses (see `_program`).
- * @param legalized  whether to check the legalised forms */
-export let verifyProgramFrom = fn(program: Program, legalized: Bool, first: I32): Bool {
-  _program(program, legalized, first)
-};
+export let verifyLegalizedProgram = fn(program: Program): Bool { _program(program, true) };
 
 /** Verifies an allocated `program`; it is legalised and within the `.jlo` limits. Registers
  * are byte operands, so a function may use at most 256, and an import has at most 8 arguments
