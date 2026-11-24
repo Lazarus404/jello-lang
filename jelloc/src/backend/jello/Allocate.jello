@@ -679,15 +679,11 @@ let _rewriteBlock = fn(block: BasicBlock): BasicBlock {
   }
 };
 
-/** Rejects function `id` for needing more physical registers than the VM allows.
- * @param id  the IR function ID
- * @throws an error asking for the function to be split */
-let _tooMany = fn(id: I32) {
-  throw coded(
-    E0901,
-    `function @${id} needs more than 256 registers; split it into smaller functions`
-  );
-  null
+/** Rejects the function being allocated for needing more physical registers than the VM allows.
+ * The driver reports only a failure that outlining cannot remove, which is one statement.
+ * @throws an error asking for the statement to be split */
+let _tooMany = fn() {
+  throw coded(E0901, "this statement needs more than 256 registers; split it into smaller ones");
 };
 
 // Returns the payload register of each catch in `blocks`, in block order.
@@ -771,7 +767,6 @@ let _tooManyParams = fn(function: Function) {
  * @throws an error if the parameters, window and temporaries need more than 256 registers, or a
  *         catch payload is left without one */
 let _allocate = fn(function: Function): Function {
-  let id = function.id;
   let params = function.params;
   _keyTypes = Array.new<ValueType>(0);
   _keys = Array.new<I32>(0);
@@ -811,7 +806,7 @@ let _allocate = fn(function: Function): Function {
   let temps = 0;
   let windowEnd = base + _scratch.len();
   let reserved = windowEnd > params.len() ? windowEnd : params.len();
-  if (reserved > _REGISTER_LIMIT) { _tooMany(id); }
+  if (reserved > _REGISTER_LIMIT) { _tooMany(); }
   _colors = _color(payloads, neighbors, moves, _REGISTER_LIMIT);
   let changed = true;
 
@@ -827,7 +822,7 @@ let _allocate = fn(function: Function): Function {
     }
 
     if (changed) {
-      if (reserved > _REGISTER_LIMIT - temps) { _tooMany(id); }
+      if (reserved > _REGISTER_LIMIT - temps) { _tooMany(); }
       _colors = _color(payloads, neighbors, moves, _REGISTER_LIMIT - temps);
     }
   }
@@ -840,7 +835,7 @@ let _allocate = fn(function: Function): Function {
 
   _numberSpillSlots();
   let physical = _physicalRegisters(spilled);
-  if (physical.len() > _REGISTER_LIMIT) { _tooMany(id); }
+  if (physical.len() > _REGISTER_LIMIT) { _tooMany(); }
 
   let allocated = windowed.map(_rewriteBlock);
   let physicalParams = Array.new<I32>(0);
