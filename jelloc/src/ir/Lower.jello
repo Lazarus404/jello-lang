@@ -101,11 +101,19 @@ let _slotCount = 1;
 let _env = -1;
 // The HIR type of the value the function being lowered returns.
 let _result = TYPE_NULL;
+/** The statuses a part returns besides 0, for falling through: it returned, leaving the value in
+ * slot 0, or it left a loop outside it with `break` or `continue`. */
+const _PART_RETURN = 1;
+const _PART_BREAK = 2;
+const _PART_CONTINUE = 3;
+
 /** The outline plan: the blocks whose statements run in parts, by HIR node, each with the
  * indices of the statements its runs start at, in order from 0. `refineOutline` grows it, and
  * each lowering follows it, until `lowerProgram` lowers a program afresh. */
 let _outlined = Array.new<I32>(0);
 let _cuts = Array.new<Array<I32>>(0);
+// The bodies of the functions whose blocks, the body or blocks inside it, the plan outlines.
+let _outlinedBodies = Array.new<I32>(0);
 /** The runs the last lowering made parts of: part `_firstRun + r` runs the statements of block
  * `_runBlocks[r]` from `_runStarts[r]` up to `_runEnds[r]`. */
 let _firstRun = 0;
@@ -1239,8 +1247,6 @@ let _try = fn(id: I32, value: Bool): I32 {
   _nextBlock += 3;
   let result = value ? _fresh(typeOf(id)) : -1;
   let payload = _fresh(TYPE_DYNAMIC);
-  // The try's value field is its catch binding, bound to the payload.
-  if (valueOf(id) >= 0) { _bindRegister(id, payload); }
   _end(Terminator.Jump(bodyBlock), bodyBlock);
 
   let outer = _handler;
@@ -1275,6 +1281,8 @@ let _try = fn(id: I32, value: Bool): I32 {
 
   if (throws) { _target(catchBlock); }
   _open(catchBlock);
+  // The try's value field is its catch binding, bound to the payload once the VM has set it.
+  if (valueOf(id) >= 0) { _bindRegister(id, payload); }
   let caught = _lowerBlock(childOf(id, 1));
   if (value) { _move(result, caught); }
   _end(Terminator.Jump(joinBlock), joinBlock);
@@ -1680,8 +1688,8 @@ let _statementAt = fn(id: I32): Bool {
     },
     Return => _returned(childOf(id, 0)),
     Throw => _exit(Terminator.Throw(_expr(childOf(id, 0)), id)),
-    Break => _exit(Terminator.Jump(_breakTarget)),
-    Continue => _exit(Terminator.Jump(_continueTarget)),
+    Break => _leaveLoop(_PART_BREAK),
+    Continue => _leaveLoop(_PART_CONTINUE),
     While => auxOf(id) == 0 ? _while(id) : _doWhile(id),
     IfStatement => _ifStatement(id),
     TryStatement => {
@@ -1839,6 +1847,7 @@ let _function = fn(id: I32, functionId: I32): IrFunction {
 
     // The captures follow the arguments, so the environment arrives at the first of them.
     if (packed && (i == arguments)) { env = _unpackEnvironment(params); }
+
     if (capture && packed) {
       _emit(Op.ArrayGet, register, [env, _i32(i - arguments)], 0);
     } else {
@@ -1907,6 +1916,7 @@ let _slotBox = fn(slot: I32): I32 { _binaryOp(Op.ArrayGet, TYPE_DYNAMIC, _env, _
  * @return `value` */
 let _setSlot = fn(slot: I32, value: I32): I32 {
   if (value < 0) { return value; }
+
   let boxed = match (_registers[value]) {
     Dynamic => value,
     _ => _unaryOp(Op.Box, TYPE_DYNAMIC, value),
@@ -1943,11 +1953,13 @@ let _cellRegister = fn(id: I32): I32 {
   cell
 };
 
-/** Walks node `id` of unit `unit`, a run or -1 for the function, in order: notes in `declared`,
- * by binding ID, the unit that declares each binding it declares, and gives each binding it uses
- * that another unit declares a slot. A binding is declared before any use, and a parameter or
- * capture by the function. */
+/** Walks node `id` of unit `unit` in order: notes in `declared`, by binding ID, the unit that
+ * declares each binding it declares, and gives each binding it uses that another unit declares a
+ * slot. A unit is the function, -1, or a run, named by its first statement; a binding is declared
+ * before any use, and a parameter or capture by the function. */
 let _noteBindings = fn(id: I32, unit: I32, declared: Array<I32>): Null {
+  let outline = _outlined.indexOf(id);
+  if (outline >= 0) { return _noteRuns(id, _cuts[outline], unit, declared); }
   let binding = valueOf(id);
 
   match (opOf(id)) {
@@ -1974,27 +1986,37 @@ let _noteBindings = fn(id: I32, unit: I32, declared: Array<I32>): Null {
   null
 };
 
-/** Prepares to lower the function whose body is block `body`; when the plan outlines it, gives a
- * slot to each binding that crosses from one of its units to another: a run of the body's
- * statements, or the function itself, which holds the tail.
+/** Prepares to lower the function whose body is block `body`; when the plan outlines it or blocks
+ * inside it, gives a slot to each binding that crosses from one of its units to another: a run of
+ * an outlined block's statements, or the function itself, which holds what no run does.
  * @return whether it is outlined */
 let _outline = fn(body: I32): Bool {
-  let at = _outlined.indexOf(body);
   _slots = Array.new<I32>(0);
   _slotCount = 1;
-  if (at < 0) { return false; }
-  let cuts = _cuts[at];
-  let declared = Array.new<I32>(0);
-  let run = 0;
-  let i = 0;
-
-  while (i < childCount(body) - auxOf(body)) {
-    if ((run + 1 < cuts.len()) && (i == cuts[run + 1])) { run++; }
-    _noteBindings(childOf(body, i), run, declared);
-    i++;
-  }
-  if (auxOf(body) == 1) { _noteBindings(lastChild(body), -1, declared); }
+  if (_outlinedBodies.indexOf(body) < 0) { return false; }
+  _noteBindings(body, -1, Array.new<I32>(0));
   true
+};
+
+// Returns where run `r` of block `block`, whose runs start at `cuts`, ends: the next run's start.
+let _runEnd = fn(block: I32, cuts: Array<I32>, r: I32): I32 {
+  r + 1 < cuts.len() ? cuts[r + 1] : childCount(block) - auxOf(block)
+};
+
+/** Walks the outlined block `block` of unit `unit` with `_noteBindings`: each statement in the
+ * unit of its run, which starts at one of `cuts` and is named by its first statement, and the
+ * tail in `unit`. */
+let _noteRuns = fn(block: I32, cuts: Array<I32>, unit: I32, declared: Array<I32>): Null {
+  for (r, start in cuts) {
+    let i = start;
+
+    while (i < _runEnd(block, cuts, r)) {
+      _noteBindings(childOf(block, i), childOf(block, start), declared);
+      i++;
+    }
+  }
+  if (auxOf(block) == 1) { _noteBindings(lastChild(block), unit, declared); }
+  null
 };
 
 /** Opens the environment of the outlined function `id`, in the block that a call of itself starts
@@ -2011,77 +2033,100 @@ let _openEnvironment = fn(id: I32) {
   null
 };
 
-// Checks whether node `id` holds a `Return`; a function it makes is a node of its own.
-let _holdsReturn = fn(id: I32): Bool {
-  match (opOf(id)) { Return => { return true; }, _ => null };
+/** Returns the statuses by which node `id` may leave a part that holds it, as bits `1 << status`:
+ * a `Return`, and, unless `looped` (in the body of a loop that it holds), a `Break` or `Continue`.
+ * A loop's condition and step leave the loop around it, as its body does not; a function it makes
+ * is a node of its own. */
+let _exits = fn(id: I32, looped: Bool): I32 {
+  let exits = match (opOf(id)) {
+    Return => 1 << _PART_RETURN,
+    Break when (!looped) => 1 << _PART_BREAK,
+    Continue when (!looped) => 1 << _PART_CONTINUE,
+    _ => 0,
+  };
+  let loop = match (opOf(id)) { While => true, _ => false };
   let i = 0;
 
   while (i < childCount(id)) {
-    if (_holdsReturn(childOf(id, i))) { return true; }
+    exits = exits | _exits(childOf(id, i), looped || (loop && (i == 1)));
     i++;
   }
-  false
+  exits
 };
 
 /** Lowers the statements of the outlined block `block` as calls of its parts, one per run from
- * each of `cuts`, each passed the environment. After a part that may return, its status 1 returns
- * (`_returnedBy`); a function body without a tail ends every path, so after its last part it
- * returns whatever the status. */
+ * each of `cuts`, each passed the environment. After each part, each status it may return leaves
+ * as `_leave` says; a function body without a tail ends every path, so after its last part the
+ * function returns whatever the status. */
 let _callRuns = fn(block: I32, cuts: Array<I32>) {
   for (r, start in cuts) {
-    let last = r + 1 == cuts.len();
-    let end = last ? childCount(block) - auxOf(block) : cuts[r + 1];
+    let end = _runEnd(block, cuts, r);
     let status = _fresh(TYPE_I32);
     _emit(Op.Call, status, [_env], _firstRun + _runBlocks.len());
     _runBlocks.push(block);
     _runStarts.push(start);
     _runEnds.push(end);
+    let exits = 0;
+    let i = start;
 
-    if (last && (auxOf(block) == 0)) {
-      _exit(Terminator.ReturnValue(_returnedBy(status)));
-    } else if (_runReturns(block, start, end)) {
-      _returnOn(status);
+    while (i < end) {
+      exits = exits | _exits(childOf(block, i), false);
+      i++;
+    }
+
+    let ends = (r + 1 == cuts.len()) && (auxOf(block) == 0);
+
+    if (ends && (_outlinedBodies.indexOf(block) >= 0)) {
+      _leave(status, _PART_RETURN);
+    } else {
+      _leaveOn(status, exits);
     }
   }
   null
 };
 
-// Checks whether a statement of block `block` from `start` up to `end` holds a `Return`.
-let _runReturns = fn(block: I32, start: I32, end: I32): Bool {
-  let i = start;
+// Leaves, as `_leave` says, on each status of `exits` that register `status` may hold.
+let _leaveOn = fn(status: I32, exits: I32) {
+  let kind = _PART_RETURN;
 
-  while (i < end) {
-    if (_holdsReturn(childOf(block, i))) { return true; }
-    i++;
+  while (kind <= _PART_CONTINUE) {
+    if ((exits & (1 << kind)) != 0) {
+      let taken = _nextBlock;
+      let test = _binaryOp(Op.Eq, TYPE_BOOL, status, _i32(kind));
+      _nextBlock += 2;
+      _end(Terminator.Branch(test, taken, taken + 1), taken);
+      _leave(status, kind);
+      _open(taken + 1);
+    }
+    kind++;
   }
-  false
+  null
 };
 
-/** Returns the register that the function returns after a part returned with register
- * `status`: the value the part left in slot 0, or, in a part, the status, which it passes on. */
-let _returnedBy = fn(status: I32): I32 {
-  _runOf(_self) >= 0 ? status : _unboxedAs(_result, _slotBox(0))
+/** Leaves the block being built after a part returned status `kind` in register `status`: the
+ * function returns the value the part left in slot 0, or a loop is left; a part whose function or
+ * loop is outside it returns the status, passing it on. */
+let _leave = fn(status: I32, kind: I32): Null {
+  if (kind != _PART_RETURN) { return _leaveLoop(kind); }
+  _exit(Terminator.ReturnValue(_runOf(_self) >= 0 ? status : _unboxedAs(_result, _slotBox(0))))
 };
 
-// Returns when the status in register `status` is 1, as `_callRuns` says.
-let _returnOn = fn(status: I32) {
-  let returning = _nextBlock;
-  let returned = _binaryOp(Op.Eq, TYPE_BOOL, status, _i32(1));
-  _nextBlock += 2;
-  _end(Terminator.Branch(returned, returning, returning + 1), returning);
-  _exit(Terminator.ReturnValue(_returnedBy(status)));
-  _open(returning + 1);
+/** Lowers a `break` or `continue`, status `kind`: a jump to the loop's exit or next round, or,
+ * when its loop is outside the part being built, a return of the status. */
+let _leaveLoop = fn(kind: I32): Null {
+  let target = kind == _PART_BREAK ? _breakTarget : _continueTarget;
+  _exit(target >= 0 ? Terminator.Jump(target) : Terminator.ReturnValue(_i32(kind)))
 };
 
-// Leaves the value of node `id` in slot 0 and returns status 1, as a part returns.
+// Leaves the value of node `id` in slot 0 and returns status `_PART_RETURN`, as a part returns.
 let _partReturn = fn(id: I32): Null {
   _setSlot(0, _expr(id));
-  _exit(Terminator.ReturnValue(_i32(1)))
+  _exit(Terminator.ReturnValue(_i32(_PART_RETURN)))
 };
 
 /** Lowers run `run` of the last lowering's outlined blocks as its part: an IR function that takes
- * the environment and returns a status, 0 when its statements fall through or 1 when one returns
- * (`_partReturn`). */
+ * the environment and returns a status, 0 when its statements fall through, else `_PART_RETURN`,
+ * `_PART_BREAK` or `_PART_CONTINUE`. */
 let _lowerRun = fn(run: I32): IrFunction {
   let block = _runBlocks[run];
   let id = _firstRun + run;
@@ -2110,8 +2155,8 @@ let _runOf = fn(functionId: I32): I32 {
 };
 
 /** Refines the outline plan after register allocation failed on IR function `failed` of the last
- * lowering: outlines a function in two runs of its body's statements, or cuts a run of several
- * statements in two.
+ * lowering: outlines a function's body or the blocks its tail holds, cuts a run of several
+ * statements in two, or outlines the blocks a run's one statement holds (`_descend`).
  * @return whether the plan changed; when not, lowering again cannot help */
 export let refineOutline = fn(failed: I32): Bool {
   let run = _runOf(failed);
@@ -2119,18 +2164,46 @@ export let refineOutline = fn(failed: I32): Bool {
   if (run >= 0) {
     let start = _runStarts[run];
     let end = _runEnds[run];
-    if (end - start < 2) { return false; }
+    if (end - start < 2) { return _descend(childOf(_runBlocks[run], start)); }
     let cuts = _cuts[_outlined.indexOf(_runBlocks[run])];
     Array.insert(cuts, cuts.indexOf(start) + 1, start + (end - start) / 2);
     return true;
   }
   if ((failed <= 0) || (failed >= childCount(rootNode()))) { return false; }
   let body = lastChild(childOf(rootNode(), failed - 1));
-  let count = childCount(body) - auxOf(body);
-  if ((count == 0) || (_outlined.indexOf(body) >= 0)) { return false; }
-  _outlined.push(body);
+  if (!_descend(body)) { return false; }
+  if (_outlinedBodies.indexOf(body) < 0) { _outlinedBodies.push(body); }
+  true
+};
+
+/** Adds block `block` to the outline plan, in two runs of its statements, or one when it has one.
+ * @return whether it was added; not when it has no statements or is there already */
+let _outlineBlock = fn(block: I32): Bool {
+  let count = childCount(block) - auxOf(block);
+  if ((count == 0) || (_outlined.indexOf(block) >= 0)) { return false; }
+  _outlined.push(block);
   _cuts.push(count < 2 ? [0] : [0, count / 2]);
   true
+};
+
+/** Outlines block `id`, or the blocks nearest it inside node `id` (`_outlineBlock`): an `if`'s
+ * branches, a loop's body, a `try`'s body and catch, or a block in an expression, such as in a
+ * block's tail when the block has no statements or is outlined already.
+ * @return whether it outlined any */
+let _descend = fn(id: I32): Bool {
+  match (opOf(id)) {
+    Block => _outlineBlock(id) || ((auxOf(id) == 1) && _descend(lastChild(id))),
+    _ => {
+      let changed = false;
+      let i = 0;
+
+      while (i < childCount(id)) {
+        changed = _descend(childOf(id, i)) || changed;
+        i++;
+      }
+      changed
+    },
+  }
 };
 
 /** The first statement of each part of the program body, in order, and the ID of the first part;
@@ -2374,6 +2447,7 @@ let _lowerBody = fn(
 export let lowerProgram = fn(program: Hir): IrProgram {
   _outlined = Array.new<I32>(0);
   _cuts = Array.new<Array<I32>>(0);
+  _outlinedBodies = Array.new<I32>(0);
   relowerOutlined(program)
 };
 
@@ -2440,6 +2514,7 @@ export let relowerOutlined = fn(program: Hir): IrProgram {
 
   while (i < childCount(root) - 1) {
     if (reached[i + 1]) { functions.push(_function(childOf(root, i), i + 1)); }
+
     // An outlined function's parts follow it.
     while (parts < _runBlocks.len()) {
       functions.push(_lowerRun(parts));
