@@ -139,10 +139,10 @@ def parse_ir(path):
         if m:
             program["wides"].append(m.group(1))
             continue
-        # The disassembly shows an F64 as C's %g does.
+        # The disassembly shows an F64 in the fewest digits that read back as it.
         m = re.match(r"f64 #\d+ = bits (-?\d+)$", line)
         if m:
-            program["floats"].append("%g" % struct.unpack("<d", struct.pack("<q", int(m.group(1))))[0])
+            program["floats"].append(struct.unpack("<d", struct.pack("<q", int(m.group(1))))[0])
             continue
         m = re.match(r"fn @(\d+)\((.*) entry (\d+) \{$", line)
         if m:
@@ -585,7 +585,8 @@ def main():
             problem("global g%d" % i, "%s decoded as %s" % (ir, ref))
     if program["wides"] != module["i64"]:
         problem("module", "i64 pool %s decoded as %s" % (program["wides"], module["i64"]))
-    if program["floats"] != module["f64"]:
+    bits = lambda floats: [struct.pack("<d", float(f)) for f in floats]
+    if bits(program["floats"]) != bits(module["f64"]):
         problem("module", "f64 pool %s decoded as %s" % (program["floats"], module["f64"]))
     natives = ["%s(%s) -> %s" % (name, " ".join(NATIVE_KINDS.get(a, "?" + a) for a in args), NATIVE_KINDS.get(ret, "?" + ret))
                for name, args, ret in program["natives"]]
