@@ -155,11 +155,16 @@ let _dynamicEqual = fn(d: I32, v: I32, value: I32): I32 {
  * @param b  the binding that holds `right`, or -1
  * @param right  the checked right operand
  * @return the Bool node
- * @throws a located error if the operands' types differ other than in nullability, or a Dynamic
- *     is compared with a value `_dynamicEqual` cannot compare */
+ * @throws a located error if an operand gives no value, the operands' types differ other than in
+ *     nullability, or a Dynamic is compared with a value `_dynamicEqual` cannot compare */
 export let equalBindings = fn(op: BinaryOp, a: I32, left: I32, b: I32, right: I32): I32 {
   let leftType = H.typeOf(left);
   let rightType = H.typeOf(right);
+
+  // A call with no result, or a block that ends every path, has the bare Null; it has no T.
+  if ((leftType == H.TYPE_NULL) || (rightType == H.TYPE_NULL)) {
+    throw coded(E0500, `cannot compare ${H.typeName(leftType)} with ${H.typeName(rightType)}`);
+  }
   if (leftType == H.TYPE_DYNAMIC) { return _negated(op, _dynamicEqual(a, b, right)); }
   if (rightType == H.TYPE_DYNAMIC) { return _negated(op, _dynamicEqual(b, a, left)); }
   let leftNull = H.isKind(leftType, Kind.Null);

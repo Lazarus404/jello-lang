@@ -29,8 +29,8 @@ import {
 } from frontend.semantics.Failures;
 import type { Hir } from frontend.hir.Hir;
 import {
-  Kind, Op, TYPE_NULL, declareNative, functionType, globalNameOf, globalTypeOf, innerOf, isHandle,
-  isKind, kindOf, node, opNode, typeArg, typeArgCount, typeName, typeOf
+  Kind, Op, TYPE_NULL, declareNative, endsPath, functionType, globalNameOf, globalTypeOf, innerOf,
+  isHandle, isKind, kindOf, node, opNode, typeArg, typeArgCount, typeName, typeOf
 } from frontend.hir.Hir;
 import { firstUninitializedRead } from frontend.semantics.InitOrder;
 import { internalRaised } from support.Internal;
@@ -58,12 +58,15 @@ import {
   checkPrototype, checkPrototypeString, instantiatePrototypes, methodCallWith
 } from frontend.semantics.Prototypes;
 import { verifyHir } from frontend.hir.Verify;
-import { E0206, E0210, E0213, E0214, E0304, E0605, E0901, coded } from support.Codes;
+import { E0206, E0210, E0213, E0214, E0304, E0605, E0701, E0901, coded } from support.Codes;
 
 /** The checked statements of the program body so far, as HIR node IDs, in initialisation order;
  * each module's global initialisers, effects and loops, with its regexps' initialisers before
  * them, and the generic instances' regexps first. */
 let _initializers = Array.new<I32>(0);
+/** The index of the module whose statement in `_initializers` ends every path, so that nothing
+ * after it runs, or -1. */
+let _ending = -1;
 // The index of `std.testing` among the modules, or -1 when the program does not load it.
 let _testing = -1;
 // The module whose HashMap map literals make, which a program that has one loads.
@@ -114,16 +117,16 @@ let _marshalled = fn(ty: I32, name: Bytes): I32 {
   ty
 };
 
-/** Inserts statements into the program body before the statements of the module being checked,
- * so that they run first.
- * @param first  the index in `_initializers` of the module's first statement
+/** Inserts statements into the program body before the statement at index `at` of
+ * `_initializers`, usually the first of the module being checked, so that they run first.
+ * @param at  the index to insert at
  * @param inits  the statements to insert */
-let _initializeFirst = fn(first: I32, inits: Array<I32>) {
+let _initializeFirst = fn(at: I32, inits: Array<I32>) {
   if (inits.len() == 0) { return null; }
   _initializers = _initializers
-    .slice(0, first)
+    .slice(0, at)
     .appendFrom(inits, 0)
-    .appendFrom(_initializers, first);
+    .appendFrom(_initializers, at);
   null
 };
 
@@ -245,7 +248,8 @@ let _checkExtension = fn(statement: Stmt, owner: Bytes) {
  *   are recorded for such imports
  * @return the checked tail, or -1 when the module has none or does not run
  * @throws a located error for any type error in the module, an unsupported top-level statement,
- *   or a test or hook with the wrong signature */
+ *   a test or hook with the wrong signature, or a statement after one, in this module or an
+ *   earlier one, that ends every path */
 let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bool): I32 {
   let { name: dotted, statements, syntax, tail, imports } = modules[index];
   let outer = enterSyntax(syntax);
@@ -275,12 +279,15 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
   if (index == _testing) { declareAssertions(index); }
   // The `Test` type a test file's tests take.
   let test = isTestModule(dotted) && (_testing >= 0) ? exportedType(_testing, "Test") : -1;
-  let first = _initializers.len();
+  /* A module after the end of every path never runs, and adds nothing to the program body
+   * unless it fails, so the end stays last; its regexps are still initialised, before it. */
+  let first = _ending < 0 ? _initializers.len() : _initializers.len() - 1;
   let functionIndex = declareFunctions(statements);
   let extended = extendedType(dotted);
 
   for (i, statement in statements) {
     let parent = enterSyntax(syntaxChild(i));
+    let slot = _initializers.len();
     beginTouch();
     beginDoubt();
 
@@ -398,6 +405,17 @@ let _checkModule = fn(modules: Array<Module>, index: I32, runs: Bool, opened: Bo
         _ => { throw unsupportedStatement(statement); },
       };
       if (test >= 0) { _checkSignature(statement, test); }
+
+      /* Declarations run nothing, so only a statement that joins the program body is reached;
+       * the first after the end is reported, as in a block. */
+      if (_initializers.len() > slot) {
+        if (_ending >= 0) {
+          let cause = _ending == index ? "" : `: module ${modules[_ending].name} never finishes`;
+          _ending = -1;
+          throw coded(E0701, "unreachable statement" + cause);
+        }
+        if (endsPath(_initializers[slot])) { _ending = index; }
+      }
     } catch (e) {
       recoverTopLevel(e, syntax);
       poisonDeclared(statement, false);
@@ -522,6 +540,7 @@ export let typeCheckModules = fn(modules: Array<Module>): Hir {
   useMethodCalls(methodCallWith);
   resetDerived();
   _initializers = Array.new<I32>(0);
+  _ending = -1;
 
   let entry = modules.len() - 1;
   _testing = -1;

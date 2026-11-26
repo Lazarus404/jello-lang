@@ -1,0 +1,6 @@
+// error: 5:1: unreachable statement: module loops.Forever never finishes
+// The program body runs its modules in turn, so nothing after an imported module's endless
+// loop runs; declarations, which run nothing, may still follow it.
+import { start } from loops.Forever;
+let next = start + 1;
+let later = fn(): I32 { next };
